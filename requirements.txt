@@ -1,0 +1,58 @@
+# ==============================================================================
+# XOD - The Autonomous Intelligence & Research Agent
+# Python 3.10+ (3.12 recommended). Exact versions: audited with pip-audit, no known
+# vulnerabilities at the time they were pinned. CI re-audits on every push.
+# ==============================================================================
+
+# Web framework & server
+fastapi==0.143.0
+starlette==1.7.0
+uvicorn==0.54.0
+httpx==0.28.1
+pydantic==2.14.0
+python-dotenv==1.2.4
+python-multipart==0.0.32
+requests==2.34.2
+
+# Security floors for libraries the ones above pull in
+urllib3>=2.8.0
+anyio>=4.15.1
+h2>=4.4.1
+filelock>=4.1.0
+fsspec>=2026.9.0
+
+# HTML scraping & web parsing
+beautifulsoup4==4.15.0
+soupsieve>=3.0.1
+
+# Agent browser (Chrome DevTools Protocol)
+websockets==17.2
+
+# Documents
+pypdf==6.20.0
+python-docx==1.2.0
+
+# Media downloads (uses the ffmpeg bundled with imageio-ffmpeg)
+yt-dlp==2026.8.19
+
+# Secrets: API keys and saved logins live in the macOS Keychain
+keyring==25.7.0
+psutil==7.2.2
+
+# On-device image & video generation (media worker; Apple silicon)
+torch==2.14.1
+diffusers==0.41.0
+transformers==5.19.0
+accelerate==1.15.0
+peft==0.21.2                 # LoRA hot-swapping
+safetensors==0.8.0
+sentencepiece==0.2.2         # FLUX / T5 tokenizer
+piexif==1.1.3                # used by the vendored mflux (app/vendor)
+imageio-ffmpeg==0.6.0        # bundled ffmpeg for video, downloads and voice input
+numpy==2.5.4
+Pillow==12.3.0
+
+# On-device models (MLX)
+mlx==0.32.3
+mlx-lm==0.32.0
+mlx-whisper==0.4.3           # local speech to text for voice input

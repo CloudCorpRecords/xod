@@ -1,0 +1,99 @@
+# ==============================================================================
+# XOD - Git Ignore
+# Protects personal data, API keys, databases, virtual environments, and caches
+# ==============================================================================
+
+# --- Environment & Sensitive Credentials ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.cert
+
+# --- Local Databases, State & User Data ---
+data/
+*.db
+*.db-journal
+*.db-wal
+*.sqlite
+*.sqlite3
+computer_state.json
+
+# --- Python Environment & Caches ---
+.venv/
+.venv*/
+env/
+venv/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Testing & Code Quality ---
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.nox/
+.tox/
+
+# --- Operating System & Editor Artifacts ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# --- Local Scratch & Separate Projects ---
+scratch/
+everythingincludedisfake/
+tmp/
+tmp_*
+*.log
+
+# --- Media & Download Artifacts ---
+*.mp3
+*.mp4
+*.m4a
+*.webm
+
+# --- Desktop app (electron/) ---
+node_modules/
+electron/dist/
+electron/out/
+
+# --- Local tooling & backups ---
+.claude/
+*.bak
+*.empty-*
+!electron/build/

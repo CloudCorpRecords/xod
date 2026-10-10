@@ -1,0 +1,67 @@
+{
+  "name": "xod-desktop",
+  "productName": "Xod",
+  "version": "0.1.0",
+  "description": "Desktop shell for Xod, a local-first AI research and computer agent.",
+  "main": "main.js",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg --arm64"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "dev.xod.desktop",
+    "productName": "Xod",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "splash.html",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../app",
+        "to": "backend/app",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!**/*.pyc",
+          "!**/*.bak"
+        ]
+      },
+      {
+        "from": "../requirements.txt",
+        "to": "backend/requirements.txt"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.png",
+      "minimumSystemVersion": "13.0",
+      "identity": null,
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Xod listens when you use voice input. Audio is transcribed on this Mac and never uploaded."
+      }
+    },
+    "dmg": {
+      "title": "Xod ${version}"
+    }
+  }
+}

@@ -1,0 +1,2653 @@
+import asyncio
+import json
+import logging
+import httpx
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+
+from fastapi import FastAPI, Request, HTTPException, UploadFile, File
+from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from app.paths import DATA_DIR
+from app.config import settings, update_env_variable
+from app.services.trustmrr import trustmrr_client, VALID_CATEGORIES, VALID_SORTS
+from app.services.you_search import you_client
+from app.services.tavily_search import tavily_client
+from app.services.tech_auditor import tech_auditor
+from app.services.omni_search import omni_search_engine
+from app.services.llm import llm_service
+from app.agent.researcher import AgenticResearcher
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+logger = logging.getLogger("main")
+
+app = FastAPI(title="Xod - Ultimate Researcher & TrustMRR Assistant", version="1.0.0")
+
+# Only this machine's own UI may talk to the server. Xod can run commands, read files and edit its
+# own code, so a web page open in any browser (including Xod's own) must not be able to send it
+# requests: no CORS, a Host check (stops DNS rebinding) and an Origin / Sec-Fetch-Site check
+# (stops cross-site requests). Tools like curl send neither header and still work.
+from starlette.responses import JSONResponse  # noqa: E402
+
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
+
+
+def _host_only(value: str) -> str:
+    v = (value or "").strip().lower()
+    if "://" in v:
+        v = v.split("://", 1)[1]
+    v = v.split("/", 1)[0]
+    if v.startswith("["):
+        return v.split("]", 1)[0] + "]"
+    return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
+
+
+@app.middleware("http")
+async def local_only_guard(request, call_next):
+    if _host_only(request.headers.get("host", "")) not in _LOCAL_HOSTS:
+        return JSONResponse({"detail": "Xod only answers on localhost."}, status_code=403)
+    origin = request.headers.get("origin")
+    own = request.headers.get("host", "").lower()
+    if origin and origin != "null" and origin.lower().split("://", 1)[-1].rstrip("/") != own:
+        return JSONResponse({"detail": "Cross-site request blocked."}, status_code=403)
+    if origin == "null" or request.headers.get("sec-fetch-site") == "cross-site":
+        return JSONResponse({"detail": "Cross-site request blocked."}, status_code=403)
+    response = await call_next(request)
+    for k, v in _SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    return response
+
+
+# Second line of defence if something slips past the sanitizer: the page may only run its own
+# scripts and talk to this server. Images and video may come from anywhere (research results).
+_SECURITY_HEADERS = {
+    "Content-Security-Policy": "; ".join([
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline'",        # the UI uses inline onclick handlers
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob: https: http:",
+        "media-src 'self' data: blob: https:",
+        "font-src 'self' data:",
+        "connect-src 'self'",
+        "object-src 'none'",
+        "frame-src 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "frame-ancestors 'none'",
+    ]),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+}
+
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+
+# Static files mount
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+MEDIA_DIR = DATA_DIR / "media_studio"
+MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+
+from app.services.storage import (
+    init_db,
+    create_session,
+    list_sessions,
+    get_session,
+    update_session,
+    delete_session,
+    add_message,
+    get_message,
+    get_session_messages,
+    list_entities,
+    get_entity,
+    search_entities,
+    update_entity_enrichment,
+    get_entity_relationships,
+    add_or_update_relationship
+)
+from app.services.community_intel import community_intel_service
+from app.services.github_auditor import github_auditor_service
+from app.services.dns_inspector import dns_inspector_service
+from app.services.surface_explorer import surface_explorer_service
+from app.services.subdomain_recon import subdomain_recon_service
+from app.services.talent_intel import talent_intel_service
+from app.services.package_auditor import package_auditor_service
+from app.services.sec_edgar import sec_edgar_service
+from app.services.ip_intel import ip_intel_service
+from app.services.traffic_intel import traffic_intel_service
+from app.services.trend_intel import trend_intel_service
+from app.services.roadmap import get_project_roadmap
+from app.services.email_intel import email_intel_service
+from app.services.funding_intel import funding_intel_service
+from app.services.project_storage import project_storage_service
+from app.services.filesystem import filesystem_service
+from app.services.browser_sandbox import browser_sandbox_service
+from app.services.system_control import system_control_service
+from app.services.creator_intel import creator_intel_service
+from app.services.youtube_client import youtube_client
+from app.services.media_model_manager import media_model_manager
+from app.services.memory_service import memory_service
+
+
+class ChatRequest(BaseModel):
+    messages: List[Dict[str, Any]]
+    persona: Optional[str] = "ultimate_researcher"
+    session_id: Optional[str] = None
+    active_workspace_path: Optional[str] = None
+    attached_document: Optional[Dict[str, Any]] = None
+
+class CreateSessionRequest(BaseModel):
+    title: Optional[str] = "New Research Session"
+    persona: Optional[str] = "ultimate_researcher"
+
+class UpdateSessionRequest(BaseModel):
+    title: Optional[str] = None
+    persona: Optional[str] = None
+
+class ConfigUpdateRequest(BaseModel):
+    trustmrr_api_key: Optional[str] = None
+    you_api_key: Optional[str] = None
+    youtube_api_key: Optional[str] = None
+    llm_provider: Optional[str] = None
+    llm_base_url: Optional[str] = None
+    llm_model: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    gemini_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    fireworks_api_key: Optional[str] = None
+    tavily_api_key: Optional[str] = None
+    huggingface_token: Optional[str] = None
+
+@app.get("/", response_class=HTMLResponse)
+async def serve_index():
+    index_file = STATIC_DIR / "index.html"
+    if not index_file.exists():
+        raise HTTPException(status_code=404, detail="index.html not found")
+    return index_file.read_text(encoding="utf-8")
+
+@app.get("/api/sessions")
+async def get_sessions():
+    """Returns list of all saved research sessions."""
+    return {"sessions": list_sessions()}
+
+@app.post("/api/sessions")
+async def create_new_session(req: CreateSessionRequest):
+    """Creates a new persistent research session."""
+    session = create_session(title=req.title or "New Research Session", persona=req.persona or "ultimate_researcher")
+    return session
+
+@app.get("/api/sessions/{session_id}")
+async def get_session_detail(session_id: str):
+    """Returns session info and its full message history."""
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    messages = get_session_messages(session_id)
+    return {"session": session, "messages": messages}
+
+@app.patch("/api/sessions/{session_id}")
+async def update_session_endpoint(session_id: str, req: UpdateSessionRequest):
+    """Updates session title or persona."""
+    update_session(session_id, title=req.title, persona=req.persona)
+    return {"status": "success"}
+
+@app.delete("/api/sessions/{session_id}")
+async def delete_session_endpoint(session_id: str):
+    """Deletes a session and its saved messages."""
+    delete_session(session_id)
+    return {"status": "success"}
+
+@app.get("/api/messages/{message_id}/trace")
+async def get_message_trace(message_id: str):
+    """Returns deep observability trace and tool payloads for a specific assistant message."""
+    msg = get_message(message_id)
+    if not msg:
+        raise HTTPException(status_code=404, detail="Message not found")
+    
+    content = msg.get("content") or ""
+    reasoning = msg.get("reasoning") or ""
+    tools = msg.get("tool_events") or []
+    
+    char_count = len(content) + len(reasoning)
+    approx_tokens = int(char_count / 3.8) if char_count > 0 else 0
+    
+    # Extract swarm intelligence if present
+    is_swarm = False
+    swarm_plan = None
+    swarm_results = []
+    subagent_tool_calls = []
+    all_tools = []
+
+    if isinstance(tools, list):
+        for ev in tools:
+            ev_type = ev.get("type")
+            if ev_type == "swarm_plan":
+                is_swarm = True
+                swarm_plan = ev
+            elif ev_type == "swarm_complete":
+                is_swarm = True
+                swarm_results = ev.get("results", [])
+            elif ev_type in ("tool_call", "subagent_tool_call"):
+                t_name = ev.get("name") or ev.get("tool") or "unknown"
+                all_tools.append(t_name)
+                if ev_type == "subagent_tool_call":
+                    subagent_tool_calls.append(ev)
+            elif ev_type == "tool_result":
+                t_name = ev.get("name") or ev.get("tool") or "unknown"
+                if t_name not in all_tools:
+                    all_tools.append(t_name)
+
+    return {
+        "message": msg,
+        "metrics": {
+            "model": settings.llm_model,
+            "provider": settings.llm_provider,
+            "reasoning_chars": len(reasoning),
+            "content_chars": len(content),
+            "estimated_tokens": approx_tokens,
+            "tool_count": len(all_tools),
+            "tools_used": all_tools,
+            "is_swarm": is_swarm,
+            "subagents_count": len(swarm_plan.get("subagents", [])) if swarm_plan else len(swarm_results),
+            "subagent_tools_count": len(subagent_tool_calls),
+            "swarm_plan": swarm_plan,
+            "swarm_results": swarm_results
+        }
+    }
+
+@app.get("/api/sessions/{session_id}/trace")
+async def get_session_trace(session_id: str):
+    """Returns the full execution trace and telemetry breakdown across all messages in a session."""
+    session = get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    messages = get_session_messages(session_id)
+    
+    total_tools = 0
+    all_tools_used = []
+    total_reasoning_chars = 0
+    total_content_chars = 0
+    turn_traces = []
+    
+    for m in messages:
+        t_events = m.get("tool_events") or []
+        reasoning = m.get("reasoning") or ""
+        content = m.get("content") or ""
+        
+        t_count = len(t_events) if isinstance(t_events, list) else 0
+        total_tools += t_count
+        total_reasoning_chars += len(reasoning)
+        total_content_chars += len(content)
+        
+        if isinstance(t_events, list):
+            for t in t_events:
+                t_name = t.get("tool") or t.get("name") or "unknown"
+                all_tools_used.append(t_name)
+        
+        turn_traces.append({
+            "id": m.get("id"),
+            "role": m.get("role"),
+            "created_at": m.get("created_at"),
+            "has_reasoning": bool(reasoning),
+            "reasoning_chars": len(reasoning),
+            "content_chars": len(content),
+            "tool_count": t_count,
+            "tools": t_events
+        })
+    
+    approx_tokens = int((total_reasoning_chars + total_content_chars) / 3.8)
+    
+    return {
+        "session": session,
+        "metrics": {
+            "model": settings.llm_model,
+            "provider": settings.llm_provider,
+            "total_messages": len(messages),
+            "total_tools": total_tools,
+            "tools_breakdown": {t: all_tools_used.count(t) for t in set(all_tools_used)},
+            "estimated_tokens": approx_tokens,
+            "total_reasoning_chars": total_reasoning_chars,
+            "total_content_chars": total_content_chars
+        },
+        "turns": turn_traces
+    }
+
+# --------------------------------------------------------------
+# Saved website logins (passwords stay in the macOS Keychain)
+# --------------------------------------------------------------
+class SaveLoginRequest(BaseModel):
+    site: str
+    username: str
+    password: str
+
+
+@app.get("/api/vault/logins")
+async def list_saved_logins():
+    from app.services import credential_vault
+    return {"logins": credential_vault.list_logins()}
+
+
+@app.post("/api/vault/logins")
+async def save_saved_login(req: SaveLoginRequest):
+    from app.services import credential_vault
+    try:
+        return {"success": True, **credential_vault.save_login(req.site, req.username, req.password, source="added by you")}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/vault/logins/{site:path}")
+async def delete_saved_login(site: str):
+    from app.services import credential_vault
+    return {"success": credential_vault.delete_login(site)}
+
+
+# --------------------------------------------------------------
+# Task inbox: jobs that run in the background (see services/task_queue.py)
+# --------------------------------------------------------------
+class NewTaskRequest(BaseModel):
+    request: str
+
+
+class TaskAnswerRequest(BaseModel):
+    text: str
+
+
+@app.get("/api/tasks")
+async def list_tasks():
+    from app.services.task_queue import task_queue
+    return {"tasks": task_queue.list(), "counts": task_queue.counts()}
+
+
+@app.post("/api/tasks")
+async def create_task(req: NewTaskRequest):
+    from app.services.task_queue import task_queue
+    try:
+        return {"success": True, "task": task_queue.create(req.request)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/tasks/{task_id}/approve")
+async def approve_task(task_id: str):
+    from app.services.task_queue import task_queue
+    return task_queue.approve(task_id)
+
+
+@app.post("/api/tasks/{task_id}/answer")
+async def answer_task(task_id: str, req: TaskAnswerRequest):
+    from app.services.task_queue import task_queue
+    return task_queue.answer(task_id, req.text)
+
+
+@app.post("/api/tasks/{task_id}/retry")
+async def retry_task(task_id: str):
+    from app.services.task_queue import task_queue
+    return task_queue.retry(task_id)
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str):
+    from app.services.task_queue import task_queue
+    return await task_queue.cancel(task_id)
+
+
+@app.delete("/api/tasks/{task_id}")
+async def delete_task(task_id: str):
+    from app.services.task_queue import task_queue
+    return {"success": task_queue.delete(task_id)}
+
+
+@app.get("/api/tasks/{task_id}/screenshot")
+async def task_screenshot(task_id: str):
+    from fastapi.responses import FileResponse
+    from app.services.task_queue import task_queue
+    path = task_queue.screenshot_path(task_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="No screenshot")
+    return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/tasks/{task_id}/show")
+async def show_task_page(task_id: str):
+    """Brings a task's own tab to the front (e.g. to clear a bot check with Take Over)."""
+    from app.services.task_queue import task_queue
+    from app.services.browser_sandbox import browser_sandbox_service as sb
+    t = task_queue.get(task_id)
+    if not t or not t.get("tab_id"):
+        return {"success": False, "error": "This task has no open page."}
+    return await sb.manage_tabs("switch", target_id=t["tab_id"])
+
+
+@app.on_event("startup")
+async def _start_task_worker():
+    from app.services.task_queue import task_queue
+    from app.services.doctor import doctor
+    task_queue.start()
+    doctor.start()
+
+
+@app.get("/api/doctor")
+async def doctor_check():
+    """Health of Xod's machinery (chat model, memory, browser, media, tasks, keys, recent errors)."""
+    from app.services.doctor import doctor
+    return await doctor.check()
+
+
+class DoctorFixRequest(BaseModel):
+    fix: str
+
+
+@app.get("/api/self-edit")
+async def self_edit_status():
+    """Self-editing gate: tiers of the chat/editor model, settings, protected code, and the change history."""
+    from app.services import self_edit
+    return self_edit.status()
+
+
+class SelfEditSettingsRequest(BaseModel):
+    enabled: Optional[bool] = None
+    auto_apply_green: Optional[bool] = None
+    editor: Optional[Dict[str, Any]] = None
+    clear_editor: Optional[bool] = None
+    tier_overrides: Optional[Dict[str, str]] = None
+
+
+@app.post("/api/self-edit/settings")
+async def self_edit_settings(req: SelfEditSettingsRequest):
+    from app.services import self_edit
+    upd = {k: v for k, v in req.dict().items() if v is not None and k != "clear_editor"}
+    if req.clear_editor:
+        upd["editor"] = None
+    self_edit.save_settings(upd)
+    return self_edit.status()
+
+
+class SelfEditRequest(BaseModel):
+    goal: str
+    files: Optional[List[str]] = None
+
+
+@app.post("/api/self-edit/request")
+async def self_edit_request(req: SelfEditRequest):
+    from app.services import self_edit
+    return await self_edit.request_change(req.goal, req.files, requested_by="you")
+
+
+@app.post("/api/self-edit/{change_id}/{action}")
+async def self_edit_action(change_id: str, action: str):
+    from app.services import self_edit
+    fn = {"approve": self_edit.approve, "reject": self_edit.reject, "revert": self_edit.revert}.get(action)
+    if not fn:
+        return {"ok": False, "detail": f"Unknown action {action}"}
+    return {**fn(change_id), "status": self_edit.status()}
+
+
+@app.get("/api/self-edit/{change_id}")
+async def self_edit_change(change_id: str):
+    from app.services import self_edit
+    c = self_edit.get_change(change_id)
+    return self_edit.public_change(c) if c else {"error": "not found"}
+
+
+@app.post("/api/doctor/fix")
+async def doctor_fix(req: DoctorFixRequest):
+    from app.services.doctor import doctor
+    res = await doctor.fix(req.fix)
+    return {**res, "report": await doctor.check()}
+
+
+async def _counted(gen):
+    """Counts replies in flight, so self-edits wait for quiet before the dev server reloads."""
+    from app.services import self_edit
+    self_edit.active_streams += 1
+    try:
+        async for chunk in gen:
+            yield chunk
+    finally:
+        self_edit.active_streams -= 1
+
+
+@app.post("/api/chat")
+async def chat_endpoint(request: ChatRequest):
+    """Streaming chat endpoint using Server-Sent Events (SSE) with persistent DB storage."""
+    # Ensure session exists or create new
+    session_id = request.session_id
+    is_new_session = False
+    
+    last_msg = request.messages[-1].get("content", "Research Session") if request.messages else "Research Session"
+    if isinstance(last_msg, list):
+        text_parts = [p.get("text", "") for p in last_msg if isinstance(p, dict) and p.get("type") == "text"]
+        prompt_preview = " ".join(text_parts) if text_parts else "Visual Intelligence Audit"
+    else:
+        prompt_preview = str(last_msg)
+
+    if not session_id or not get_session(session_id):
+        title = prompt_preview[:35] + ("..." if len(prompt_preview) > 35 else "")
+        session = create_session(title=title, persona=request.persona or "ultimate_researcher")
+        session_id = session["id"]
+        is_new_session = True
+    else:
+        session = get_session(session_id)
+
+    # Save user message to persistent storage
+    if request.messages and request.messages[-1].get("role") == "user":
+        user_text = prompt_preview if isinstance(last_msg, str) else json.dumps(last_msg)
+        add_message(session_id=session_id, role="user", content=user_text)
+
+    researcher = AgenticResearcher(persona=request.persona or "ultimate_researcher")
+
+    async def event_generator():
+        yield f"data: {json.dumps({'type': 'session_info', 'session_id': session_id, 'is_new': is_new_session})}\n\n"
+
+        assistant_content = ""
+        assistant_reasoning = ""
+        tool_events = []
+
+        try:
+            async for event in researcher.run_research_stream(
+                messages=request.messages,
+                active_workspace_path=request.active_workspace_path,
+                attached_document=request.attached_document
+            ):
+                event_type = event.get("type")
+                if event_type == "content":
+                    assistant_content += event.get("content", "")
+                elif event_type == "reasoning":
+                    assistant_reasoning += event.get("content", "")
+                elif event_type in (
+                    "tool_call", "tool_result", "scorecard",
+                    "swarm_plan", "subagent_status", "subagent_tool_call",
+                    "subagent_tool_result", "swarm_complete"
+                ):
+                    tool_events.append(event)
+
+                yield f"data: {json.dumps(event)}\n\n"
+
+        except Exception as e:
+            logger.exception(f"Chat stream exception: {e}")
+            err_event = {"type": "error", "content": f"Server error: {str(e)}"}
+            yield f"data: {json.dumps(err_event)}\n\n"
+        finally:
+            # Persist assistant response to SQLite database
+            if assistant_content or assistant_reasoning or tool_events:
+                add_message(
+                    session_id=session_id,
+                    role="assistant",
+                    content=assistant_content,
+                    reasoning=assistant_reasoning,
+                    tool_events=tool_events
+                )
+                try:
+                    from app.services.trace_recorder import record_trace
+                    last_user_query = ""
+                    for m in reversed(request.messages):
+                        if m.get("role") == "user":
+                            last_user_query = m.get("content", "")
+                            break
+                    record_trace(
+                        source="chat",
+                        query=last_user_query,
+                        tool_calls=[{"name": e.get("name") or e.get("tool", "unknown"), "event": e} for e in tool_events if e.get("type") in ("tool_call", "subagent_tool_call")],
+                        outcome=assistant_content[:1000],
+                        success=True,
+                        model=settings.llm_model
+                    )
+                except Exception:
+                    pass
+
+    return StreamingResponse(
+        _counted(event_generator()),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+@app.get("/api/config")
+async def get_config():
+    """Returns safe masked configuration and status."""
+    key = settings.trustmrr_api_key
+    masked_key = ""
+    if key:
+        masked_key = key[:7] + "..." + key[-4:] if len(key) > 11 else "******"
+
+    you_key = settings.you_api_key
+    masked_you_key = ""
+    if you_key:
+        masked_you_key = you_key[:7] + "..." + you_key[-4:] if len(you_key) > 11 else "******"
+
+    yt_key = settings.youtube_api_key
+    masked_yt_key = ""
+    if yt_key:
+        masked_yt_key = yt_key[:7] + "..." + yt_key[-4:] if len(yt_key) > 11 else "******"
+
+    tav_key = settings.tavily_api_key
+    masked_tav_key = ""
+    if tav_key:
+        masked_tav_key = tav_key[:7] + "..." + tav_key[-4:] if len(tav_key) > 11 else "******"
+
+    return {
+        "trustmrr_configured": bool(key),
+        "trustmrr_masked_key": masked_key,
+        "you_configured": bool(you_key),
+        "you_masked_key": masked_you_key,
+        "tavily_configured": bool(tav_key),
+        "tavily_masked_key": masked_tav_key,
+        "youtube_configured": bool(yt_key),
+        "youtube_masked_key": masked_yt_key,
+        "llm_provider": settings.llm_provider,
+        "llm_base_url": settings.llm_base_url,
+        "llm_model": settings.llm_model,
+        "has_openai_key": bool(settings.openai_api_key),
+        "has_anthropic_key": bool(settings.anthropic_api_key),
+        "has_gemini_key": bool(settings.gemini_api_key),
+        "has_groq_key": bool(settings.groq_api_key),
+        "has_openrouter_key": bool(settings.openrouter_api_key),
+        "has_fireworks_key": bool(settings.fireworks_api_key),
+        "has_tavily_key": bool(tav_key),
+        "has_huggingface_token": bool(settings.huggingface_token),
+        "huggingface_masked_token": (settings.huggingface_token[:4] + "..." + settings.huggingface_token[-4:]) if len(settings.huggingface_token) > 8 else ("Configured" if settings.huggingface_token else "")
+    }
+
+@app.post("/api/config")
+async def update_config(req: ConfigUpdateRequest):
+    """Updates settings and persists to .env."""
+    if req.trustmrr_api_key is not None:
+        key_val = req.trustmrr_api_key.strip()
+        update_env_variable("TRUSTMRR_API_KEY", key_val)
+        trustmrr_client.set_api_key(key_val)
+
+    if req.you_api_key is not None:
+        you_val = req.you_api_key.strip()
+        update_env_variable("YOU_API_KEY", you_val)
+        you_client.set_api_key(you_val)
+
+    if req.tavily_api_key is not None:
+        tav_val = req.tavily_api_key.strip()
+        update_env_variable("TAVILY_API_KEY", tav_val)
+        tavily_client.set_api_key(tav_val)
+
+    if req.youtube_api_key is not None:
+        yt_val = req.youtube_api_key.strip()
+        update_env_variable("YOUTUBE_API_KEY", yt_val)
+        youtube_client.set_api_key(yt_val)
+
+    if req.llm_provider is not None:
+        update_env_variable("LLM_PROVIDER", req.llm_provider)
+
+    if req.llm_base_url is not None:
+        update_env_variable("LLM_BASE_URL", req.llm_base_url)
+
+    if req.llm_model is not None:
+        update_env_variable("LLM_MODEL", req.llm_model)
+
+    if req.openai_api_key is not None:
+        update_env_variable("OPENAI_API_KEY", req.openai_api_key.strip())
+
+    if req.gemini_api_key is not None:
+        update_env_variable("GEMINI_API_KEY", req.gemini_api_key.strip())
+
+    if req.groq_api_key is not None:
+        update_env_variable("GROQ_API_KEY", req.groq_api_key.strip())
+
+    if req.anthropic_api_key is not None:
+        update_env_variable("ANTHROPIC_API_KEY", req.anthropic_api_key.strip())
+
+    if req.openrouter_api_key is not None:
+        update_env_variable("OPENROUTER_API_KEY", req.openrouter_api_key.strip())
+
+    if req.fireworks_api_key is not None:
+        update_env_variable("FIREWORKS_API_KEY", req.fireworks_api_key.strip())
+
+    if req.huggingface_token is not None:
+        hf_val = req.huggingface_token.strip()
+        update_env_variable("HUGGINGFACE_TOKEN", hf_val)
+        update_env_variable("HF_TOKEN", hf_val)
+        media_model_manager.set_hf_token(hf_val)
+
+    return {"status": "success", "message": "Settings updated successfully."}
+
+class TavilyTestRequest(BaseModel):
+    tavily_api_key: Optional[str] = None
+
+@app.post("/api/tavily/test")
+async def test_tavily_connection(payload: Optional[TavilyTestRequest] = None):
+    """Tests Tavily AI API key and connectivity."""
+    k = payload.tavily_api_key if payload else None
+    res = await tavily_client.verify_key(k)
+    if res.get("valid") and (k or tavily_client.api_key):
+        clean_key = (k or tavily_client.api_key).strip()
+        settings.tavily_api_key = clean_key
+        update_env_variable("TAVILY_API_KEY", clean_key)
+        tavily_client.set_api_key(clean_key)
+    return res
+
+class TavilySearchRequest(BaseModel):
+    query: str
+    count: int = 5
+    search_depth: str = "basic"
+    include_answer: bool = True
+
+@app.post("/api/tavily/search")
+async def search_tavily_endpoint(req: TavilySearchRequest):
+    """Direct search endpoint for Tavily AI."""
+    return await tavily_client.search(
+        query=req.query,
+        count=req.count,
+        search_depth=req.search_depth,
+        include_answer=req.include_answer
+    )
+
+class YouTubeTestRequest(BaseModel):
+    youtube_api_key: Optional[str] = None
+
+@app.post("/api/youtube/test")
+async def test_youtube_key_endpoint(req: Optional[YouTubeTestRequest] = None):
+    """Tests YouTube Data API v3 key validity."""
+    k = req.youtube_api_key if req else None
+    return await youtube_client.test_key(k)
+
+@app.get("/api/youtube/channel/{identifier}")
+async def youtube_channel_endpoint(identifier: str):
+    """Inspects YouTube channel statistics and recent uploads."""
+    return await youtube_client.inspect_channel(identifier)
+
+class MediaDownloadRequest(BaseModel):
+    url_or_query: str
+    format_type: str = "auto"
+    output_dir: Optional[str] = None
+
+@app.post("/api/media/download")
+async def media_download_endpoint(req: MediaDownloadRequest):
+    """Downloads YouTube video or extracts audio song directly to host ~/Downloads."""
+    from app.services.media_downloader import media_downloader_service
+    return await media_downloader_service.download(
+        url_or_query=req.url_or_query,
+        format_type=req.format_type,
+        output_dir=req.output_dir
+    )
+
+@app.post("/api/media/info")
+async def media_info_endpoint(req: MediaDownloadRequest):
+    """Fetches media metadata (title, uploader, duration, thumbnail) without downloading."""
+    from app.services.media_downloader import media_downloader_service
+    return await media_downloader_service.get_info(req.url_or_query)
+
+@app.get("/api/swarm/status")
+async def get_swarm_status_endpoint():
+    """Returns available model tiers and subagent specialist profiles."""
+    from app.agent.swarm import SPECIALIST_ARCHETYPES
+    tiers = llm_service.get_available_tiers()
+    return {
+        "conductor": "Xod",
+        "tiers": tiers,
+        "specialists": SPECIALIST_ARCHETYPES
+    }
+
+@app.post("/api/fireworks/test")
+async def test_fireworks_connection(payload: Optional[Dict[str, str]] = None):
+    """Tests the Fireworks AI API key and model connectivity."""
+    key = (payload.get("fireworks_api_key") if payload else None) or settings.fireworks_api_key
+    if not key or not key.strip():
+        return {"valid": False, "message": "No Fireworks API key provided."}
+
+    clean_key = key.strip().strip("'\"")
+    if clean_key.lower().startswith("bearer "):
+        clean_key = clean_key[7:].strip()
+
+    if not clean_key:
+        return {"valid": False, "message": "No Fireworks API key provided."}
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            res = await client.get(
+                "https://api.fireworks.ai/inference/v1/models",
+                headers={"Authorization": f"Bearer {clean_key}"}
+            )
+            if res.status_code == 200:
+                data = res.json()
+                models = data.get("data", [])
+                settings.fireworks_api_key = clean_key
+                update_env_variable("FIREWORKS_API_KEY", clean_key)
+                return {
+                    "valid": True,
+                    "message": f"Connected to Fireworks AI! ({len(models)} models available)",
+                    "models_count": len(models)
+                }
+            elif res.status_code in (401, 403):
+                err_detail = ""
+                try:
+                    err_json = res.json()
+                    err_detail = err_json.get("error", {}).get("message") or err_json.get("message", "")
+                except Exception:
+                    pass
+                msg = f"Authentication failed (HTTP {res.status_code}). Check your Fireworks API key."
+                if err_detail:
+                    msg += f" ({err_detail})"
+                return {"valid": False, "message": msg}
+            else:
+                err_detail = ""
+                try:
+                    err_json = res.json()
+                    err_detail = err_json.get("error", {}).get("message") or err_json.get("message", "")
+                except Exception:
+                    err_detail = res.text[:120]
+                return {"valid": False, "message": f"Fireworks returned HTTP {res.status_code}: {err_detail}"}
+    except Exception as e:
+        return {"valid": False, "message": f"Connection error: {str(e)}"}
+
+@app.post("/api/trustmrr/test")
+async def test_trustmrr_connection():
+    """Tests the TrustMRR API key."""
+    res = await trustmrr_client.verify_key()
+    return res
+
+@app.post("/api/you/test")
+async def test_you_connection():
+    """Tests the You.com API key."""
+    res = await you_client.verify_key()
+    return res
+
+@app.get("/api/trustmrr/categories")
+async def list_categories():
+    return {"categories": VALID_CATEGORIES, "sorts": VALID_SORTS}
+
+@app.get("/api/trustmrr/deals")
+async def get_deals(category: Optional[str] = None, max_multiple: Optional[float] = None):
+    """Direct deal screening endpoint."""
+    res = await trustmrr_client.get_acquisition_deals(category=category, max_multiple=max_multiple)
+    return res
+
+@app.get("/api/llm/models")
+async def get_llm_models(provider: Optional[str] = None):
+    """Lists models available from the currently configured or requested provider."""
+    models = await llm_service.list_models(provider_override=provider)
+    loaded_model = None
+    for m in models:
+        if m.get("is_loaded"):
+            loaded_model = m.get("id")
+            break
+    return {
+        "models": models,
+        "current_model": settings.llm_model,
+        "loaded_model": loaded_model
+    }
+
+@app.get("/api/lmstudio/status")
+async def get_lmstudio_status():
+    """Fetches real-time status and loaded instances from LM Studio native v1 API."""
+    return await llm_service.get_lmstudio_status()
+
+class ModelActionRequest(BaseModel):
+    model_key: Optional[str] = None
+    instance_id: Optional[str] = None
+
+@app.post("/api/lmstudio/load")
+async def load_lmstudio_model(req: ModelActionRequest):
+    """Loads a model into LM Studio memory."""
+    if not req.model_key:
+        raise HTTPException(status_code=400, detail="model_key is required")
+    res = await llm_service.load_lmstudio_model(req.model_key)
+    return res
+
+@app.post("/api/lmstudio/unload")
+async def unload_lmstudio_model(req: ModelActionRequest):
+    """Unloads a model from LM Studio memory to free RAM/VRAM."""
+    res = await llm_service.unload_lmstudio_model(req.instance_id)
+    return res
+
+class AuditRequest(BaseModel):
+    target: str
+
+@app.post("/api/audit")
+async def audit_endpoint(req: AuditRequest):
+    """Direct live domain tech audit endpoint."""
+    return await tech_auditor.audit(req.target)
+
+class OmniSearchRequest(BaseModel):
+    goal: str
+    target_startup: Optional[str] = None
+    domain: Optional[str] = None
+
+@app.post("/api/omni-search")
+async def omni_search_endpoint(req: OmniSearchRequest):
+    """Proprietary multi-vector query fanout and RRF intelligence search."""
+    return await omni_search_engine.search(
+        goal=req.goal,
+        target_name=req.target_startup,
+        target_domain=req.domain
+    )
+
+@app.get("/api/knowledge-graph")
+async def get_knowledge_graph_entities(limit: int = 50):
+    """Returns all researched startups stored in the persistent Knowledge Graph."""
+    return {"entities": list_entities(limit=limit)}
+
+@app.get("/api/knowledge-graph/search")
+async def search_knowledge_graph_endpoint(q: str):
+    """Searches local Knowledge Graph by keyword."""
+    return {"results": search_entities(q)}
+
+@app.get("/api/knowledge-graph/{slug}")
+async def get_knowledge_graph_entity_detail(slug: str):
+    """Returns single startup profile from Knowledge Graph."""
+    entity = get_entity(slug)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found in Knowledge Graph")
+    return {"entity": entity}
+
+class CommunityIntelRequest(BaseModel):
+    target: str
+    query: Optional[str] = None
+
+@app.post("/api/community-intel")
+async def community_intel_endpoint(req: CommunityIntelRequest):
+    """Mines developer and user sentiment from Hacker News & forums."""
+    return await community_intel_service.mine(target=req.target, query=req.query)
+
+class GitHubAuditRequest(BaseModel):
+    target: str
+    repo: Optional[str] = None
+
+@app.post("/api/github-audit")
+async def github_audit_endpoint(req: GitHubAuditRequest):
+    """Audits open-source repository telemetry, stars, forks, and velocity."""
+    return await github_auditor_service.audit(target=req.target, repo=req.repo)
+
+class DNSInspectRequest(BaseModel):
+    domain: str
+
+@app.post("/api/dns-inspect")
+async def dns_inspect_endpoint(req: DNSInspectRequest):
+    """Inspects corporate mail host, SPF, DMARC, and SaaS domain verification tokens."""
+    return await dns_inspector_service.inspect(domain=req.domain)
+
+class SurfaceExploreRequest(BaseModel):
+    domain: str
+
+@app.post("/api/surface-explore")
+async def surface_explore_endpoint(req: SurfaceExploreRequest):
+    """Probes SaaS product surfaces, APIs, changelogs, and enterprise pages."""
+    return await surface_explorer_service.explore(domain=req.domain)
+
+class EntityEnrichRequest(BaseModel):
+    slug: str
+    tags: Optional[List[str]] = None
+    notes: Optional[str] = None
+    competitor_slugs: Optional[List[str]] = None
+    due_diligence_score: Optional[int] = None
+
+@app.post("/api/knowledge-graph/enrich")
+async def enrich_entity_endpoint(req: EntityEnrichRequest):
+    """Enriches an entity in the Knowledge Graph with tags, notes, and competitor links."""
+    res = update_entity_enrichment(
+        slug=req.slug,
+        tags=req.tags,
+        notes=req.notes,
+        competitor_slugs=req.competitor_slugs,
+        due_diligence_score=req.due_diligence_score
+    )
+    if "error" in res:
+        raise HTTPException(status_code=404, detail=res["error"])
+    return res
+
+class SubdomainReconRequest(BaseModel):
+    domain: str
+
+@app.post("/api/subdomain-recon")
+async def subdomain_recon_endpoint(req: SubdomainReconRequest):
+    """Mines Certificate Transparency logs and passive DNS for shadow infrastructure."""
+    return await subdomain_recon_service.recon(domain=req.domain)
+
+class TalentAuditRequest(BaseModel):
+    target: str
+    domain: Optional[str] = None
+
+@app.post("/api/talent-audit")
+async def talent_audit_endpoint(req: TalentAuditRequest):
+    """Mines public ATS job boards (Ashby, Greenhouse, Lever) for hiring and headcount velocity."""
+    return await talent_intel_service.audit_talent_and_hiring(target=req.target, domain=req.domain)
+
+class PackageAuditRequest(BaseModel):
+    target: str
+    package_name: Optional[str] = None
+
+@app.post("/api/package-audit")
+async def package_audit_endpoint(req: PackageAuditRequest):
+    """Audits ground-truth developer adoption and downloads across NPM, PyPI, and Docker Hub."""
+    return await package_auditor_service.audit_package_ecosystem(target=req.target, package_name=req.package_name)
+
+class SECFilingsRequest(BaseModel):
+    target: str
+    entity_name: Optional[str] = None
+
+@app.post("/api/sec-filings")
+async def sec_filings_endpoint(req: SECFilingsRequest):
+    """Audits SEC EDGAR Form D private placement filings, venture capital, and board directors."""
+    return await sec_edgar_service.audit_sec_filings(target=req.target, entity_name=req.entity_name)
+
+class IPAuditRequest(BaseModel):
+    target: str
+    entity_name: Optional[str] = None
+
+@app.post("/api/ip-audit")
+async def ip_audit_endpoint(req: IPAuditRequest):
+    """Audits USPTO trademarks, patent moats, and intellectual property."""
+    return await ip_intel_service.audit_ip_landscape(target=req.target, entity_name=req.entity_name)
+
+class DomainTrafficRequest(BaseModel):
+    domain: str
+
+@app.post("/api/traffic/domain")
+async def domain_traffic_endpoint(req: DomainTrafficRequest):
+    """Audits ground-truth Tranco Top 1M popularity, monthly visitor estimates, and edge CDN speed."""
+    return await traffic_intel_service.audit_domain_traffic(domain=req.domain)
+
+class PathActivityRequest(BaseModel):
+    target: str
+    path: Optional[str] = None
+
+@app.post("/api/traffic/path")
+async def path_activity_endpoint(req: PathActivityRequest):
+    """Inspects path-level liveness (e.g. /checkoutaf1), redirects, latency, and Wayback capture frequency."""
+    return await traffic_intel_service.audit_path_activity(target=req.target, path=req.path)
+
+class TrafficCompareRequest(BaseModel):
+    target_a: str
+    target_b: str
+    path_a: Optional[str] = None
+    path_b: Optional[str] = None
+
+@app.post("/api/traffic/compare")
+async def traffic_compare_endpoint(req: TrafficCompareRequest):
+    """Executes head-to-head digital traffic, global rank, and path activity comparison."""
+    return await traffic_intel_service.compare_traffic_and_paths(
+        target_a=req.target_a,
+        target_b=req.target_b,
+        path_a=req.path_a,
+        path_b=req.path_b
+    )
+
+class SubdomainActivityRequest(BaseModel):
+    domain: str
+    max_sample: Optional[int] = 10
+
+@app.post("/api/traffic/subdomains")
+async def subdomain_activity_endpoint(req: SubdomainActivityRequest):
+    """Tests whether discovered subdomains are actively being used in production vs dead zombies."""
+    clean_dom = req.domain.lower().replace("https://", "").replace("http://", "").strip().split("/")[0].lstrip("www.")
+    recon_res = await subdomain_recon_service.recon(domain=clean_dom)
+    subs = recon_res.get("sample_subdomains", [])
+    if not subs:
+        subs = [f"api.{clean_dom}", f"app.{clean_dom}", f"shop.{clean_dom}", f"auth.{clean_dom}", f"staging.{clean_dom}"]
+    return await traffic_intel_service.probe_subdomains_activity(
+        domain=clean_dom,
+        subdomains=subs,
+        max_sample=req.max_sample or 10
+    )
+
+@app.get("/api/trends")
+async def get_trends_endpoint(
+    platform: Optional[str] = "all",
+    query: Optional[str] = None,
+    geo: Optional[str] = "US",
+    force_refresh: Optional[bool] = False
+):
+    """Fetches real-time social & internet trends (X/Twitter, TikTok, Google Trends, Hacker News, GitHub) with zero API keys."""
+    return await trend_intel_service.get_all_trends(
+        platform=platform or "all",
+        query=query,
+        geo=geo or "US",
+        force_refresh=force_refresh or False
+    )
+
+class TopicBuzzRequest(BaseModel):
+    topic: str
+    limit: Optional[int] = 8
+
+@app.post("/api/trends/search")
+async def topic_buzz_endpoint(req: TopicBuzzRequest):
+    """Searches real-time multi-platform community buzz and discussion across X, Reddit, and Hacker News."""
+    return await trend_intel_service.search_topic_buzz(topic=req.topic, limit=req.limit or 8)
+
+@app.get("/api/roadmap")
+async def roadmap_endpoint():
+    """Returns the backend project capability roadmap, statuses, and zero-key architectural details."""
+    return get_project_roadmap()
+
+class FindEmailRequest(BaseModel):
+    first_name: str
+    last_name: str
+    domain: str
+
+@app.post("/api/email/find")
+async def find_email_endpoint(req: FindEmailRequest):
+    """Discovers and models verified work email candidates without paid Hunter/RocketReach accounts."""
+    return await email_intel_service.find_work_email(
+        first_name=req.first_name,
+        last_name=req.last_name,
+        domain=req.domain
+    )
+
+class VerifyEmailRequest(BaseModel):
+    email: str
+
+@app.post("/api/email/verify")
+async def verify_email_endpoint(req: VerifyEmailRequest):
+    """Conducts pre-flight bounce-risk verification for an email address."""
+    return await email_intel_service.verify_email_bounce_risk(email=req.email)
+
+class JobFirehoseRequest(BaseModel):
+    target: str
+    domain: Optional[str] = None
+    department: Optional[str] = None
+    max_age_days: Optional[int] = 45
+
+@app.post("/api/jobs/firehose")
+async def job_firehose_endpoint(req: JobFirehoseRequest):
+    """Aggregates real-time job requisitions from Ashby, Greenhouse, and Lever with liveness checks."""
+    return await talent_intel_service.scan_live_job_firehose(
+        target=req.target,
+        domain=req.domain,
+        max_age_days=req.max_age_days or 45,
+        department=req.department
+    )
+
+class BatchJobFirehoseRequest(BaseModel):
+    targets: Optional[List[str]] = None
+    cohort: Optional[str] = None
+    role_keyword: Optional[str] = None
+    max_age_days: Optional[int] = 45
+
+@app.post("/api/jobs/firehose/batch")
+async def batch_job_firehose_endpoint(req: BatchJobFirehoseRequest):
+    """Scans real-time job requisitions across multiple startups or curated cohorts concurrently."""
+    return await talent_intel_service.scan_batch_job_firehose(
+        targets=req.targets,
+        cohort=req.cohort,
+        role_keyword=req.role_keyword,
+        max_age_days=req.max_age_days or 45
+    )
+
+
+class FundingOrgRequest(BaseModel):
+    target: str
+    domain: Optional[str] = None
+
+@app.post("/api/funding/org")
+async def funding_org_endpoint(req: FundingOrgRequest):
+    """Audits Y Combinator accelerator batch, verified founders, and federal SEC Form D capital."""
+    return await funding_intel_service.audit_funding_and_org(
+        target=req.target,
+        domain=req.domain
+    )
+
+class TriggerEventsRequest(BaseModel):
+    target: str
+    domain: Optional[str] = None
+
+@app.post("/api/trigger/events")
+async def trigger_events_endpoint(req: TriggerEventsRequest):
+    """Scans corporate trigger events (funding, launches, hires) to generate warm outreach openers."""
+    return await trend_intel_service.scan_trigger_events(
+        target=req.target,
+        domain=req.domain
+    )
+
+# -------------------------------------------------------------
+# CREATOR DISCOVERY & ATTENTION ARBITRAGE API
+# -------------------------------------------------------------
+
+class CreatorDiscoverRequest(BaseModel):
+    niche: str
+    platform: Optional[str] = "all"
+    follower_min: Optional[int] = 5000
+    follower_max: Optional[int] = 500000
+    limit: Optional[int] = 10
+
+class CreatorPredictRequest(BaseModel):
+    handle: str
+    platform: str
+    followers: Optional[int] = 50000
+    recent_views: Optional[List[int]] = None
+    median_views: Optional[int] = None
+    avg_likes: Optional[int] = None
+    avg_comments: Optional[int] = None
+
+@app.post("/api/creators/discover")
+async def creator_discover_endpoint(req: CreatorDiscoverRequest):
+    """Autonomous multi-platform creator discovery, Attention Prediction ($V_50$), and CPM Arbitrage scoring."""
+    return await creator_intel_service.discover_creators(
+        niche=req.niche,
+        platform=req.platform or "all",
+        follower_min=req.follower_min or 5000,
+        follower_max=req.follower_max or 500000,
+        limit=req.limit or 10
+    )
+
+@app.post("/api/creators/predict")
+async def creator_predict_endpoint(req: CreatorPredictRequest):
+    """Calculates Expected View Floor ($V_50$), Algorithmic Velocity Ratio ($AVR$), Predicted CPM, and Arbitrage Multiple vs $15 market baseline."""
+    return creator_intel_service.model_attention_arbitrage(
+        handle=req.handle,
+        platform=req.platform,
+        followers=req.followers or 50000,
+        recent_views=req.recent_views,
+        median_views=req.median_views,
+        avg_likes=req.avg_likes,
+        avg_comments=req.avg_comments
+    )
+
+# -------------------------------------------------------------
+# LOCAL PROJECT WORKSPACE & OBSERVABILITY API
+# -------------------------------------------------------------
+
+class CreateProjectRequest(BaseModel):
+    name: str
+    slug: Optional[str] = None
+    description: Optional[str] = None
+    color: Optional[str] = "#6366f1"
+    icon: Optional[str] = "folder"
+    tags: Optional[List[str]] = None
+    custom_path: Optional[str] = None
+
+@app.get("/api/projects")
+async def list_projects_endpoint():
+    """Lists all physical project folders on disk with files, sessions, and telemetry."""
+    projects = project_storage_service.list_projects()
+    return {"projects": projects, "unfiled": project_storage_service.list_unfiled_sessions([p["slug"] for p in projects])}
+
+@app.post("/api/projects")
+async def create_project_endpoint(req: CreateProjectRequest):
+    """Creates a new physical project directory and workspace on the computer."""
+    return project_storage_service.create_project(
+        name=req.name,
+        slug=req.slug,
+        description=req.description or "",
+        color=req.color or "#6366f1",
+        icon=req.icon or "folder",
+        tags=req.tags,
+        custom_path=req.custom_path
+    )
+
+class SaveFileRequest(BaseModel):
+    filename: str
+    content: str
+    subfolder: Optional[str] = "dossiers"
+
+@app.post("/api/projects/{slug}/files")
+async def save_project_file_endpoint(slug: str, req: SaveFileRequest):
+    """Saves or updates a physical file inside a project folder on disk."""
+    return project_storage_service.save_project_file(
+        project_slug=slug,
+        filename=req.filename,
+        content=req.content,
+        subfolder=req.subfolder or "dossiers"
+    )
+
+@app.get("/api/projects/{slug}/files")
+async def read_project_file_endpoint(slug: str, filename: str, subfolder: Optional[str] = "dossiers"):
+    """Reads a physical file from a project folder."""
+    return project_storage_service.read_project_file(
+        project_slug=slug,
+        subfolder=subfolder or "dossiers",
+        filename=filename
+    )
+
+@app.delete("/api/projects/{slug}/files")
+async def delete_project_file_endpoint(slug: str, filename: str, subfolder: Optional[str] = "dossiers"):
+    """Deletes a physical file from a project folder."""
+    return project_storage_service.delete_project_file(
+        project_slug=slug,
+        subfolder=subfolder or "dossiers",
+        filename=filename
+    )
+
+class AssignSessionRequest(BaseModel):
+    session_id: str
+    project_slug: Optional[str] = ""   # empty = take it out of its project
+
+@app.post("/api/projects/assign-session")
+async def assign_session_endpoint(req: AssignSessionRequest):
+    """Assigns an active chat session to a physical project folder."""
+    success = project_storage_service.assign_session_to_project(
+        session_id=req.session_id,
+        project_slug=req.project_slug
+    )
+    return {"success": success}
+
+class MoveFileRequest(BaseModel):
+    from_slug: str
+    subfolder: str
+    filename: str
+    to_slug: str
+
+@app.post("/api/projects/move-file")
+async def move_project_file_endpoint(req: MoveFileRequest):
+    """Moves a saved file from one project to another (sidebar drag and drop)."""
+    return project_storage_service.move_project_file(req.from_slug, req.subfolder, req.filename, req.to_slug)
+
+@app.get("/api/projects/observability")
+async def get_observability_endpoint():
+    """Returns the full knowledge graph, entity links, and project observability telemetry."""
+    return project_storage_service.get_observability_data()
+
+@app.get("/api/projects/search")
+async def search_projects_endpoint(q: str):
+    """Performs deep global search across all local projects, dossiers, and entities."""
+    return project_storage_service.search_all_projects(query=q)
+
+# -------------------------------------------------------------
+# COMPUTER FILESYSTEM & FULL MACHINE EXPLORER API
+# -------------------------------------------------------------
+
+class FSWriteRequest(BaseModel):
+    path: str
+    content: str
+
+class FSCreateFileRequest(BaseModel):
+    dir_path: str
+    filename: str
+    content: Optional[str] = ""
+
+class FSCreateFolderRequest(BaseModel):
+    parent_path: str
+    folder_name: str
+
+class FSRenameRequest(BaseModel):
+    source_path: str
+    new_name: str
+
+class FSDuplicateRequest(BaseModel):
+    source_path: str
+
+class FSDeleteRequest(BaseModel):
+    path: str
+
+class FSLinkProjectRequest(BaseModel):
+    path: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    color: Optional[str] = "#10b981"
+    icon: Optional[str] = "folder"
+    tags: Optional[List[str]] = None
+
+@app.get("/api/fs/browse")
+async def fs_browse_endpoint(path: Optional[str] = None, show_hidden: bool = False, sort_by: str = "name"):
+    """Lists directories and files anywhere on the user's computer with metadata and shortcuts."""
+    return filesystem_service.list_directory(raw_path=path, show_hidden=show_hidden, sort_by=sort_by)
+
+@app.get("/api/fs/read")
+async def fs_read_endpoint(path: str):
+    """Reads a computer file with safe text/image/size handling."""
+    res = filesystem_service.read_file(raw_path=path)
+    if "error" in res and not res.get("is_too_large"):
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+@app.post("/api/fs/write")
+async def fs_write_endpoint(req: FSWriteRequest):
+    """Saves edited content to a file on the computer."""
+    res = filesystem_service.write_file(raw_path=req.path, content=req.content)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+@app.post("/api/fs/create-file")
+async def fs_create_file_endpoint(req: FSCreateFileRequest):
+    """Creates a new file in any writable folder on the computer."""
+    res = filesystem_service.create_file(raw_dir=req.dir_path, filename=req.filename, content=req.content or "")
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+@app.post("/api/fs/create-folder")
+async def fs_create_folder_endpoint(req: FSCreateFolderRequest):
+    """Creates a new folder on the computer."""
+    res = filesystem_service.create_folder(raw_parent=req.parent_path, folder_name=req.folder_name)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+@app.post("/api/fs/rename")
+async def fs_rename_endpoint(req: FSRenameRequest):
+    """Renames a computer file or folder."""
+    res = filesystem_service.rename_item(raw_source=req.source_path, new_name=req.new_name)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+@app.post("/api/fs/duplicate")
+async def fs_duplicate_endpoint(req: FSDuplicateRequest):
+    """Duplicates a computer file or folder."""
+    res = filesystem_service.duplicate_item(raw_source=req.source_path)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+@app.post("/api/fs/delete")
+async def fs_delete_endpoint(req: FSDeleteRequest):
+    """Deletes a file or directory with system safety protection."""
+    res = filesystem_service.delete_item(raw_path=req.path)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+@app.get("/api/fs/search")
+async def fs_search_endpoint(path: Optional[str] = None, q: str = ""):
+    """Searches files and contents recursively in a computer folder."""
+    return filesystem_service.search_filesystem(raw_base=path or "", query=q)
+
+@app.post("/api/fs/link-project")
+async def fs_link_project_endpoint(req: FSLinkProjectRequest):
+    """Links any existing directory on the computer as a Xod project workspace."""
+    try:
+        return project_storage_service.link_folder(
+            folder_path=req.path,
+            name=req.name,
+            description=req.description or "",
+            color=req.color or "#10b981",
+            icon=req.icon or "folder",
+            tags=req.tags
+        )
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/projects/{slug}/unlink")
+async def fs_unlink_project_endpoint(slug: str):
+    """Unlinks a project workspace without deleting files on the computer."""
+    res = project_storage_service.unlink_project(slug=slug)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+
+# -------------------------------------------------------------
+# Autonomous Browser Sandbox & Computer Control Endpoints
+# -------------------------------------------------------------
+
+class BrowserNavigateRequest(BaseModel):
+    url: str
+
+class BrowserClickRequest(BaseModel):
+    target: str
+
+class BrowserTypeRequest(BaseModel):
+    selector: str
+    text: str
+    press_enter: Optional[bool] = False
+
+class BrowserClickCoordsRequest(BaseModel):
+    x: float
+    y: float
+    button: Optional[str] = "left"
+
+class BrowserTypeDirectRequest(BaseModel):
+    text: str
+    press_enter: Optional[bool] = False
+
+class BrowserEvaluateRequest(BaseModel):
+    expression: str
+
+class BrowserScrollRequest(BaseModel):
+    direction: Optional[str] = "down"
+    amount: Optional[int] = 500
+    to_selector: Optional[str] = None
+
+class BrowserHoverRequest(BaseModel):
+    target: str
+
+class BrowserKeyRequest(BaseModel):
+    key: str
+
+class BrowserWaitRequest(BaseModel):
+    target: Optional[str] = None
+    condition: Optional[str] = "selector"
+    value: Optional[str] = None
+    timeout_sec: Optional[float] = 10.0
+
+class BrowserPdfRequest(BaseModel):
+    filename: Optional[str] = None
+    landscape: Optional[bool] = False
+    print_background: Optional[bool] = True
+
+class BrowserUploadRequest(BaseModel):
+    file_paths: List[str]
+    selector_or_index: Optional[Any] = None
+
+class BrowserAxTreeRequest(BaseModel):
+    max_nodes: Optional[int] = 60
+
+class BrowserMissionRequest(BaseModel):
+    goal: str
+    start_url: Optional[str] = None
+    max_steps: Optional[int] = 6
+
+class BrowserTabActionRequest(BaseModel):
+    action: str = "list"
+    target_id: Optional[str] = None
+    url: Optional[str] = "about:blank"
+
+class BrowserObserveRequest(BaseModel):
+    max_elements: Optional[int] = 60
+    filter_type: Optional[str] = "all"
+
+class BrowserInteractRequest(BaseModel):
+    index: Optional[Any] = None
+    selector: Optional[str] = None
+    text_target: Optional[str] = None
+    action: Optional[str] = "click"
+    text: Optional[str] = None
+    press_enter: Optional[bool] = False
+    clear_first: Optional[bool] = True
+
+class BrowserFormFillRequest(BaseModel):
+    fields: List[Dict[str, Any]]
+    submit_index: Optional[Any] = None
+
+class BrowserVisibilityRequest(BaseModel):
+    visible: bool = True
+
+class BrowserExtractDataRequest(BaseModel):
+    instruction: str
+    schema_description: Optional[str] = None
+
+class BrowserCookiesRequest(BaseModel):
+    action: Optional[str] = "get"
+    cookies: Optional[List[Dict[str, Any]]] = None
+
+class BrowserRestartRequest(BaseModel):
+    clear_profile: Optional[bool] = False
+    visible: Optional[bool] = None
+
+class BrowserUnstuckRequest(BaseModel):
+    reload_if_blank: Optional[bool] = True
+
+class BrowserCaptchaSolveRequest(BaseModel):
+    auto_click: Optional[bool] = True
+    wait_sec: Optional[float] = 12.0
+
+class ComputerRunRequest(BaseModel):
+    command: str
+    cwd: Optional[str] = None
+    timeout_sec: Optional[int] = 45
+
+class ComputerNotifyRequest(BaseModel):
+    title: str
+    message: str
+    sound: Optional[bool] = False
+
+class ComputerRevealRequest(BaseModel):
+    path: Optional[str] = None
+    target: Optional[str] = None
+    folder: Optional[str] = None
+
+class ComputerFindRequest(BaseModel):
+    query: str
+    root_dir: Optional[str] = None
+    max_results: Optional[int] = 30
+
+class ComputerManageFileRequest(BaseModel):
+    action: str
+    src: str
+    dst: Optional[str] = None
+
+class ComputerClipboardRequest(BaseModel):
+    text: str
+
+class ComputerProcessKillRequest(BaseModel):
+    pid: int
+    force: Optional[bool] = False
+
+class ComputerStartJobRequest(BaseModel):
+    name: str
+    command: str
+    cwd: Optional[str] = None
+
+class ComputerAIReviewRequest(BaseModel):
+    intent: Optional[str] = None
+
+class ComputerAIExecuteActionRequest(BaseModel):
+    action_type: str
+    params: Dict[str, Any]
+
+class ComputerFileReadRequest(BaseModel):
+    filepath: str
+    max_bytes: Optional[int] = 50000
+
+class ComputerFileWriteRequest(BaseModel):
+    filepath: str
+    content: str
+    create_dirs: Optional[bool] = True
+
+class ComputerFilePatchRequest(BaseModel):
+    filepath: str
+    search_text: str
+    replace_text: str
+
+
+@app.get("/api/browser/status")
+async def get_browser_status():
+    """Returns current state of the isolated background AI browser."""
+    return browser_sandbox_service.get_state()
+
+@app.post("/api/browser/navigate")
+async def browser_navigate_endpoint(req: BrowserNavigateRequest):
+    """Navigates the background browser to a URL without moving user cursor."""
+    try:
+        return await browser_sandbox_service.navigate(url=req.url)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/click")
+async def browser_click_endpoint(req: BrowserClickRequest):
+    """Clicks an element by selector or visible text inside the background browser."""
+    try:
+        return await browser_sandbox_service.click(selector_or_text=req.target)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/type")
+async def browser_type_endpoint(req: BrowserTypeRequest):
+    """Types text into an input field inside the background browser."""
+    try:
+        return await browser_sandbox_service.type_text(
+            selector=req.selector,
+            text=req.text,
+            press_enter=bool(req.press_enter)
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/click-coords")
+async def browser_click_coords_endpoint(req: BrowserClickCoordsRequest):
+    """Dispatches a direct hardware/CDP click at exact (x, y) coordinates for human-in-the-loop intervention."""
+    try:
+        return await browser_sandbox_service.click_coordinates(x=req.x, y=req.y, button=req.button or "left")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/type-direct")
+async def browser_type_direct_endpoint(req: BrowserTypeDirectRequest):
+    """Sends keystrokes directly into whatever DOM element has focus."""
+    try:
+        return await browser_sandbox_service.type_direct(text=req.text, press_enter=bool(req.press_enter))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/browser/content")
+async def browser_content_endpoint(max_length: int = 10000):
+    """Extracts text, links, and structure from the currently active browser page."""
+    try:
+        return await browser_sandbox_service.extract_content(max_length=max_length)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/screenshot")
+async def browser_screenshot_endpoint():
+    """Captures an immediate screenshot of the AI's current browser page."""
+    try:
+        return await browser_sandbox_service.take_screenshot()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/evaluate")
+async def browser_evaluate_endpoint(req: BrowserEvaluateRequest):
+    """Evaluates JavaScript inside the background browser."""
+    try:
+        return await browser_sandbox_service.evaluate_js(expression=req.expression)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/scroll")
+async def browser_scroll_endpoint(req: BrowserScrollRequest):
+    """Scrolls the page or scrolls to an element."""
+    try:
+        return await browser_sandbox_service.scroll(
+            direction=req.direction or "down",
+            amount=req.amount or 500,
+            to_selector=req.to_selector
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/hover")
+async def browser_hover_endpoint(req: BrowserHoverRequest):
+    """Hovers over an element to trigger interactive dropdowns or CSS hover effects."""
+    try:
+        return await browser_sandbox_service.hover(selector_or_text=req.target)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/key")
+async def browser_key_endpoint(req: BrowserKeyRequest):
+    """Dispatches a keyboard event (Enter, Escape, Tab, ArrowDown, Backspace) to page."""
+    try:
+        return await browser_sandbox_service.press_key(key=req.key)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/wait")
+async def browser_wait_endpoint(req: BrowserWaitRequest):
+    """Waits for an element or condition to appear in the DOM."""
+    try:
+        cond = req.condition or "selector"
+        val = req.value or req.target or ""
+        return await browser_sandbox_service.wait_for_condition(
+            condition=cond,
+            value=val,
+            timeout_sec=req.timeout_sec or 10.0
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/browser/markdown")
+async def browser_markdown_endpoint(max_length: int = 15000):
+    """Extracts clean, structured GitHub-flavored Markdown from current page."""
+    try:
+        return await browser_sandbox_service.extract_clean_markdown(max_length=max_length)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/screenshot/full")
+async def browser_full_screenshot_endpoint():
+    """Captures a full scroll-height screenshot of the current page."""
+    try:
+        return await browser_sandbox_service.capture_full_page_screenshot()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/browser/tabs")
+async def browser_list_tabs_endpoint():
+    """Lists open browser tabs."""
+    return await browser_sandbox_service.manage_tabs(action="list")
+
+@app.post("/api/browser/tabs")
+async def browser_tabs_action_endpoint(req: BrowserTabActionRequest):
+    """Performs tab management (list, new, switch, close)."""
+    return await browser_sandbox_service.manage_tabs(
+        action=req.action,
+        target_id=req.target_id,
+        url=req.url
+    )
+
+@app.post("/api/browser/mission")
+async def browser_mission_endpoint(req: BrowserMissionRequest):
+    """Runs an autonomous multi-step perception-action browser mission with live LLM deliberation."""
+    try:
+        return await browser_sandbox_service.run_browser_mission(
+            goal=req.goal,
+            start_url=req.start_url,
+            max_steps=req.max_steps or 6
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/observe")
+async def browser_observe_endpoint(req: Optional[BrowserObserveRequest] = None):
+    """Inspects visible interactive elements with Set-of-Marks indexing and returns grounded text map."""
+    try:
+        max_el = req.max_elements if req else 60
+        filt = req.filter_type if req else "all"
+        return await browser_sandbox_service.observe(max_count=max_el or 60, filter=filt or "all")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/interact")
+async def browser_interact_endpoint(req: BrowserInteractRequest):
+    """Executes deterministic action directly by element numeric index (Set-of-Marks), selector, or text."""
+    try:
+        return await browser_sandbox_service.interact_by_index(
+            index=req.index,
+            action=req.action or "click",
+            text=req.text,
+            press_enter=bool(req.press_enter),
+            clear_first=bool(req.clear_first if req.clear_first is not None else True),
+            selector=req.selector,
+            text_target=req.text_target
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/form")
+async def browser_form_endpoint(req: BrowserFormFillRequest):
+    """Batch fills multiple form fields and optionally submits."""
+    try:
+        return await browser_sandbox_service.fill_form(
+            fields=req.fields,
+            submit_index=req.submit_index
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/visibility")
+async def browser_visibility_endpoint(req: BrowserVisibilityRequest):
+    """Toggles Chrome between silent background headless mode and visible macOS desktop window."""
+    try:
+        # req.visible=True means headless=False
+        return await browser_sandbox_service.set_headless_mode(not bool(req.visible))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/dismiss-overlays")
+async def browser_dismiss_overlays_endpoint():
+    """Auto-detects and dismisses cookie consent popups, GDPR banners, and overlay backdrops."""
+    try:
+        return await browser_sandbox_service.dismiss_overlays()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/restart")
+async def browser_restart_endpoint(req: Optional[BrowserRestartRequest] = None):
+    """Force-restarts browser, clears dead locks, and optionally wipes cookies/cache for fresh profile."""
+    try:
+        clear_prof = req.clear_profile if req else False
+        headless = not req.visible if (req and req.visible is not None) else None
+        return await browser_sandbox_service.restart_browser(clear_profile=clear_prof, headless=headless)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/unstuck")
+async def browser_unstuck_endpoint(req: Optional[BrowserUnstuckRequest] = None):
+    """Autonomous self-healing: halts spinners, closes modal dialogs & backdrops, unfreezes scroll."""
+    try:
+        reload_blank = req.reload_if_blank if req else True
+        return await browser_sandbox_service.unstuck(reload_if_blank=reload_blank)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/browser/captcha/detect")
+async def browser_captcha_detect_endpoint():
+    """Detects whether active page contains Cloudflare Turnstile, 'Just a moment...', or reCAPTCHA."""
+    try:
+        return await browser_sandbox_service.detect_captcha()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/captcha/solve")
+async def browser_captcha_solve_endpoint(req: Optional[BrowserCaptchaSolveRequest] = None):
+    """Autonomously attempts solving or bypassing detected CAPTCHA barrier."""
+    try:
+        auto_click = req.auto_click if req else True
+        wait_sec = req.wait_sec if req else 12.0
+        return await browser_sandbox_service.handle_captcha(auto_click=auto_click, wait_sec=wait_sec)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/browser/smart-inspect")
+async def browser_smart_inspect_endpoint():
+    """Gathers single-shot perceptual grounding (Set-of-Marks tags, headings, forms, markdown outline)."""
+    try:
+        return await browser_sandbox_service.smart_inspect()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/browser/network/snoop")
+async def browser_network_snoop_endpoint(filter_url: Optional[str] = None, limit: Optional[int] = 20):
+    """Retrieves intercepted background API/XHR/fetch requests and JSON payloads."""
+    try:
+        return await browser_sandbox_service.snoop_network(filter_url=filter_url, limit=limit or 20)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/som-snapshot")
+async def browser_som_snapshot_endpoint():
+    """Captures a screenshot with high-contrast Set-of-Marks badges overlaid on interactive elements."""
+    try:
+        return await browser_sandbox_service.take_screenshot(overlay_som=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/extract-data")
+async def browser_extract_data_endpoint(req: BrowserExtractDataRequest):
+    """Synthesizes clean structured JSON data from current page based on instruction and schema."""
+    try:
+        return await browser_sandbox_service.extract_structured_data(
+            instruction=req.instruction,
+            schema_description=req.schema_description
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/cookies")
+async def browser_cookies_endpoint(req: BrowserCookiesRequest):
+    """Manages browser cookies (get, set, clear)."""
+    try:
+        return await browser_sandbox_service.manage_cookies(
+            action=req.action or "get",
+            cookies=req.cookies
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/browser/cookies")
+async def browser_get_cookies_endpoint():
+    """Gets cookies for the current browser page."""
+    try:
+        return await browser_sandbox_service.manage_cookies(action="get")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/pdf")
+async def browser_export_pdf_endpoint(req: Optional[BrowserPdfRequest] = None):
+    """Exports the current page to a high-resolution PDF file."""
+    try:
+        r = req or BrowserPdfRequest()
+        return await browser_sandbox_service.export_pdf(
+            filename=r.filename,
+            landscape=r.landscape or False,
+            print_background=True if r.print_background is None else r.print_background
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/upload")
+async def browser_upload_file_endpoint(req: BrowserUploadRequest):
+    """Attaches local files to an input[type='file'] element via CDP."""
+    try:
+        return await browser_sandbox_service.upload_file(
+            file_paths=req.file_paths,
+            selector_or_index=req.selector_or_index
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/browser/downloads")
+async def browser_downloads_endpoint():
+    """Lists files downloaded into sandbox downloads folder."""
+    try:
+        return await browser_sandbox_service.get_downloads()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/documents/upload")
+async def upload_document_endpoint(file: UploadFile = File(...)):
+    """Parses uploaded documents (PDF, DOCX, CSV, TXT, JSON, code, etc.) into clean text and metadata."""
+    try:
+        content_bytes = await file.read()
+        from app.services.document_parser import document_parser_service
+        parsed = document_parser_service.parse_bytes(file.filename, content_bytes)
+        return parsed
+    except Exception as e:
+        logger.error(f"Failed to parse uploaded document {file.filename}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/browser/ax-tree")
+async def browser_ax_tree_endpoint(max_nodes: int = 60):
+    """Extracts semantic Accessibility (AX) Tree snapshot via CDP."""
+    try:
+        return await browser_sandbox_service.extract_accessibility_tree(max_nodes=max_nodes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/browser/mission/live")
+async def browser_mission_live_endpoint():
+    """Returns the latest active or completed autonomous browser mission trace."""
+    return browser_sandbox_service.latest_mission or {"status": "idle", "steps": []}
+
+@app.get("/api/computer/profile")
+async def computer_profile_endpoint():
+    """Returns persistent host machine profile, cwd, and specs."""
+    return system_control_service.get_computer_profile()
+
+@app.get("/api/computer/telemetry")
+async def computer_telemetry_endpoint():
+    """Returns background system telemetry (CPU load, memory, disk, top processes)."""
+    return system_control_service.get_system_telemetry()
+
+@app.post("/api/computer/run")
+async def computer_run_endpoint(req: ComputerRunRequest):
+    """Runs a background shell command safely without stealing active window focus."""
+    return await system_control_service.run_command(
+        command=req.command,
+        cwd=req.cwd,
+        timeout_sec=req.timeout_sec or 45
+    )
+
+@app.post("/api/computer/run-stream")
+async def computer_run_stream_endpoint(req: ComputerRunRequest):
+    """Streams live stdout and stderr chunks in real time via Server-Sent Events (SSE)."""
+    async def event_generator():
+        async for event in system_control_service.run_command_stream(
+            command=req.command,
+            cwd=req.cwd,
+            timeout_sec=req.timeout_sec or 60
+        ):
+            yield f"data: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+@app.get("/api/computer/history")
+async def computer_history_endpoint():
+    """Returns recent background command executions."""
+    return system_control_service.command_history
+
+@app.post("/api/computer/notify")
+async def computer_notify_endpoint(req: ComputerNotifyRequest):
+    """Sends a native macOS notification banner to the user."""
+    return await system_control_service.notify_user(
+        title=req.title,
+        message=req.message,
+        sound=bool(req.sound)
+    )
+
+@app.post("/api/computer/reveal")
+@app.post("/api/computer/open-finder")
+async def computer_reveal_endpoint(req: ComputerRevealRequest):
+    """Reveals a file or directory in macOS Finder."""
+    target = req.path or req.target or req.folder or ""
+    return await system_control_service.reveal_in_finder(path=target)
+
+@app.post("/api/computer/find")
+async def computer_find_endpoint(req: ComputerFindRequest):
+    """Instant Spotlight search for files across the computer."""
+    return await system_control_service.find_files(
+        query=req.query,
+        root_dir=req.root_dir,
+        max_results=req.max_results or 30
+    )
+
+@app.post("/api/computer/file/manage")
+async def computer_file_manage_endpoint(req: ComputerManageFileRequest):
+    """Safely manages files (trash to macOS Trash, copy, move, mkdir)."""
+    return await system_control_service.manage_file(
+        action=req.action,
+        src=req.src,
+        dst=req.dst
+    )
+
+@app.get("/api/computer/clipboard")
+async def computer_clipboard_get_endpoint():
+    """Reads current text from macOS clipboard."""
+    return await system_control_service.read_clipboard()
+
+@app.post("/api/computer/clipboard")
+async def computer_clipboard_set_endpoint(req: ComputerClipboardRequest):
+    """Sets text into macOS clipboard."""
+    return await system_control_service.write_clipboard(text=req.text)
+
+@app.get("/api/computer/port/{port}")
+async def computer_port_inspect_endpoint(port: int):
+    """Inspects processes listening on a port."""
+    return await system_control_service.inspect_port(port=port)
+
+@app.post("/api/computer/process/kill")
+async def computer_kill_process_endpoint(req: ComputerProcessKillRequest):
+    """Safely terminates a process by PID."""
+    return await system_control_service.kill_process(pid=req.pid, force=bool(req.force))
+
+@app.get("/api/computer/jobs")
+async def computer_jobs_list_endpoint():
+    """Lists running background daemon jobs."""
+    return {"jobs": system_control_service.list_jobs()}
+
+@app.post("/api/computer/jobs")
+async def computer_jobs_start_endpoint(req: ComputerStartJobRequest):
+    """Starts a persistent background daemon job."""
+    return await system_control_service.start_background_job(
+        name=req.name,
+        command=req.command,
+        cwd=req.cwd
+    )
+
+@app.post("/api/computer/jobs/{job_id}/stop")
+async def computer_jobs_stop_endpoint(job_id: str, force: Optional[bool] = False):
+    """Stops a background daemon job."""
+    return await system_control_service.stop_job(job_id=job_id, force=bool(force))
+
+@app.get("/api/computer/jobs/{job_id}/logs")
+async def computer_jobs_logs_endpoint(job_id: str, tail: Optional[int] = 100):
+    """Retrieves logs from a background daemon job."""
+    return system_control_service.get_job_logs(job_id=job_id, tail=tail or 100)
+
+@app.get("/api/computer/ports")
+async def computer_ports_endpoint():
+    """Returns all active listening TCP ports discovered dynamically on the machine."""
+    ports = system_control_service.get_listening_ports()
+    return {"ports": ports, "count": len(ports)}
+
+@app.post("/api/computer/ai/review")
+async def computer_ai_review_endpoint(req: ComputerAIReviewRequest):
+    """Triggers an AI host diagnostic audit synthesizing live telemetry, ports, and memory."""
+    return await system_control_service.ai_review_system(user_intent=req.intent)
+
+@app.post("/api/computer/ai/execute_action")
+async def computer_ai_execute_action_endpoint(req: ComputerAIExecuteActionRequest):
+    """Executes an AI-recommended or user-selected remediation action."""
+    return await system_control_service.execute_system_action(action_type=req.action_type, params=req.params)
+
+@app.post("/api/computer/file/read")
+async def computer_file_read_endpoint(req: ComputerFileReadRequest):
+    """Reads a file from the host filesystem."""
+    return system_control_service.read_file(filepath=req.filepath, max_bytes=req.max_bytes or 50000)
+
+@app.post("/api/computer/file/write")
+async def computer_file_write_endpoint(req: ComputerFileWriteRequest):
+    """Writes content to a file on the host filesystem."""
+    return system_control_service.write_file(filepath=req.filepath, content=req.content, create_dirs=bool(req.create_dirs))
+
+@app.post("/api/computer/file/patch")
+async def computer_file_patch_endpoint(req: ComputerFilePatchRequest):
+    """Replaces text in a file on the host filesystem."""
+    return system_control_service.patch_file(filepath=req.filepath, search_text=req.search_text, replace_text=req.replace_text)
+
+
+# ==============================================================================
+# Hands-Free Voice Engine & Model Lab Endpoints
+# ==============================================================================
+from app.services.voice import voice_engine
+from app.services.trace_recorder import get_lab_stats, export_training_data, set_feedback
+
+class VoiceCommandRequest(BaseModel):
+    query: str
+    speak_back: Optional[bool] = True
+
+class VoiceTTSRequest(BaseModel):
+    text: str
+    voice: Optional[str] = "Samantha"
+
+class TraceFeedbackRequest(BaseModel):
+    trace_id: str
+    value: int  # +1 (good) or -1 (bad)
+
+class LabExportRequest(BaseModel):
+    specialist: Optional[str] = "intent_router"
+
+@app.post("/api/voice/transcribe")
+async def voice_transcribe_endpoint(request: Request):
+    """Speech to text on this Mac (local Whisper). Body: the raw recording (webm/ogg/mp4/wav)."""
+    from app.services import speech_to_text
+    return await speech_to_text.transcribe(await request.body())
+
+@app.post("/api/voice/command")
+async def voice_command_endpoint(req: VoiceCommandRequest):
+    """Executes spoken computer command with sub-400ms regex routing and trace capture."""
+    return await voice_engine.process_voice_command(query=req.query, speak_back=bool(req.speak_back))
+
+@app.post("/api/voice/tts")
+async def voice_tts_endpoint(req: VoiceTTSRequest):
+    """Speaks text using macOS native speech synthesizer without blocking."""
+    success = await voice_engine.speak_native(text=req.text, voice=req.voice or "Samantha")
+    return {"success": success, "text": req.text}
+
+@app.get("/api/lab/stats")
+async def lab_stats_endpoint():
+    """Returns Model Lab telemetry: clusters, trace counts, readiness for on-device distillation."""
+    return get_lab_stats()
+
+@app.post("/api/lab/export")
+async def lab_export_endpoint(req: LabExportRequest):
+    """Exports trace dataset in chat JSONL format for MLX LoRA distillation."""
+    return export_training_data(specialist=req.specialist or "intent_router")
+
+@app.post("/api/lab/feedback")
+async def lab_feedback_endpoint(req: TraceFeedbackRequest):
+    """Marks trace as high quality (+1) or low quality (-1)."""
+    ok = set_feedback(trace_id=req.trace_id, value=req.value)
+    return {"success": ok, "trace_id": req.trace_id, "value": req.value}
+
+from app.services.finetuning import finetuning_service
+
+class StartTrainingRequest(BaseModel):
+    specialist: Optional[str] = "browser_navigator"
+    base_model: Optional[str] = None   # None: the specialist's recommended student
+    iters: Optional[int] = None        # None: sized to the dataset
+    batch_size: Optional[int] = 1
+    learning_rate: Optional[float] = 1e-4
+
+
+class SpecialistToggleRequest(BaseModel):
+    enabled: bool
+
+
+class GroupFeedbackRequest(BaseModel):
+    group_id: str
+    value: int
+
+
+@app.post("/api/lab/train")
+async def lab_train_start_endpoint(req: StartTrainingRequest):
+    """Builds the dataset from good examples and starts on-device MLX LoRA training."""
+    return await finetuning_service.start_training_job(
+        specialist=req.specialist or "browser_navigator",
+        base_model=req.base_model,
+        iters=req.iters,
+        batch_size=req.batch_size or 1,
+        learning_rate=req.learning_rate or 1e-4,
+    )
+
+
+@app.get("/api/lab/jobs")
+async def lab_jobs_list_endpoint():
+    """All training runs (survives restarts), newest first."""
+    return {"jobs": finetuning_service.list_jobs()}
+
+
+@app.get("/api/lab/jobs/{job_id}")
+async def lab_job_status_endpoint(job_id: str):
+    """Live loss curve, logs, and test results of a training run."""
+    return finetuning_service.get_job_status(job_id=job_id)
+
+
+@app.post("/api/lab/jobs/{job_id}/cancel")
+async def lab_job_cancel_endpoint(job_id: str):
+    return await finetuning_service.cancel(job_id)
+
+
+@app.post("/api/lab/jobs/{job_id}/evaluate")
+async def lab_job_evaluate_endpoint(job_id: str):
+    """Re-runs the held-out test for a trained student."""
+    return await finetuning_service.evaluate(job_id)
+
+
+@app.get("/api/lab/specialists")
+async def lab_specialists_endpoint():
+    """Mini models Xod can learn from its own work: data collected, readiness, test results, live status."""
+    from app.services import specialists, dataset_recorder
+    from app.services.finetuning import STUDENT_CHOICES
+    return {
+        "specialists": specialists.overview(),
+        "tasks": dataset_recorder.task_stats(),
+        "student_choices": STUDENT_CHOICES,
+        "promote_rules": {"min_valid_json": specialists.PROMOTE_MIN_VALID_JSON,
+                          "min_action_match": specialists.PROMOTE_MIN_ACTION_MATCH},
+    }
+
+
+@app.post("/api/lab/specialists/{name}/learn-from-mistakes")
+async def lab_learn_from_mistakes_endpoint(name: str):
+    """Preference-trains the current student on corrected failures and its own mistakes (DPO)."""
+    return await finetuning_service.start_preference_job(name)
+
+
+@app.post("/api/lab/specialists/{name}/enabled")
+async def lab_specialist_toggle_endpoint(name: str, req: SpecialistToggleRequest):
+    """Switches a tested specialist on (it takes over that task's fast steps) or off."""
+    from app.services import specialists
+    return await specialists.set_enabled(name, req.enabled)
+
+
+@app.post("/api/lab/feedback/group")
+async def lab_group_feedback_endpoint(req: GroupFeedbackRequest):
+    """Thumbs up/down on a whole run (e.g. a browser task) labels all of its examples."""
+    from app.services import dataset_recorder
+    return {"success": True, "labelled": dataset_recorder.label_group(req.group_id, req.value, "user feedback")}
+
+
+@app.on_event("startup")
+async def _restart_enabled_specialists():
+    from app.services import specialists
+    asyncio.create_task(specialists.start_enabled_servers())
+
+
+# ==============================================================
+# LOCAL MEDIA STUDIO (On-Device Image & Video Editor)
+# ==============================================================
+from app.services.media_studio import local_media_service
+
+class ImageGenerateRequest(BaseModel):
+    prompt: str
+    style: Optional[str] = "photorealistic"
+    width: Optional[int] = 512
+    height: Optional[int] = 512
+    seed: Optional[int] = None
+    model: Optional[str] = None
+    loras: Optional[List[Dict[str, Any]]] = None
+    negative_prompt: Optional[str] = None
+
+@app.post("/api/media/image/generate")
+async def media_image_generate_endpoint(req: ImageGenerateRequest):
+    """Generates an image on this Mac (memory-managed media worker)."""
+    return await local_media_service.generate_ai_image(
+        prompt=req.prompt,
+        style=req.style or "photorealistic",
+        width=req.width or 512,
+        height=req.height or 512,
+        seed=req.seed,
+        model=req.model,
+        loras=req.loras,
+        negative_prompt=req.negative_prompt,
+    )
+
+
+@app.get("/api/media/engine")
+async def media_engine_status():
+    """Installed image/video models and LoRAs (usable or not, and why), plus live memory state."""
+    from app.services.media_runtime import list_models, list_loras, media_runtime
+    from app.services.memory_broker import memory_broker
+    from app.services.media_model_manager import media_model_manager
+    cfg = media_model_manager.config
+    return {"models": list_models(), "loras": list_loras(), "runtime": media_runtime.status(),
+            "memory": memory_broker.status(),
+            "active": {"image": cfg.get("active_image_model", ""), "video": cfg.get("active_video_model", "")}}
+
+
+@app.post("/api/media/engine/release")
+async def media_engine_release():
+    """Stops the media worker now, giving its memory back (the chat model returns on its next use)."""
+    from app.services.media_runtime import media_runtime
+    from app.services.memory_broker import memory_broker
+    stopped = await media_runtime.release(full=True)
+    await memory_broker.ensure_teacher()
+    return {"success": True, "stopped": stopped}
+
+class ImageEditRequest(BaseModel):
+    image_path: str
+    operations: List[Dict[str, Any]]
+    output_format: Optional[str] = "png"
+
+class ImageCreateRequest(BaseModel):
+    title: str
+    subtitle: Optional[str] = ""
+    theme: Optional[str] = "dark_cyber"
+    width: Optional[int] = 1200
+    height: Optional[int] = 675
+
+class VideoTrimRequest(BaseModel):
+    video_path: str
+    start_sec: float
+    duration_sec: float
+    output_format: Optional[str] = "mp4"
+
+class VideoGifRequest(BaseModel):
+    video_path: str
+    start_sec: Optional[float] = 0.0
+    duration_sec: Optional[float] = 5.0
+    fps: Optional[int] = 12
+    scale_width: Optional[int] = 480
+
+class VideoOverlayRequest(BaseModel):
+    video_path: str
+    text: str
+    position: Optional[str] = "bottom"
+    font_size: Optional[int] = 32
+
+@app.post("/api/media/image/edit")
+async def media_image_edit_endpoint(req: ImageEditRequest):
+    """Edits, crops, adjusts, filters, or watermarks an image on-device."""
+    return local_media_service.edit_image(
+        image_path=req.image_path,
+        operations=req.operations,
+        output_format=req.output_format
+    )
+
+@app.post("/api/media/image/create")
+async def media_image_create_endpoint(req: ImageCreateRequest):
+    """Generates high-res branded graphics on-device."""
+    return local_media_service.create_image_from_template(
+        title=req.title,
+        subtitle=req.subtitle or "",
+        theme=req.theme or "dark_cyber",
+        width=req.width or 1200,
+        height=req.height or 675
+    )
+
+@app.post("/api/media/video/trim")
+async def media_video_trim_endpoint(req: VideoTrimRequest):
+    """Trims a video segment on-device using local Apple Silicon ffmpeg."""
+    return await local_media_service.trim_video(
+        video_path=req.video_path,
+        start_sec=req.start_sec,
+        duration_sec=req.duration_sec,
+        output_format=req.output_format or "mp4"
+    )
+
+@app.post("/api/media/video/gif")
+async def media_video_gif_endpoint(req: VideoGifRequest):
+    """Converts a video segment into an animated GIF on-device."""
+    return await local_media_service.convert_to_gif(
+        video_path=req.video_path,
+        start_sec=req.start_sec or 0.0,
+        duration_sec=req.duration_sec or 5.0,
+        fps=req.fps or 12,
+        scale_width=req.scale_width or 480
+    )
+
+@app.post("/api/media/video/overlay")
+async def media_video_overlay_endpoint(req: VideoOverlayRequest):
+    """Adds styled text overlay / lower thirds to a video on-device."""
+    return await local_media_service.add_text_overlay(
+        video_path=req.video_path,
+        text=req.text,
+        position=req.position or "bottom",
+        font_size=req.font_size or 32
+    )
+
+@app.get("/api/media/list")
+async def media_list_endpoint():
+    """Lists all on-device generated and edited media artifacts."""
+    return {"media": local_media_service.list_created_media()}
+
+class VideoSpliceRequest(BaseModel):
+    video_paths: List[str]
+    transition: Optional[str] = None
+    output_format: Optional[str] = "mp4"
+
+class VideoExtractFrameRequest(BaseModel):
+    video_path: str
+    frame_type: Optional[str] = "first"  # "first" | "last" | "timestamp"
+    timestamp_sec: Optional[float] = None
+    output_format: Optional[str] = "png"
+
+class VideoFromFrameRequest(BaseModel):
+    image_path: str
+    duration_sec: Optional[float] = 3.0
+    fps: Optional[int] = 30
+    motion: Optional[str] = "zoom_in"
+    audio_path: Optional[str] = None
+    output_format: Optional[str] = "mp4"
+
+@app.post("/api/media/video/splice")
+async def media_video_splice_endpoint(req: VideoSpliceRequest):
+    """Splices multiple local video clips together on-device."""
+    return await local_media_service.splice_videos(
+        video_paths=req.video_paths,
+        transition=req.transition,
+        output_format=req.output_format or "mp4"
+    )
+
+@app.post("/api/media/video/extract_frame")
+async def media_video_extract_frame_endpoint(req: VideoExtractFrameRequest):
+    """Extracts first, last, or specific timestamp frame from a video on-device."""
+    return await local_media_service.extract_frame(
+        video_path=req.video_path,
+        frame_type=req.frame_type or "first",
+        timestamp_sec=req.timestamp_sec,
+        output_format=req.output_format or "png"
+    )
+
+@app.post("/api/media/video/from_frame")
+async def media_video_from_frame_endpoint(req: VideoFromFrameRequest):
+    """Creates a motion video from an extracted frame or image on-device."""
+    return await local_media_service.create_video_from_frame(
+        image_path=req.image_path,
+        duration_sec=req.duration_sec or 3.0,
+        fps=req.fps or 30,
+        motion=req.motion or "zoom_in",
+        audio_path=req.audio_path,
+        output_format=req.output_format or "mp4"
+    )
+
+
+class VideoGenerateRequest(BaseModel):
+    prompt: str
+    duration_sec: Optional[float] = 2.0
+    fps: Optional[int] = 24
+    motion: Optional[str] = None
+    style: Optional[str] = "photorealistic"
+    model: Optional[str] = None
+    loras: Optional[List[Dict[str, Any]]] = None
+    seed: Optional[int] = None
+    negative_prompt: Optional[str] = None
+
+@app.post("/api/media/video/generate")
+async def media_video_generate_endpoint(req: VideoGenerateRequest):
+    """Synthesizes an AI motion video directly from a descriptive text prompt on-device."""
+    return await local_media_service.generate_ai_video(
+        prompt=req.prompt,
+        duration_sec=req.duration_sec or 2.0,
+        fps=req.fps or 24,
+        motion=req.motion,
+        style=req.style or "photorealistic",
+        model=req.model,
+        loras=req.loras,
+        seed=req.seed,
+        negative_prompt=req.negative_prompt,
+    )
+
+
+class MediaModelActionRequest(BaseModel):
+    model_id: str
+    model_type: Optional[str] = "image"
+
+class MediaModelRevealRequest(BaseModel):
+    model_id: str
+
+
+# -------------------------------------------------------------
+# ON-DEVICE MEDIA MODEL STUDIO & DISCOVERY ENDPOINTS
+# -------------------------------------------------------------
+@app.get("/api/media/models/status")
+async def media_models_status_endpoint():
+    """Returns active models, downloaded on-device models inventory, and hardware acceleration status."""
+    return media_model_manager.get_status()
+
+@app.get("/api/media/models/curated")
+async def media_models_curated_endpoint():
+    """Returns curated image and video models optimized for Apple Silicon."""
+    return {"models": media_model_manager.list_curated_models()}
+
+@app.get("/api/media/models/search")
+async def media_models_search_endpoint(q: str = "", type: Optional[str] = None, limit: int = 15):
+    """Queries Hugging Face Hub live for text-to-image or text-to-video models."""
+    return {"models": media_model_manager.search_huggingface_models(query=q, model_type=type, limit=limit)}
+
+@app.post("/api/media/models/activate")
+async def media_models_activate_endpoint(req: MediaModelActionRequest):
+    """Sets a model as active default for image or video generation."""
+    return media_model_manager.set_active_model(model_id=req.model_id, model_type=req.model_type or "image")
+
+@app.post("/api/media/models/download")
+async def media_models_download_endpoint(req: MediaModelActionRequest):
+    """Starts 1-click background download of a model to the local device."""
+    return media_model_manager.start_download_job(model_id=req.model_id, model_type=req.model_type or "image")
+
+@app.get("/api/media/models/download/{job_id}")
+async def media_models_download_status_endpoint(job_id: str):
+    """Checks the status of an ongoing model download."""
+    return media_model_manager.get_download_status(job_id)
+
+@app.delete("/api/media/models/{model_id:path}")
+async def media_models_delete_endpoint(model_id: str):
+    """Deletes a local model folder from disk to reclaim storage."""
+    return media_model_manager.delete_model(model_id)
+
+@app.post("/api/media/models/reveal")
+async def media_models_reveal_endpoint(req: MediaModelRevealRequest):
+    """Reveals the model directory directly in macOS Finder."""
+    return media_model_manager.reveal_in_finder(req.model_id)
+
+class MediaHfTokenRequest(BaseModel):
+    token: str
+
+@app.post("/api/media/models/token")
+async def media_models_token_endpoint(req: MediaHfTokenRequest):
+    """Saves and validates Hugging Face user access token."""
+    return media_model_manager.set_hf_token(req.token)
+
+@app.get("/api/media/models/token/test")
+async def media_models_token_test_endpoint():
+    """Validates the currently configured Hugging Face user token."""
+    return media_model_manager.test_hf_token()
+
+
+# =====================================================================
+# PERSISTENT LONG-TERM MEMORY (SQLite Vector Vault) ENDPOINTS
+# =====================================================================
+
+class MemorySearchRequest(BaseModel):
+    query: str
+    category: Optional[str] = None
+    limit: Optional[int] = 10
+
+class MemoryStoreRequest(BaseModel):
+    title: str
+    content: str
+    category: Optional[str] = "general"
+    tags: Optional[List[str]] = None
+    importance: Optional[int] = 3
+    source_session_id: Optional[str] = None
+
+class MemoryIndexWorkspaceRequest(BaseModel):
+    workspace_dir: Optional[str] = None
+
+@app.get("/api/memory/list")
+async def memory_list_endpoint(category: Optional[str] = None, limit: int = 50):
+    """Lists memories from persistent vector vault."""
+    return memory_service.list_memories(category=category, limit=limit)
+
+@app.post("/api/memory/search")
+async def memory_search_endpoint(req: MemorySearchRequest):
+    """Performs hybrid vector cosine + FTS5 semantic search."""
+    results = await memory_service.search_memories_async(
+        query=req.query,
+        category=req.category,
+        limit=req.limit or 10
+    )
+    return {"query": req.query, "count": len(results), "results": results}
+
+@app.post("/api/memory/store")
+async def memory_store_endpoint(req: MemoryStoreRequest):
+    """Stores a new permanent memory with dense vector embedding."""
+    mem = await memory_service.store_memory_async(
+        title=req.title,
+        content=req.content,
+        category=req.category or "general",
+        tags=req.tags,
+        importance=req.importance or 3,
+        source_session_id=req.source_session_id
+    )
+    return mem
+
+@app.delete("/api/memory/{memory_id}")
+async def memory_delete_endpoint(memory_id: str):
+    """Permanently deletes a memory by ID."""
+    success = memory_service.delete_memory(memory_id)
+    return {"success": success, "id": memory_id}
+
+@app.get("/api/memory/stats")
+async def memory_stats_endpoint():
+    """Returns memory vault capacity, embedding model, and category distribution."""
+    return memory_service.get_stats()
+
+@app.post("/api/memory/index-workspace")
+async def memory_index_workspace_endpoint(req: Optional[MemoryIndexWorkspaceRequest] = None):
+    """Scans and indexes workspace repository into persistent memory vault."""
+    ws_path = req.workspace_dir if req else None
+    res = await memory_service.auto_index_workspace(workspace_path=ws_path)
+    return {"status": "indexed", "count": res.get("indexed_memories", 0), "result": res}
+
+
+
+
+
+
+
+

@@ -1,0 +1,1860 @@
+import os
+import json
+import asyncio
+import re
+import time
+import logging
+from pathlib import Path
+from typing import List, Dict, Any, AsyncGenerator, Optional, Tuple
+from app.config import settings
+from app.services.llm import llm_service, parse_llm_json, JSON_MIN_TOKENS
+from app.agent.prompts import PERSONA_PROMPTS
+from app.agent.tools import TOOL_DEFINITIONS, execute_tool, select_tools_for_query
+from app.agent.evidence import EvidenceBoard
+from app.services.scoring import compute_due_diligence_score
+from app.services.storage import save_or_update_entity
+from app.paths import DATA_DIR
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+
+logger = logging.getLogger("researcher")
+
+class AgenticResearcher:
+    """
+    Next-Generation Autonomous Research Director.
+    Features:
+    1. Dynamic Plan & Hypothesis Tree (Plan-and-Solve)
+    2. Structured Evidence Board (Working Memory & Context Compression)
+    3. Multi-Hop Autonomous Execution Loop with Gap Detection
+    4. Real-time Plan and Evidence SSE event streaming
+    """
+
+    def __init__(self, persona: str = "ultimate_researcher"):
+        self._planner_example: Optional[Dict[str, Any]] = None   # {"id", "response"} of this turn's plan
+        self._carried: Dict[str, Any] = {}   # job_id, output_path, ... from this turn's results (see _fill_placeholders)
+        self.persona = persona
+        self.system_prompt = PERSONA_PROMPTS.get(persona, PERSONA_PROMPTS["ultimate_researcher"])
+
+    async def run_research_stream(
+        self,
+        messages: List[Dict[str, Any]],
+        max_hops: int = 4,
+        active_workspace_path: Optional[str] = None,
+        attached_document: Optional[Dict[str, Any]] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Runs the deliberation-first autonomous research loop and yields real-time SSE events.
+        1. Deliberation Phase ("Think First, Decide, Then Act"):
+           - LLM evaluates conversation history with tool definitions.
+           - If conversational / conceptual / greeting: LLM outputs direct answer without tools.
+             Stream direct response, do NOT emit plan, do NOT emit scorecard. Done.
+           - If research is required: LLM selects initial tool calls.
+        2. Plan Formation & Tool Execution:
+           - Dynamically formulate research plan reflecting selected tools and query.
+           - Emit plan event to UI.
+           - Execute initial tool calls and populate EvidenceBoard.
+        3. Multi-Hop Gap Detection Loop:
+           - Iterate hops until evidence gaps are closed or max_hops reached.
+        4. Conditional Scoring & Institutional Synthesis:
+           - Emit scorecard ONLY if verified empirical evidence exists for an entity.
+           - Auto-index into persistent Knowledge Graph.
+           - Stream definitive markdown synthesis report.
+        """
+        attached_image_urls: List[str] = []
+        text_parts: List[str] = []
+        user_msg = messages[-1].get("content", "") if messages else "SaaS Market Intelligence"
+        if isinstance(user_msg, list):
+            for part in user_msg:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif part.get("type") == "image_url":
+                        url_obj = part.get("image_url", {})
+                        img_url = url_obj.get("url") if isinstance(url_obj, dict) else str(url_obj)
+                        if img_url:
+                            attached_image_urls.append(img_url)
+            user_query = " ".join(text_parts).strip() if text_parts else "Analyze this image"
+        else:
+            user_query = str(user_msg)
+
+        has_image = bool(attached_image_urls)
+        has_document = bool(attached_document or "[Attached Document:" in user_query or "[Attached File from Computer:" in user_query)
+
+        evidence_board = EvidenceBoard(objective=user_query)
+        if has_image:
+            evidence_board.visual_telemetry.append({
+                "images_count": len(attached_image_urls),
+                "query": user_query
+            })
+        if has_document:
+            doc_name = (attached_document.get("name") if attached_document else None) or "Attached Document"
+            evidence_board.doc_telemetry.append(attached_document or {"name": doc_name})
+
+        # -------------------------------------------------------------
+        # STEP 1: DELIBERATION PHASE ("Think First, Decide, Then Act")
+        # -------------------------------------------------------------
+        yield {"type": "status", "content": "🤔 Deliberating objective & evaluating tool requirements..."}
+
+        system_prompt = self.system_prompt
+        try:
+            from app.services.system_control import system_control_service
+            profile = system_control_service.get_computer_profile()
+            telem = system_control_service.get_system_telemetry()
+            current_cwd = active_workspace_path or profile.get("current_working_directory") or os.getcwd()
+            system_prompt += f"""
+
+[PERSISTENT COMPUTER HOST ENVIRONMENT]
+- Machine Host: {profile.get('host_os')} ({profile.get('arch')})
+- Computer ID: {profile.get('computer_id')}
+- Current Working Directory: {current_cwd}
+- RAM: {telem.get('memory', {}).get('used_gb')} GB used of {telem.get('memory', {}).get('total_gb')} GB
+- CPU 1m Load: {telem.get('cpu_load', {}).get('1m')}
+
+You have direct non-intrusive access to control this computer in the background:
+- `computer_run_command`: Run shell commands in the persistent working directory without focus stealing.
+- `computer_find_files`: Instantly search across the entire Mac via Spotlight (`mdfind`) for any file or folder.
+- `computer_manage_file`: Safely move, copy, make directories, or move files to macOS Trash (recoverable).
+- `computer_inspect_port`: Check which process and PID is listening on any port (3000, 8000, etc.).
+- `computer_kill_process`: Terminate any stuck process by PID.
+- `computer_clipboard`: Read or write the system clipboard (`pbpaste`/`pbcopy`).
+- `computer_start_job` / `computer_list_jobs` / `computer_stop_job`: Run and monitor background daemons.
+- `computer_wait_for`: Wait until a job finishes or prints something, a file appears, a port opens, or a URL responds.
+- `computer_check_job`: See a background job's status and the output since you last looked.
+- `computer_inspect_system`: Gather live CPU, RAM, disk, and process telemetry.
+- `computer_reveal_finder`: Reveal files or directories in Finder.
+- `browser_navigate`: Navigate to any URL live via Chrome CDP. Automatically returns top interactive elements with Set-of-Marks numeric tags (`[1]`, `[2]`), detected forms, headings, text snippet, and screenshot. You can act on numeric indices immediately!
+- `browser_smart_inspect`: Instant multimodal inspection returning Set-of-Marks tags, forms, headings, text, and screenshot in a single call.
+- `browser_dismiss_overlays`: Intelligently dismiss cookie banners, GDPR consent notices, newsletter modals, and blocking overlays.
+- `browser_observe`: Scan visible interactive elements with numeric Set-of-Marks IDs (`[1]`, `[2]`, ...).
+- `browser_interact`: Deterministically click, type, hover, select, or check elements by numeric Set-of-Marks `index`, CSS `selector`, or `text_target`. Automatically re-indexes if DOM changed.
+- `browser_extract_data`: Stagehand-style structured data extraction primitive. Synthesizes clean structured JSON entities (lists, tables, pricing) from the page according to an extraction instruction.
+- `browser_fill_form`: Fill multi-field forms in a single batch turn by field label, placeholder, name, id, index, or type, handling text, selects, and checkboxes.
+- `browser_press_key`: Send key presses (Enter, Escape, Tab, ArrowDown, etc.) to the page or target element.
+- `browser_hover`: Hover over elements by index or selector to trigger dropdowns, tooltips, or hover menus.
+- `browser_set_visibility`: Toggle between silent background headless Chrome (`headless=True`) and visible native desktop Chrome on macOS (`headless=False`) so the user can observe live or solve CAPTCHAs.
+- `browser_snoop_network`: Capture intercepted background fetch/XHR API responses and JSON payloads directly from SPAs.
+- `browser_manage_cookies`: Inspect, set, or clear cookies via Chrome DevTools Protocol.
+- `browser_manage_tabs`: List open tabs, open a new tab, switch tabs by ID, or close tabs.
+- `browser_wait_for`: Poll until an element selector, body text, URL pattern, or network idle (>1s without API activity) is ready.
+- `browser_export_pdf`: Export the active page to a high-resolution PDF document saved to the workspace.
+- `browser_upload_file`: Attach local files to an <input type="file"> element via CDP without native OS file dialogues.
+- `browser_get_downloads`: Inspect files downloaded into the browser sandbox folder.
+- `browser_extract_ax_tree`: Extract the semantic Accessibility (AX) Tree hierarchy for structured reasoning on complex SPAs.
+- `browser_snapshot`: Capture a live visual screenshot of the current browser page, optionally with Set-of-Marks overlays (`overlay_som=True`) or full-page (`full_page=True`).
+- `scan_live_job_firehose`: Scan verified live requisitions across Ashby, Greenhouse, Lever, and job boards.
+- `media_download_youtube`: Downloads YouTube videos (MP4) or extracts audio songs (MP3 at 192kbps) directly into macOS ~/Downloads folder. Call this whenever the user asks to get, download, or rip a song, music, or video.
+
+[EMBODIED WEB ACTION & APPLICATION PRINCIPLES]
+You have FULL embodied agency with Chrome CDP access (port 9228) and host computer controls.
+STRICLY FORBIDDEN: NEVER output canned AI refusals ("As an AI, I cannot physically submit job applications on your behalf", "I cannot click buttons", or "I am only a ghostwriter").
+When asked to apply for jobs or interact with portals, navigate directly via `browser_navigate`, auto-dismiss popups via `browser_dismiss_overlays`, inspect elements, search local resume files with `computer_find_files`, and map form inputs with `browser_fill_form`.
+When asked to download or get a song or video from YouTube, call `media_download_youtube` with format_type='audio' (for songs/music) or 'video' (for videos).
+
+When the user asks in natural language to perform computer actions or browse the web, immediately translate their intent into the appropriate computer or browser tool. Explain findings clearly and format code/output cleanly.
+"""
+        except Exception:
+            pass
+
+        if active_workspace_path:
+            system_prompt += f"""
+
+[ACTIVE CONTROLLED WORKSPACE SCOPE]
+The user is working inside and has focused the AI on this local workspace directory:
+Target Folder: {active_workspace_path}
+
+You have dedicated filesystem tools for this folder:
+- fs_list_workspace_files: Explore directory structure, subfolders, and files in this folder.
+- fs_read_workspace_file: Read source code, documentation (README), configs (package.json, pyproject.toml, requirements.txt), or notes.
+- fs_write_workspace_file: Create, edit, or write code, dossiers, architecture docs, or scripts into this folder.
+- fs_search_workspace: Search for keywords, class names, or symbols across all files in this folder.
+
+When the user asks to inspect, audit, explain, write, or refactor code/files in this project, use these tools autonomously to inspect the directory and produce accurate, real-world findings.
+"""
+
+        # Auto-Recall relevant long-term memories from persistent vector vault
+        try:
+            from app.services.memory_service import memory_service
+            from app.agent.prompts import format_memory_context
+
+            query_for_mem = user_query.strip()
+            if query_for_mem and len(query_for_mem) >= 3 and not self._is_conversational_greeting(query_for_mem):
+                recalled_memories = await memory_service.search_memories_async(query=query_for_mem, limit=3)
+                if recalled_memories:
+                    mem_block = format_memory_context(recalled_memories)
+                    if mem_block:
+                        system_prompt += f"\n\n{mem_block}\n"
+                        yield {
+                            "type": "evidence_update",
+                            "key": "long_term_memories",
+                            "data": {
+                                "recalled_count": len(recalled_memories),
+                                "memories": [
+                                    {
+                                        "id": m["id"],
+                                        "title": m["title"],
+                                        "category": m["category"],
+                                        "score": round(m.get("relevance_score", 0), 2)
+                                    }
+                                    for m in recalled_memories
+                                ]
+                            }
+                        }
+        except Exception as e:
+            logger.debug(f"Memory auto-recall skipped: {e}")
+
+        # Maintain true multi-turn conversation thread for native Thinking in Tools
+        conversation_thread: List[Dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            *messages
+        ]
+
+        # Clear-cut web tasks and "submit it" / "continue" replies skip planning entirely.
+        early_mission = self._mission_request(user_query, {})
+        if early_mission:
+            async for ev in self._stream_browser_mission(**early_mission):
+                yield ev
+            return
+
+        # "Check yourself" / "something's broken": the doctor answers, no planner, no free-written report.
+        # (The planner reached for general system stats and the writer invented problems that weren't there.)
+        if self._SELF_CHECK_RE.search(user_query):
+            async for ev in self._stream_self_check(user_query):
+                yield ev
+            return
+
+        # "Change your own code so …": straight to the self-edit gate. Left to the planner, Gemma
+        # answered from its training ("I can't modify my own code") without trying the tool.
+        if self._SELF_EDIT_RE.search(user_query):
+            async for ev in self._stream_self_edit(user_query):
+                yield ev
+            return
+
+        # -------------------------------------------------------------
+        # STEP 1: NEURAL DELIBERATION & FIRST-PRINCIPLES DECISION
+        # -------------------------------------------------------------
+        yield {"type": "status", "content": "🤔 Deliberating objective & reasoning execution strategy..."}
+
+        prior_messages = messages[:-1] if len(messages) > 1 else []
+        deliberation = None
+        async for ev in self.deliberate_and_plan(
+            query=user_query,
+            conversation_history=prior_messages,
+            active_workspace_path=active_workspace_path,
+            has_image=has_image,
+            has_document=has_document,
+            attached_document=attached_document,
+            attached_image_urls=attached_image_urls
+        ):
+            if ev.get("type") == "deliberation_complete":
+                deliberation = ev.get("deliberation")
+            else:
+                yield ev
+
+        if not deliberation:
+            deliberation = {
+                "thought": "Directly evaluating user request and deploying intelligence research.",
+                "decision": "execute_plan",
+                "direct_response": "",
+                "plan_title": f"Investigation: {user_query[:40]}",
+                "plan_steps": [
+                    {
+                        "id": 1,
+                        "title": f"Execute Deep Web & Intelligence Search on '{user_query[:40]}'",
+                        "tools": ["web_search"],
+                        "tool_args": [{"query": user_query}],
+                        "status": "pending"
+                    }
+                ],
+                "task_focus": "research",
+                "is_swarm": False
+            }
+
+        # Multi-step web tasks (apply, sign up, fill a form...) run as one closed browser loop
+        # instead of a fixed plan, so the agent can react to what each page shows.
+        mission = self._mission_request(user_query, deliberation)
+        if mission:
+            async for ev in self._stream_browser_mission(**mission):
+                yield ev
+            return
+
+        # If LLM decides direct conversational answer is sufficient (greetings, explanations, chitchat)
+        if deliberation.get("decision") == "direct_answer":
+            direct_reply = deliberation.get("direct_response", "").strip()
+            if direct_reply:
+                yield {"type": "content", "content": direct_reply}
+            else:
+                async for chunk in llm_service.stream_chat_completion(
+                    messages=conversation_thread,
+                    temperature=0.3
+                ):
+                    yield chunk
+            yield {"type": "done"}
+            return
+
+        # -------------------------------------------------------------
+        # STEP 2: REGISTER DELIBERATED EXECUTION PLAN
+        # -------------------------------------------------------------
+        plan_title = deliberation.get("plan_title") or f"Execution Plan: {user_query[:40]}"
+        raw_steps = deliberation.get("plan_steps") or []
+        task_focus = deliberation.get("task_focus", "general")
+        is_swarm_task = bool(deliberation.get("is_swarm"))
+
+        plan_steps = []
+        for idx, s in enumerate(raw_steps, 1):
+            tools = [self._canonicalize_tool_name(t) for t in s.get("tools", [])]
+            plan_steps.append({
+                "id": idx,
+                "title": s.get("title", f"Milestone {idx}"),
+                "tools": tools,
+                "tool_args": s.get("tool_args", [{}]),
+                "is_swarm": s.get("is_swarm", is_swarm_task),
+                "is_visual": s.get("is_visual", has_image and idx == 1),
+                "is_document": s.get("is_document", has_document and idx == 1),
+                "status": "pending"
+            })
+
+        if not plan_steps:
+            primary_search = "tavily_search" if settings.tavily_api_key else "web_search"
+            plan_steps.append({
+                "id": 1,
+                "title": f"Execute Deep Intelligence Investigation on '{user_query[:40]}'",
+                "tools": [primary_search],
+                "tool_args": [{"query": user_query}],
+                "status": "pending"
+            })
+
+        # Append final synthesis milestone
+        plan_steps.append({
+            "id": len(plan_steps) + 1,
+            "title": f"Synthesize Findings & Action Report ({task_focus.replace('_', ' ').title()})",
+            "tools": [],
+            "tool_args": [],
+            "status": "pending"
+        })
+
+        # Emit plan event immediately to UI
+        yield {
+            "type": "plan",
+            "title": plan_title,
+            "steps": plan_steps
+        }
+
+        # -------------------------------------------------------------
+        # STEP 3: SEQUENTIAL EXECUTION OF PLAN MILESTONES
+        # -------------------------------------------------------------
+        for step in plan_steps[:-1]:
+            step["status"] = "in_progress"
+            yield {"type": "plan_step", "step_id": step["id"], "status": "in_progress"}
+            yield {"type": "status", "content": f"⚡ Executing Milestone {step['id']}: {step['title']}..."}
+
+            if step.get("is_swarm"):
+                from app.agent.swarm import SwarmCoordinator
+                swarm_coord = SwarmCoordinator(active_workspace_path=active_workspace_path)
+                subagent_specs = swarm_coord.compile_jit_swarm(user_query)
+                yield {
+                    "type": "status",
+                    "content": f"⚡ Xod Conductor: Spawning JIT Sub-Agent Swarm ({len(subagent_specs)} specialists)..."
+                }
+                async for ev in swarm_coord.run_swarm_stream(subagent_specs):
+                    ev_type = ev.get("type")
+                    if ev_type == "subagent_tool_result":
+                        fn_name = ev.get("name")
+                        fn_res = ev.get("data")
+                        evidence_board.update_from_tool(fn_name, {}, fn_res)
+                        yield {
+                            "type": "evidence_update",
+                            "stats": evidence_board.get_stats()
+                        }
+                    yield ev
+            elif step.get("is_visual"):
+                yield {"type": "status", "content": "👁️ Ingesting image pixels & analyzing visual scene details..."}
+                yield {
+                    "type": "evidence_update",
+                    "stats": evidence_board.get_stats()
+                }
+            elif step.get("is_document"):
+                doc_name = (attached_document.get("name") if attached_document else None) or "Attached Document"
+                yield {"type": "status", "content": f"📄 Ingesting document sections & extracting structure ({doc_name})..."}
+                yield {
+                    "type": "evidence_update",
+                    "stats": evidence_board.get_stats()
+                }
+            elif step.get("is_memory_synthesis") or step.get("is_conversational_followup"):
+                yield {"type": "status", "content": "🧠 Correlating prior research findings & contextual memory..."}
+                yield {
+                    "type": "evidence_update",
+                    "stats": evidence_board.get_stats()
+                }
+            else:
+                tools = step.get("tools", [])
+                tool_args_list = step.get("tool_args", [])
+                executed_calls = []
+                executed_results = []
+
+                for idx, fn_name in enumerate(tools):
+                    args = tool_args_list[idx] if idx < len(tool_args_list) else {}
+                    args = self._fill_placeholders(fn_name, args)   # show the real values in the UI too
+                    call_id = f"call_{step['id']}_{idx}"
+
+                    yield {
+                        "type": "tool_call",
+                        "name": fn_name,
+                        "args": args,
+                        "id": call_id
+                    }
+
+                    result, shown = None, False
+                    origin = {"kind": "planner", **self._planner_example} if self._planner_example else None
+                    async for ev in self._run_tool_healing(fn_name, args, call_id, user_query, active_workspace_path, origin):
+                        if ev["type"] == "_final":
+                            fn_name, args, result, shown = ev["tool"], ev["args"], ev["result"], ev["shown"]
+                        else:
+                            yield ev
+
+                    evidence_board.update_from_tool(fn_name, args, result)
+                    summary = self._format_summary(result)
+
+                    if not shown:
+                        yield {
+                            "type": "tool_result",
+                            "name": fn_name,
+                            "summary": summary,
+                            "data": result,
+                            "id": call_id
+                        }
+
+                    yield {
+                        "type": "evidence_update",
+                        "stats": evidence_board.get_stats()
+                    }
+
+                    executed_calls.append({
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": fn_name,
+                            "arguments": json.dumps(args)
+                        }
+                    })
+                    executed_results.append(result)
+
+                if executed_calls:
+                    conversation_thread.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": executed_calls
+                    })
+                    for tc_item, res_item in zip(executed_calls, executed_results):
+                        clean_payload = self._clean_tool_payload(tc_item["function"]["name"], res_item)
+                        conversation_thread.append({
+                            "role": "tool",
+                            "tool_call_id": tc_item["id"],
+                            "name": tc_item["function"]["name"],
+                            "content": json.dumps(clean_payload)
+                        })
+
+            step["status"] = "completed"
+            yield {"type": "plan_step", "step_id": step["id"], "status": "completed"}
+
+        # -------------------------------------------------------------
+        # STEP 3.5: DYNAMIC ReAct REFLECTION & ADAPTIVE TOOL LOOP
+        # -------------------------------------------------------------
+        # If the task requires dynamic problem solving and is not a pure media generation,
+        # inspect live observations, detect gaps/errors, and allow the agent to deliberate,
+        # self-correct, and invoke follow-up tools dynamically.
+        is_media_download_or_gen = any(
+            any(t in ("media_generate_image", "media_generate_video", "media_download_youtube") for t in s.get("tools", []))
+            for s in plan_steps
+        )
+
+        if not is_swarm_task and not is_media_download_or_gen and max_hops > 1:
+            react_hop = 1
+            max_react_hops = min(max_hops, 3)
+            available_candidate_tools = select_tools_for_query(
+                query=user_query,
+                persona=self.persona,
+                active_workspace_path=active_workspace_path,
+                max_tools=16
+            )
+
+            from app.agent.healing import fingerprint
+            seen_calls = {fingerprint(t, (st.get("tool_args") or [{}])[i] if i < len(st.get("tool_args") or []) else {})
+                          for st in plan_steps for i, t in enumerate(st.get("tools", []))}
+            while react_hop <= max_react_hops:
+                stats = evidence_board.get_stats()
+                audit_trail = getattr(evidence_board, "tool_audit_trail", [])
+                has_observable_errors = False
+                for item in audit_trail[-3:]:
+                    res_val = item.get("result", {})
+                    if isinstance(res_val, dict) and (res_val.get("success") is False or res_val.get("error")):
+                        has_observable_errors = True
+                        break
+
+                # Prompt LLM to deliberate on whether more actions/self-corrections are required
+                eval_messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are Xod's ReAct Deliberator & Gap Analyzer.\n"
+                            "Review the user query, recent tool observations, and determine if an additional corrective tool call is needed.\n"
+                            "If the user query is already fully answered, return JSON: {\"action\": \"conclude\", \"reasoning\": \"Goal achieved.\"}\n"
+                            "If a follow-up action or error recovery is needed, return JSON:\n"
+                            "{\n"
+                            "  \"action\": \"tool_call\",\n"
+                            "  \"tool_name\": \"<one of available tools>\",\n"
+                            "  \"tool_args\": {},\n"
+                            "  \"reasoning\": \"<1 sentence explanation of why this action resolves the remaining gap>\"\n"
+                            "}"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"USER QUERY: {user_query}\n\n"
+                            f"EVIDENCE SUMMARY:\n{evidence_board.to_markdown_summary()[:2000]}\n\n"
+                            f"RECENT TOOL AUDIT:\n{json.dumps(audit_trail[-4:], indent=2)[:1500]}\n\n"
+                            f"AVAILABLE TOOLS:\n{[t['function']['name'] for t in available_candidate_tools]}"
+                        )
+                    }
+                ]
+
+                try:
+                    eval_reply = await llm_service.chat_completion(
+                        messages=eval_messages,
+                        temperature=0.1,
+                        max_tokens=JSON_MIN_TOKENS,
+                        task="react_step",   # follow-up decisions are training data too (see repair_learning)
+                    )
+                    decision = parse_llm_json(eval_reply.get("content", "")) or {"action": "conclude"}
+                except Exception as eval_err:
+                    logger.debug(f"ReAct reflection evaluation error: {eval_err}")
+                    decision, eval_reply = {"action": "conclude"}, {}
+
+                if decision.get("action") == "tool_call" and decision.get("tool_name"):
+                    fn_name = decision["tool_name"]
+                    fn_args = decision.get("tool_args", {})
+                    # Same call again won't give a different answer: stop instead of looping.
+                    fp = fingerprint(fn_name, fn_args)
+                    if fp in seen_calls:
+                        break
+                    seen_calls.add(fp)
+                    react_call_id = f"react_hop_{react_hop}"
+                    reason = decision.get("reasoning", "Adaptive follow-up action.")
+
+                    yield {"type": "status", "content": f"🔄 ReAct Hop {react_hop}: {reason}"}
+                    yield {
+                        "type": "tool_call",
+                        "name": fn_name,
+                        "args": fn_args,
+                        "id": react_call_id
+                    }
+
+                    res, shown = None, False
+                    origin = {"kind": "react", "id": eval_reply.get("_example_id"), "response": eval_reply.get("content", "")}
+                    async for ev in self._run_tool_healing(fn_name, fn_args, react_call_id, user_query, active_workspace_path, origin):
+                        if ev["type"] == "_final":
+                            fn_name, fn_args, res, shown = ev["tool"], ev["args"], ev["result"], ev["shown"]
+                        else:
+                            yield ev
+
+                    evidence_board.update_from_tool(fn_name, fn_args, res)
+                    summary = self._format_summary(res)
+
+                    if not shown:
+                        yield {
+                            "type": "tool_result",
+                            "name": fn_name,
+                            "summary": summary,
+                            "data": res,
+                            "id": react_call_id
+                        }
+                    yield {
+                        "type": "evidence_update",
+                        "stats": evidence_board.get_stats()
+                    }
+
+                    clean_payload = self._clean_tool_payload(fn_name, res)
+                    conversation_thread.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [{
+                            "id": react_call_id,
+                            "type": "function",
+                            "function": {"name": fn_name, "arguments": json.dumps(fn_args)}
+                        }]
+                    })
+                    conversation_thread.append({
+                        "role": "tool",
+                        "tool_call_id": react_call_id,
+                        "name": fn_name,
+                        "content": json.dumps(clean_payload)
+                    })
+
+                    react_hop += 1
+                else:
+                    # Concluded; no further tool calls necessary
+                    break
+
+        # Ensure all intermediate steps marked completed
+        for s in plan_steps[:-1]:
+            if s["status"] != "completed":
+                s["status"] = "completed"
+                yield {"type": "plan_step", "step_id": s["id"], "status": "completed"}
+
+        # -------------------------------------------------------------
+        # STEP 4: CONDITIONAL DUE DILIGENCE SCORECARD & SYNTHESIS
+        # -------------------------------------------------------------
+        final_step = plan_steps[-1]
+        final_step["status"] = "in_progress"
+        yield {"type": "plan_step", "step_id": final_step["id"], "status": "in_progress"}
+        # Neural task classification derived from deliberator's task_focus & actual evidence
+        is_creator_task = (
+            task_focus in ("creator", "influencer") or
+            bool((evidence_board.creator_telemetry or {}).get("shortlisted_candidates"))
+        )
+        is_media_task = (
+            task_focus in ("media", "video", "image", "music") or
+            bool(evidence_board.media_telemetry)
+        )
+        is_job_action_task = (
+            not is_creator_task and not is_media_task and (
+                task_focus in ("job_action", "career", "jobs") or
+                any(t in ("browser_fill_form", "scan_live_job_firehose") for s in plan_steps for t in s.get("tools", []))
+            )
+        )
+        is_browser_task = not is_creator_task and not is_job_action_task and not is_media_task and (
+            task_focus == "browser" or bool(evidence_board.browser_telemetry)
+        )
+        is_computer_task = not is_creator_task and not is_job_action_task and not is_media_task and (
+            task_focus == "computer" or bool(evidence_board.computer_telemetry)
+        )
+        is_file_organization_task = (
+            task_focus == "workspace" or
+            bool(evidence_board.fs_telemetry) or
+            any(t in ("fs_create_folder", "fs_organize_files", "fs_move_file", "computer_batch_organize") for s in plan_steps for t in s.get("tools", []))
+        )
+        is_followup_memory_task = any(s.get("is_memory_synthesis") for s in plan_steps)
+
+        if is_swarm_task:
+            yield {"type": "status", "content": "⚡ Conductor Xod: Synthesizing Multi-Agent Swarm Intelligence..."}
+        elif is_media_task:
+            yield {"type": "status", "content": "🎵 Synthesizing Downloaded Media File Delivery & Specs..."}
+        elif is_creator_task:
+            yield {"type": "status", "content": "🎯 Synthesizing Creator Attention Arbitrage Dossier & Roster..."}
+        elif is_job_action_task:
+            yield {"type": "status", "content": "🦾 Synthesizing Embodied Job Application & Web Form Submission Report..."}
+        elif is_file_organization_task:
+            yield {"type": "status", "content": "📁 Synthesizing File Organization & Folder Structure Summary..."}
+        elif is_followup_memory_task:
+            yield {"type": "status", "content": "🧠 Synthesizing Contextual Follow-Up Analysis from Memory..."}
+        elif has_image:
+            yield {"type": "status", "content": "👁️ Synthesizing Detailed Visual Scene Analysis & Walkthrough..."}
+        elif has_document:
+            yield {"type": "status", "content": "📄 Synthesizing Executive Document Intelligence Report..."}
+        elif is_browser_task:
+            yield {"type": "status", "content": "🌐 Synthesizing Live Website Walkthrough & Thoughts..."}
+        elif is_computer_task:
+            yield {"type": "status", "content": "💻 Synthesizing System Execution Report..."}
+        else:
+            yield {"type": "status", "content": "📊 Synthesizing Institutional Due Diligence Report..."}
+
+        stats = evidence_board.get_stats()
+        # Only compute and emit a formal M&A scorecard if verified financial/business metrics were uncovered
+        has_real_financials = (
+            stats["metrics_count"] > 0 or
+            bool(evidence_board.verified_financials) or
+            bool(evidence_board.sec_filings) or
+            self.persona in ("acquisition_hunter", "competitor_teardown")
+        )
+
+        entity_name = (
+            evidence_board.target_entity
+            or evidence_board.verified_financials.get("name")
+            or (evidence_board.target_domain.split(".")[0].capitalize() if evidence_board.target_domain else None)
+        )
+        scorecard = None
+
+        if has_real_financials and entity_name and not is_browser_task and not is_swarm_task and not has_image and not is_job_action_task:
+            scorecard = compute_due_diligence_score(evidence_board)
+            try:
+                save_or_update_entity({
+                    "slug": evidence_board.verified_financials.get("slug") or entity_name.lower().replace(" ", "-"),
+                    "name": entity_name,
+                    "category": evidence_board.verified_financials.get("category"),
+                    "website": evidence_board.target_domain,
+                    "verified_mrr": evidence_board.verified_financials.get("verified_mrr"),
+                    "last_30d_revenue": evidence_board.verified_financials.get("last_30d_revenue"),
+                    "total_revenue": evidence_board.verified_financials.get("total_revenue"),
+                    "arr_multiple": evidence_board.verified_financials.get("arr_multiple"),
+                    "growth_30d": evidence_board.verified_financials.get("growth_30d"),
+                    "active_subscriptions": evidence_board.verified_financials.get("active_subscriptions"),
+                    "tech_stack": evidence_board.tech_stack,
+                    "pricing_signals": evidence_board.pricing_signals,
+                    "tags": evidence_board.tags or ([evidence_board.verified_financials.get("category")] if evidence_board.verified_financials.get("category") else []),
+                    "due_diligence_score": scorecard.get("overall_score"),
+                    "dossier_summary": f"Audited {entity_name} with score {scorecard.get('overall_score')}/100 ({scorecard.get('rating')})."
+                })
+            except Exception as e:
+                logger.warning(f"Could not auto-index entity to Knowledge Graph: {e}")
+
+            yield {
+                "type": "scorecard",
+                "scorecard": scorecard,
+                "entity": entity_name
+            }
+
+        evidence_summary = evidence_board.to_compact_summary()
+        scorecard_clause = (
+            f"Quantitative Health Score: {scorecard.get('overall_score')}/100 ({scorecard.get('rating')}).\n\n"
+            if scorecard else ""
+        )
+
+        if has_image:
+            task_instruction = f"""
+Directly and thoroughly answer the user's visual request: "{user_query}"
+You have full multimodal vision capabilities and are looking directly at the uploaded image.
+Provide an articulate, structured visual walkthrough:
+1. **Scene Overview & Primary Subjects**: Who or what is depicted in the foreground, background, and center. Describe people, clothing, posture, vehicles, street/environment, trees, houses, architecture.
+2. **Key Visual Details & Elements**: Identify specific items (e.g. skateboard, logos, text on clothing, cars, street elements), lighting, weather, time of day, and colors.
+3. **Atmosphere & Context**: Setting, vibe, activity taking place, and perspective.
+4. **Direct Answer & Takeaways**: Provide a clear, definitive response directly answering "{user_query}".
+
+Format your response in articulate Markdown with bold highlights and structured bullet points.
+"""
+        elif has_document:
+            doc_meta_str = ""
+            if attached_document:
+                doc_meta_str = f"Document: {attached_document.get('name')} ({attached_document.get('size_formatted', '')}, {attached_document.get('page_count', 1)} pages).\n\n"
+            task_instruction = f"""
+Directly and thoroughly analyze the attached document addressing: "{user_query}"
+{doc_meta_str}Provide a high-density, professional executive report:
+1. **Document Overview & Metadata**: Title, document type, scope, and key topics covered.
+2. **Core Findings & Structural Breakdown**: Key sections, data points, metrics, and arguments.
+3. **Critical Analysis & Takeaways**: Significant observations, strengths, risks, or gaps.
+4. **Actionable Recommendations & Next Steps**: Pragmatic, high-leverage guidance based on the document.
+
+Format your response in articulate Markdown with bold highlights and structured bullet points.
+"""
+        elif is_swarm_task:
+            task_instruction = f"""
+Directly address the user's objective: "{user_query}"
+You are Xod, the master conductor. Your specialized JIT sub-agent swarm has completed concurrent investigations across their respective pruned domains.
+Using the verified Evidence Board observations below, deliver an articulate, cohesive, high-level institutional master report:
+1. **Executive Synthesis & Unified Verdict**: Core takeaways combining all investigated domains.
+2. **Specialist Domain Findings**:
+   - Provide concrete observations, metrics, or configs uncovered by each specialist domain.
+   - Quote real ports, processes, code structures, or web elements.
+3. **Strategic Recommendations & Next Actions**:
+   - Clear, pragmatic next steps for the user.
+
+Format your response in articulate Markdown with bold highlights, tables or structured bullet points.
+"""
+        elif is_creator_task:
+            task_instruction = f"""
+Directly address the user's objective: "{user_query}"
+You have scanned and scored creator candidates using quantitative Attention Prediction and CPM Arbitrage models.
+Using the verified Evidence Board and Creator Telemetry below, deliver an institutional Attention Arbitrage & Creator Roster Dossier:
+
+1. **Executive Arbitrage Overview**:
+   - Total creators analyzed vs shortlisted candidates.
+   - Blended Portfolio Predicted CPM vs Industry Baseline ($15–$25 CPM).
+   - Expected View Floor ($V_{{50}}$) aggregate reach and total predicted creator budget.
+   - Overall Portfolio Arbitrage Multiple.
+
+2. **Ranked Creator Arbitrage Roster**:
+   - Provide a clean Markdown table ranking the creators by Arbitrage Multiple / Efficiency.
+   - Table columns: `Creator / Handle` | `Platform` | `Est. Followers` | `Median Views (V50)` | `AVR (Velocity)` | `Est. Fair Fee` | `Predicted CPM` | `Arbitrage Multiple` | `Contact / Gateways`
+   - Include direct handles, follower counts, view floors, calculated fees, predicted CPMs, and contact emails/links where discovered.
+
+3. **High-Conversion Creative Hooks & Angle Blueprints**:
+   - For the top shortlisted creators, detail the tailored narrative hooks, content format recommendations, and angles designed for algorithmic breakout.
+
+4. **Outreach & Deployment Protocol**:
+   - Step-by-step guidance on contacting the creators, fee negotiation ranges, and whitelisting / spark ad amplification strategies.
+
+Format your response in articulate Markdown with bold highlights, tables, and structured sections.
+"""
+        elif is_job_action_task:
+            portal_label = "Y Combinator Work at a Startup" if any(k in user_query.lower() for k in ["work at a startup", "workatastartup", "yc", "y combinator"]) else "Target Career Portal"
+            task_instruction = f"""
+Directly and proactively address the user's career application objective: "{user_query}"
+You are Xod, an embodied autonomous agent with direct web and host execution capabilities.
+Base every statement on the tool results and evidence above. If a step did not happen or a page did not load, say so plainly; never claim navigation, form filling, or file discovery that the tool results don't show, and never invent job listings.
+
+CRITICAL POLICY - HIGH EMBODIED AGENCY & ZERO CANNED REFUSALS:
+- STRICTLY FORBIDDEN: NEVER state canned AI refusals ("As an AI, I cannot physically submit job applications on your behalf", "I cannot click buttons", "I cannot interact with dynamic web forms", or "I am only a ghostwriter"). You DO possess browser automation, form filling (`browser_fill_form`), element interaction (`browser_interact`), file uploading (`browser_upload_file`), and computer file access.
+- Deliver a complete, high-agency Embodied Application & Execution Dossier:
+
+1. **Autonomous Navigation & Live Portal Status**:
+   - Report the live URL navigated to, page load status, and verified active requisitions/roles.
+2. **Discovered Open Positions & Requisition Table**:
+   - Present a structured Markdown table of open roles discovered on the portal: `Position Title` | `Company / Team` | `Location / Remote` | `Apply Status / Form Link`.
+3. **Automated Candidate Profile & Form Field Mapping**:
+   - Detail the automated form fields identified on the application page (e.g. Full Name, Email, LinkedIn, GitHub, Portfolio URL, Years of Experience, Short Bio).
+   - Show how the candidate profile maps directly to each input field.
+4. **Candidate Resume Discovery on Host**:
+   - Report any local resume or CV files discovered on the Mac (from Spotlight `computer_find_files`), file paths, and readiness for automatic attachment via `browser_upload_file`.
+5. **Action Execution Summary & Next Steps**:
+   - Provide concrete next actions: automated draft preparation, one-click submission confirmation, or automated batch applying across selected target startups.
+
+Format your response in articulate Markdown with bold highlights, tables, and clear actionable steps.
+"""
+        elif is_browser_task:
+            target_site_label = evidence_board.target_domain or entity_name or "the target website"
+            task_instruction = f"""
+Directly and thoroughly answer the user's request: "{user_query}"
+You used the browser on {target_site_label}. Describe ONLY what the tool results and evidence above actually show.
+If the page did not load, was blank, or showed a verification/bot check, say that plainly in the first sentence and stop there; never describe a site from memory or general knowledge.
+Where the evidence supports it, cover:
+1. **Live First Impressions & Hero Offers**: Describe the key promotions, banners, hero products, and value propositions visible right on the page.
+2. **Layout & Navigation Architecture**: Walk through the navigation structure, search bar accessibility, department menus, and service hubs.
+3. **User Experience & Friction Assessment**: Critique the visual hierarchy, clutter vs clarity, responsiveness, and shopping flow.
+4. **Key Takeaways & Strategic Verdict**: What works well, what feels outdated, and your overall verdict.
+
+Format your response in articulate Markdown with bold highlights and bullet points.
+"""
+        elif is_computer_task:
+            # Only sections for tools that actually ran: given the full list, the model filled in
+            # every one (an invented "M2 Max, 32 GB, battery 88%" when no telemetry tool had run).
+            ran = {item.get("tool") for item in getattr(evidence_board, "tool_audit_trail", [])}
+            sections = [
+                ({"computer_directory_tree", "computer_list_directory", "fs_list_workspace_files", "computer_find_files"},
+                 "**Files & folders found**: the paths and items the tools returned."),
+                ({"computer_read_file", "computer_edit_file", "computer_write_file", "fs_read_workspace_file", "fs_write_workspace_file"},
+                 "**Files read or changed**: exact paths and what was in them or what changed."),
+                ({"computer_batch_organize", "fs_organize_files", "computer_manage_file", "fs_move_file"},
+                 "**Files organized or moved**: what moved where."),
+                ({"computer_run_command", "computer_run_applescript", "computer_start_job", "computer_check_job", "computer_wait_for"},
+                 "**Commands & background jobs**: the command, exit code, how long it took, and its actual output."),
+                ({"computer_inspect_system", "computer_hardware_overview", "computer_inspect_port"},
+                 "**System readings**: only the numbers the tools returned."),
+            ]
+            wanted = [text for tools, text in sections if ran & tools]
+            task_instruction = f"""
+Directly answer the user's computer request: "{user_query}"
+Lead with the answer itself (the result, the output, what changed), in a sentence or two.
+""" + ("Then, briefly:\n" + "\n".join(f"- {w}" for w in wanted) if wanted else "") + """
+Only report what the tool results above show. Never add hardware specs, memory, battery, ports, or
+file contents that no tool returned, and don't add sections for things that weren't done.
+"""
+        elif is_file_organization_task:
+            task_instruction = f"""
+Directly address the user's file/folder manipulation request: "{user_query}"
+Present the actions taken, created folders, and organized files in clean Markdown:
+- Detail the created folders and their locations.
+- List all files moved or organized into each folder in a structured table or checklist.
+- Provide practical instructions for finding and managing the files in the workspace.
+"""
+        elif is_followup_memory_task:
+            task_instruction = f"""
+Directly address the user's follow-up request: "{user_query}"
+Rely seamlessly on our previous conversation history and established findings.
+- If the user requested a table, format the data in clean, readable Markdown tables.
+- If the user asked for comparison, elaboration, or clarification, provide an articulate, direct answer without re-explaining unneeded background.
+"""
+        elif is_media_task:
+            task_instruction = f"""
+Directly present the completed Media Studio asset creation for: "{user_query}"
+You are Xod, an articulate multimedia creative director.
+Deliver an engaging asset delivery walkthrough:
+1. **Asset Preview & Delivery**:
+   - For images or videos, embed the media preview: `![Asset Preview](/media/<filename>)` using the relative URL from the tool output.
+   - Quote the full on-device path: `Full On-Device Path: <path>`.
+   - Describe the asset in detail: scene composition, subjects (e.g. snowman, snowfall, tree), movement/animation dynamics (e.g. drifting snowflakes, playful bounce/wobble), colors, and atmosphere.
+2. **Technical Specifications**:
+   - Dimensions, format (e.g. MP4 H.264 video or JPEG image), duration/fps if video, file size, and on-device rendering engine.
+3. **Host Computer & Finder Control**:
+   - Inform the user they can click "Open in Finder" directly on the preview card, or tell you to open the folder or file in Finder anytime.
+
+Format your response in articulate Markdown with bold highlights. Do not emit any tool call tags.
+"""
+        else:
+            task_instruction = f"""
+Synthesize the comprehensive Research Dossier addressing: "{user_query}".
+{scorecard_clause}Use markdown tables, bold key findings, list architectural layers, highlight security and infrastructure takeaways.
+"""
+
+        synthesis_content = f"""The empirical research investigation has completed. Here is the verified Evidence Board containing all live observations:
+
+{evidence_summary}
+
+CRITICAL INSTRUCTIONS:
+- Tool execution phase is CLOSED. DO NOT emit any tool calls, function calls, `<|tool_call|>`, or `call:...` code blocks.
+- Speak directly to the user in articulate, professional Markdown.
+- Every fact, number, and file content must come from the Evidence Board above. If something wasn't checked, don't state it.
+{task_instruction}"""
+
+        system_instruction_text = (
+            "You are Xod, an articulate, expert AI assistant. Provide your complete, detailed analysis, walkthrough, and thoughts directly to the user in fluent Markdown. Do NOT output any tool calls or function tags."
+        )
+        if has_image:
+            system_instruction_text = "You are Xod, an articulate multimodal AI assistant with sharp visual perception. You can see the user's uploaded image in full fidelity. Directly and thoroughly examine the image to describe its subjects, composition, details, and environment, answering the user's request in structured Markdown. Do not emit any tool calls."
+            multimodal_user_parts = [
+                {"type": "text", "text": f"{user_query}\n\n{task_instruction}\n\n{synthesis_content}"}
+            ]
+            for img_url in attached_image_urls:
+                multimodal_user_parts.append({"type": "image_url", "image_url": {"url": img_url}})
+            synthesis_user_content = multimodal_user_parts
+        elif has_document:
+            system_instruction_text = "You are Xod, an institutional document intelligence and analysis assistant. Analyze the user's attached document in complete detail. Synthesize an executive report with key findings, data points, structural breakdown, and recommendations in fluent Markdown. Do not emit any tool calls."
+            synthesis_user_content = f"{user_query}\n\n{task_instruction}\n\n{synthesis_content}"
+        elif is_media_task:
+            system_instruction_text = "You are Xod, an articulate multimedia creative director. Present the generated or edited media asset directly to the user with the embedded markdown preview, visual description, and file path. Do not output any tool calls."
+            synthesis_user_content = f"{user_query}\n\n{task_instruction}\n\n{synthesis_content}"
+        elif is_job_action_task:
+            system_instruction_text = "You are Xod, an embodied autonomous AI agent with direct browser automation and computer capabilities. You proactively navigate job portals, inspect application forms, map candidate data, locate resumes on the host machine, and prepare live submissions. NEVER give canned AI refusals ('As an AI, I cannot physically...'). Present an articulate, high-agency execution dossier with live findings, open roles table, form field mapping, and next actions. Do NOT output any raw tool call tags."
+            synthesis_user_content = f"{user_query}\n\n{synthesis_content}"
+        elif is_file_organization_task:
+            system_instruction_text = "You are Xod, an autonomous system with workspace and file management capabilities. You create folders, move files, and organize directories as requested. Report file operations clearly in clean Markdown tables and lists."
+            synthesis_user_content = f"{user_query}\n\n{task_instruction}\n\n{synthesis_content}"
+        elif is_followup_memory_task:
+            system_instruction_text = "You are Xod, an intelligent assistant with seamless conversational memory. You remember prior turns, prior facts, and prior research findings. Address the user's follow-up request directly using your memory of the previous discussion. Do not output any tool call tags."
+            synthesis_user_content = f"{user_query}\n\n{task_instruction}\n\n{synthesis_content}"
+        else:
+            synthesis_user_content = f"{user_query}\n\n{synthesis_content}"
+
+        synthesis_messages = self._format_conversation_history_for_synthesis(
+            messages=messages,
+            current_user_content=synthesis_user_content,
+            system_instruction=system_instruction_text
+        )
+
+        accumulated_text = ""
+        synthesis_tool_call_detected = False
+
+        try:
+            async for chunk in llm_service.stream_chat_completion(
+                messages=synthesis_messages,
+                temperature=0.3
+            ):
+                if chunk.get("type") == "content":
+                    tok = chunk.get("content", "")
+                    accumulated_text += tok
+                    # If model leaked a tool call tag during synthesis, hide it from live stream
+                    if "<|tool_call" in accumulated_text or "<tool_call" in accumulated_text or ("call:" in accumulated_text and len(accumulated_text.strip()) < 80):
+                        synthesis_tool_call_detected = True
+                        continue
+                    yield chunk
+                else:
+                    yield chunk
+        except Exception as e:
+            logger.error(f"Final streaming error: {e}")
+            yield {"type": "error", "content": f"Synthesis error: {str(e)}"}
+
+        # Robust Recovery: If model only emitted a tool call syntax and produced no real text
+        cleaned_prose = re.sub(r'(?:<\|?tool_call\|?>)?\s*(?:call:)?([a-zA-Z0-9_]+)\s*\{.*?\}\s*(?:<\|?/?tool_call\|?>)?', '', accumulated_text, flags=re.DOTALL).strip()
+        if (synthesis_tool_call_detected or not accumulated_text.strip()) and len(cleaned_prose) < 50:
+            if is_media_task and evidence_board.media_telemetry:
+                last_m = evidence_board.media_telemetry[-1]
+                m_filename = last_m.get("filename") or "asset"
+                m_url = last_m.get("media_url") or last_m.get("relative_url") or f"/media/{m_filename}"
+                m_path = last_m.get("output_path") or str(DATA_DIR / "media_studio" / m_filename)
+                is_vid = any(m_filename.endswith(ext) for ext in [".mp4", ".webm", ".mov"])
+                kind = "Video" if is_vid else "Visual"
+                dur = f"- **Duration**: {last_m.get('duration_sec', 4.0)}s\n" if is_vid else ""
+                fallback_msg = f"""I have completed and rendered your {kind.lower()} asset on your machine:
+
+### 🎬 {kind} Asset Delivery
+
+![{kind} Preview]({m_url})
+
+**Full On-Device Path:**
+`{m_path}`
+
+---
+
+### ⚙️ Technical Specifications
+- **Format**: {"MP4 (H.264)" if is_vid else "JPEG (RGB)"}
+{dur}- **File Size**: {last_m.get('size_bytes', 0):,} bytes
+- **Engine**: Local Media Studio On-Device Core
+
+---
+
+### 🚀 Host System Control
+You can click **Open in Finder** above to view the file directly in macOS Finder, or ask me to open any folder on your Mac at any time!
+"""
+                yield {"type": "content", "content": fallback_msg}
+                accumulated_text = fallback_msg
+            else:
+                logger.info("Model leaked tool call during synthesis. Executing robust natural-language recovery stream...")
+            if has_image:
+                recov_parts = [
+                    {"type": "text", "text": f"{user_query}\n\nPlease share your detailed visual walkthrough of what you see in the image and your thoughts."}
+                ]
+                for img_url in attached_image_urls:
+                    recov_parts.append({"type": "image_url", "image_url": {"url": img_url}})
+                recovery_messages = self._format_conversation_history_for_synthesis(
+                    messages=messages,
+                    current_user_content=recov_parts,
+                    system_instruction="You are Xod, a thoughtful multimodal AI assistant. Describe everything you see in the image in rich detail. Do not call any tools."
+                )
+            else:
+                recovery_text = f"{user_query}\n\nThe empirical investigation has completed. Here are the observations:\n\n{evidence_summary}\n\nPlease share your detailed walkthrough and thoughts."
+                recovery_messages = self._format_conversation_history_for_synthesis(
+                    messages=messages,
+                    current_user_content=recovery_text,
+                    system_instruction="You are Xod, a thoughtful AI assistant. Speak directly to the user in fluent Markdown. Do not call any tools."
+                )
+            try:
+                async for chunk in llm_service.stream_chat_completion(
+                    messages=recovery_messages,
+                    temperature=0.4
+                ):
+                    if chunk.get("type") == "content":
+                        cleaned = re.sub(r'<\|?/?tool_call\|?>.*', '', chunk["content"])
+                        if cleaned:
+                            yield {"type": "content", "content": cleaned}
+                    else:
+                        yield chunk
+            except Exception as e:
+                logger.error(f"Recovery synthesis failed: {e}")
+
+        final_step["status"] = "completed"
+        yield {"type": "plan_step", "step_id": final_step["id"], "status": "completed"}
+        yield {"type": "done"}
+
+    # ------------------------------------------------------------------
+    # Browser missions: multi-step web tasks run as one closed loop
+    # ------------------------------------------------------------------
+    _WEB_ACTION_RE = re.compile(
+        r"\b(apply|applying|sign ?up|register|fill (?:out|in)|submit|book|reserve|order|check ?out|"
+        r"log ?in|enroll|subscribe|unsubscribe|rsvp|post (?:a|an|my)|create an account|"
+        r"buy|purchase|add .{1,40} to (?:my |the )?(?:cart|bag|basket|wishlist)|compare|check (?:the )?(?:price|prices|availability|status|stock)|"
+        r"find|look up|look for|search|track|download|message|send (?:a |an )?(?:message|dm|email|note)|reply to|"
+        r"cancel (?:my )?(?:subscription|order|account)|go to|open|navigate to|browse)\b",
+        re.I,
+    )
+    # Browser missions need a concrete site; general research questions stay with web search.
+    _WEB_CONTEXT_RE = re.compile(
+        r"https?://|localhost(?::\d+)?|\b[a-z0-9-]+\.(?:com|io|ai|co|org|net|dev|app|shop|store)\b|"
+        r"\b(website|site|online|form|portal|my account|cart|"
+        r"indeed|linkedin|glassdoor|wellfound|ziprecruiter|workatastartup|amazon|ebay|etsy|walmart|target|bestbuy|"
+        r"reddit|twitter|x\.com|facebook|instagram|youtube|github|airbnb|booking|expedia|craigslist|zillow|opentable)\b",
+        re.I,
+    )
+    _QUESTION_RE = re.compile(r"^\s*(how|what|why|when|should|is|are|does|do i|explain|tell me)\b", re.I)
+    _CONFIRM_RE = re.compile(r"\b(submit it|send it|go ahead|yes|yep|approve[d]?|confirm(ed)?|do it|ship it)\b", re.I)
+    _SELF_CHECK_RE = re.compile(
+        r"(check|diagnose|heal|fix|test) (yourself|itself|xod)|self[- ]?(heal|check|diagnos)|health ?check|"
+        r"(something|anything)('?s| is)? (seems? )?(broken|wrong)|what('?s| is) (wrong|broken)( with (you|xod|yourself|the app|this app))?\s*[?.!]*$|"
+        r"(is|are) (you|xod) (broken|working|ok)|keeps? failing|"
+        r"why (isn'?t|is not|aren'?t) (it|you|xod|this) working", re.I)
+    _SELF_EDIT_RE = re.compile(
+        r"\b(change|edit|modify|update|fix|patch|rewrite|improve)\s+(your|xod'?s)\s+(own\s+)?(source\s+)?code\b|"
+        r"\b(edit|change|modify|patch|upgrade|reprogram)\s+(yourself|itself)\b|\bself[- ]?edit\b", re.I)
+    _CONTINUE_RE = re.compile(r"\b(continue|keep going|resume|try again|retry|carry on|done|cleared|finished|added|fixed)\b", re.I)
+
+    @staticmethod
+    def _normalize_tool_args(args_list: List[Any], n_tools: int) -> List[Dict[str, Any]]:
+        """Gemma sometimes writes one call's arguments as name/value items:
+        [{"name": "command", "val": "ls"}, {"name": "cwd", "val": "~"}]  ->  [{"command": "ls", "cwd": "~"}]."""
+        def is_pair(d):
+            return isinstance(d, dict) and "name" in d and len(d) == 2 and any(k in d for k in ("val", "value"))
+        if args_list and all(is_pair(d) for d in args_list) and (n_tools <= 1 or len(args_list) != n_tools):
+            merged = {d["name"]: d.get("val", d.get("value")) for d in args_list}
+            return [merged] + [{} for _ in range(max(0, n_tools - 1))]
+        return [d if isinstance(d, dict) else {} for d in args_list]
+
+    # Values a plan step can't know in advance (they come from earlier steps' results).
+    _PLACEHOLDER_RE = re.compile(r"replace[_ ]?with|from[_ ]step|<[^>]+>|\{\{.*\}\}|^\$\w+$|previous[_ ]step|placeholder", re.I)
+    _CARRY_KEYS = ("job_id", "pid", "output_path", "path", "filepath", "url", "port", "session_id", "tab_id")
+
+    def _remember_values(self, result: Any) -> None:
+        if isinstance(result, dict):
+            for k in self._CARRY_KEYS:
+                if result.get(k) not in (None, "", []):
+                    self._carried[k] = result[k]
+
+    def _fill_placeholders(self, fn_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Fills arguments that point at an earlier step's result (e.g. "REPLACE_WITH_JOB_ID_FROM_STEP_1"),
+        and a missing job_id for job tools, from what earlier steps in this turn returned."""
+        out = dict(args or {})
+        for k, v in list(out.items()):
+            if isinstance(v, str) and self._PLACEHOLDER_RE.search(v) and k in self._carried:
+                out[k] = self._carried[k]
+        if fn_name in ("computer_check_job", "computer_stop_job", "computer_wait_for") and not out.get("job_id") \
+                and "job_id" in self._carried and (fn_name != "computer_wait_for" or not any(out.get(x) for x in ("port", "url", "path", "pid"))):
+            out["job_id"] = self._carried["job_id"]
+        return out
+
+    async def _exec_tool_stream(self, fn_name: str, args: Dict[str, Any], call_id: str,
+                                active_workspace_path: Optional[str]):
+        """Runs one tool. Shell commands stream their output; everything else returns at once.
+        Yields tool_stream events, then {"type": "_result", "result": ...}."""
+        if fn_name == "computer_wait_for":
+            from app.services.job_watch import wait_for_stream
+            result: Dict[str, Any] = {}
+            async for ev in wait_for_stream(args):
+                if ev["type"] == "progress":
+                    yield {"type": "status", "content": ev["text"]}   # also keeps a task card's progress fresh
+                else:
+                    result = ev["result"]
+            yield {"type": "_result", "result": result}
+            return
+        if fn_name == "computer_run_command":
+            from app.services.system_control import system_control_service
+            cmd_str = args.get("command", "")
+            out_accum, err_accum = [], []
+            exit_code, status, duration = 0, "completed", 0.0
+            async for chunk in system_control_service.run_command_stream(
+                    command=cmd_str, cwd=args.get("cwd") or active_workspace_path or None,
+                    timeout_sec=args.get("timeout_sec", 45)):
+                if chunk.get("type") in ("stdout", "stderr"):
+                    txt = chunk.get("text", "")
+                    (out_accum if chunk["type"] == "stdout" else err_accum).append(txt)
+                    yield {"type": "tool_stream", "name": fn_name, "id": call_id, "stream_type": chunk["type"], "text": txt}
+                elif chunk.get("type") == "done":
+                    exit_code = chunk.get("exit_code", 0)
+                    status = chunk.get("status", "completed")
+                    duration = chunk.get("duration_sec", 0.0)
+            result = {"command": cmd_str, "cwd": system_control_service.current_working_directory, "status": status,
+                      "exit_code": exit_code, "stdout": "".join(out_accum), "stderr": "".join(err_accum),
+                      "duration_sec": duration}
+        else:
+            try:
+                result = await execute_tool(fn_name, args, active_workspace_path=active_workspace_path)
+            except Exception as e:
+                result = {"success": False, "error": str(e)}
+        yield {"type": "_result", "result": result}
+
+    async def _run_tool_healing(self, fn_name: str, args: Dict[str, Any], call_id: str, user_query: str,
+                                active_workspace_path: Optional[str], origin: Optional[Dict[str, Any]] = None):
+        """Runs a tool, checks the result for real, and repairs failures (see agent/healing.py).
+        Yields UI events, then {"type": "_final", "tool", "args", "result"} with whichever call worked."""
+        from app.agent.healing import Repairer, check_result
+        args = self._fill_placeholders(fn_name, args)
+        result: Dict[str, Any] = {}
+        async for ev in self._exec_tool_stream(fn_name, args, call_id, active_workspace_path):
+            if ev["type"] == "_result":
+                result = ev["result"]
+            else:
+                yield ev
+        if check_result(fn_name, args, result)["ok"]:
+            self._remember_values(result)
+            yield {"type": "_final", "tool": fn_name, "args": args, "result": result, "shown": False}
+            return
+        # Show the failed attempt, then repair.
+        yield {"type": "tool_result", "name": fn_name, "summary": self._format_summary(result), "data": result, "id": call_id}
+
+        async def run(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
+            out: Dict[str, Any] = {}
+            async for e in self._exec_tool_stream(name, a, call_id, active_workspace_path):
+                if e["type"] == "_result":
+                    out = e["result"]
+            return out
+
+        candidates = select_tools_for_query(query=user_query, persona=self.persona,
+                                            active_workspace_path=active_workspace_path, max_tools=16)
+        repairer = Repairer(run, user_query, TOOL_DEFINITIONS, candidates)
+        async for ev in repairer.repair(fn_name, args, result, call_id):
+            if ev["type"] == "_repair_done":
+                # The decision that made the failed call learns from it (label, and a pair if the fix is clear).
+                try:
+                    from app.services.repair_learning import record_outcome
+                    record_outcome(origin, fn_name, args, ev["tool"], ev["args"], ev["ok"], ev.get("kind") or "unknown",
+                                   canon=self._canonicalize_tool_name)
+                except Exception as e:
+                    logger.debug(f"repair learning skipped: {e}")
+                if ev["ok"]:
+                    self._remember_values(ev["result"])
+                yield {"type": "_final", "tool": ev["tool"], "args": ev["args"], "result": ev["result"], "shown": True}
+            else:
+                yield ev
+
+    async def _stream_self_edit(self, user_query: str) -> AsyncGenerator[Dict[str, Any], None]:
+        from app.services import self_edit
+        ed = self_edit.editor_model()
+        yield {"type": "plan", "title": "Changing my own code", "steps": [
+            {"id": 1, "title": f"Write the change ({ed['model']}) and test it in a copy", "tools": ["xod_self_edit"], "status": "in_progress"},
+            {"id": 2, "title": "Report what happened", "tools": [], "status": "pending"},
+        ]}
+        yield {"type": "plan_step", "step_id": 1, "status": "in_progress"}
+        yield {"type": "status", "content": f"🛠 Code changes by {ed['model']}: {ed['tier']} ({ed['why']})"}
+        args = {"goal": user_query}
+        yield {"type": "tool_call", "name": "xod_self_edit", "args": args, "id": "self_edit_1"}
+        result = await execute_tool("xod_self_edit", args)
+        yield {"type": "tool_result", "name": "xod_self_edit", "id": "self_edit_1", "data": result,
+               "summary": result.get("summary") or result.get("error", "")[:120]}
+        yield {"type": "plan_step", "step_id": 1, "status": "completed"}
+        yield {"type": "plan_step", "step_id": 2, "status": "in_progress"}
+        if result.get("success"):
+            lines = [f"**{result['summary']}**", "",
+                     f"- Written by {result['model']} ({result['tier']}), {result['changed_lines']} lines in {', '.join(f'`{f}`' for f in result['files'])}",
+                     f"- Passed in a test copy: {', '.join(result['checks_passed'])}",
+                     f"- {result['next']}"]
+            if result["status"] == "proposed":
+                lines.append("\nOpen **Tools → Health → Self-editing** to see the exact diff and approve or reject it.")
+        else:
+            lines = [f"I didn't change any code. {result.get('error', '')}"]
+        yield {"type": "content", "content": "\n".join(lines)}
+        yield {"type": "plan_step", "step_id": 2, "status": "completed"}
+        yield {"type": "done"}
+
+    async def _stream_self_check(self, user_query: str) -> AsyncGenerator[Dict[str, Any], None]:
+        wants_fix = bool(re.search(r"\b(fix|repair|heal|sort (it|this) out|make it work)\b", user_query, re.I))
+        yield {"type": "plan", "title": "Checking myself", "steps": [
+            {"id": 1, "title": "Run Xod's health checks" + (" and fix what I can" if wants_fix else ""),
+             "tools": ["xod_doctor"], "status": "in_progress"},
+            {"id": 2, "title": "Report exactly what I found", "tools": [], "status": "pending"},
+        ]}
+        yield {"type": "plan_step", "step_id": 1, "status": "in_progress"}
+        args = {"fix": wants_fix}
+        yield {"type": "tool_call", "name": "xod_doctor", "args": args, "id": "doctor_1"}
+        result = await execute_tool("xod_doctor", args)
+        yield {"type": "tool_result", "name": "xod_doctor", "id": "doctor_1", "data": result,
+               "summary": f"Health: {result.get('overall', '?')}"}
+        yield {"type": "plan_step", "step_id": 1, "status": "completed"}
+        yield {"type": "plan_step", "step_id": 2, "status": "in_progress"}
+        yield {"type": "content", "content": self._format_doctor_report(result, wants_fix)}
+        yield {"type": "plan_step", "step_id": 2, "status": "completed"}
+        yield {"type": "done"}
+
+    @staticmethod
+    def _format_doctor_report(result: Dict[str, Any], wants_fix: bool) -> str:
+        """Written straight from the doctor's report: every line is something a check actually measured."""
+        checks = result.get("checks") or []
+        fixed = [f for f in result.get("applied_fixes") or [] if f.get("ok")]
+        failed_fixes = [f for f in result.get("applied_fixes") or [] if not f.get("ok")]
+        problems = [c for c in checks if c["level"] == "fail"]
+        notes = [c for c in checks if c["level"] == "warn"]
+        lines = []
+        if not problems and not notes and not fixed:
+            lines.append("**Everything I can check is working.**")
+        elif not problems and fixed:
+            lines.append("**I found a problem and fixed it.**")
+        elif problems:
+            lines.append(f"**{len(problems)} thing{'s' if len(problems) > 1 else ''} need{'' if len(problems) > 1 else 's'} attention.**")
+        else:
+            lines.append("**Working, with something worth knowing.**")
+        if fixed:
+            lines.append("\n**Fixed:**")
+            lines += [f"- {f['check']}: {f['detail']}" for f in fixed]
+        if failed_fixes:
+            lines.append("\n**Tried but couldn't fix:**")
+            lines += [f"- {f['check']}: {f['detail']}" for f in failed_fixes]
+        if problems:
+            lines.append("\n**Needs attention:**")
+            lines += [f"- **{c['label']}**: {c['detail']}" + (f" (I can do this: *{c['fix_label']}*. Say \"fix it\" or use Tools → Health.)"
+                                                              if c.get("fix_label") and not wants_fix else "") for c in problems]
+        if notes:
+            lines.append("\n**Worth knowing:**")
+            lines += [f"- **{c['label']}**: {c['detail']}" for c in notes]
+        ok = [c for c in checks if c["level"] == "ok"]
+        if ok:
+            lines.append("\n**Working:** " + "; ".join(f"{c['label']} ({c['detail']})" for c in ok))
+        recent = result.get("recent_failures") or []
+        if recent:
+            lines.append("\n**Recent tool errors:** " + "; ".join(
+                f"{r['tool']} ({r['kind'].replace('_', ' ')})" for r in recent[-5:]))
+        return "\n".join(lines)
+
+    def _mission_request(self, user_query: str, deliberation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Decides whether this turn should run (or resume) a browser mission."""
+        from app.services.browser_sandbox import browser_sandbox_service as sandbox
+        query = (user_query or "").strip()
+
+        pending = sandbox.pending_submit
+        if pending and time.time() - pending.get("created_at", 0) > 3600:
+            sandbox.pending_submit = pending = None
+        if pending and self._CONFIRM_RE.search(query) and len(query) < 120:
+            return {
+                "goal": f"{pending['goal']}\nThe user approved pressing \"{pending['label']}\" on this page. Press it now, "
+                        "then keep going with the goal (any later submit will ask the user again). "
+                        "Finish once the goal is done and report what the page confirms.",
+                "start_url": "current",
+                "allow_submit": True,
+                "max_steps": 25,
+                "resuming": True,
+            }
+
+        last = sandbox.latest_mission or {}
+        if last.get("status") in ("blocked", "incomplete", "needs_input", "needs_confirmation", "failed") and self._CONTINUE_RE.search(query) and len(query) < 300:
+            return {
+                "goal": f"{last.get('goal')}\nUser's latest message: {query}",
+                "start_url": "current",
+                "allow_submit": False,
+                "max_steps": 25,
+                "resuming": True,
+            }
+
+        planned = [
+            (t, (s.get("tool_args") or [{}])[i] if i < len(s.get("tool_args") or []) else {})
+            for s in deliberation.get("plan_steps", []) for i, t in enumerate(s.get("tools", []))
+        ]
+        for tool, args in planned:
+            if tool == "browser_run_mission" and isinstance(args, dict):
+                return {"goal": args.get("goal") or query, "start_url": args.get("start_url"),
+                        "allow_submit": False, "max_steps": args.get("max_steps") or 25, "resuming": False}
+
+        uses_browser = any(t.startswith("browser_") for t, _ in planned) or deliberation.get("task_focus") in ("browser", "job_action")
+        if (self._WEB_ACTION_RE.search(query) and not self._QUESTION_RE.match(query)
+                and (self._WEB_CONTEXT_RE.search(query) or uses_browser)):
+            return {"goal": query, "start_url": None, "allow_submit": False, "max_steps": 25, "resuming": False}
+        return None
+
+    async def _stream_browser_mission(
+        self, goal: str, start_url: Optional[str], allow_submit: bool, max_steps: int, resuming: bool
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        from app.services.browser_sandbox import browser_sandbox_service as sandbox
+
+        if not resuming or allow_submit:
+            sandbox.pending_submit = None
+
+        title = "Sending it" if allow_submit else ("Picking up where I left off" if resuming else "Doing it in the browser")
+        yield {"type": "plan", "title": title, "steps": [
+            {"id": 1, "title": "Work through the task step by step", "tools": ["browser_run_mission"], "status": "in_progress"},
+            {"id": 2, "title": "Report what actually happened", "tools": [], "status": "pending"},
+        ]}
+        yield {"type": "plan_step", "step_id": 1, "status": "in_progress"}
+        call_args = {"goal": goal, "start_url": start_url, "max_steps": max_steps}
+        yield {"type": "tool_call", "name": "browser_run_mission", "args": call_args, "id": "mission_1"}
+
+        task = asyncio.create_task(sandbox.run_browser_mission(
+            goal=goal, start_url=start_url, max_steps=max_steps, allow_submit=allow_submit
+        ))
+        mission_id = None
+        seen = 0
+        while not task.done():
+            await asyncio.sleep(1.0)
+            rec = sandbox.latest_mission or {}
+            if mission_id is None and rec.get("goal") == goal:
+                mission_id = rec.get("mission_id")
+            if mission_id and rec.get("mission_id") == mission_id:
+                steps = rec.get("steps", [])
+                for st in steps[seen:]:
+                    icon = {"success": "✓", "failed": "✗", "waiting": "⏸"}.get(st.get("status"), "•")
+                    line = f"{icon} Step {st['step_num']}: {st.get('reasoning') or st.get('action')}"
+                    yield {"type": "status", "content": line[:220]}
+                    yield {"type": "reasoning", "content": line + "\n"}
+                seen = len(steps)
+
+        try:
+            result = task.result()
+        except Exception as e:
+            logger.error(f"Browser mission crashed: {e}")
+            result = {"status": "failed", "final_answer": f"The browser ran into an error: {e}. Nothing was submitted.", "steps": []}
+
+        yield {"type": "tool_result", "name": "browser_run_mission",
+               "summary": f"{result.get('status', 'done')} after {len(result.get('steps', []))} steps",
+               "data": {k: v for k, v in result.items() if k != "steps"}, "id": "mission_1"}
+        yield {"type": "plan_step", "step_id": 1, "status": "completed"}
+        yield {"type": "plan_step", "step_id": 2, "status": "in_progress"}
+        yield {"type": "content", "content": self._format_mission_report(result)}
+        yield {"type": "plan_step", "step_id": 2, "status": "completed"}
+        yield {"type": "done"}
+
+    def _format_mission_report(self, result: Dict[str, Any]) -> str:
+        """Plain account of the mission, built only from what happened in the browser."""
+        from app.services.browser_sandbox import load_user_profile, PROFILE_PATH
+        status = result.get("status", "failed")
+        heading = {
+            "completed": "### ✅ Done",
+            "needs_confirmation": "### ✋ Ready to send, waiting for your OK",
+            "needs_input": "### 💬 I need something from you",
+            "blocked": "### 🧱 Stopped at a verification check",
+            "incomplete": "### ⏳ Not finished yet",
+            "failed": "### ⚠️ That didn't work",
+        }.get(status, "### Browser task")
+        parts = [heading, (result.get("final_answer") or "").strip()]
+
+        if status == "needs_input" and not load_user_profile():
+            parts.append(
+                f"_Tip: put your details (name, email, phone, links, resume path) in `{PROFILE_PATH}` "
+                "so I can fill forms without asking each time._"
+            )
+
+        notes = result.get("notes") or []
+        if notes:
+            parts.append("<details><summary>What I found along the way</summary>\n\n" + "\n".join(f"- {n}" for n in notes) + "\n\n</details>")
+
+        steps = [s for s in result.get("steps", []) if s.get("action") not in ("finish",)]
+        if steps:
+            lines = []
+            for s in steps[-15:]:
+                mark = {"success": "✓", "failed": "✗", "waiting": "⏸"}.get(s.get("status"), "•")
+                lines.append(f"{s['step_num']}. {mark} {(s.get('reasoning') or s.get('action') or '').strip()[:160]}")
+            more = f" (last 15 of {len(steps)})" if len(steps) > 15 else ""
+            parts.append(f"<details><summary>What I did{more}</summary>\n\n" + "\n".join(lines) + "\n\n</details>")
+        return "\n\n".join(p for p in parts if p)
+
+    def _canonicalize_tool_name(self, name: str) -> str:
+        """Normalizes model tool name predictions and aliases to exact registered tool functions."""
+        name_clean = (name or "").strip().lower()
+        alias_map = {
+            "google_search": "web_search",
+            "search": "web_search",
+            "google": "web_search",
+            "ddg_search": "web_search",
+            "duckduckgo": "web_search",
+            "search_web": "web_search",
+            "tavily": "tavily_search",
+            "scrape": "web_scrape",
+            "scrape_url": "web_scrape",
+            "bash": "computer_run_command",
+            "shell": "computer_run_command",
+            "terminal": "computer_run_command",
+            "run_command": "computer_run_command",
+            "exec_command": "computer_run_command",
+            "read_file": "computer_read_file",
+            "write_file": "computer_write_file",
+            "edit_file": "computer_edit_file",
+            "patch_file": "computer_edit_file",
+            "find_files": "computer_find_files",
+            "spotlight": "computer_find_files",
+            "inspect_port": "computer_inspect_port",
+            "port_check": "computer_inspect_port",
+            "kill_process": "computer_kill_process",
+            "hardware_specs": "computer_hardware_overview",
+            "hardware_overview": "computer_hardware_overview",
+            "battery": "computer_hardware_overview",
+            "system_specs": "computer_inspect_system",
+            "system_overview": "computer_inspect_system",
+            "open_finder": "computer_reveal_finder",
+            "reveal_finder": "computer_reveal_finder",
+            "navigate": "browser_navigate",
+            "open_browser": "browser_navigate",
+            "open_url": "browser_navigate",
+            "observe_page": "browser_observe",
+            "observe": "browser_observe",
+            "interact": "browser_interact",
+            "fill_form": "browser_fill_form",
+            "extract_data": "browser_extract_data",
+            "browser_mission": "browser_run_mission",
+            "run_mission": "browser_run_mission",
+            "restart_browser": "browser_restart",
+            "browser_reboot": "browser_restart",
+            "unstuck_browser": "browser_unstuck",
+            "unstuck": "browser_unstuck",
+            "solve_captcha": "browser_handle_captcha",
+            "handle_captcha": "browser_handle_captcha",
+            "pass_captcha": "browser_handle_captcha",
+            "captcha": "browser_handle_captcha",
+            "turnstile": "browser_handle_captcha",
+            "cloudflare": "browser_handle_captcha",
+            "list_files": "fs_list_workspace_files",
+            "create_folder": "fs_create_folder",
+            "mkdir": "fs_create_folder",
+            "move_file": "fs_move_file",
+            "generate_image": "media_generate_image",
+            "generate_video": "media_generate_video",
+            "download_youtube": "media_download_youtube",
+            "youtube_download": "media_download_youtube",
+            "audit_tech": "audit_tech_stack",
+            "tech_stack": "audit_tech_stack",
+            "audit_funding": "audit_funding_and_org",
+        }
+        return alias_map.get(name_clean, name_clean)
+
+
+    def _format_conversation_history_for_synthesis(
+        self,
+        messages: List[Dict[str, Any]],
+        current_user_content: Any,
+        system_instruction: str,
+        max_history_turns: int = 8,
+        max_turn_chars: int = 2500
+    ) -> List[Dict[str, Any]]:
+        """
+        Constructs a robust, compliant multi-turn chat sequence for final synthesis:
+        - Injects system prompt as the first message.
+        - Preserves prior user/assistant conversation history so follow-up questions
+          retain complete memory of previously discussed facts, tables, and entities.
+        - Sanitizes turns to enforce strictly alternating roles (user -> assistant -> user).
+        - Compacts lengthy prior assistant outputs to keep local models within context limits.
+        - Appends the current turn as the final user message.
+        """
+        sanitized: List[Dict[str, Any]] = [{"role": "system", "content": system_instruction}]
+
+        if not messages or len(messages) <= 1:
+            sanitized.append({"role": "user", "content": current_user_content})
+            return sanitized
+
+        prior_history = messages[:-1]
+        recent_history = prior_history[-max_history_turns:]
+
+        accumulated_turns: List[Dict[str, str]] = []
+        for turn in recent_history:
+            role = turn.get("role", "user")
+            if role not in ("user", "assistant"):
+                continue
+            content = turn.get("content", "")
+            if isinstance(content, list):
+                txts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+                content = " ".join(txts).strip()
+            else:
+                content = str(content or "").strip()
+
+            if not content:
+                continue
+
+            if role == "assistant" and len(content) > max_turn_chars:
+                content = content[:max_turn_chars] + "\n... [prior response summarized for context]"
+
+            if accumulated_turns and accumulated_turns[-1]["role"] == role:
+                accumulated_turns[-1]["content"] += f"\n\n{content}"
+            else:
+                accumulated_turns.append({"role": role, "content": content})
+
+        if accumulated_turns and accumulated_turns[-1]["role"] == "user":
+            extra_user = accumulated_turns.pop()
+            if isinstance(current_user_content, str):
+                current_user_content = f"{extra_user['content']}\n\n{current_user_content}"
+            elif isinstance(current_user_content, list):
+                current_user_content.insert(0, {"type": "text", "text": extra_user['content']})
+
+        sanitized.extend(accumulated_turns)
+        sanitized.append({"role": "user", "content": current_user_content})
+        return sanitized
+
+    async def deliberate_and_plan(
+        self,
+        query: str,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
+        active_workspace_path: Optional[str] = None,
+        has_image: bool = False,
+        has_document: bool = False,
+        attached_document: Optional[Dict[str, Any]] = None,
+        attached_image_urls: Optional[List[str]] = None
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """
+        Pure LLM-driven first-principles deliberation and planning streamed live.
+        Replaces hardcoded regex pattern matching with native LLM reasoning.
+        Evaluates the user's objective, context, and the tool ecosystem to decide:
+        - 'direct_answer': for greetings, explanations, follow-ups, chitchat.
+        - 'execute_plan': formulated milestones, tool names, and arguments.
+        Streams reasoning thoughts live to UI and yields 'deliberation_complete'.
+        """
+        from app.services.llm import llm_service
+
+        doc_info = f"Attached Document: {attached_document.get('name', 'document')} ({attached_document.get('size_formatted', '')})" if (has_document and attached_document) else "None"
+        workspace_info = f"Controlled Local Workspace Folder: {active_workspace_path}" if active_workspace_path else "No workspace folder focused"
+
+        deliberator_system_prompt = f"""You are Xod, an autonomous AI operating on macOS.
+Deliberate on the user objective from first principles and decide whether to answer directly or execute an action plan.
+
+TOOL ECOSYSTEM:
+1. Host Computer:
+   - computer_hardware_overview: Apple Silicon/Intel chip, CPU cores, macOS version, battery percentage.
+   - computer_inspect_system: Host RAM utilization, CPU load, OS specs.
+   - computer_inspect_port: Check process occupying a port. Args: {{"port": 8000}}
+   - computer_kill_process: Terminate process by PID. Args: {{"pid": 1234}}
+   - computer_run_command: Run terminal shell command in background. Args: {{"command": "..."}}
+   - computer_find_files: Spotlight search for files on macOS. Args: {{"query": "pattern"}}
+   - computer_directory_tree: Folder hierarchy tree. Args: {{"path": "...", "max_depth": 2}}
+   - computer_read_file: Read file lines safely. Args: {{"filepath": "..."}}
+   - computer_edit_file: Surgically edit file lines. Args: {{"filepath": "...", "target_content": "...", "replacement_content": "..."}}
+   - computer_batch_organize: Organize messy files into categorized subfolders. Args: {{"source_dir": "..."}}
+   - computer_reveal_finder: Open folder or highlight file in macOS Finder. Args: {{"path": "..."}}
+   - computer_open_item: Launch macOS app or file. Args: {{"target": "..."}}
+   - computer_run_applescript: Execute AppleScript automation. Args: {{"script": "..."}}
+   - computer_clipboard: Read or write system clipboard. Args: {{"action": "read"}}
+   - computer_list_jobs: Audit active background daemons.
+   - computer_start_job: Start something long (build, install, server) in the background; returns a job_id at once. Args: {{"name": "...", "command": "..."}}
+   - computer_wait_for: Wait until it's done/ready instead of guessing. Args: {{"condition": "job_done|job_output|file_exists|port_open|url_ok", "job_id": "...", "text": "...", "port": 3000, "timeout_sec": 300}}
+   - computer_check_job: New output and status of a background job. Args: {{"job_id": "..."}}
+   - xod_self_edit: Change Xod's OWN code (you CAN do this; it's gated by model strength, tested in a copy, and revertible). Use when a Xod tool itself is buggy or the user asks you to change yourself. Args: {{"goal": "what to change and why, with the exact error"}}
+   - xod_doctor: Check and fix Xod's own health (chat model, browser, memory, hung jobs). Args: {{"fix": true}}
+
+2. Controlled Workspace ({workspace_info}):
+   - fs_list_workspace_files: Explore workspace directory tree.
+   - fs_read_workspace_file: Read source code or config in workspace. Args: {{"filepath": "..."}}
+   - fs_write_workspace_file: Write code or doc to workspace. Args: {{"filepath": "...", "content": "..."}}
+   - fs_search_workspace: Search code/symbols across workspace. Args: {{"query": "..."}}
+   - fs_create_folder: Create directory in workspace. Args: {{"folder_path": "..."}}
+   - fs_move_file: Move or rename file in workspace. Args: {{"source_path": "...", "destination_path": "..."}}
+
+3. Live Web & Market Intelligence:
+   - web_search: Live web search across Google/Bing/DuckDuckGo. Args: {{"query": "..."}}
+   - tavily_search: Deep AI-optimized web search. Args: {{"query": "..."}}
+   - web_scrape: Fetch & extract target webpage markdown. Args: {{"url": "https://..."}}
+   - audit_tech_stack: Audits software frameworks & cloud architecture. Args: {{"target": "..."}}
+   - audit_funding_and_org: VC funding, SEC filings, founders. Args: {{"target": "..."}}
+   - trustmrr_get_startup: Verified SaaS metrics, ARR, MRR, multiples. Args: {{"slug": "..."}}
+   - trustmrr_screen_deals: Screen live vetted acquisition deals. Args: {{"category": "..."}}
+
+4. Autonomous Browser Sandbox:
+   - browser_navigate: Navigate to a webpage. Args: {{"url": "https://..."}}
+   - browser_observe: Inspect visible interactive elements using Set-of-Marks.
+   - browser_interact: Click or type on element. Args: {{"index": 1, "action": "click"}}
+   - browser_fill_form: Populate form fields. Args: {{"fields": {{"#selector": "val"}}}}
+   - browser_extract_data: Extract structured data per instructions. Args: {{"instruction": "..."}}
+   - browser_extract_markdown: Extract full text/markdown of current page.
+   - browser_run_mission: Autonomous closed-loop mission on a goal. Args: {{"goal": "...", "start_url": "..."}}
+   - browser_handle_captcha: Autonomously detect and solve Cloudflare Turnstile, 'Just a moment...', reCAPTCHA.
+   - browser_unstuck: Autonomous self-healing to unfreeze hung pages, abort spinners, close dialogs & backdrops.
+   - browser_restart: Force-restart browser, clear dead singleton locks, or purge profile if stuck. Args: {{"clear_profile": false}}
+
+5. Local Media Studio:
+   - media_generate_image: Generate image asset. Args: {{"prompt": "..."}}
+   - media_generate_video: Generate AI motion video. Args: {{"prompt": "..."}}
+   - media_download_youtube: Download YouTube audio or video. Args: {{"url_or_query": "..."}}
+
+CONTEXT:
+- Workspace: {workspace_info}
+- Image Attached: {has_image}
+- Document Attached: {doc_info}
+
+DECISION RULES:
+- 'direct_answer': Greetings ('hi', 'hello'), conceptual questions, chitchat, or follow-ups answerable from context without tools.
+- 'execute_plan': External actions, web research, browser automation, terminal commands, file reading/editing, system telemetry, media synthesis.
+
+Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
+```json
+{{
+  "thought": "1-2 sentences explaining reasoning and why tools are or are not needed",
+  "decision": "direct_answer" | "execute_plan",
+  "direct_response": "Conversational Markdown answer if direct_answer, else empty string",
+  "plan_title": "Concise human-facing title",
+  "plan_steps": [
+    {{
+      "id": 1,
+      "title": "Human-readable milestone description",
+      "tools": ["tool_name"],
+      "tool_args": [{{"arg_name": "val"}}]
+    }}
+  ],
+  "task_focus": "research" | "computer" | "workspace" | "browser" | "media" | "swarm" | "general"
+}}
+```"""
+        delib_history = []
+        if conversation_history:
+            for m in conversation_history[-4:]:
+                r = m.get("role")
+                c = m.get("content")
+                if r in ("user", "assistant") and isinstance(c, str) and c.strip():
+                    delib_history.append({"role": r, "content": c[:400]})
+
+        try:  # lessons from earlier repairs on this Mac (see doctor.planner_notes)
+            from app.services.doctor import doctor
+            notes = doctor.planner_notes()
+            if notes:
+                deliberator_system_prompt += "\n\nLEARNED ON THIS MAC (from fixing earlier failures):\n" + "\n".join(f"- {n}" for n in notes)
+        except Exception:
+            pass
+
+        delib_messages = [
+            {"role": "system", "content": deliberator_system_prompt},
+            *delib_history,
+            {"role": "user", "content": f"USER OBJECTIVE: {query}"}
+        ]
+
+        raw_accumulated = ""
+        emitted_any_reasoning = False
+
+        try:
+            async for chunk in llm_service.stream_chat_completion(
+                messages=delib_messages,
+                temperature=0.1,
+                max_tokens=JSON_MIN_TOKENS,
+                task="planner",
+            ):
+                chunk_type = chunk.get("type")
+                if chunk_type == "example_id":
+                    self._planner_example = {"id": chunk["id"], "response": raw_accumulated}
+                    continue
+                if chunk_type == "reasoning":
+                    content = chunk.get("content", "")
+                    if content:
+                        emitted_any_reasoning = True
+                        yield {"type": "reasoning", "content": content}
+                elif chunk_type == "content":
+                    tok = chunk.get("content", "")
+                    raw_accumulated += tok
+                    # If model streams reasoning as raw prose before opening json bracket '{'
+                    if "{" not in raw_accumulated:
+                        yield {"type": "reasoning", "content": tok}
+                        emitted_any_reasoning = True
+
+            parsed = parse_llm_json(raw_accumulated)
+            if not parsed:
+                raise ValueError(f"Planner returned no usable JSON: {raw_accumulated[:200]!r}")
+
+            thought = parsed.get("thought") or "Deliberated user objective and planned optimal actions."
+            if not emitted_any_reasoning and thought:
+                yield {"type": "reasoning", "content": f"{thought}\n"}
+
+            decision = parsed.get("decision", "execute_plan")
+            direct_resp = parsed.get("direct_response", "")
+            title = parsed.get("plan_title") or parsed.get("title") or f"Execution Plan: {query[:40]}"
+            raw_steps = parsed.get("plan_steps") or parsed.get("steps") or []
+            task_focus = parsed.get("task_focus") or parsed.get("task_category") or "general"
+            is_swarm = bool(parsed.get("is_swarm"))
+
+            clean_steps = []
+            for idx, s in enumerate(raw_steps, 1):
+                tools_val = s.get("tools", [])
+                if isinstance(tools_val, str):
+                    tools_val = [tools_val]
+                tools = [self._canonicalize_tool_name(t) for t in tools_val if t]
+
+                args_val = s.get("tool_args", [{}])
+                if isinstance(args_val, dict):
+                    args_val = [args_val]
+                elif not isinstance(args_val, list):
+                    args_val = [{}]
+                args_val = self._normalize_tool_args(args_val, len(tools))
+
+                clean_steps.append({
+                    "id": idx,
+                    "title": s.get("title", f"Milestone {idx}"),
+                    "tools": tools,
+                    "tool_args": args_val,
+                    "is_swarm": s.get("is_swarm", is_swarm),
+                    "is_visual": s.get("is_visual", has_image and idx == 1),
+                    "is_document": s.get("is_document", has_document and idx == 1),
+                    "status": "pending"
+                })
+
+            # A cut-off plan can end with a half-written step that has no tools.
+            if any(s["tools"] for s in clean_steps):
+                clean_steps = [s for s in clean_steps if s["tools"]]
+                for idx, s in enumerate(clean_steps, 1):
+                    s["id"] = idx
+
+            yield {
+                "type": "deliberation_complete",
+                "deliberation": {
+                    "thought": thought,
+                    "decision": decision,
+                    "direct_response": direct_resp,
+                    "plan_title": title,
+                    "plan_steps": clean_steps,
+                    "task_focus": task_focus,
+                    "is_swarm": is_swarm
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Deliberation error: {e}")
+            yield {
+                "type": "deliberation_complete",
+                "deliberation": {
+                    "thought": "Directly evaluating user request and deploying intelligence research.",
+                    "decision": "execute_plan",
+                    "direct_response": "",
+                    "plan_title": f"Investigation: {query[:40]}",
+                    "plan_steps": [
+                        {
+                            "id": 1,
+                            "title": f"Execute Deep Web & Intelligence Search on '{query[:40]}'",
+                            "tools": ["web_search"],
+                            "tool_args": [{"query": query}],
+                            "status": "pending"
+                        }
+                    ],
+                    "task_focus": "research",
+                    "is_swarm": False
+                }
+            }
+
+
+    def _format_summary(self, result: Dict[str, Any]) -> str:
+        if not isinstance(result, dict):
+            return "Completed"
+        if "error" in result:
+            return f"Error: {result.get('message') or result.get('error')}"
+        if "occurrences_replaced" in result:
+            return f"Surgically Updated {result.get('name')}: line {result.get('line_number')} ({result.get('occurrences_replaced')} chunk replaced, delta {result.get('lines_delta', 0):+d} lines)"
+        elif "tree" in result and "stats" in result and isinstance(result.get("stats"), dict):
+            st = result.get("stats", {})
+            return f"Directory Tree {result.get('name')}: {st.get('total_dirs', 0)} dirs, {st.get('total_files', 0)} files ({st.get('total_size_formatted', '')})"
+        elif "total_files_moved" in result:
+            return f"Batch Organized: {result.get('total_files_moved', 0)} files into {len(result.get('breakdown', {}))} categories"
+        elif "chip" in result and "macos_version" in result:
+            return f"Hardware: {result.get('chip')}, {result.get('cpu_cores')} cores, {result.get('macos_version')}"
+        elif "sliced_range" in result:
+            return f"Read File {result.get('name')}: lines {result.get('sliced_range')} ({result.get('lines_returned')} lines)"
+        elif "script" in result and "output" in result:
+            return f"AppleScript executed: exit {result.get('exit_code', 0)}"
+        elif "total_files" in result:
+            return f"Workspace Files: Listed {result.get('total_files', 0)} files in {result.get('subpath') or 'root'}"
+        elif ("lines" in result or "line_count" in result) and ("path" in result or "name" in result):
+            fname = result.get("name") or result.get("path")
+            lines_cnt = result.get("lines") or result.get("line_count", 0)
+            return f"Read Workspace File {fname}: {lines_cnt} lines ({result.get('size_formatted') or result.get('size_bytes', 0)})"
+        elif "total_matches" in result and "query" in result:
+            return f"Workspace Search '{result.get('query')}': {result.get('total_matches')} match(es)"
+        elif "port" in result:
+            p_status = "In Use" if result.get("in_use") else "Available"
+            return f"Port {result.get('port')}: {p_status} ({len(result.get('processes', []))} process(es))"
+        elif "ports" in result:
+            return f"Discovered {len(result.get('ports', []))} active listening ports"
+        elif "jobs" in result:
+            return f"Background Jobs: {len(result.get('jobs', []))} active"
+        elif "chars" in result:
+            return f"System Clipboard: {result.get('chars', 0)} characters ingested"
+        elif "total_candidates" in result:
+            return f"Indexed {result.get('total_candidates', 0)} interactive elements (Set-of-Marks)"
+        elif "extracted_data" in result:
+            count = len(result.get("extracted_data", [])) if isinstance(result.get("extracted_data"), list) else 1
+            return f"Extracted {count} structured entities from browser viewport"
+        elif "fields_filled" in result:
+            return f"Filled {result.get('fields_filled', 0)} form input(s) via CDP"
+        elif "requisitions" in result or ("jobs" in result and "company" in result):
+            count = len(result.get("requisitions", result.get("jobs", [])))
+            return f"Scanned ATS Firehose: {count} verified live job requisition(s)"
+        elif "filename" in result and "pdf_path" in result:
+            return f"Exported page to PDF: {result.get('filename')}"
+        elif "tree" in result:
+            return f"Extracted Accessibility Tree ({len(result.get('tree', []))} nodes)"
+        elif "stdout" in result and "exit_code" in result:
+            return f"Ran command (exit {result.get('exit_code')}, {result.get('duration_sec', 0)}s)"
+        elif "cpu_load" in result and "memory" in result:
+            return f"Telemetry: {result.get('os')} ({result.get('arch')}), RAM {result.get('memory', {}).get('used_gb')}/{result.get('memory', {}).get('total_gb')}GB"
+        elif "media_type" in result and "file_path" in result:
+            m_type = result.get('media_type', 'media').capitalize()
+            return f"Downloaded {m_type}: '{result.get('title')}' ({result.get('file_size_mb', 0)} MB) -> {result.get('file_name')}"
+        elif result.get("action") == "generate_ai_image" or ("filename" in result and "relative_url" in result):
+            return f"Synthesized Visual Asset: {result.get('filename')} ({result.get('width', 1024)}x{result.get('height', 1024)}) -> {result.get('relative_url')}"
+        elif result.get("action") == "splice_videos":
+            return f"Spliced {result.get('input_clips_count', 0)} Video Clips -> {result.get('filename')} ({result.get('duration_sec', 0)}s)"
+        elif result.get("action") == "extract_frame":
+            return f"Extracted {result.get('frame_type')} Frame -> {result.get('filename')}"
+        elif result.get("action") in ("generate_ai_video", "create_video_from_frame"):
+            return f"Synthesized Motion Video ({result.get('motion')}) -> {result.get('filename')} ({result.get('duration_sec', 0)}s)"
+        elif result.get("action") in ("open_folder", "reveal_file") or ("revealed_path" in result or "opened_folder" in result):
+            tgt = result.get("target") or result.get("revealed_path") or result.get("opened_folder") or "item"
+            return f"Opened in macOS Finder: {Path(tgt).name} ({tgt})"
+        elif "technologies" in result:
+            return f"Audited {result.get('domain', 'target')}: {result.get('total_technologies_detected', 0)} tech badges detected"
+        elif "results" in result:
+            prov = "Tavily AI" if result.get("provider") == "tavily" else ("You.com" if result.get("provider") == "you.com" else "Web")
+            ans_note = f" (Answer: '{result.get('answer')[:45]}...')" if result.get("answer") else ""
+            return f"Found {len(result.get('results', []))} {prov} search results{ans_note}"
+        elif "count" in result and "query" in result and "root" in result:
+            return f"Spotlight Search '{result.get('query')}': Discovered {result.get('count', 0)} file(s)"
+        elif "diagnoses" in result and "remediations" in result:
+            return f"System AI Review: {result.get('status', 'OK')} ({len(result.get('diagnoses', []))} diagnosis, {len(result.get('remediations', []))} remediations)"
+        elif "pid" in result and ("killed" in result or "success" in result):
+            return f"Process PID {result.get('pid')}: Terminated successfully"
+        elif "content" in result:
+            return f"Extracted webpage content ({result.get('length', 0)} chars)"
+        elif "url" in result and "title" in result:
+            return f"Navigated to {result.get('title') or result.get('url')}"
+        elif "shortlisted_candidates" in result or "total_discovered" in result:
+            blended_cpm = result.get("blended_predicted_cpm", 0.0)
+            return f"Discovered & Scored {len(result.get('shortlisted_candidates', []))} creators (Blended Predicted CPM: ${blended_cpm:.2f})"
+        elif "predicted_cpm" in result and "handle" in result:
+            return f"Modelled {result.get('handle')}: Predicted CPM ${result.get('predicted_cpm', 0.0):.2f} ({result.get('arbitrage_multiple', 1.0):.2f}x arbitrage)"
+        return "Intelligence gathered"
+
+    def _clean_tool_payload(self, tool_name: str, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Creates a high-density, context-efficient summary of tool results
+        tailored for Gemma 4's 8k context window to ensure lightning-fast thinking.
+        """
+        if not isinstance(result, dict):
+            return {"result": str(result)[:600]}
+
+        cleaned = {}
+        for k, v in result.items():
+            if k in ("raw_html", "html", "dom", "raw_response", "body", "headers"):
+                continue
+            if isinstance(v, list) and len(v) > 15:
+                cleaned[k] = v[:15]
+                cleaned[f"{k}_total_count"] = len(v)
+            elif isinstance(v, str) and len(v) > 800:
+                cleaned[k] = v[:800] + "... [truncated for brevity]"
+            else:
+                cleaned[k] = v
+        return cleaned

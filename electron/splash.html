@@ -1,0 +1,22 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>Xod</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0f1222; color: #f3ecdf; font: 13px -apple-system, system-ui, sans-serif; -webkit-app-region: drag; }
+    body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+    .moon { width: 64px; height: 64px; border-radius: 50%; background: radial-gradient(circle at 35% 35%, #fff6d6, #f2b24a 75%); box-shadow: 0 0 40px rgba(242, 178, 74, .35); animation: bob 2.4s ease-in-out infinite; }
+    h1 { margin: 0; font: italic 600 26px Georgia, serif; }
+    #status { color: #a39e97; max-width: 340px; text-align: center; min-height: 32px; line-height: 1.4; }
+    @keyframes bob { 50% { transform: translateY(-5px); } }
+  </style>
+</head>
+<body>
+  <div class="moon"></div>
+  <h1>Xod</h1>
+  <div id="status">Starting…</div>
+  <script>function setStatus(t) { document.getElementById("status").textContent = t; }</script>
+</body>
+</html>
