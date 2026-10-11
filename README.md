@@ -55,7 +55,7 @@
 | 16–24 GB | Qwen 3.5 9B (built-in engine), or any model you already use in LM Studio or Ollama | 6 GB |
 | 32 GB or more | Qwen 3.8 27B (built-in engine) | 16 GB |
 
-> Xod 0.1 isn't signed by Apple yet, so macOS asks the first time: right-click Xod in Applications → **Open** → **Open**.
+> Xod isn't notarized by Apple yet, so the first time you open it macOS says it can't check it. Click **Done**, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Xod. You only do this once.
 
 Needs a Mac with Apple silicon (M1 or newer), macOS 13 or later, and Google Chrome for Xod's browser.
 

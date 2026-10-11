@@ -20,7 +20,8 @@ MAX_BYTES = 5 * 1024 * 1024
 FORBIDDEN_PATHS = [
     (re.compile(r"(^|/)data/"), "the data folder (chats, memories, models)"),
     (re.compile(r"(^|/)\.env(\.|$)(?!example)"), "an .env file"),
-    (re.compile(r"\.(db|sqlite3?|db-wal|db-shm)$"), "a database"),
+    (re.compile(r"\.(db|sqlite3?)(-wal|-shm|-journal)?$"), "a database"),
+    (re.compile(r"(^|/)\.wrangler/"), "local Cloudflare dev state"),
     (re.compile(r"(^|/)xod_ai_browser_sandbox/"), "the agent's browser profile (cookies, logins)"),
     (re.compile(r"\.(pem|key|p12|pfx|keychain-db)$"), "a key or certificate"),
     (re.compile(r"(^|/)(vault_index|profile)\.json$"), "personal Xod settings"),

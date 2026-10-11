@@ -18,6 +18,8 @@ data/
 *.db-wal
 *.sqlite
 *.sqlite3
+*.sqlite-wal
+*.sqlite-shm
 computer_state.json
 
 # --- Python Environment & Caches ---
@@ -98,3 +100,7 @@ electron/out/
 *.empty-*
 !electron/build/
 electron/python-runtime/
+
+# --- Agent Mail relay (local runs) ---
+relay/*.db
+relay/worker/.wrangler/

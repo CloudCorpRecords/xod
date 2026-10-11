@@ -31,6 +31,8 @@ jobs:
         run: |
           npm ci
           npm run dist
+      - name: The app's signature is intact (otherwise macOS calls it "damaged")
+        run: codesign --verify --deep --strict --verbose=2 electron/dist/mac-arm64/Xod.app
       - name: Checksum
         working-directory: electron/dist
         run: shasum -a 256 Xod-*.dmg > SHA256SUMS.txt && cat SHA256SUMS.txt
