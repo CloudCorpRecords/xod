@@ -57,7 +57,11 @@ fs.rmSync(path.join(OUT, "lib", "python3.12", "EXTERNALLY-MANAGED"), { force: tr
 const reqs = path.join(__dirname, "..", "..", "requirements.txt");
 const sh = (args) => execFileSync(py, args, { stdio: "inherit", env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: "1" } });
 sh(["-m", "pip", "install", "--no-compile", "--only-binary=:all:", "-r", reqs]);
-sh(["-m", "pip", "uninstall", "-y", "pip"]);   // the installed app never installs anything
+// Media Studio's libraries are a one-time download on first use instead (app/services/media_packages.py),
+// which keeps Xod's download about a third smaller. pip stays, to fetch them.
+// imageio-ffmpeg is left out too: its ffmpeg is a GPL build, so it's fetched from PyPI on first use rather
+// than redistributed inside the app.
+sh(["-m", "pip", "uninstall", "-y", "torch", "diffusers", "accelerate", "peft", "sympy", "networkx", "mpmath", "imageio-ffmpeg"]);
 // Drop the packages' own test suites (never imported by the app).
 const sp = path.join(OUT, "lib", "python3.12", "site-packages");
 for (const name of fs.readdirSync(sp)) {
@@ -67,4 +71,7 @@ for (const name of fs.readdirSync(sp)) {
 // Precompiled bytecode (hash-based, so it stays valid inside a read-only, signed app): faster launch.
 sh(["-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash", path.join(OUT, "lib", "python3.12")]);
 fs.copyFileSync(reqs, path.join(OUT, "XOD_REQUIREMENTS"));
+// Notices for everything that ships inside the app (fails the build on a GPL-family license).
+execFileSync("python3", [path.join(__dirname, "..", "..", "scripts", "third_party_licenses.py"), sp,
+  path.join(OUT, "THIRD_PARTY_LICENSES.txt")], { stdio: "inherit" });
 console.log("Installed Xod's packages into the bundled Python.");

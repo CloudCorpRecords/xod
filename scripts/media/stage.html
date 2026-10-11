@@ -1,0 +1,127 @@
+<!doctype html>
+<!-- Title cards for Xod's launch video, with the real moon (mascot.js) and fonts straight from
+     app/static. Open as stage.html#intro (or #private, #asks, #end…). Each scene plays once, about 4 s. -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Xod stage</title>
+<link rel="stylesheet" href="../../app/static/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="../../app/static/css/whimsy.css">
+<style>
+  :root { --ink: #0f1222; --paper: #fffaf0; --lamp: #f2b24a; --lamp-soft: #ffd06b; --dim: #a39e97;
+          --ease: cubic-bezier(0.16, 1, 0.3, 1); }
+  html, body { margin: 0; height: 100%; background: var(--ink); color: var(--paper); overflow: hidden;
+               font-family: Figtree, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  body::before { content: ""; position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 70% 55% at 50% 115%, rgba(242,178,74,.16), transparent 70%),
+                radial-gradient(ellipse 60% 50% at 50% -10%, rgba(161,150,236,.10), transparent 70%); }
+  #sky { position: fixed; inset: 0; }
+  .s { position: absolute; border-radius: 50%; background: var(--paper); opacity: var(--o);
+       animation: tw var(--d) ease-in-out infinite var(--dl); }
+  @keyframes tw { 50% { opacity: calc(var(--o) * .25); } }
+  .scene { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 28px; }
+  .scene.on { display: flex; }
+  h1 { font-family: Fraunces, Georgia, serif; font-weight: 600; font-size: 128px; line-height: 1.02; letter-spacing: -0.02em; margin: 0;
+       font-variation-settings: "SOFT" 100, "WONK" 0, "opsz" 144; }
+  h1 em { font-style: italic; color: var(--lamp-soft); font-variation-settings: "SOFT" 100, "WONK" 1, "opsz" 144; }
+  p { font-size: 40px; color: var(--dim); margin: 0; font-weight: 500; letter-spacing: -0.005em; }
+  .in { opacity: 0; filter: blur(14px); transform: translateY(26px) scale(.985); animation: rise 1.4s var(--ease) forwards; }
+  .d1 { animation-delay: .25s } .d2 { animation-delay: .75s } .d3 { animation-delay: 1.3s } .d4 { animation-delay: 1.9s }
+  @keyframes rise { to { opacity: 1; filter: blur(0); transform: none; } }
+  .moonwrap { position: relative; }
+  .xod-mascot.big { width: 340px !important; height: 340px !important; }
+  .xod-mascot.mid { width: 180px !important; height: 180px !important; }
+  .pill { display: inline-flex; gap: 14px; align-items: center; padding: 16px 30px; border-radius: 999px;
+          background: var(--lamp); color: var(--ink); font-weight: 600; font-size: 28px; }
+  .url { font-size: 30px; color: var(--paper); opacity: .85; letter-spacing: .01em; }
+  .row { display: flex; gap: 22px; justify-content: center; flex-wrap: wrap; max-width: 1300px; }
+  .chip { padding: 14px 26px; border-radius: 999px; border: 1px solid rgba(255,250,240,.14); background: rgba(255,250,240,.04);
+          font-size: 26px; color: var(--paper); }
+  .rise-moon { animation: moonrise 2.6s var(--ease) forwards; transform: translateY(240px); opacity: 0; }
+  @keyframes moonrise { to { transform: none; opacity: 1; } }
+</style>
+</head>
+<body>
+<div id="sky"></div>
+
+<section class="scene" id="intro">
+  <div class="moonwrap rise-moon"><div class="xod-mascot xod-mascot--hero big" data-mood="idle"></div></div>
+  <h1 class="in d3">Meet Xod.</h1>
+</section>
+
+<section class="scene" id="private">
+  <h1 class="in d1">A private AI that<br><em>works</em> on your Mac.</h1>
+  <p class="in d2">Your model. Your files. Nothing leaves unless you say so.</p>
+</section>
+
+<section class="scene" id="research">
+  <h1 class="in d1">Ask anything.</h1>
+  <p class="in d2">It reads the web with its own browser, and shows its sources.</p>
+</section>
+
+<section class="scene" id="asks">
+  <h1 class="in d1">It asks <em>before</em> it acts.</h1>
+  <p class="in d2">Nothing is sent, paid, posted or deleted without your OK.</p>
+</section>
+
+<section class="scene" id="routines">
+  <h1 class="in d1">Teach it once.</h1>
+  <p class="in d2">Save any job as a routine. Xod repeats it, on a schedule if you like.</p>
+</section>
+
+<section class="scene" id="undo">
+  <h1 class="in d1">Every change, <em>undoable</em>.</h1>
+  <p class="in d2">A plain-words log of everything Xod did, with one-click undo.</p>
+</section>
+
+<section class="scene" id="more">
+  <h1 class="in d1" style="font-size:84px">And a lot more.</h1>
+  <div class="row in d2">
+    <span class="chip">Voice, on-device</span><span class="chip">Images &amp; video</span><span class="chip">Shareable reports</span>
+    <span class="chip">Connected apps (MCP)</span><span class="chip">Background tasks</span><span class="chip">Cloud only when it helps</span>
+  </div>
+</section>
+
+<section class="scene" id="end">
+  <div class="moonwrap in d1"><div class="xod-mascot xod-mascot--hero mid" data-mood="idle"></div></div>
+  <h1 class="in d2">Xod</h1>
+  <p class="in d3">Free and open source. For Apple-silicon Macs.</p>
+  <div class="in d4" style="display:flex;flex-direction:column;gap:18px;align-items:center">
+    <span class="pill">Download for Mac</span>
+    <span class="url">github.com/CloudCorpRecords/xod</span>
+  </div>
+</section>
+
+<section class="scene" id="social">
+  <div style="display:flex;align-items:center;gap:64px;text-align:left">
+    <div class="xod-mascot xod-mascot--hero big" data-mood="idle"></div>
+    <div style="display:flex;flex-direction:column;gap:22px">
+      <h1 style="font-size:96px">Xod</h1>
+      <p style="font-size:38px;color:var(--paper);max-width:760px">A private AI that works on your Mac.</p>
+      <p style="font-size:28px">Free and open source · github.com/CloudCorpRecords/xod</p>
+    </div>
+  </div>
+</section>
+
+<script>
+  // stars
+  const sky = document.getElementById("sky");
+  for (let i = 0; i < 140; i++) {
+    const s = document.createElement("span");
+    const z = Math.random() < .85 ? 1.5 : 2.5;
+    s.className = "s";
+    Object.assign(s.style, { left: Math.random() * 100 + "%", top: Math.pow(Math.random(), 1.5) * 90 + "%", width: z + "px", height: z + "px" });
+    s.style.setProperty("--o", (.15 + Math.random() * .55).toFixed(2));
+    s.style.setProperty("--d", 3 + Math.random() * 5 + "s");
+    s.style.setProperty("--dl", -Math.random() * 8 + "s");
+    sky.appendChild(s);
+  }
+  function show(name) {
+    document.querySelectorAll(".scene").forEach((s) => s.classList.toggle("on", s.id === name));
+  }
+  window.show = show;
+  show((location.hash || "#intro").slice(1));
+</script>
+<script src="../../app/static/js/mascot.js"></script>
+</body>
+</html>

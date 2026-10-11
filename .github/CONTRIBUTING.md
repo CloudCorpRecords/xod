@@ -8,7 +8,7 @@ Thank you for your interest in contributing to **Xod**! We welcome contributions
 
 1. **Fork and clone the repository**:
    ```bash
-   git clone https://github.com/your-username/xod.git
+   git clone https://github.com/CloudCorpRecords/xod.git
    cd xod
    ```
 
@@ -32,6 +32,7 @@ Thank you for your interest in contributing to **Xod**! We welcome contributions
 
 5. **Run the tests** before opening a pull request:
    ```bash
+   .venv/bin/python tests/smoke/run_smoke_test.py         # every endpoint and panel, security headers (needs Chrome)
    .venv/bin/python tests/features/run_features_test.py   # undo, routines, routing, add-ons, reports, MCP
    .venv/bin/python tests/self_heal/run_heal_test.py
    .venv/bin/python tests/self_heal/run_learning_jobs_test.py
@@ -42,7 +43,9 @@ Thank you for your interest in contributing to **Xod**! We welcome contributions
    ```bash
    cd electron && npm install && npm run dist   # → electron/dist/Xod-<version>-arm64.dmg
    ```
-   The build installs every package into a Python that ships inside Xod.app, so people who download it install nothing on first launch.
+   The build installs every package into a Python that ships inside Xod.app, so people who download it install nothing on first launch. Media Studio's heavy libraries (PyTorch, diffusers) and ffmpeg are fetched on first use instead (`app/services/media_packages.py`). It also writes the notices for everything bundled (`scripts/third_party_licenses.py`) and fails on GPL-family licenses.
+
+   Releases: push a tag like `v0.1.0` and `.github/workflows/release.yml` builds the installer and attaches it to a draft release.
 
 7. **Turn on the release check** (once per clone). It blocks commits that contain keys, databases, `.env` files or your home folder path:
    ```bash

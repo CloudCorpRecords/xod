@@ -7,13 +7,7 @@ from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger("media_downloader")
 
-# yt-dlp uses the ffmpeg that ships inside the imageio-ffmpeg package (nothing downloaded at runtime).
-try:
-    import imageio_ffmpeg
-    FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
-except Exception as e:
-    FFMPEG_BIN = None
-    logger.warning(f"ffmpeg not available: {e}")
+# yt-dlp merges and converts with the ffmpeg from imageio-ffmpeg (the Mac app fetches it on first use).
 
 try:
     import yt_dlp
@@ -62,7 +56,8 @@ class MediaDownloaderService:
         self,
         target: str,
         format_type: str = "auto",
-        output_dir: Optional[str] = None
+        output_dir: Optional[str] = None,
+        ffmpeg: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not yt_dlp:
             return {
@@ -104,8 +99,8 @@ class MediaDownloaderService:
             # Overwrite if exists to guarantee fresh file
             "overwrites": True,
         }
-        if FFMPEG_BIN:
-            ydl_opts["ffmpeg_location"] = FFMPEG_BIN
+        if ffmpeg:
+            ydl_opts["ffmpeg_location"] = ffmpeg
 
         if is_audio:
             ydl_opts["format"] = "ba/b"
@@ -189,11 +184,18 @@ class MediaDownloaderService:
         Asynchronously downloads a YouTube video or song to disk.
         """
         target = self._sanitize_target(url_or_query)
+        try:
+            from app.services.media_studio import ffmpeg_bin
+            ffmpeg = await ffmpeg_bin()
+        except Exception as e:
+            logger.warning(f"ffmpeg not available: {e}")
+            ffmpeg = None
         return await asyncio.to_thread(
             self._download_sync,
             target=target,
             format_type=format_type,
-            output_dir=output_dir
+            output_dir=output_dir,
+            ffmpeg=ffmpeg,
         )
 
     def _get_info_sync(self, target: str) -> Dict[str, Any]:

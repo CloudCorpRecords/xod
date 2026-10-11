@@ -332,6 +332,8 @@ class MediaModelManager:
         if not snapshot_download:
             return {"success": False, "error": "huggingface_hub package is not installed."}
 
+        from app.services import media_packages
+        media_packages.start_install()   # the Mac app's first media model also needs the libraries
         sanitized_name = model_id.replace("/", "---")
         recipe = next((c.get("install") for c in CURATED_MEDIA_MODELS if c["id"] == model_id), None)
         if recipe is None:

@@ -59,6 +59,7 @@ PROTECTED_FILES = {
     "app/services/activity.py",           # the undo log
     "app/services/llm_routing.py",        # when Xod may spend money on cloud models (budget)
     "app/static/js/safe-html.js",         # sanitizer for everything the AI writes
+    "app/services/media_packages.py",     # installs packages from PyPI (what, and which versions)
 }
 # file -> top-level names whose source must stay byte-for-byte the same
 PROTECTED_SYMBOLS = {
@@ -211,7 +212,7 @@ def check_edit_policy(rel: str, before: Optional[str], after: str) -> Optional[s
     if rel.startswith("../") or not rel.startswith(EDITABLE_ROOTS):
         return f"{rel}: only files under app/ and tests/ can be changed"
     if rel in PROTECTED_FILES:
-        return f"{rel} is protected safety code (keys, logins, approvals, undo, budget or the self-edit gate)"
+        return f"{rel} is protected safety code (keys, logins, approvals, undo, budget, package installs or the self-edit gate)"
     if "/__pycache__/" in rel or rel.endswith((".pyc", ".db", ".env")):
         return f"{rel}: not a source file"
     if rel in PROTECTED_SYMBOLS and before is not None:

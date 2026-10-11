@@ -4236,6 +4236,7 @@ function createAssistantMessageContainer() {
 }
 
 function handleResearchEvent(event, assistantBubble) {
+  try { window.dispatchEvent(new CustomEvent("xod:agent", { detail: event })); } catch (_) {}
   if (assistantBubble && assistantBubble.eventsLog) {
     assistantBubble.eventsLog.push(event);
   }
@@ -4326,6 +4327,13 @@ async function fetchDeals() {
     const data = await res.json();
     const deals = data.deals || [];
 
+    if (data.needs_key || data.error) {
+      container.innerHTML = `
+        <div class="text-center text-zinc-400 py-12 text-sm">
+          ${data.needs_key ? "Deal screening uses TrustMRR. Add your TrustMRR API key in Settings → API keys to see deals." : escapeHtml(data.error)}
+        </div>`;
+      return;
+    }
     if (deals.length === 0) {
       container.innerHTML = `
         <div class="text-center text-zinc-400 py-12 text-sm">
@@ -11334,17 +11342,19 @@ class LocalSpeechRecognition {
       return;
     }
     this.stream = stream;
-    this.chunks = [];
+    this.pcm = [];
     this.heard = false;
-    this.recorder = new MediaRecorder(stream);
-    this.recorder.ondataavailable = (e) => { if (e.data.size) this.chunks.push(e.data); };
-    this.recorder.onstop = () => this._finish();
-    this.recorder.start(250);
-    // Simple level meter to notice when you've stopped talking.
+    this.recorder = true;
+    // Raw audio straight from the mic, sent as a WAV file (no codecs, so the Mac needs no ffmpeg to read it).
     this.ctx = new AudioContext();
+    const source = this.ctx.createMediaStreamSource(stream);
+    this.proc = this.ctx.createScriptProcessor(4096, 1, 1);
+    this.proc.onaudioprocess = (e) => { this.pcm.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+    source.connect(this.proc);
+    this.proc.connect(this.ctx.destination);
     const analyser = this.ctx.createAnalyser();
     analyser.fftSize = 1024;
-    this.ctx.createMediaStreamSource(stream).connect(analyser);
+    source.connect(analyser);
     const buf = new Float32Array(analyser.fftSize);
     const started = Date.now();
     let lastLoud = Date.now();
@@ -11361,14 +11371,35 @@ class LocalSpeechRecognition {
   }
   stop() {
     clearInterval(this.timer);
-    if (this.recorder && this.recorder.state !== "inactive") this.recorder.stop();
+    if (this.recorder) this._finish();
+  }
+  // 16 kHz mono 16-bit WAV, which is what Whisper wants anyway.
+  _wav() {
+    const rate = this.ctx.sampleRate, out = 16000;
+    const total = this.pcm.reduce((n, a) => n + a.length, 0);
+    const all = new Float32Array(total);
+    let o = 0;
+    for (const a of this.pcm) { all.set(a, o); o += a.length; }
+    const n = Math.floor(total * out / rate);
+    const view = new DataView(new ArrayBuffer(44 + n * 2));
+    const str = (off, t) => { for (let i = 0; i < t.length; i++) view.setUint8(off + i, t.charCodeAt(i)); };
+    str(0, "RIFF"); view.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
+    view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+    view.setUint32(24, out, true); view.setUint32(28, out * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+    str(36, "data"); view.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) {
+      const v = Math.max(-1, Math.min(1, all[Math.min(total - 1, Math.floor(i * rate / out))]));
+      view.setInt16(44 + i * 2, v * 0x7fff, true);
+    }
+    return new Blob([view], { type: "audio/wav" });
   }
   async _finish() {
-    const type = this.recorder.mimeType || "audio/webm";
-    this.stream.getTracks().forEach((t) => t.stop());
-    try { this.ctx.close(); } catch (e) {}
+    const type = "audio/wav";
     this.recorder = null;
-    const blob = new Blob(this.chunks, { type });
+    try { this.proc.disconnect(); } catch (e) {}
+    this.stream.getTracks().forEach((t) => t.stop());
+    const blob = this._wav();
+    try { this.ctx.close(); } catch (e) {}
     if (!this.heard || blob.size < 1000) {
       this.onerror && this.onerror({ error: "no-speech" });
       this.onend && this.onend();
@@ -11396,7 +11427,7 @@ class LocalSpeechRecognition {
 }
 
 function initSpeechRecognition() {
-  if (!navigator.mediaDevices || !window.MediaRecorder) {
+  if (!navigator.mediaDevices || !window.AudioContext) {
     alert("Voice input needs microphone access, which this browser doesn't offer.");
     return null;
   }
@@ -11932,7 +11963,16 @@ async function refreshMediaEngine() {
       loraSel.innerHTML = `<option value="">No LoRA</option>` + d.loras.map((l) => `<option value="${escapeHtml(l.name)}">${escapeHtml(l.name)}</option>`).join("");
       loraSel.value = keep;
     }
-    const rt = d.runtime, mem = d.memory;
+    const rt = d.runtime, mem = d.memory, libs = d.libraries || { installed: true };
+    if (!libs.installed) {
+      const busy = libs.status === "installing";
+      strip.innerHTML = busy
+        ? `<span>Downloading Media Studio's image and video tools (one time, ~${libs.download_mb} MB)… <span class="text-zinc-500">${escapeHtml(libs.progress || "")}</span></span>`
+        : `<span>${libs.status === "error" ? `<span class="text-amber-300">The download didn't finish: ${escapeHtml(libs.error || "")}</span>` : `Media Studio needs a one-time download of its image and video tools (~${libs.download_mb} MB).`}</span>
+           <button onclick="installMediaLibraries()" class="text-zinc-200 hover:text-white underline">${libs.status === "error" ? "Try again" : "Download now"}</button>`;
+      if (busy) setTimeout(refreshMediaEngine, 2000);
+      return;
+    }
     const engine = rt.worker_running ? `Loaded: <b class="text-zinc-200">${escapeHtml((rt.loaded_model || "starting").split("/").pop().replace("---", "/"))}</b>` : "Idle (no model in memory)";
     const chat = mem.teacher_paused ? `<span class="text-amber-300">Chat model paused to make room; it comes back on its own</span>` : "Chat model ready";
     strip.innerHTML = `
@@ -11944,6 +11984,11 @@ async function refreshMediaEngine() {
   } catch (e) {
     if (strip) strip.textContent = "Couldn't reach the image engine.";
   }
+}
+
+async function installMediaLibraries() {
+  await fetch("/api/media/libraries/install", { method: "POST" });
+  refreshMediaEngine();
 }
 
 function setMediaAIKind(kind) {

@@ -1,0 +1,21 @@
+name: Idea
+description: Something Xod could do, or do better.
+labels: ["idea"]
+body:
+  - type: textarea
+    id: job
+    attributes:
+      label: What would you hand Xod?
+      description: Describe the job in your own words, the way you'd ask a person.
+      placeholder: "Every Friday, check these three competitors' pricing pages and tell me what changed."
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What happens today?
+      description: How you do it now, or where Xod falls short.
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?

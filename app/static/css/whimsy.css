@@ -133,46 +133,36 @@ h3.font-bold, h2.font-bold { font-weight: 600; }
 
 .xod-mascot .xm-glow { transition: opacity 0.6s ease; opacity: 0.55; }
 .xod-mascot--small .xm-glow { opacity: 0.35; }
-.xod-mascot .xm-eyes { transition: transform 0.18s ease-out; }
-.xod-mascot .xm-lids { transform-origin: 32px 33px; transform-box: view-box; }
-.xod-mascot .xm-open,
-.xod-mascot .xm-shut,
-.xod-mascot .xm-joy,
-.xod-mascot .xm-smile,
-.xod-mascot .xm-o,
-.xod-mascot .xm-grin { transition: opacity 0.2s ease; }
-.xod-mascot .xm-shut, .xod-mascot .xm-joy, .xod-mascot .xm-o, .xod-mascot .xm-grin { opacity: 0; }
-.xod-mascot .xm-orbit { opacity: 0; transform-origin: 32px 34px; transform-box: view-box; }
+/* Body, eyes and mouth are moved every frame by mascot.js; these only cross-fade the eye shapes. */
+.xod-mascot .xm-open, .xod-mascot .xm-shut, .xod-mascot .xm-joy, .xod-mascot .xm-dizzy { transition: opacity 0.14s ease; }
+.xod-mascot .xm-shut, .xod-mascot .xm-joy, .xod-mascot .xm-dizzy { opacity: 0; }
+.xod-mascot .xm-sweat { transition: opacity 0.3s ease; }
+.xod-mascot .xm-swirl { transform-box: fill-box; transform-origin: center; animation: swirl 0.8s linear infinite; }
+@keyframes swirl { to { transform: rotate(360deg); } }
+.xod-mascot .xm-orbit { opacity: 0; transform-origin: 32px 34px; transform-box: view-box; transition: opacity 0.4s ease; }
 .xod-mascot .xm-z { opacity: 0; }
+.xod-mascot .xm-rings circle { opacity: 0; transform-origin: 32px 34px; transform-box: view-box; }
 
-.xod-mascot.is-blinking .xm-lids { animation: blink 0.16s ease-in-out; }
-@keyframes blink { 50% { transform: scaleY(0.08); } }
-
-/* thinking: a little star circles while the eyes look up and about */
-.xod-mascot[data-mood="thinking"] .xm-orbit { opacity: 1; animation: orbit 2.4s linear infinite; }
-.xod-mascot[data-mood="thinking"] .xm-smile { opacity: 0; }
-.xod-mascot[data-mood="thinking"] .xm-o { opacity: 1; }
-.xod-mascot[data-mood="thinking"] .xm-glow { opacity: 0.9; animation: glowBreath 1.6s ease-in-out infinite; }
+/* thinking / searching / working: a little star circles, the glow breathes */
+.xod-mascot:is([data-mood="thinking"], [data-mood="searching"], [data-mood="working"]) .xm-orbit { opacity: 1; animation: orbit 2.4s linear infinite; }
+.xod-mascot[data-mood="searching"] .xm-orbit { animation-duration: 1.2s; }
+.xod-mascot:is([data-mood="thinking"], [data-mood="searching"], [data-mood="working"]) .xm-glow { opacity: 0.9; animation: glowBreath 1.6s ease-in-out infinite; }
 @keyframes orbit { to { transform: rotate(360deg); } }
 @keyframes glowBreath { 50% { opacity: 0.5; } }
 
-/* happy: eyes become little arcs, cheeks flush, a tiny hop */
-.xod-mascot[data-mood="happy"] .xm-open { opacity: 0; }
-.xod-mascot[data-mood="happy"] .xm-joy { opacity: 1; }
-.xod-mascot[data-mood="happy"] .xm-smile { opacity: 0; }
-.xod-mascot[data-mood="happy"] .xm-grin { opacity: 1; }
-.xod-mascot[data-mood="happy"] .xm-cheek { opacity: 0.85; }
-.xod-mascot[data-mood="happy"] svg { animation: hop 0.6s var(--spring); }
-@keyframes hop {
-  0% { transform: translateY(0) scale(1, 1); }
-  25% { transform: translateY(1px) scale(1.08, 0.9); }
-  55% { transform: translateY(-14%) scale(0.95, 1.06); }
-  100% { transform: translateY(0) scale(1, 1); }
-}
+/* listening: soft rings ripple out while you speak */
+.xod-mascot[data-mood="listening"] .xm-rings circle { animation: ripple 1.8s ease-out infinite; }
+.xod-mascot[data-mood="listening"] .xm-rings circle:nth-child(2) { animation-delay: 0.6s; }
+.xod-mascot[data-mood="listening"] .xm-rings circle:nth-child(3) { animation-delay: 1.2s; }
+.xod-mascot[data-mood="listening"] .xm-glow { opacity: 1; }
+@keyframes ripple { 0% { opacity: 0.7; transform: scale(0.95); } 100% { opacity: 0; transform: scale(1.45); } }
 
-/* sleepy: eyes close, small z's drift up */
-.xod-mascot[data-mood="sleepy"] .xm-open { opacity: 0; }
-.xod-mascot[data-mood="sleepy"] .xm-shut { opacity: 1; }
+/* waiting for your OK: the glow pulses slowly */
+.xod-mascot[data-mood="waiting"] .xm-glow { animation: glowBreath 2.4s ease-in-out infinite; }
+.xod-mascot[data-mood="happy"] .xm-glow { opacity: 1; }
+.xod-mascot[data-mood="error"] .xm-glow { opacity: 0.25; }
+
+/* sleepy: small z's drift up */
 .xod-mascot[data-mood="sleepy"] .xm-glow { opacity: 0.2; }
 .xod-mascot[data-mood="sleepy"] .xm-z { animation: zzz 3s ease-in-out infinite; }
 .xod-mascot[data-mood="sleepy"] .xm-z2 { animation-delay: 1.5s; }
@@ -182,15 +172,21 @@ h3.font-bold, h2.font-bold { font-weight: 600; }
   100% { opacity: 0; transform: translate(8px, -16px) scale(1.1); }
 }
 
-.xod-mascot.is-squished svg { animation: squish 0.45s var(--spring); }
-@keyframes squish {
-  0% { transform: scale(1, 1); }
-  30% { transform: scale(1.14, 0.84); }
-  60% { transform: scale(0.94, 1.07); }
-  100% { transform: scale(1, 1); }
-}
 .xod-mascot.is-spinning svg { animation: spinJoy 0.9s var(--spring); }
 @keyframes spinJoy { to { transform: rotate(360deg); } }
+.xod-mascot--hero { touch-action: none; user-select: none; }
+
+/* petting */
+.xm-heart {
+  position: fixed; z-index: 70; pointer-events: none;
+  color: #ee8fae; font-size: 13px; line-height: 1;
+  animation: heartUp 1.3s var(--ease-out) forwards;
+}
+@keyframes heartUp {
+  0% { opacity: 0; transform: translateY(0) scale(0.5); }
+  20% { opacity: 1; transform: translateY(-6px) scale(1); }
+  100% { opacity: 0; transform: translateY(-34px) scale(0.9) rotate(12deg); }
+}
 
 @keyframes moonFloat {
   0%, 100% { transform: translateY(0) rotate(-1.5deg); }
@@ -351,7 +347,7 @@ h3.font-bold, h2.font-bold { font-weight: 600; }
 
 @media (prefers-reduced-motion: reduce) {
   .star, .xod-mascot--hero, .shooting-star,
-  .xod-mascot svg, .xod-mascot .xm-orbit, .xod-mascot .xm-z,
+  .xod-mascot svg, .xod-mascot .xm-orbit, .xod-mascot .xm-z, .xod-mascot .xm-rings circle, .xod-mascot .xm-swirl, .xm-heart,
   #welcomeHeroStarters .starter-card, .starter-card:hover > i, .starter-card:hover > svg,
   #sendButton.is-launching svg, .sparkle {
     animation: none !important;

@@ -1,0 +1,50 @@
+name: Bug report
+description: Something in Xod doesn't work the way it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Found a security problem? Please don't file it here; use **Security → Report a vulnerability** instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Xod
+        2. Ask "…"
+        3. …
+  - type: input
+    id: version
+    attributes:
+      label: Xod version
+      placeholder: "0.1.0 (desktop app) or a commit hash"
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Which AI model?
+      options:
+        - Built-in engine
+        - LM Studio
+        - Ollama
+        - Cloud (Claude / GPT / Gemini)
+        - Not sure
+  - type: input
+    id: mac
+    attributes:
+      label: Mac and macOS
+      placeholder: "MacBook Pro M1 Pro, 16 GB, macOS 26.1"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Anything else?
+      description: Screenshots or the output of **Tools → Health check**. Please remove anything personal first.

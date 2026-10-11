@@ -32,12 +32,16 @@ def _ffmpeg_error(stderr: bytes) -> str:
     return "\n".join(lines[-4:])[-600:] or "ffmpeg failed without an error message"
 
 
-# Discover local ffmpeg
-try:
-    import imageio_ffmpeg
-    FFMPEG_BIN = imageio_ffmpeg.get_ffmpeg_exe()
-except Exception:
-    FFMPEG_BIN = "ffmpeg"
+async def ffmpeg_bin() -> str:
+    """ffmpeg for the video tools. The Mac app fetches it on first use (see media_packages)."""
+    from app.services import media_packages
+    exe = media_packages.ffmpeg_exe()
+    if not exe:
+        await media_packages.ensure("video")
+        exe = media_packages.ffmpeg_exe()
+    if not exe:
+        raise RuntimeError("ffmpeg isn't available")
+    return exe
 
 
 class LocalMediaService:
@@ -203,7 +207,7 @@ class LocalMediaService:
         out_path = self.output_dir / out_name
 
         cmd = [
-            FFMPEG_BIN,
+            await ffmpeg_bin(),
             "-y",
             "-ss", str(start_sec),
             "-i", str(src),
@@ -250,7 +254,7 @@ class LocalMediaService:
 
         vf_filter = f"fps={fps},scale={scale_width}:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"
         cmd = [
-            FFMPEG_BIN,
+            await ffmpeg_bin(),
             "-y",
             "-ss", str(start_sec),
             "-t", str(duration_sec),
@@ -305,7 +309,7 @@ class LocalMediaService:
               f"box=1:boxcolor=black@0.6:boxborderw=8:{pos_exp}")
 
         cmd = [
-            FFMPEG_BIN,
+            await ffmpeg_bin(),
             "-y",
             "-i", str(src),
             "-vf", vf,
@@ -339,7 +343,7 @@ class LocalMediaService:
             return 0.0
         try:
             cmd = [
-                FFMPEG_BIN,
+                await ffmpeg_bin(),
                 "-i", str(src)
             ]
             proc = await asyncio.create_subprocess_exec(
@@ -395,7 +399,7 @@ class LocalMediaService:
 
             # First attempt: stream copy (ultra fast, sub-second)
             cmd_copy = [
-                FFMPEG_BIN,
+                await ffmpeg_bin(),
                 "-y",
                 "-f", "concat",
                 "-safe", "0",
@@ -413,7 +417,7 @@ class LocalMediaService:
             # If stream copy failed (e.g. mismatched resolutions or codecs), fall back to re-encode
             if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
                 cmd_reencode = [
-                    FFMPEG_BIN,
+                    await ffmpeg_bin(),
                     "-y",
                     "-f", "concat",
                     "-safe", "0",
@@ -481,7 +485,7 @@ class LocalMediaService:
             seek_time = float(timestamp_sec or 0.0)
 
         cmd = [
-            FFMPEG_BIN,
+            await ffmpeg_bin(),
             "-y",
             "-ss", str(seek_time),
             "-i", str(src),
@@ -590,7 +594,7 @@ class LocalMediaService:
                 ]
 
                 proc = await asyncio.create_subprocess_exec(
-                    FFMPEG_BIN, "-y",
+                    await ffmpeg_bin(), "-y",
                     "-f", "rawvideo",
                     "-vcodec", "rawvideo",
                     "-s", "1280x720",
@@ -660,7 +664,7 @@ class LocalMediaService:
             vf = f"scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p"
 
         cmd = [
-            FFMPEG_BIN,
+            await ffmpeg_bin(),
             "-y",
             "-loop", "1",
             "-i", str(src)

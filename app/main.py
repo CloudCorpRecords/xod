@@ -44,6 +44,17 @@ def _host_only(value: str) -> str:
     return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
 
 
+from app.services.trustmrr import TrustMRRError as _TrustMRRError
+
+
+@app.exception_handler(_TrustMRRError)
+async def trustmrr_error_handler(request: Request, exc: _TrustMRRError):
+    """A missing or rejected TrustMRR key is a setup problem, not a crash: say what to do."""
+    missing = "missing" in str(exc).lower()
+    return JSONResponse(status_code=400 if missing else 502,
+                        content={"success": False, "needs_key": missing, "error": str(exc)})
+
+
 @app.middleware("http")
 async def local_only_guard(request, call_next):
     if _host_only(request.headers.get("host", "")) not in _LOCAL_HOSTS:
@@ -2624,9 +2635,18 @@ async def media_engine_status():
     from app.services.memory_broker import memory_broker
     from app.services.media_model_manager import media_model_manager
     cfg = media_model_manager.config
+    from app.services import media_packages
     return {"models": list_models(), "loras": list_loras(), "runtime": media_runtime.status(),
+            "libraries": media_packages.status(),
             "memory": memory_broker.status(),
             "active": {"image": cfg.get("active_image_model", ""), "video": cfg.get("active_video_model", "")}}
+
+
+@app.post("/api/media/libraries/install")
+async def media_libraries_install():
+    """Starts the one-time download of Media Studio's libraries (the Mac app ships without them)."""
+    from app.services import media_packages
+    return media_packages.start_install()
 
 
 @app.post("/api/media/engine/release")

@@ -123,11 +123,13 @@ class MediaRuntime:
 
     # ------------------------------------------------------------------ process control
     async def _start(self, gpu_fraction: float) -> None:
+        from app.services import media_packages
+        await media_packages.ensure()   # first use in the Mac app: a one-time download
         env = dict(os.environ, XOD_MEDIA_GPU_FRACTION=f"{gpu_fraction:.2f}", PYTHONUNBUFFERED="1",
                    XOD_MEDIA_MLX_LIMIT_GB=f"{GPU_WORKING_SET_GB:.1f}")
         self.gpu_fraction = gpu_fraction
         self.proc = await asyncio.create_subprocess_exec(
-            str(VENV_PYTHON), "-m", "app.services.media_worker", cwd=str(BASE_DIR), env=env,
+            str(VENV_PYTHON), "-m", "app.services.media_worker", cwd=str(BASE_DIR), env=media_packages.worker_env(env),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
             limit=1 << 20,
         )
@@ -362,9 +364,9 @@ class MediaRuntime:
         say("Encoding the video…")
         out_path = OUTPUT_DIR / f"ai_video_{stamp}.mp4"
         vf = "minterpolate=fps=24:mi_mode=mci:mc_mode=aobmc:vsbmc=1," if smooth else ""
-        from app.services.media_studio import FFMPEG_BIN
+        from app.services.media_studio import ffmpeg_bin
         proc = await asyncio.create_subprocess_exec(
-            FFMPEG_BIN, "-y", "-loglevel", "error", "-framerate", str(fps), "-i", str(frames_dir / "%04d.png"),
+            await ffmpeg_bin(), "-y", "-loglevel", "error", "-framerate", str(fps), "-i", str(frames_dir / "%04d.png"),
             "-vf", f"{vf}format=yuv420p", "-c:v", "libx264", "-crf", "18", "-movflags", "+faststart", str(out_path),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         _, err = await proc.communicate()

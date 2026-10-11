@@ -7,6 +7,9 @@ sys.path.insert(0, str(ROOT))
 import numpy as np
 from PIL import Image
 from app.services.media_runtime import media_runtime, list_models
+import app.services.media_runtime as _mr
+# Test images go to test_runs, never into the Media Studio gallery.
+_mr.OUTPUT_DIR = _mr.DATA_DIR / "test_runs" / "media"
 from app.services.memory_broker import memory_broker, available_gb
 from app.services.llm import llm_service
 
