@@ -18,7 +18,7 @@
   "scripts": {
     "start": "electron .",
     "bundle-python": "node scripts/bundle-python.js",
-    "dist": "npm run bundle-python && electron-builder --mac dmg --arm64 -c.mac.identity=- --publish never",
+    "dist": "bash scripts/build-mac.sh",
     "dist:signed": "npm run bundle-python && electron-builder --mac dmg --arm64 -c.mac.hardenedRuntime=true -c.mac.notarize=true"
   },
   "devDependencies": {
