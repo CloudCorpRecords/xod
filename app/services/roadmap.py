@@ -1,64 +1,42 @@
-from typing import Dict, Any, List
+from typing import Any, Dict
+
+# Shown in the app under Tools → "What's coming next", and kept in step with ROADMAP.md.
+ROADMAP = [
+    # ---- next
+    {"status": "next", "name": "Faster answers on 16 GB Macs",
+     "description": "Fewer model calls per answer and a smaller default model, so a researched answer takes well under a minute."},
+    {"status": "next", "name": "Signed, notarized Mac app",
+     "description": "No security warning on first open."},
+    {"status": "next", "name": "Quicker first launch",
+     "description": "A prebuilt environment instead of a few-GB install the first time Xod opens."},
+    {"status": "next", "name": "One-click connected apps",
+     "description": "Ready-made setups for Gmail, Calendar, Notion and GitHub, instead of pasting a config."},
+    {"status": "next", "name": "Spoken replies",
+     "description": "Xod answers out loud, with an on-device voice."},
+    # ---- later
+    {"status": "later", "name": "Shareable routine templates",
+     "description": "Import and share routines like \"weekly competitor check\" or \"morning brief\"."},
+    {"status": "later", "name": "Approve from your phone",
+     "description": "A companion to approve or decline Xod's pending actions when you're away from the Mac."},
+    {"status": "later", "name": "More Macs and Linux",
+     "description": "Intel Macs (cloud or Ollama models) and Linux."},
+    # ---- shipped in 0.1
+    {"status": "shipped", "name": "Built-in AI engine and setup",
+     "description": "Runs a model on your Mac with no other apps; picks one that fits your memory."},
+    {"status": "shipped", "name": "Routines",
+     "description": "Teach a job once, then repeat it by hand or on a schedule."},
+    {"status": "shipped", "name": "Activity and undo",
+     "description": "Everything Xod did, with undo for file changes."},
+    {"status": "shipped", "name": "Connected apps (MCP)",
+     "description": "Use outside tools behind approvals, and use Xod from other AI apps."},
+    {"status": "shipped", "name": "Shareable reports",
+     "description": "Answers as a polished page and PDF with sources."},
+    {"status": "shipped", "name": "Smart model routing",
+     "description": "Cloud help for hard steps, with permission, costs shown and a budget."},
+    {"status": "shipped", "name": "Add-ons",
+     "description": "Startup intel, people finder, website forensics, creators & trends, Media Studio, Model Lab."},
+]
+
 
 def get_project_roadmap() -> Dict[str, Any]:
-    """Returns the backend project capability roadmap, statuses, and zero-key architectural details."""
-    return {
-        "title": "Xod Intelligence Engine — Capability Roadmap",
-        "version": "2.5.0",
-        "modules": [
-            {
-                "id": "email_finder",
-                "number": 1,
-                "name": "Verified Work-Email Finder",
-                "tool": "find_work_email",
-                "status": "active",
-                "description": "Permutation engine (first.last@, first@, etc.) + MX host alignment + GitHub commit author mining + public digital exhaust.",
-                "bottleneck_solved": "Replaces paywalled Hunter/RocketReach with zero-key discovery for early-stage founders."
-            },
-            {
-                "id": "job_firehose",
-                "number": 2,
-                "name": "Live Job Firehose & Batch Cohort Hunter",
-                "tool": "scan_live_job_firehose / scan_batch_job_firehose",
-                "status": "active",
-                "description": "Aggregates public Ashby, Greenhouse, and Lever JSON feeds with recency filtering, dead-posting liveness check, and multi-company cohort batch scanning (YC AI, Modern DevTools, AI Infra).",
-                "bottleneck_solved": "Eliminates stale job boards and ghost jobs with real-time HTTP liveness checks and multi-company talent sweeps."
-            },
-            {
-                "id": "funding_org_data",
-                "number": 3,
-                "name": "Funding & Org Intelligence",
-                "tool": "audit_funding_and_org",
-                "status": "active",
-                "description": "Y Combinator public directory (batch W24/S23, founders, team size) + SEC EDGAR Form D venture capital filings + scam risk screening.",
-                "bottleneck_solved": "Fast corporate due diligence and scam screening for stealth/early startups."
-            },
-            {
-                "id": "email_verifier",
-                "number": 4,
-                "name": "Email Bounce-Risk Verifier",
-                "tool": "verify_email_bounce_risk",
-                "status": "active",
-                "description": "Cloudflare DNS-over-HTTPS MX lookup + SPF/DMARC policy extraction + catch-all detection + disposable domain blocking.",
-                "bottleneck_solved": "Prevents cold email domain reputation burns with zero-key pre-send deliverability checks."
-            },
-            {
-                "id": "tech_detector",
-                "number": 5,
-                "name": "Live Tech-Stack Detector",
-                "tool": "audit_tech_stack",
-                "status": "active",
-                "description": "In-situ DOM scripts, HTTP response headers, CDN signatures, DNS telemetry, and SDK fingerprints without external APIs.",
-                "bottleneck_solved": "Instant tech stack personalization lines (e.g. 'I see you run Next.js and Supabase')."
-            },
-            {
-                "id": "trigger_radar",
-                "number": 6,
-                "name": "Trigger-Event Radar",
-                "tool": "scan_trigger_events",
-                "status": "active",
-                "description": "Algolia Hacker News (Show HN / launches) + SEC EDGAR Form D (funding rounds) + Google News RSS corporate announcements.",
-                "bottleneck_solved": "Generates warm conversational openers ('saw your Series A', 'saw your Show HN launch')."
-            }
-        ]
-    }
+    return {"title": "What's coming next", "version": "0.1.0", "items": ROADMAP}

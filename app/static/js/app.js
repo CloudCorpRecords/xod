@@ -1684,28 +1684,19 @@ async function fetchRoadmap() {
   try {
     const res = await fetch("/api/roadmap");
     const data = await res.json();
-    const modules = data.modules || [];
-
-    let html = `<div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">`;
-    for (const m of modules) {
-      html += `
-        <div class="p-4 rounded-xl bg-surface-750/70 border border-white/[0.06] hover:border-purple-500/40 transition-all flex flex-col justify-between space-y-3">
-          <div class="space-y-1.5">
-            <div class="flex items-center justify-between">
-              <span class="text-[10px] font-mono text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded border border-purple-500/20 font-bold">Module #${m.number}</span>
-              <span class="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20 font-semibold">✓ ${m.status.toUpperCase()}</span>
-            </div>
-            <h4 class="font-bold text-sm text-white">${escapeHtml(m.name)}</h4>
-            <p class="text-zinc-300 font-mono text-[11px] text-purple-300/90">${escapeHtml(m.tool)}</p>
-            <p class="text-xs text-zinc-400 leading-relaxed">${escapeHtml(m.description)}</p>
-          </div>
-          <div class="pt-2 border-t border-surface-700/60 flex items-center justify-between text-xs">
-            <span class="text-[11px] text-zinc-400 italic">${escapeHtml(m.bottleneck_solved)}</span>
-          </div>
-        </div>
-      `;
+    const items = data.items || [];
+    const groups = [["next", "Next", "text-brand-300"], ["later", "Later", "text-indigo-300"], ["shipped", "Shipped in 0.1", "text-emerald-300"]];
+    let html = "";
+    for (const [key, label, color] of groups) {
+      const list = items.filter((i) => i.status === key);
+      if (!list.length) continue;
+      html += `<h4 class="text-[12px] font-semibold uppercase tracking-wider ${color} mt-4 mb-2">${label}</h4>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-2.5">` + list.map((i) => `
+          <div class="p-3.5 rounded-xl bg-surface-750/70 border border-white/[0.06]">
+            <p class="font-semibold text-[13px] text-white">${key === "shipped" ? "✓ " : ""}${escapeHtml(i.name)}</p>
+            <p class="text-xs text-zinc-400 leading-relaxed mt-1">${escapeHtml(i.description)}</p>
+          </div>`).join("") + `</div>`;
     }
-    html += `</div>`;
     container.innerHTML = html;
     lucide.createIcons();
   } catch (err) {

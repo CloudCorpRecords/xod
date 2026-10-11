@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from app.paths import DATA_DIR
+from app.paths import APP_ROOT, DATA_DIR
 
 logger = logging.getLogger("xod.specialists")
 
@@ -131,9 +131,9 @@ async def start_server(name: str) -> Dict[str, Any]:
     await stop_server(name)
     port = _free_port()
     proc = subprocess.Popen(
-        [str(VENV_PYTHON), "-m", "mlx_lm.server", "--model", entry["base_model"],
+        [str(VENV_PYTHON), "-m", "app.services.engine_child", "--model", entry["base_model"],
          "--adapter-path", adapter, "--host", "127.0.0.1", "--port", str(port)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(APP_ROOT),
     )
     _servers[name] = {"proc": proc, "port": port, "ready": False}
     deadline = time.time() + 180

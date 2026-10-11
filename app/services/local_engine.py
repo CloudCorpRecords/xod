@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from app.paths import APP_ROOT
+
 logger = logging.getLogger("xod.engine")
 
 # Recommended models, smallest first. need_gb: memory while running (weights + working space).
@@ -170,9 +172,9 @@ class LocalEngine:
             await memory_broker.make_room(entry["need_gb"], f"chat model {repo.split('/')[-1]}")
             env = dict(os.environ, HF_HUB_OFFLINE="1", TOKENIZERS_PARALLELISM="false")
             self.proc = subprocess.Popen(
-                [sys.executable, "-m", "mlx_lm.server", "--model", repo, "--host", "127.0.0.1",
+                [sys.executable, "-m", "app.services.engine_child", "--model", repo, "--host", "127.0.0.1",
                  "--port", str(self.port), "--max-tokens", "8192"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env, cwd=str(APP_ROOT),
             )
             self.repo = repo
             deadline = time.time() + 240

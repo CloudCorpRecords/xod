@@ -490,6 +490,19 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                         has_observable_errors = True
                         break
 
+                # Every planned step worked and returned something: skip the extra "anything missing?"
+                # model call (~15 s on a local model). It runs when something failed or came back empty.
+                def _empty(r):
+                    if not isinstance(r, dict):
+                        return not r
+                    if "results" in r:
+                        hits = r.get("results") or []
+                        return not hits or all((h or {}).get("title") == "Search Error" for h in hits if isinstance(h, dict))
+                    return False
+                if react_hop == 1 and not has_observable_errors and audit_trail and \
+                        not any(_empty(t.get("result")) for t in audit_trail):
+                    break
+
                 # Prompt LLM to deliberate on whether more actions/self-corrections are required
                 eval_messages = [
                     {
@@ -524,6 +537,7 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                         temperature=0.1,
                         max_tokens=JSON_MIN_TOKENS,
                         task="react_step",   # follow-up decisions are training data too (see repair_learning)
+                        think=False,         # a small yes/no-and-which-tool decision
                     )
                     decision = parse_llm_json(eval_reply.get("content", "")) or {"action": "conclude"}
                 except Exception as eval_err:
@@ -933,9 +947,13 @@ CRITICAL INSTRUCTIONS:
         synthesis_tool_call_detected = False
 
         try:
+            # The research is done by now: writing it up needs no thinking phase, which on a local
+            # model was ~80% of the wait. Depth on request (or for attached documents).
+            deep = bool(has_document or self._DEPTH_RE.search(user_query or ""))
             async for chunk in llm_service.stream_chat_completion(
                 messages=synthesis_messages,
-                temperature=0.3
+                temperature=0.3,
+                think=None if deep else False,
             ):
                 if chunk.get("type") == "content":
                     tok = chunk.get("content", "")
@@ -1058,6 +1076,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"reddit|twitter|x\.com|facebook|instagram|youtube|github|airbnb|booking|expedia|craigslist|zillow|opentable)\b",
         re.I,
     )
+    _DEPTH_RE = re.compile(r"\b(deep[- ]?dive|in[- ]depth|thorough(ly)?|think (it )?(through|carefully|hard)|step by step|detailed analysis)\b", re.I)
     _QUESTION_RE = re.compile(r"^\s*(how|what|why|when|should|is|are|does|do i|explain|tell me)\b", re.I)
     _CONFIRM_RE = re.compile(r"\b(submit it|send it|go ahead|yes|yep|approve[d]?|confirm(ed)?|do it|ship it)\b", re.I)
     _SELF_CHECK_RE = re.compile(
@@ -1642,6 +1661,24 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
   "task_focus": "research" | "computer" | "workspace" | "browser" | "media" | "swarm" | "general"
 }}
 ```"""
+        # Keep the tool list honest: drop add-on tools that are switched off, mention the report
+        # tool and any connected MCP tools.
+        try:
+            from app.services import packs
+            deliberator_system_prompt = "\n".join(
+                line for line in deliberator_system_prompt.split("\n")
+                if not (m := re.match(r"\s+- ([a-z_]+):", line)) or packs.tool_allowed(m.group(1)))
+            extra = ["   - xod_make_report: Save a finished answer as a shareable page + PDF with sources. "
+                     "Args: {\"title\": \"...\", \"markdown\": \"...\"}"]
+            from app.services.mcp_client import mcp_hub
+            mcp_tools = [d["function"] for d in mcp_hub.tool_definitions()][:12]
+            if mcp_tools:
+                extra.append("6. Connected apps (MCP; actions wait for the user's approval):")
+                extra += [f"   - {t['name']}: {t['description'][:110]}" for t in mcp_tools]
+            deliberator_system_prompt = deliberator_system_prompt.replace("\nCONTEXT:", "\n" + "\n".join(extra) + "\n\nCONTEXT:", 1)
+        except Exception as e:
+            logger.debug(f"planner tool list not adjusted: {e}")
+
         delib_history = []
         if conversation_history:
             for m in conversation_history[-4:]:
@@ -1668,30 +1705,41 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
         emitted_any_reasoning = False
 
         try:
-            async for chunk in llm_service.stream_chat_completion(
-                messages=delib_messages,
-                temperature=0.1,
-                max_tokens=JSON_MIN_TOKENS,
-                task="planner",
-            ):
-                chunk_type = chunk.get("type")
-                if chunk_type == "example_id":
-                    self._planner_example = {"id": chunk["id"], "response": raw_accumulated}
-                    continue
-                if chunk_type == "reasoning":
-                    content = chunk.get("content", "")
-                    if content:
-                        emitted_any_reasoning = True
-                        yield {"type": "reasoning", "content": content}
-                elif chunk_type == "content":
-                    tok = chunk.get("content", "")
-                    raw_accumulated += tok
-                    # If model streams reasoning as raw prose before opening json bracket '{'
-                    if "{" not in raw_accumulated:
-                        yield {"type": "reasoning", "content": tok}
-                        emitted_any_reasoning = True
-
-            parsed = parse_llm_json(raw_accumulated)
+            # Fast first: most plans don't need a thinking phase (it was ~half the planning time).
+            # If the fast plan isn't usable, plan again with thinking on.
+            modes = (None,) if self._DEPTH_RE.search(query or "") else (False, None)
+            parsed = None
+            for think_mode in modes:
+                raw_accumulated = ""
+                async for chunk in llm_service.stream_chat_completion(
+                    messages=delib_messages,
+                    temperature=0.1,
+                    max_tokens=JSON_MIN_TOKENS,
+                    task="planner",
+                    think=think_mode,
+                ):
+                    chunk_type = chunk.get("type")
+                    if chunk_type == "example_id":
+                        self._planner_example = {"id": chunk["id"], "response": raw_accumulated}
+                        continue
+                    if chunk_type == "reasoning":
+                        content = chunk.get("content", "")
+                        if content:
+                            emitted_any_reasoning = True
+                            yield {"type": "reasoning", "content": content}
+                    elif chunk_type == "content":
+                        tok = chunk.get("content", "")
+                        raw_accumulated += tok
+                        # If model streams reasoning as raw prose before opening json bracket '{'
+                        if "{" not in raw_accumulated:
+                            yield {"type": "reasoning", "content": tok}
+                            emitted_any_reasoning = True
+                parsed = parse_llm_json(raw_accumulated)
+                if parsed and (parsed.get("plan_steps") or parsed.get("steps") or parsed.get("direct_response")
+                               or parsed.get("decision") in ("direct_response", "respond", "answer")):
+                    break
+                if think_mode is False:
+                    yield {"type": "status", "content": "🤔 Thinking it through more carefully…"}
             if not parsed:
                 raise ValueError(f"Planner returned no usable JSON: {raw_accumulated[:200]!r}")
 

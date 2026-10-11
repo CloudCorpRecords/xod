@@ -605,8 +605,10 @@ class LLMService:
         endpoint_override: Optional[Dict[str, Any]] = None,
         task: Optional[str] = None,
         group_id: Optional[str] = None,
+        think: Optional[bool] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Streams text chunks and reasoning tokens directly. task: see chat_completion."""
+        """Streams text chunks and reasoning tokens directly. task: see chat_completion.
+        think=False skips a local reasoning model's thinking phase (much faster first word)."""
         streamed: List[str] = []
         started = time.time()
         if not endpoint_override and not tier:
@@ -640,6 +642,10 @@ class LLMService:
         if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini"):
             payload["stream_options"] = {"include_usage": True}   # token counts for cost tracking
         _usage: Optional[Dict[str, Any]] = None
+        if think is False and info["provider"] in ("lm_studio", "ollama"):
+            payload["reasoning_effort"] = "none"
+        if think is False and info["provider"] == "xod":
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
 
         async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
             for attempt in range(1, MAX_ATTEMPTS + 1):
