@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import httpx
 from pathlib import Path
 from typing import List, Dict, Any, Optional
@@ -549,6 +550,27 @@ async def update_settings(req: UpdateSettings):
     from app.services import updates
     updates.set_enabled(req.enabled)
     return {"success": True, "enabled": updates.enabled()}
+
+
+# ---- Xod's look (static/js/mascot.js): which character the companion is drawn as
+
+class CompanionSettings(BaseModel):
+    character: str
+
+
+@app.get("/api/companion")
+async def companion_get():
+    from app.services.storage import get_setting
+    return {"character": get_setting("companion", "moon")}
+
+
+@app.post("/api/companion")
+async def companion_set(req: CompanionSettings):
+    from app.services.storage import set_setting
+    if not re.fullmatch(r"[a-z]{2,16}", req.character or ""):
+        raise HTTPException(status_code=400, detail="Unknown look.")
+    set_setting("companion", req.character)
+    return {"success": True, "character": req.character}
 
 
 # ---- Agent Mail (services/agent_mail.py): encrypted messages between Xods

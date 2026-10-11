@@ -355,6 +355,90 @@ h3.font-bold, h2.font-bold { font-weight: 600; }
   .starter-card:hover, .starter-card:nth-child(even):hover { transform: none; }
 }
 
+/* --- Looks: parts and habits shared by every character --- */
+/* Nightcap: slips on when it dozes off */
+.xod-mascot .xm-cap { opacity: 0; transform: translateY(-6px); transform-box: view-box; transition: opacity 0.5s ease, transform 0.6s var(--spring); }
+.xod-mascot[data-mood="sleepy"]:not(.xod-mascot--preview) .xm-cap { opacity: 1; transform: none; }
+.xod-mascot svg[data-character="cat"] .xm-cap { translate: 0 -3px; }
+.xod-mascot svg[data-character="robot"] .xm-cap { translate: 0 -1px; }
+
+/* Robot: the light on its antenna shows what it's doing */
+.xod-mascot .xc-bulb { fill: #f2b24a; transition: fill 0.3s ease; }
+.xod-mascot:is([data-mood="thinking"], [data-mood="searching"], [data-mood="working"]) .xc-bulb { fill: #a196ec; animation: bulbBlink 0.7s steps(2, jump-none) infinite; }
+.xod-mascot[data-mood="waiting"] .xc-bulb { fill: #ffd06b; animation: bulbBlink 1.6s ease-in-out infinite; }
+.xod-mascot[data-mood="listening"] .xc-bulb { fill: #6fd0bf; }
+.xod-mascot[data-mood="happy"] .xc-bulb { fill: #93d17f; }
+.xod-mascot[data-mood="error"] .xc-bulb { fill: #ff7a7a; }
+.xod-mascot[data-mood="sleepy"] .xc-bulb { fill: #3a4366; }
+.xod-mascot[data-fidget="scan"] .xc-bulb { fill: #6fd0bf; animation: bulbBlink 0.25s steps(2, jump-none) infinite; }
+@keyframes bulbBlink { 50% { opacity: 0.35; } }
+
+/* Double-click: a little backflip */
+.xod-mascot.is-flipping svg { animation: flipJoy 0.85s cubic-bezier(0.3, 0.7, 0.4, 1); }
+@keyframes flipJoy {
+  0% { transform: translateY(0) rotate(0); }
+  15% { transform: translateY(4%) scale(1.08, 0.88); }
+  55% { transform: translateY(-38%) rotate(-200deg); }
+  85% { transform: translateY(0) rotate(-360deg) scale(1.1, 0.9); }
+  100% { transform: translateY(0) rotate(-360deg); }
+}
+
+/* Changing looks: out in a puff, in with a bounce */
+.xod-mascot.is-poofing svg { animation: poofOut 0.18s ease-in forwards; }
+.xod-mascot.is-arriving svg { animation: arriveIn 0.6s var(--spring); }
+@keyframes poofOut { to { transform: scale(0.2); opacity: 0; } }
+@keyframes arriveIn { 0% { transform: scale(0.2); opacity: 0; } 60% { opacity: 1; } 100% { transform: scale(1); } }
+.xm-puff {
+  position: fixed; z-index: 70; pointer-events: none; border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #fffaf0, rgba(228, 220, 205, 0.7) 60%, transparent 72%);
+  animation: puffOut 0.65s var(--ease-out) forwards;
+}
+@keyframes puffOut {
+  0% { opacity: 0.95; transform: translate(0, 0) scale(0.5); }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) scale(1.5); }
+}
+
+/* Floating marks beyond hearts */
+.xm-heart.is-note { color: var(--lamp-soft); animation-name: noteUp; }
+.xm-heart.is-ask { color: var(--lamp-soft); font-family: 'Fraunces', Georgia, serif; font-weight: 700; }
+.xm-heart.is-bang { color: var(--peony); font-family: 'Fraunces', Georgia, serif; font-weight: 700; }
+.xm-heart.is-boo { color: #cfe7f3; font-family: 'Fraunces', Georgia, serif; font-style: italic; }
+@keyframes noteUp {
+  0% { opacity: 0; transform: translate(0, 0) rotate(-10deg) scale(0.6); }
+  25% { opacity: 1; }
+  100% { opacity: 0; transform: translate(14px, -32px) rotate(14deg) scale(1); }
+}
+
+/* Picker */
+.xc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.65rem; }
+.xc-card {
+  display: flex; flex-direction: column; align-items: center; gap: 0.2rem; text-align: center;
+  padding: 1rem 0.75rem 0.85rem; border-radius: 16px;
+  background: rgba(255, 250, 240, 0.035); border: 1px solid rgba(255, 250, 240, 0.08);
+  transition: transform 0.35s var(--spring), border-color 0.2s ease, background 0.2s ease;
+}
+.xc-card:hover { transform: translateY(-2px); border-color: rgba(242, 178, 74, 0.3); background: rgba(255, 250, 240, 0.06); }
+.xc-card[aria-pressed="true"] { border-color: var(--lamp); background: rgba(242, 178, 74, 0.08); box-shadow: 0 0 0 3px rgba(242, 178, 74, 0.1); }
+.xc-card:focus-visible { outline: 2px solid var(--lamp); outline-offset: 2px; }
+.xc-name { font-family: 'Fraunces', Georgia, serif; font-style: italic; font-size: 15px; color: var(--paper); margin-top: 0.35rem; }
+.xc-blurb { font-size: 11.5px; line-height: 1.35; color: #a39e97; }
+.xod-mascot--preview { width: 76px; height: 76px; pointer-events: none; }
+.xc-card[aria-pressed="true"] .xod-mascot--preview .xm-glow { opacity: 0.85; }
+
+/* A small button by the big one, for changing looks */
+.xod-look-btn {
+  position: absolute; right: -6px; bottom: 0; width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center; color: var(--paper-dim);
+  background: rgba(23, 27, 49, 0.9); border: 1px solid rgba(255, 250, 240, 0.12);
+  opacity: 0; transform: scale(0.8); transition: opacity 0.2s ease, transform 0.3s var(--spring), color 0.2s ease;
+}
+.xod-hero-mascot:hover .xod-look-btn, .xod-look-btn:focus-visible { opacity: 1; transform: none; }
+.xod-look-btn:hover { color: var(--lamp-soft); }
+
+@media (prefers-reduced-motion: reduce) {
+  .xod-mascot.is-flipping svg, .xod-mascot.is-poofing svg, .xod-mascot.is-arriving svg, .xm-puff, .xod-mascot .xc-bulb { animation: none !important; }
+}
+
 /* --- Chat avatars & user bubble --- */
 .xod-mascot--chat { width: 34px; height: 34px; }
 .xod-mascot--chat .xm-glow { opacity: 0.3; }

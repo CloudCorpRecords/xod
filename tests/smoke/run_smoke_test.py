@@ -36,7 +36,7 @@ PANELS = [
     "openMediaStudioModal()", "openModelLabModal()", "openObservabilityModal()", "openKnowledgeGraphModal()",
     "openComputerFileManagerModal()", "openRoadmapModal()", "openLMStudioModal()", "openCreateProjectModal()",
     "openAutonomousCockpitModal()", "openDealsModal()", "openHunterSuiteModal()", "openTechAuditModal()",
-    "openMailPanel()", "openSlashCommandPalette()", "toggleToolsMenu(new MouseEvent('click'))", "toggleSidebar()",
+    "openMailPanel()", "openCompanionPicker()", "openSlashCommandPalette()", "toggleToolsMenu(new MouseEvent('click'))", "toggleSidebar()",
 ]
 
 results = []

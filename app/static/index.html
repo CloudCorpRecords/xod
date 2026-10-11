@@ -58,10 +58,10 @@
   <!-- Marked for Markdown -->
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
-  <script src="/static/js/safe-html.js?v=moonlit38"></script>
+  <script src="/static/js/safe-html.js?v=moonlit41"></script>
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/static/css/style.css?v=moonlit38">
-  <link rel="stylesheet" href="/static/css/whimsy.css?v=moonlit38">
+  <link rel="stylesheet" href="/static/css/style.css?v=moonlit41">
+  <link rel="stylesheet" href="/static/css/whimsy.css?v=moonlit41">
 </head>
 <body class="bg-surface-900 text-zinc-100 flex flex-col h-screen overflow-hidden font-sans antialiased selection:bg-brand-600 selection:text-white relative">
   <!-- ============================================================== -->
@@ -191,6 +191,10 @@
             <button onclick="closeToolsMenu();openMcpPanel()" class="tools-menu-item">
               <i data-lucide="blocks" class="size-4 text-brand-400 shrink-0"></i>
               <div class="min-w-0"><p class="flex items-center gap-2">Connected apps</p><p>MCP tools in, Xod out</p></div>
+            </button>
+            <button onclick="closeToolsMenu();openCompanionPicker()" class="tools-menu-item">
+              <i data-lucide="palette" class="size-4 text-pink-300 shrink-0"></i>
+              <div class="min-w-0"><p class="flex items-center gap-2">Xod's look</p><p>Moon, cat, ghost, robot and more</p></div>
             </button>
             <button onclick="closeToolsMenu();openRoutingPanel()" class="tools-menu-item">
               <i data-lucide="split" class="size-4 text-indigo-300 shrink-0"></i>
@@ -404,6 +408,7 @@
           <div class="xod-hero-mascot">
             <div class="xod-bubble" id="xodBubble" role="status" aria-live="polite"></div>
             <button type="button" class="xod-mascot xod-mascot--hero" data-mood="idle" aria-label="Say hi to Xod"></button>
+            <button type="button" class="xod-look-btn" onclick="openCompanionPicker()" title="Change Xod's look" aria-label="Change Xod's look"><i data-lucide="palette" class="size-3.5"></i></button>
           </div>
           <p id="xodGreeting" class="xod-greeting"></p>
           <div id="welcomeHeroIconWrap" class="size-12 mx-auto rounded-2xl bg-gradient-to-tr from-brand-600 via-indigo-500 to-purple-600 flex items-center justify-center shadow-xl shadow-brand-500/30">
@@ -4155,21 +4160,21 @@
     </div>
   </div>
 
-  <script src="/static/js/app.js?v=moonlit38"></script>
-  <script src="/static/js/sidebar.js?v=moonlit38"></script>
-  <script src="/static/js/tasks.js?v=moonlit38"></script>
-  <script src="/static/js/health.js?v=moonlit38"></script>
-  <script src="/static/js/whimsy.js?v=moonlit38"></script>
-  <script src="/static/js/mascot.js?v=moonlit38"></script>
-  <script src="/static/js/setup.js?v=moonlit38"></script>
-  <script src="/static/js/activity.js?v=moonlit38"></script>
-  <script src="/static/js/routines.js?v=moonlit38"></script>
-  <script src="/static/js/mcp.js?v=moonlit38"></script>
-  <script src="/static/js/mail.js?v=moonlit38"></script>
-  <script src="/static/js/updates.js?v=moonlit38"></script>
-  <script src="/static/js/routing.js?v=moonlit38"></script>
-  <script src="/static/js/reports.js?v=moonlit38"></script>
-  <script src="/static/js/packs.js?v=moonlit38"></script>
+  <script src="/static/js/app.js?v=moonlit41"></script>
+  <script src="/static/js/sidebar.js?v=moonlit41"></script>
+  <script src="/static/js/tasks.js?v=moonlit41"></script>
+  <script src="/static/js/health.js?v=moonlit41"></script>
+  <script src="/static/js/whimsy.js?v=moonlit41"></script>
+  <script src="/static/js/mascot.js?v=moonlit41"></script>
+  <script src="/static/js/setup.js?v=moonlit41"></script>
+  <script src="/static/js/activity.js?v=moonlit41"></script>
+  <script src="/static/js/routines.js?v=moonlit41"></script>
+  <script src="/static/js/mcp.js?v=moonlit41"></script>
+  <script src="/static/js/mail.js?v=moonlit41"></script>
+  <script src="/static/js/updates.js?v=moonlit41"></script>
+  <script src="/static/js/routing.js?v=moonlit41"></script>
+  <script src="/static/js/reports.js?v=moonlit41"></script>
+  <script src="/static/js/packs.js?v=moonlit41"></script>
 </body>
 </html>
 
