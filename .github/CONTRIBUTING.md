@@ -38,7 +38,13 @@ Thank you for your interest in contributing to **Xod**! We welcome contributions
    .venv/bin/python tests/self_edit/run_self_edit_test.py   # needs a local model in LM Studio
    ```
 
-6. **Turn on the release check** (once per clone). It blocks commits that contain keys, databases, `.env` files or your home folder path:
+6. **Build the Mac installer** (optional). Needs Node and a standalone Python 3.12 (`uv python install 3.12`):
+   ```bash
+   cd electron && npm install && npm run dist   # → electron/dist/Xod-<version>-arm64.dmg
+   ```
+   The build installs every package into a Python that ships inside Xod.app, so people who download it install nothing on first launch.
+
+7. **Turn on the release check** (once per clone). It blocks commits that contain keys, databases, `.env` files or your home folder path:
    ```bash
    printf '#!/bin/sh\nexec python3 scripts/check_release.py --staged\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
    ```
@@ -73,4 +79,4 @@ Your personal data lives outside the repo (`~/Library/Application Support/Xod`);
 
 ## 📄 License
 
-By contributing to Xod, you agree that your contributions will be licensed under its [MIT License](LICENSE).
+By contributing to Xod, you agree that your contributions will be licensed under its [MIT License](../LICENSE).

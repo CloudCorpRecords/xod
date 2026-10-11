@@ -1,14 +1,12 @@
 from typing import Any, Dict
 
-# Shown in the app under Tools → "What's coming next", and kept in step with ROADMAP.md.
+# Shown in the app under Tools → "What's coming next", and kept in step with docs/ROADMAP.md.
 ROADMAP = [
     # ---- next
     {"status": "next", "name": "Faster answers on 16 GB Macs",
      "description": "Fewer model calls per answer and a smaller default model, so a researched answer takes well under a minute."},
     {"status": "next", "name": "Signed, notarized Mac app",
      "description": "No security warning on first open."},
-    {"status": "next", "name": "Quicker first launch",
-     "description": "A prebuilt environment instead of a few-GB install the first time Xod opens."},
     {"status": "next", "name": "One-click connected apps",
      "description": "Ready-made setups for Gmail, Calendar, Notion and GitHub, instead of pasting a config."},
     {"status": "next", "name": "Spoken replies",
@@ -21,6 +19,8 @@ ROADMAP = [
     {"status": "later", "name": "More Macs and Linux",
      "description": "Intel Macs (cloud or Ollama models) and Linux."},
     # ---- shipped in 0.1
+    {"status": "shipped", "name": "One-download install",
+     "description": "Drag Xod to Applications and open it; everything it needs comes inside the app."},
     {"status": "shipped", "name": "Built-in AI engine and setup",
      "description": "Runs a model on your Mac with no other apps; picks one that fits your memory."},
     {"status": "shipped", "name": "Routines",

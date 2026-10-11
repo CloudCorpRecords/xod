@@ -30,7 +30,9 @@ Xod runs on your own Mac with a local model. It researches the web with its own 
 
 ### Desktop app
 
-Download `Xod-<version>-arm64.dmg` from [Releases](../../releases), drag Xod to Applications and open it. On first launch Xod sets up its Python environment (a few GB, one time) and walks you through picking a model.
+1. Download `Xod-<version>-arm64.dmg` (about 600 MB) from [Releases](../../releases) and open it.
+2. Drag **Xod** onto **Applications**.
+3. Open Xod. Everything it needs is already inside the app, so it's ready in seconds; a short setup helps you pick an AI model.
 
 > The app isn't signed by Apple yet, so macOS will warn the first time: right-click Xod.app → **Open**, or allow it in System Settings → Privacy & Security.
 
@@ -93,7 +95,7 @@ Also in the box: on-device images and video (FLUX, AnimateDiff), voice input tra
 - **It asks first** before any submit, send, payment, post or delete on a website, and before running outside (MCP) tools that change things.
 - **Audited dependencies:** exact versions with no known vulnerabilities when pinned; CI re-checks weekly.
 
-Found a security problem? Please report it privately; see [SECURITY.md](SECURITY.md).
+Found a security problem? Please report it privately; see [SECURITY.md](.github/SECURITY.md).
 
 ## For developers
 
@@ -108,13 +110,14 @@ xod/
 │   │                        #   local engine, model routing, MCP client, media, packs…
 │   ├── static/              # the web UI (vanilla JS + Tailwind, libraries vendored)
 │   └── vendor/              # mflux (MIT), patched
-├── electron/                # desktop app and .dmg build
+├── electron/                # desktop app and .dmg installer (cd electron && npm run dist)
+├── docs/                    # roadmap and screenshots
 ├── scripts/                 # release checker, screenshots
 ├── tests/                   # end-to-end suites
 └── run.sh
 ```
 
-Tests: `.venv/bin/python tests/features/run_features_test.py` (and the suites in `tests/self_heal` and `tests/self_edit`). They use a throwaway data folder, never yours. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Tests: `.venv/bin/python tests/features/run_features_test.py` (and the suites in `tests/self_heal` and `tests/self_edit`). They use a throwaway data folder, never yours. See [CONTRIBUTING.md](.github/CONTRIBUTING.md).
 
 ## License
 

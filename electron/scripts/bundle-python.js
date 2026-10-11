@@ -1,6 +1,7 @@
 // Copies a standalone Python 3.12 (python-build-standalone, as installed by `uv python install 3.12`)
-// into electron/python-runtime, which electron-builder ships inside Xod.app. Then people who
-// download Xod don't need Python installed. Runs before `npm run dist`.
+// into electron/python-runtime and installs all of Xod's packages into it, so Xod.app ships
+// ready to run: people who download Xod need no Python, no Terminal and no first-run install.
+// Runs before `npm run dist`.
 //
 // Override the source with XOD_BUNDLE_PYTHON=/path/to/python-root (the folder that contains bin/).
 const { execFileSync } = require("child_process");
@@ -48,3 +49,22 @@ fs.rmSync(OUT, { recursive: true, force: true });
 copy(src, OUT);
 fs.writeFileSync(path.join(OUT, "XOD_PYTHON_VERSION"), version + "\n");
 console.log(`Bundled Python ${version} from ${src} → ${OUT}`);
+
+// Xod's packages, installed into the bundled Python itself (it's relocatable, so no venv needed).
+const py = path.join(OUT, "bin", "python3.12");
+// uv marks its Pythons "externally managed"; this copy is Xod's own, so drop the marker.
+fs.rmSync(path.join(OUT, "lib", "python3.12", "EXTERNALLY-MANAGED"), { force: true });
+const reqs = path.join(__dirname, "..", "..", "requirements.txt");
+const sh = (args) => execFileSync(py, args, { stdio: "inherit", env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: "1" } });
+sh(["-m", "pip", "install", "--no-compile", "--only-binary=:all:", "-r", reqs]);
+sh(["-m", "pip", "uninstall", "-y", "pip"]);   // the installed app never installs anything
+// Drop the packages' own test suites (never imported by the app).
+const sp = path.join(OUT, "lib", "python3.12", "site-packages");
+for (const name of fs.readdirSync(sp)) {
+  const d = path.join(sp, name, "tests");
+  if (fs.existsSync(d) && fs.lstatSync(d).isDirectory()) fs.rmSync(d, { recursive: true, force: true });
+}
+// Precompiled bytecode (hash-based, so it stays valid inside a read-only, signed app): faster launch.
+sh(["-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash", path.join(OUT, "lib", "python3.12")]);
+fs.copyFileSync(reqs, path.join(OUT, "XOD_REQUIREMENTS"));
+console.log("Installed Xod's packages into the bundled Python.");

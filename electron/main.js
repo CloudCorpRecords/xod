@@ -12,13 +12,13 @@ const path = require("path");
 app.setPath("userData", path.join(app.getPath("appData"), "Xod", "Electron"));
 const DATA_DIR = process.env.XOD_DATA_DIR || path.join(app.getPath("appData"), "Xod");
 
-// From source: the repository and its .venv. Installed (Xod.app): the Python code is bundled
-// read-only in Resources/backend, and the Python environment is made once in the data folder.
+// From source: the repository and its .venv. Installed (Xod.app): the Python code and a Python
+// with every package already installed are both inside the app (electron/scripts/bundle-python.js),
+// so nothing is installed on first launch.
 const PACKAGED = app.isPackaged;
 const ROOT = PACKAGED ? path.join(process.resourcesPath, "backend") : path.resolve(__dirname, "..");
-const VENV_DIR = PACKAGED ? path.join(DATA_DIR, "python") : path.join(ROOT, ".venv");
-const VENV_PY = path.join(VENV_DIR, "bin", "python");
-const STAMP = path.join(VENV_DIR, ".xod-requirements");
+const VENV_DIR = path.join(ROOT, ".venv");
+const PY = PACKAGED ? path.join(process.resourcesPath, "python", "bin", "python3.12") : path.join(VENV_DIR, "bin", "python");
 const PREFERRED_PORT = Number(process.env.XOD_PORT || 8000);
 
 let server = null;          // the Python process we started (null if we attached to a running one)
@@ -70,9 +70,6 @@ async function pickPort() {
 }
 
 function findPython() {
-  // Installed app: the Python bundled in Xod.app (electron/scripts/bundle-python.js).
-  const bundled = path.join(process.resourcesPath || "", "python", "bin", "python3.12");
-  if (PACKAGED && fs.existsSync(bundled)) return bundled;
   for (const cmd of ["python3.12", "python3.13", "python3.11", "python3.10", "python3"]) {
     const r = spawnSync(cmd, ["-c", "import sys; print(sys.version_info[:2] >= (3, 10))"], { encoding: "utf8" });
     if (r.status === 0 && r.stdout.trim() === "True") return cmd;
@@ -93,33 +90,27 @@ function run(cmd, args, label) {
   });
 }
 
-// First run: make the Python environment Xod needs (a few GB of packages, one time).
-// Installs again when requirements.txt changes (e.g. after an update of Xod.app).
 async function ensurePythonEnv() {
-  const reqs = fs.readFileSync(path.join(ROOT, "requirements.txt"), "utf8");
-  // The environment points at the Python it was made from; if Xod.app moved, that link is broken.
-  if (fs.existsSync(VENV_DIR) && spawnSync(VENV_PY, ["-c", "import sys"]).status !== 0) {
-    status("Repairing Xod's Python environment…");
-    fs.rmSync(VENV_DIR, { recursive: true, force: true });
+  if (PACKAGED) {
+    if (!fs.existsSync(PY)) throw new Error("This copy of Xod is incomplete. Download it again from the Releases page.");
+    // Earlier test builds installed packages into the data folder on first launch; that copy is no longer used.
+    fs.rmSync(path.join(DATA_DIR, "python"), { recursive: true, force: true });
+    return;
   }
-  const ready = fs.existsSync(VENV_PY) && (!PACKAGED || (fs.existsSync(STAMP) && fs.readFileSync(STAMP, "utf8") === reqs));
-  if (ready) return;
-  if (!fs.existsSync(VENV_PY)) {
-    const py = findPython();
-    if (!py) throw new Error("Xod needs Python 3.10 or newer (3.12 recommended). Install it from python.org, then open Xod again.");
-    status("First run: creating Xod's Python environment…");
-    fs.mkdirSync(path.dirname(VENV_DIR), { recursive: true });
-    await run(py, ["-m", "venv", VENV_DIR], "Creating environment");
-  }
+  // From source: make .venv the first time (a few GB of packages).
+  if (fs.existsSync(PY) && spawnSync(PY, ["-c", "import sys"]).status === 0) return;
+  const py = findPython();
+  if (!py) throw new Error("Xod needs Python 3.10 or newer (3.12 recommended). Install it from python.org, then open Xod again.");
+  status("First run: creating Xod's Python environment…");
+  fs.rmSync(VENV_DIR, { recursive: true, force: true });
+  await run(py, ["-m", "venv", VENV_DIR], "Creating environment");
   status("Installing Xod's packages (a few GB, one time)…");
-  await run(VENV_PY, ["-m", "pip", "install", "--upgrade", "pip"], "Updating pip");
-  await run(VENV_PY, ["-m", "pip", "install", "-r", path.join(ROOT, "requirements.txt")], "Installing packages");
-  if (PACKAGED) fs.writeFileSync(STAMP, reqs);
+  await run(PY, ["-m", "pip", "install", "-r", path.join(ROOT, "requirements.txt")], "Installing packages");
 }
 
 function serverEnv() {
   const env = { ...process.env, PYTHONUNBUFFERED: "1", XOD_DATA_DIR: DATA_DIR };
-  if (PACKAGED) Object.assign(env, { XOD_PACKAGED: "1", PYTHONDONTWRITEBYTECODE: "1" });
+  if (PACKAGED) Object.assign(env, { XOD_PACKAGED: "1", PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" });
   return env;
 }
 
@@ -132,7 +123,7 @@ async function startServer() {
   await ensurePythonEnv();
   const port = await pickPort();
   status("Starting Xod…");
-  server = spawn(VENV_PY, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)], {
+  server = spawn(PY, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)], {
     cwd: ROOT,
     env: serverEnv(),
   });
@@ -225,7 +216,32 @@ function showMain() {
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
+// Opened straight from the download (the disk image or Downloads)? Offer to install it properly.
+function offerMoveToApplications() {
+  if (!PACKAGED || process.platform !== "darwin" || app.isInApplicationsFolder()) return false;
+  const choice = dialog.showMessageBoxSync({
+    type: "question",
+    buttons: ["Move to Applications", "Not now"],
+    defaultId: 0, cancelId: 1,
+    message: "Install Xod in your Applications folder?",
+    detail: "Then you can open it from Launchpad, Spotlight or the Dock like any other app.",
+  });
+  if (choice !== 0) return false;
+  try {
+    return app.moveToApplicationsFolder({
+      conflictHandler: (type) => type === "exists"
+        ? dialog.showMessageBoxSync({ type: "question", buttons: ["Replace", "Cancel"], defaultId: 0, cancelId: 1,
+            message: "An older Xod is already in Applications. Replace it?" }) === 0
+        : true,
+    });
+  } catch (e) {
+    dialog.showErrorBox("Couldn't move Xod", String(e.message || e));
+    return false;
+  }
+}
+
 app.whenReady().then(async () => {
+  if (offerMoveToApplications()) return;    // macOS relaunches it from Applications
   lockDown();
   showSplash();
   try {

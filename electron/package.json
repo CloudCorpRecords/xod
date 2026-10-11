@@ -40,10 +40,6 @@
         ]
       },
       {
-        "from": "../requirements.txt",
-        "to": "backend/requirements.txt"
-      },
-      {
         "from": "python-runtime",
         "to": "python",
         "filter": [
@@ -71,7 +67,26 @@
       "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "dmg": {
-      "title": "Xod ${version}"
-    }
+      "title": "Install Xod",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "iconSize": 110,
+      "contents": [
+        {
+          "x": 140,
+          "y": 180,
+          "type": "file"
+        },
+        {
+          "x": 400,
+          "y": 180,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "compression": "normal"
   }
 }
