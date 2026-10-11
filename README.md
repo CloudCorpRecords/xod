@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/CloudCorpRecords/xod/releases/latest"><b>Download for Mac</b></a> ·
-  <a href="docs/media/xod-launch.mp4">Watch the 1-minute film</a> ·
+  <a href="docs/media/xod-launch.mp4">Watch the 2-minute film</a> ·
   <a href="#build-from-source">Build from source</a>
 </p>
 

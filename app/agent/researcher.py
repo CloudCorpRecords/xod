@@ -93,7 +93,7 @@ class AgenticResearcher:
         # -------------------------------------------------------------
         # STEP 1: DELIBERATION PHASE ("Think First, Decide, Then Act")
         # -------------------------------------------------------------
-        yield {"type": "status", "content": "🤔 Deliberating objective & evaluating tool requirements..."}
+        yield {"type": "status", "content": "Thinking…"}
 
         system_prompt = self.system_prompt
         try:
@@ -232,7 +232,7 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         # -------------------------------------------------------------
         # STEP 1: NEURAL DELIBERATION & FIRST-PRINCIPLES DECISION
         # -------------------------------------------------------------
-        yield {"type": "status", "content": "🤔 Deliberating objective & reasoning execution strategy..."}
+        yield {"type": "status", "content": "Planning…"}
 
         prior_messages = messages[:-1] if len(messages) > 1 else []
         deliberation = None
@@ -345,7 +345,7 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         for step in plan_steps[:-1]:
             step["status"] = "in_progress"
             yield {"type": "plan_step", "step_id": step["id"], "status": "in_progress"}
-            yield {"type": "status", "content": f"⚡ Executing Milestone {step['id']}: {step['title']}..."}
+            yield {"type": "status", "content": f"• {step['title']}…"}
 
             if step.get("is_swarm"):
                 from app.agent.swarm import SwarmCoordinator
@@ -367,20 +367,20 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                         }
                     yield ev
             elif step.get("is_visual"):
-                yield {"type": "status", "content": "👁️ Ingesting image pixels & analyzing visual scene details..."}
+                yield {"type": "status", "content": "Looking at the image…"}
                 yield {
                     "type": "evidence_update",
                     "stats": evidence_board.get_stats()
                 }
             elif step.get("is_document"):
                 doc_name = (attached_document.get("name") if attached_document else None) or "Attached Document"
-                yield {"type": "status", "content": f"📄 Ingesting document sections & extracting structure ({doc_name})..."}
+                yield {"type": "status", "content": f"Reading {doc_name}…"}
                 yield {
                     "type": "evidence_update",
                     "stats": evidence_board.get_stats()
                 }
             elif step.get("is_memory_synthesis") or step.get("is_conversational_followup"):
-                yield {"type": "status", "content": "🧠 Correlating prior research findings & contextual memory..."}
+                yield {"type": "status", "content": "Remembering what we found earlier…"}
                 yield {
                     "type": "evidence_update",
                     "stats": evidence_board.get_stats()
@@ -555,7 +555,7 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                     react_call_id = f"react_hop_{react_hop}"
                     reason = decision.get("reasoning", "Adaptive follow-up action.")
 
-                    yield {"type": "status", "content": f"🔄 ReAct Hop {react_hop}: {reason}"}
+                    yield {"type": "status", "content": f"Checking something else: {reason}"}
                     yield {
                         "type": "tool_call",
                         "name": fn_name,
@@ -650,27 +650,27 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         is_followup_memory_task = any(s.get("is_memory_synthesis") for s in plan_steps)
 
         if is_swarm_task:
-            yield {"type": "status", "content": "⚡ Conductor Xod: Synthesizing Multi-Agent Swarm Intelligence..."}
+            yield {"type": "status", "content": "Putting the team's findings together…"}
         elif is_media_task:
-            yield {"type": "status", "content": "🎵 Synthesizing Downloaded Media File Delivery & Specs..."}
+            yield {"type": "status", "content": "Writing up the download…"}
         elif is_creator_task:
-            yield {"type": "status", "content": "🎯 Synthesizing Creator Attention Arbitrage Dossier & Roster..."}
+            yield {"type": "status", "content": "Writing up the creators…"}
         elif is_job_action_task:
-            yield {"type": "status", "content": "🦾 Synthesizing Embodied Job Application & Web Form Submission Report..."}
+            yield {"type": "status", "content": "Writing up what I did on the site…"}
         elif is_file_organization_task:
-            yield {"type": "status", "content": "📁 Synthesizing File Organization & Folder Structure Summary..."}
+            yield {"type": "status", "content": "Writing up the file changes…"}
         elif is_followup_memory_task:
-            yield {"type": "status", "content": "🧠 Synthesizing Contextual Follow-Up Analysis from Memory..."}
+            yield {"type": "status", "content": "Writing the answer…"}
         elif has_image:
-            yield {"type": "status", "content": "👁️ Synthesizing Detailed Visual Scene Analysis & Walkthrough..."}
+            yield {"type": "status", "content": "Describing the image…"}
         elif has_document:
-            yield {"type": "status", "content": "📄 Synthesizing Executive Document Intelligence Report..."}
+            yield {"type": "status", "content": "Writing up the document…"}
         elif is_browser_task:
-            yield {"type": "status", "content": "🌐 Synthesizing Live Website Walkthrough & Thoughts..."}
+            yield {"type": "status", "content": "Writing up the website…"}
         elif is_computer_task:
-            yield {"type": "status", "content": "💻 Synthesizing System Execution Report..."}
+            yield {"type": "status", "content": "Writing up what I ran…"}
         else:
-            yield {"type": "status", "content": "📊 Synthesizing Institutional Due Diligence Report..."}
+            yield {"type": "status", "content": "Writing the answer…"}
 
         stats = evidence_board.get_stats()
         # Only compute and emit a formal M&A scorecard if verified financial/business metrics were uncovered
@@ -1668,8 +1668,11 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             deliberator_system_prompt = "\n".join(
                 line for line in deliberator_system_prompt.split("\n")
                 if not (m := re.match(r"\s+- ([a-z_]+):", line)) or packs.tool_allowed(m.group(1)))
-            extra = ["   - xod_make_report: Save a finished answer as a shareable page + PDF with sources. "
-                     "Args: {\"title\": \"...\", \"markdown\": \"...\"}"]
+            extra = []
+            # Only offer the report tool when a report is wanted, so plain questions get plain answers.
+            if re.search(r"\b(report|pdf|share|send this|write[- ]?up)\b", query or "", re.I):
+                extra.append("   - xod_make_report: Save a finished answer as a shareable page + PDF with sources. "
+                             "Args: {\"title\": \"...\", \"markdown\": \"...\"}")
             from app.services.mcp_client import mcp_hub
             mcp_tools = [d["function"] for d in mcp_hub.tool_definitions()][:12]
             if mcp_tools:
@@ -1729,21 +1732,25 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
                             yield {"type": "reasoning", "content": content}
                     elif chunk_type == "content":
                         tok = chunk.get("content", "")
+                        had_brace = "{" in raw_accumulated
                         raw_accumulated += tok
-                        # If model streams reasoning as raw prose before opening json bracket '{'
-                        if "{" not in raw_accumulated:
-                            yield {"type": "reasoning", "content": tok}
-                            emitted_any_reasoning = True
+                        # Some models write prose before the JSON. Show it as a thought once the JSON
+                        # starts, unless it's only a code fence like ```json.
+                        if not had_brace and "{" in raw_accumulated:
+                            prose = re.sub(r"```\w*", "", raw_accumulated.split("{", 1)[0]).strip()
+                            if len(prose) >= 20:
+                                yield {"type": "reasoning", "content": prose + "\n"}
+                                emitted_any_reasoning = True
                 parsed = parse_llm_json(raw_accumulated)
                 if parsed and (parsed.get("plan_steps") or parsed.get("steps") or parsed.get("direct_response")
                                or parsed.get("decision") in ("direct_response", "respond", "answer")):
                     break
                 if think_mode is False:
-                    yield {"type": "status", "content": "🤔 Thinking it through more carefully…"}
+                    yield {"type": "status", "content": "Thinking it through more carefully…"}
             if not parsed:
                 raise ValueError(f"Planner returned no usable JSON: {raw_accumulated[:200]!r}")
 
-            thought = parsed.get("thought") or "Deliberated user objective and planned optimal actions."
+            thought = parsed.get("thought") or ""
             if not emitted_any_reasoning and thought:
                 yield {"type": "reasoning", "content": f"{thought}\n"}
 
@@ -1892,9 +1899,9 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
         elif "technologies" in result:
             return f"Audited {result.get('domain', 'target')}: {result.get('total_technologies_detected', 0)} tech badges detected"
         elif "results" in result:
-            prov = "Tavily AI" if result.get("provider") == "tavily" else ("You.com" if result.get("provider") == "you.com" else "Web")
+            prov = "Tavily" if result.get("provider") == "tavily" else ("You.com" if result.get("provider") == "you.com" else "web")
             ans_note = f" (Answer: '{result.get('answer')[:45]}...')" if result.get("answer") else ""
-            return f"Found {len(result.get('results', []))} {prov} search results{ans_note}"
+            return f"Found {len(result.get('results', []))} {prov} results{ans_note}"
         elif "count" in result and "query" in result and "root" in result:
             return f"Spotlight Search '{result.get('query')}': Discovered {result.get('count', 0)} file(s)"
         elif "diagnoses" in result and "remediations" in result:
@@ -1910,7 +1917,7 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             return f"Discovered & Scored {len(result.get('shortlisted_candidates', []))} creators (Blended Predicted CPM: ${blended_cpm:.2f})"
         elif "predicted_cpm" in result and "handle" in result:
             return f"Modelled {result.get('handle')}: Predicted CPM ${result.get('predicted_cpm', 0.0):.2f} ({result.get('arbitrage_multiple', 1.0):.2f}x arbitrage)"
-        return "Intelligence gathered"
+        return "Done"
 
     def _clean_tool_payload(self, tool_name: str, result: Dict[str, Any]) -> Dict[str, Any]:
         """

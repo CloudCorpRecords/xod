@@ -54,9 +54,12 @@ def _stored() -> Optional[Dict[str, bool]]:
 def enabled() -> Set[str]:
     stored = _stored()
     if stored is None:
+        # Decided once, then saved: installs from before add-ons existed keep everything on; new
+        # installs (which only have the sample "Getting started" chat) start with the defaults.
         try:
-            from app.services.storage import list_sessions
-            existing = bool(list_sessions())
+            from app.services.storage import list_sessions, set_setting
+            existing = len(list_sessions()) > 1
+            set_setting("packs", json.dumps({p["id"]: bool(existing or p["default"]) for p in PACKS}))
         except Exception:
             existing = False
         return {p["id"] for p in PACKS if existing or p["default"]}

@@ -148,11 +148,11 @@ class Scenes:
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             time.sleep(2)
-            body = json.dumps({"request": "Go to http://localhost:8799/messages and send the Acme recruiter this message: "
+            body = json.dumps({"request": "Reply to Dana at Acme on the job board (http://localhost:8799/messages): "
                                             "\"Hi Dana, thanks for the call today. I'm excited about the role and happy to share more examples.\""}).encode()
             req = urllib.request.Request(self.url + "/api/tasks", data=body, headers={"Content-Type": "application/json"})
             task = json.loads(urllib.request.urlopen(req).read())
-            tid = task.get("id") or (task.get("task") or {}).get("id")
+            tid = (task.get("task") or {}).get("id") or task.get("id")
             print("approval: task", tid)
             t0 = time.time()
             while time.time() - t0 < 900:
@@ -176,30 +176,62 @@ class Scenes:
                     await s.move(btn[0], btn[1], 1.0)
                     await asyncio.sleep(0.8)
                     await s.click(at=btn, move=0.1)
-                await asyncio.sleep(6)
-                frames_to_mp4(await s.stop_recording(), self.clip("app-approval"))
+                await asyncio.sleep(2.5)
+                part1 = await s.stop_recording()
+                # Xod presses Send (once) and finishes: fast-forwarded.
+                await s.move(W - 300, H - 120, 0.4)
+                await s.start_recording()
+                t0 = time.time()
+                while time.time() - t0 < 600:
+                    lst = json.loads(urllib.request.urlopen(f"{self.url}/api/tasks").read())["tasks"]
+                    if next((t["status"] for t in lst if t["id"] == tid), None) in ("done", "failed", "waiting"):
+                        break
+                    await asyncio.sleep(2)
+                await asyncio.sleep(2.5)
+                part2 = await s.stop_recording()
+                crop = (W - 960, 0, 960, 540)
+                frames_to_mp4(part1, self.work / "app-approval-a.mp4", crop=crop, scale=1.5)
+                waited = part2[-1][0] - part2[0][0] if part2 else 1
+                frames_to_mp4(part2, self.work / "app-approval-b.mp4", crop=crop, scale=1.5, speed=max(10, waited / 7))
+                join([self.work / "app-approval-a.mp4", self.work / "app-approval-b.mp4"], self.clip("app-approval"), fade=0.3)
+                sent = json.loads(urllib.request.urlopen("http://localhost:8799/admin/state").read()).get("messages")
+                print("approval: messages sent:", len(sent or []))
         finally:
             mock.terminate()
 
     async def routine(self):
-        """Turn the answer into a routine that runs every Monday."""
+        """Turn the answer into a routine that runs every Monday morning."""
         sid = (self.work / "research-session.txt").read_text().strip() if (self.work / "research-session.txt").exists() else ""
         async with Studio(width=W, height=H, scale=1.5, port=9485) as s:
             await self.fresh(s)
             if sid:
                 await s.js(f"selectSession({json.dumps(sid)})")
                 await asyncio.sleep(2)
-            await s.start_recording()
-            await asyncio.sleep(0.5)
-            btn = await s.js("""(() => { const b = [...document.querySelectorAll('button')].filter(b => /save as routine/i.test(b.innerText || b.title || '') ).pop();
+            btn = await s.js("""(() => { const b = [...document.querySelectorAll('button')].filter(b => /save as routine/i.test(b.innerText || '')).pop();
                 if (!b) return null; b.scrollIntoView({block: 'center'}); const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()""")
+            await s.move(W / 2, H / 2, 0.1)
+            await s.start_recording()
+            await asyncio.sleep(0.4)
             if btn:
-                await asyncio.sleep(0.6)
-                await s.click(at=btn, move=1.0)
-                await asyncio.sleep(2.5)
+                await s.click(at=btn, move=0.9)
+            await asyncio.sleep(1.4)
+            # When: on certain days → Monday at 8:00
+            await s.click("#rtKind", move=0.7)
+            await s.js("(() => { const k = document.getElementById('rtKind'); k.value = 'weekly'; k.dispatchEvent(new Event('change', {bubbles: true})); })()")
+            await asyncio.sleep(0.6)
+            await s.click("#rtDays input[value='mon']", move=0.6)
+            await s.js("(() => { const t = document.getElementById('rtTime'); t.value = '08:00'; t.dispatchEvent(new Event('change', {bubbles: true})); })()")
+            await asyncio.sleep(0.8)
+            await s.click("[data-ed='save']", move=0.7)
+            await asyncio.sleep(1.2)
+            part1 = await s.stop_recording()
+            await s.start_recording()
             await s.js("openRoutinesPanel()")
-            await asyncio.sleep(3.5)
-            frames_to_mp4(await s.stop_recording(), self.clip("app-routine"))
+            await asyncio.sleep(3.2)
+            part2 = await s.stop_recording()
+            frames_to_mp4(part1, self.work / "app-routine-a.mp4", crop=(W / 2 - 640, 100, 1280, 720), scale=1.5)
+            frames_to_mp4(part2, self.work / "app-routine-b.mp4", crop=(W - 960, 0, 960, 540), scale=1.5)
+            join([self.work / "app-routine-a.mp4", self.work / "app-routine-b.mp4"], self.clip("app-routine"), fade=0.3)
 
     async def undo(self):
         """The activity log, and one click to put a change back."""
@@ -216,7 +248,7 @@ class Scenes:
                 await asyncio.sleep(0.6)
                 await s.click(at=btn, move=0.1)
             await asyncio.sleep(3)
-            frames_to_mp4(await s.stop_recording(), self.clip("app-undo"))
+            frames_to_mp4(await s.stop_recording(), self.clip("app-undo"), crop=(W - 960, 0, 960, 540), scale=1.5)
 
 
 def join(clips, out: Path, fade=0.45):
@@ -238,6 +270,20 @@ def join(clips, out: Path, fade=0.45):
                     "-c:v", "libx264", "-preset", "slow", "-crf", "20", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)],
                    check=True)
     return out
+
+
+def retime(src: Path, out: Path, start=0.0, dur=None, speed=1.0):
+    """Trims and/or speeds up a clip for the final edit."""
+    t = ["-ss", str(start)] + (["-t", str(dur)] if dur else [])
+    subprocess.run([ffmpeg(), "-y", "-loglevel", "error", *t, "-i", str(src), "-vf", f"setpts=PTS/{speed}",
+                    "-an", "-c:v", "libx264", "-crf", "16", "-preset", "fast", str(out)], check=True)
+    return out
+
+
+# The final cut: (start, length, speed) per clip.
+EDIT = {"app-home": (2.5, 13.0, 1.0), "app-research-1": (0.3, None, 1.15), "app-research-2": (0.0, None, 1.8),
+        "app-research-3": (0.0, None, 1.4), "app-routine": (0.0, None, 1.25),
+        **{f"card-{c}": (0.0, 3.7, 1.0) for c in ("private", "research", "asks", "routines", "undo", "more")}}
 
 
 def gif(src: Path, out: Path, start=0.0, dur=None, width=880, fps=18):
@@ -274,7 +320,8 @@ async def main():
              c("card-undo"), c("app-undo"), c("card-more"), c("card-end")]
     have = [p for p in order if p.exists()]
     if len(have) == len(order):
-        join(have, out / "xod-launch.mp4")
+        cut = [retime(p, work / f"cut-{p.name}", *EDIT[p.stem]) if p.stem in EDIT else p for p in order]
+        join(cut, out / "xod-launch.mp4")
         print("video:", out / "xod-launch.mp4")
     else:
         print("missing clips:", [p.name for p in order if not p.exists()])

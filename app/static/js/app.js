@@ -2461,7 +2461,10 @@ function renderStoredAssistantMessage(m) {
   let toolsHtml = "";
   if (m.tool_events && m.tool_events.length > 0) {
     toolsHtml = `<div class="tools-container flex flex-wrap gap-2">`;
+    // One chip per call: a call that got a result is shown by its result.
+    const answered = new Set(m.tool_events.filter((t) => t.type === "tool_result" && t.id).map((t) => t.id));
     for (const t of m.tool_events) {
+      if (t.type === "tool_call" && t.id && answered.has(t.id)) continue;
       if (t.type === "tool_call" || t.type === "tool_result") {
         const icon = getToolIcon(t.name);
         const label = formatToolName(t.name);
@@ -2533,7 +2536,7 @@ function renderStoredAssistantMessage(m) {
       </div>
       <div class="action-footer flex items-center gap-2 pt-2 border-t border-surface-800 text-xs text-zinc-400">
         <button class="btn-copy hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors">
-          <i data-lucide="copy" class="size-3.5"></i> Copy Report
+          <i data-lucide="copy" class="size-3.5"></i> Copy
         </button>
         <button class="btn-export hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors">
           <i data-lucide="download" class="size-3.5"></i> Export Markdown
@@ -2548,7 +2551,7 @@ function renderStoredAssistantMessage(m) {
           <i data-lucide="share-2" class="size-3.5"></i> Share report
         </button>
         <button class="btn-open-trace hover:text-indigo-300 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-indigo-400 transition-colors font-medium ml-auto" title="Open full LLM Observability & Action Trace">
-          <i data-lucide="activity" class="size-3.5"></i> Observability Trace
+          <i data-lucide="activity" class="size-3.5"></i> How I got this
         </button>
       </div>
     </div>
@@ -2567,7 +2570,7 @@ function renderStoredAssistantMessage(m) {
       navigator.clipboard.writeText(m.content || "");
       copyBtn.innerHTML = `<i data-lucide="check" class="size-3.5 text-emerald-400"></i> Copied!`;
       setTimeout(() => {
-        copyBtn.innerHTML = `<i data-lucide="copy" class="size-3.5"></i> Copy Report`;
+        copyBtn.innerHTML = `<i data-lucide="copy" class="size-3.5"></i> Copy`;
         if (window.lucide) lucide.createIcons();
       }, 2000);
     });
@@ -2910,7 +2913,7 @@ async function handleChatSubmit(e) {
   // Prepare assistant response container
   const assistantBubble = createAssistantMessageContainer();
   isStreaming = true;
-  updateLiveStatusBar(true, "Deliberating objective & thinking in tools...");
+  updateLiveStatusBar(true, "Thinking…");
 
   currentAbortController = new AbortController();
 
@@ -3003,7 +3006,7 @@ function updateLiveStatusBar(show, text = "") {
     if (island) island.setAttribute("data-island-state", "executing");
     if (idleBar) idleBar.classList.add("hidden");
     if (missionBar) missionBar.classList.remove("hidden");
-    if (missionStatus) missionStatus.textContent = text || "Deliberating research objective...";
+    if (missionStatus) missionStatus.textContent = text || "Thinking…";
     if (!missionTimerInterval) startMissionTimer();
   } else {
     if (bar) bar.classList.add("hidden");
@@ -3287,7 +3290,7 @@ function createAssistantMessageContainer() {
           </summary>
           <div class="thinking-body p-3.5 pt-2.5 border-t border-white/[0.06] bg-black/25 relative space-y-2">
             <div class="thinking-live-header flex items-center justify-between pb-1 text-xs">
-              <span class="text-[11px] text-zinc-400">Autonomous Deliberation Stream</span>
+              <span class="text-[11px] text-zinc-400">Thoughts</span>
               <button type="button" class="btn-copy-thinking text-zinc-500 hover:text-white p-1 rounded hover:bg-white/10 transition-colors" title="Copy thoughts">
                 <i data-lucide="copy" class="size-3.5"></i>
               </button>
@@ -3306,14 +3309,14 @@ function createAssistantMessageContainer() {
       <!-- Main Synthesis Content -->
       <div class="prose-custom min-w-0">
         <span class="inline-flex items-center gap-2 text-zinc-400 text-xs animate-pulse font-mono">
-          <span class="size-2 rounded-full bg-brand-400 animate-ping"></span> Synthesizing intelligence...
+          <span class="size-2 rounded-full bg-brand-400 animate-ping"></span> Working on it…
         </span>
       </div>
 
       <!-- Action Footer -->
       <div class="action-footer hidden flex items-center gap-2 pt-2.5 border-t border-white/[0.08] text-xs text-zinc-400">
         <button class="btn-copy hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors">
-          <i data-lucide="copy" class="size-3.5"></i> Copy Report
+          <i data-lucide="copy" class="size-3.5"></i> Copy
         </button>
         <button class="btn-export hover:text-white flex items-center gap-1 ml-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors">
           <i data-lucide="download" class="size-3.5"></i> Export Markdown
@@ -3328,7 +3331,7 @@ function createAssistantMessageContainer() {
           <i data-lucide="share-2" class="size-3.5"></i> Share report
         </button>
         <button class="btn-open-trace hover:text-indigo-300 flex items-center gap-1 ml-auto px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-indigo-400 transition-colors font-medium" title="Open full LLM Observability & Action Trace">
-          <i data-lucide="activity" class="size-3.5"></i> Observability Trace
+          <i data-lucide="activity" class="size-3.5"></i> How I got this
         </button>
       </div>
     </div>
@@ -3573,8 +3576,8 @@ function createAssistantMessageContainer() {
     updateEvidence(stats) {
       if (!stats) return;
       evidenceHud.classList.remove("hidden");
-      hudMetrics.textContent = `📊 ${stats.metrics_count || 0} Metrics Verified`;
-      hudTech.textContent = `🛠️ ${stats.tech_count || 0} Tech Badges`;
+      hudMetrics.textContent = `${stats.metrics_count || 0} facts checked`;
+      hudTech.textContent = `${stats.tech_count || 0} tech found`;
       hudSources.textContent = `🌐 ${stats.sources_count || 0} Web Sources`;
     },
     setScorecard(scorecard, entityName) {
@@ -4208,7 +4211,7 @@ function createAssistantMessageContainer() {
       navigator.clipboard.writeText(assistantBubble.fullContent);
       copyBtn.innerHTML = `<i data-lucide="check" class="size-3.5 text-emerald-400"></i> Copied!`;
       setTimeout(() => {
-        copyBtn.innerHTML = `<i data-lucide="copy" class="size-3.5"></i> Copy Report`;
+        copyBtn.innerHTML = `<i data-lucide="copy" class="size-3.5"></i> Copy`;
         if (window.lucide) lucide.createIcons();
       }, 2000);
     });
@@ -4773,31 +4776,31 @@ function formatToolName(name) {
     "trustmrr_get_startup": "TrustMRR Dossier",
     "trustmrr_compare_startups": "TrustMRR Benchmark",
     "trustmrr_screen_deals": "TrustMRR Deal Screener",
-    "tavily_search": "Tavily AI Research",
-    "you_search": "You.com Web Intel",
-    "you_news_search": "You.com News Intel",
-    "web_search": "Live Web Search",
-    "web_scrape": "Page Scraper",
-    "calculate_saas_metrics": "Financial Model",
-    "browser_navigate": "Autonomous Browser Navigator",
-    "browser_click": "Synthetic Browser Click",
-    "browser_type": "Synthetic Form Input",
-    "browser_snapshot": "Live Browser Snapshot",
-    "browser_extract_content": "Live Browser DOM Extraction",
-    "browser_evaluate_script": "Browser JavaScript Execution",
-    "computer_run_command": "Background Shell Execution",
-    "computer_inspect_system": "System Telemetry & Load",
-    "computer_notify_user": "macOS Native Notification",
+    "tavily_search": "Web search",
+    "you_search": "Web search (You.com)",
+    "you_news_search": "News search",
+    "web_search": "Web search",
+    "web_scrape": "Read a page",
+    "calculate_saas_metrics": "Did the math",
+    "browser_navigate": "Opened a page",
+    "browser_click": "Clicked",
+    "browser_type": "Typed",
+    "browser_snapshot": "Looked at the page",
+    "browser_extract_content": "Read the page",
+    "browser_evaluate_script": "Ran a script on the page",
+    "computer_run_command": "Ran a command",
+    "computer_inspect_system": "Checked the Mac",
+    "computer_notify_user": "Sent a notification",
     "computer_reveal_finder": "Reveal in macOS Finder",
-    "computer_find_files": "Spotlight Global Search",
-    "computer_read_file": "Inspect File Lines",
-    "computer_write_file": "Write Computer File",
-    "computer_edit_file": "Surgical File Update",
-    "computer_directory_tree": "Directory Tree Visualizer",
-    "computer_list_directory": "Explore Mac Directory",
-    "computer_batch_organize": "Batch File Organizer",
-    "computer_open_item": "Launch macOS App / Path",
-    "computer_run_applescript": "Execute AppleScript",
+    "computer_find_files": "Searched files",
+    "computer_read_file": "Read a file",
+    "computer_write_file": "Wrote a file",
+    "computer_edit_file": "Edited a file",
+    "computer_directory_tree": "Looked at a folder",
+    "computer_list_directory": "Looked at a folder",
+    "computer_batch_organize": "Tidied a folder",
+    "computer_open_item": "Opened",
+    "computer_run_applescript": "Ran AppleScript",
     "computer_hardware_overview": "macOS Hardware & Power",
     "computer_manage_file": "File Operations & Trash",
     "computer_clipboard": "System Clipboard",
@@ -10450,7 +10453,7 @@ async function cockpitRunBrowserMission(goalParam = null, urlParam = null) {
   if (deck) deck.classList.remove("hidden");
   if (toggleBtn) toggleBtn.classList.remove("hidden");
   if (answerCard) answerCard.classList.add("hidden");
-  if (statusTitle) statusTitle.textContent = "Autonomous Mission Deliberating...";
+  if (statusTitle) statusTitle.textContent = "Thinking…";
   if (stepsList) {
     stepsList.innerHTML = `
       <div class="flex items-center gap-2 p-2 rounded-lg bg-surface-900 border border-surface-750 text-xs text-zinc-300">
