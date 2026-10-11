@@ -532,6 +532,25 @@ async def mcp_call_endpoint(req: MCPCall):
     return await execute_tool(req.tool, req.args or {})
 
 
+# ---- "A new version is out" (services/updates.py)
+
+class UpdateSettings(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/update")
+async def update_status(force: bool = False):
+    from app.services import updates
+    return await updates.status(force=force)
+
+
+@app.post("/api/update/settings")
+async def update_settings(req: UpdateSettings):
+    from app.services import updates
+    updates.set_enabled(req.enabled)
+    return {"success": True, "enabled": updates.enabled()}
+
+
 # ---- Agent Mail (services/agent_mail.py): encrypted messages between Xods
 
 class MailSetup(BaseModel):

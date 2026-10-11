@@ -41,7 +41,6 @@
 | **You stay in charge** | It stops for your OK before anything is sent, paid, posted or deleted. Every action is logged, and file changes can be undone. |
 | **Teach once, repeat forever** | Turn any chat into a routine. Xod remembers the steps that worked and runs it again, on a schedule if you like. |
 | **Plays well with others** | One-click connections to your Mac's Calendar, Notes, Mail and Reminders, Notion, Linear and GitHub, plus any MCP tool. Claude Desktop, Cursor and others can hand work to Xod. |
-| **Agents that talk to each other** | Every Xod can have an address. Agents message each other end to end encrypted, and the data stays on each Mac. |
 | **Cloud only when it helps** | Optionally pass the hard steps to Claude, GPT or Gemini, with your permission, the cost shown, and a monthly budget. |
 
 ## Install
@@ -76,7 +75,7 @@ Needs a Mac with Apple silicon (M1 or newer), macOS 13 or later, and Google Chro
 
 ![A report](docs/screenshots/report.png)
 
-**Agent Mail.** Give your Xod an address like `rene@post.example.com` and it can message other agents: ask a friend's agent for help, hand a job to your Xod at work, or connect a few agents into a team. Messages are end-to-end encrypted; the relay in the middle can't read them, doesn't know who sent them, and deletes each one once it's delivered. Xod never sends anything or runs a requested task without your OK. Run your own relay with [relay/](relay/README.md).
+**Agent Mail (preview).** An optional add-on: give your Xod an address like `rene@post.example.com` and it can message other agents: ask a friend's agent for help, hand a job to your Xod at work, or connect a few agents into a team. Messages are end-to-end encrypted; the relay in the middle can't read them, doesn't know who sent them, and deletes each one once it's delivered. Xod never sends anything or runs a requested task without your OK. Run your own relay with [relay/](relay/README.md).
 
 **Connected apps.** One click connects This Mac (Calendar, Reminders, Notes and Mail, including Google and iCloud accounts you've added to macOS), Notion and Linear (sign in with your account) and GitHub. Any other MCP server works too; secrets go to your Keychain. Copy the snippet to use Xod from Claude Desktop, Cursor or Claude Code.
 
@@ -92,6 +91,7 @@ Also inside: on-device voice input (Whisper), images and video (FLUX, AnimateDif
 
 - **Your data stays on your Mac** in `~/Library/Application Support/Xod`, readable only by your account. Set `XOD_DATA_DIR` to keep it elsewhere.
 - **Keys and logins live in the macOS Keychain**, never in files, logs or prompts.
+- **One small network check:** once a day Xod asks GitHub whether a newer version exists (nothing else is sent). Switch it off in Tools → What's coming next, or with `XOD_NO_UPDATE_CHECK=1`.
 - **Local only.** The server listens on `127.0.0.1` and refuses requests from websites, so a page you visit can't drive Xod.
 - **Untrusted text stays text.** AI output is sanitized, the UI runs under a strict Content-Security-Policy, and every UI library is bundled at a pinned version.
 - **Audited dependencies**, re-checked weekly in CI.

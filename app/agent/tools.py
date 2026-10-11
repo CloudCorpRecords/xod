@@ -2632,7 +2632,9 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         from app.services.mcp_client import mcp_hub
         return await mcp_hub.call(name, arguments or {})
     if name in ("agent_mail_send", "agent_mail_inbox"):
-        from app.services import agent_mail
+        from app.services import agent_mail, packs as _packs
+        if not _packs.tool_allowed(name):
+            return {"success": False, "error": "Agent Mail is a preview add-on and it's off (Tools → Add-ons)."}
         try:
             if name == "agent_mail_send":
                 return agent_mail.draft(arguments.get("to"), arguments.get("text", ""), arguments.get("subject", ""),

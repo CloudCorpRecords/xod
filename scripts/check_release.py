@@ -90,6 +90,15 @@ def main() -> int:
         if hit:
             line = text.count("\n", 0, text.index(hit)) + 1
             problems.append(f"{f}:{line}: contains your home folder path")
+    # One version everywhere: the app's own (app/version.py) and the installer's (electron/package.json).
+    try:
+        import json, re as _re
+        app_v = _re.search(r'VERSION = "([^"]+)"', open("app/version.py").read()).group(1)
+        pkg_v = json.load(open("electron/package.json"))["version"]
+        if app_v != pkg_v:
+            problems.append(f"app/version.py says {app_v} but electron/package.json says {pkg_v}")
+    except (OSError, AttributeError, KeyError, ValueError):
+        pass
     if problems:
         print("✋ Not safe to publish yet:\n  " + "\n  ".join(problems))
         print("\nFix these (or add the file to .gitignore). Secrets belong in the Keychain, not in files.")

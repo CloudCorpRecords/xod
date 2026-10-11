@@ -45,4 +45,5 @@ ROADMAP = [
 
 
 def get_project_roadmap() -> Dict[str, Any]:
-    return {"title": "What's coming next", "version": "0.2.0", "items": ROADMAP}
+    from app.version import VERSION
+    return {"title": "What's coming next", "version": VERSION, "items": ROADMAP}

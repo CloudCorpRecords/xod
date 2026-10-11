@@ -1685,8 +1685,14 @@ async function fetchRoadmap() {
     const res = await fetch("/api/roadmap");
     const data = await res.json();
     const items = data.items || [];
-    const groups = [["next", "Next", "text-brand-300"], ["later", "Later", "text-indigo-300"], ["shipped", "Shipped in 0.1", "text-emerald-300"]];
-    let html = "";
+    const groups = [["next", "Next", "text-brand-300"], ["later", "Later", "text-indigo-300"], ["shipped", "Already in Xod", "text-emerald-300"]];
+    let upd = {};
+    try { upd = await (await fetch("/api/update")).json(); } catch (e) {}
+    let html = `<div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-surface-750/70 border border-white/[0.06] text-[12px] text-zinc-300">
+      <span>You have Xod ${escapeHtml(upd.current || "")}${upd.available ? ` · <a href="${escapeHtml(upd.url)}" target="_blank" rel="noopener" class="text-brand-300 hover:underline">${escapeHtml(upd.latest)} is out</a>` : upd.latest ? " · up to date" : ""}</span>
+      <label class="flex items-center gap-1.5 text-zinc-400" title="Once a day Xod asks GitHub for the latest version. Nothing else is sent.">
+        <input type="checkbox" class="accent-amber-400" ${upd.enabled ? "checked" : ""} onchange="fetch('/api/update/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:this.checked})})"> Tell me about new versions</label>
+    </div>`;
     for (const [key, label, color] of groups) {
       const list = items.filter((i) => i.status === key);
       if (!list.length) continue;

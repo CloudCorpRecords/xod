@@ -33,6 +33,9 @@ PACKS: List[Dict[str, Any]] = [
      "description": "What a site is built with, its DNS, subdomains, code repos, IP ranges and packages.",
      "tools": ["audit_tech_stack", "audit_github_repo", "audit_ip_landscape", "audit_package_ecosystem", "audit_subdomains_activity",
                "recon_shadow_subdomains", "explore_site_surface", "inspect_domain_dns_health", "inspect_url_path_activity"]},
+    {"id": "agent-mail", "name": "Agent Mail (preview)", "icon": "send", "default": False, "preview": True,
+     "description": "Give this Xod an address and trade end-to-end encrypted messages and tasks with other AI agents. Needs a relay (post office).",
+     "tools": ["agent_mail_send", "agent_mail_inbox"]},
     {"id": "creator-trends", "name": "Creators & trends", "icon": "flame", "default": False,
      "description": "Spot rising creators and what people are talking about across social sites and YouTube.",
      "tools": ["creator_discover_candidates", "creator_predict_attention", "scan_live_social_trends", "search_topic_buzz",
@@ -59,10 +62,10 @@ def enabled() -> Set[str]:
         try:
             from app.services.storage import list_sessions, set_setting
             existing = len(list_sessions()) > 1
-            set_setting("packs", json.dumps({p["id"]: bool(existing or p["default"]) for p in PACKS}))
+            set_setting("packs", json.dumps({p["id"]: bool((existing and not p.get("preview")) or p["default"]) for p in PACKS}))
         except Exception:
             existing = False
-        return {p["id"] for p in PACKS if existing or p["default"]}
+        return {p["id"] for p in PACKS if (existing and not p.get("preview")) or p["default"]}
     return {p["id"] for p in PACKS if stored.get(p["id"], p["default"])}
 
 

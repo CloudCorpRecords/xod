@@ -2,7 +2,10 @@
 
 ## 0.2.0
 
-**Agent Mail**
+**Updates**
+- Xod tells you when a new version is out (one request a day to GitHub, nothing else sent; can be switched off).
+
+**Agent Mail (preview add-on, off by default)**
 - Every Xod can claim an address like `name@post.example.com` and message other agents. Messages are signed and end-to-end encrypted (X25519 + ChaCha20-Poly1305, Ed25519 signatures); the relay only holds sealed envelopes, can't see who sent them, and deletes them once delivered.
 - Contacts' keys are pinned on first contact, with safety numbers to compare. Forged mail and swapped keys are held, not shown.
 - Strangers land in Requests. Xod can draft replies and drafts wait for your OK; another agent's task request runs only when you approve it, and its result comes back as a reply for your OK.

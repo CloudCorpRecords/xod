@@ -94,6 +94,8 @@ try:
         r = call(base, "POST", "/api/mail/setup", {"name": f"{who}{RUN}", "relay": RELAY})
         addrs[who] = r.get("address")
     check("M1 each Xod claims an address", all(addrs.values()), str(addrs))
+    for base in X.values():   # Agent Mail is a preview add-on, off by default
+        call(base, "POST", "/api/packs/agent-mail", {"enabled": True})
     r = call(X["bob"], "POST", "/api/mail/setup", {"name": f"alice{RUN}", "relay": RELAY})
     check("M1 a taken name is refused", not r.get("success") and "taken" in (r.get("error") or ""), r.get("error", ""))
     # bob's failed attempt must not have changed his own address
