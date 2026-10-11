@@ -450,15 +450,11 @@ class SystemControlService:
         Sends a native macOS notification banner without stealing window focus.
         Optionally plays a gentle subtle chime.
         """
-        escaped_title = title.replace('"', '\\"')
-        escaped_msg = message.replace('"', '\\"')
-        script = f'display notification "{escaped_msg}" with title "{escaped_title}"'
-        if sound:
-            script += ' sound name "Tink"'
-
+        # Text goes in as arguments, never pasted into the script: a message can't break out and run AppleScript.
+        line = 'display notification (item 2 of argv) with title (item 1 of argv)' + (' sound name "Tink"' if sound else "")
         try:
             proc = await asyncio.create_subprocess_exec(
-                "osascript", "-e", script,
+                "osascript", "-e", "on run argv", "-e", line, "-e", "end run", str(title)[:200], str(message)[:500],
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
@@ -626,10 +622,16 @@ class SystemControlService:
             return {"success": False, "error": f"Source path does not exist: {src_path}"}
 
         if action == "trash":
-            script = f'tell application "Finder" to delete POSIX file "{src_path}"'
+            # /usr/bin/trash (macOS 14+) takes the path as an argument: no Finder permission prompt, and no way
+            # for a file name to inject AppleScript. Older macOS: Finder, with the path passed as an argument too.
+            if os.path.exists("/usr/bin/trash"):
+                argv = ["/usr/bin/trash", src_path]
+            else:
+                argv = ["osascript", "-e", "on run argv", "-e", 'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)',
+                        "-e", "end run", src_path]
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "osascript", "-e", script,
+                    *argv,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )

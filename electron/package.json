@@ -8,7 +8,9 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --mac dmg --arm64"
+    "bundle-python": "node scripts/bundle-python.js",
+    "dist": "npm run bundle-python && electron-builder --mac dmg --arm64 -c.mac.identity=null",
+    "dist:signed": "npm run bundle-python && electron-builder --mac dmg --arm64 -c.mac.hardenedRuntime=true -c.mac.notarize=true"
   },
   "devDependencies": {
     "electron": "^44.7.0",
@@ -40,6 +42,13 @@
       {
         "from": "../requirements.txt",
         "to": "backend/requirements.txt"
+      },
+      {
+        "from": "python-runtime",
+        "to": "python",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "mac": {
@@ -54,11 +63,12 @@
       "category": "public.app-category.productivity",
       "icon": "build/icon.png",
       "minimumSystemVersion": "13.0",
-      "identity": null,
       "hardenedRuntime": false,
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Xod listens when you use voice input. Audio is transcribed on this Mac and never uploaded."
-      }
+      },
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
     "dmg": {
       "title": "Xod ${version}"

@@ -52,6 +52,9 @@ class MemoryBroker:
     async def _teacher_status(self) -> Optional[Dict[str, Any]]:
         try:
             from app.config import settings
+            if settings.llm_provider == "xod":
+                from app.services.local_engine import local_engine
+                return {"key": local_engine.repo, "instance_id": None, "builtin": True} if local_engine.running() else None
             if settings.llm_provider != "lm_studio":
                 return None
             from app.services.llm import llm_service
@@ -63,9 +66,13 @@ class MemoryBroker:
         loaded = await self._teacher_status()
         if not loaded:
             return False
-        from app.services.llm import llm_service
-        await llm_service.unload_lmstudio_model(loaded.get("instance_id"))
-        self.teacher_paused = {"key": loaded["key"], "context_length": loaded.get("context_length")}
+        if loaded.get("builtin"):
+            from app.services.local_engine import local_engine
+            await local_engine.stop()   # started again by the next chat message (local_engine.ensure_running)
+        else:
+            from app.services.llm import llm_service
+            await llm_service.unload_lmstudio_model(loaded.get("instance_id"))
+        self.teacher_paused = {"key": loaded["key"], "context_length": loaded.get("context_length"), "builtin": bool(loaded.get("builtin"))}
         self._log(f"Paused the chat model ({loaded['key']}) to make room")
         await asyncio.sleep(1.5)
         return True
@@ -73,6 +80,10 @@ class MemoryBroker:
     async def ensure_teacher(self) -> None:
         """Called before every chat-model request: reloads it if the broker had paused it."""
         if not self.teacher_paused:
+            return
+        if self.teacher_paused.get("builtin"):
+            # The built-in engine restarts itself (and makes room) in llm_service; nothing to reload here.
+            self.teacher_paused = None
             return
         async with self._lk():
             if not self.teacher_paused:

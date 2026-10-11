@@ -58,10 +58,10 @@
   <!-- Marked for Markdown -->
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
-  <script src="/static/js/safe-html.js?v=moonlit20"></script>
+  <script src="/static/js/safe-html.js?v=moonlit31"></script>
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/static/css/style.css?v=moonlit20">
-  <link rel="stylesheet" href="/static/css/whimsy.css?v=moonlit20">
+  <link rel="stylesheet" href="/static/css/style.css?v=moonlit31">
+  <link rel="stylesheet" href="/static/css/whimsy.css?v=moonlit31">
 </head>
 <body class="bg-surface-900 text-zinc-100 flex flex-col h-screen overflow-hidden font-sans antialiased selection:bg-brand-600 selection:text-white relative">
   <!-- ============================================================== -->
@@ -74,6 +74,7 @@
         <div>
           <h3 class="font-bold text-lg text-white">Tasks</h3>
           <p class="text-[12px] text-zinc-400 mt-0.5">Hand Xod a job and walk away. It asks before anything gets sent or paid.</p>
+          <button onclick="closeTasksPanel();openRoutinesPanel()" class="mt-1.5 text-[12px] text-brand-300 hover:text-brand-200 flex items-center gap-1"><i data-lucide="repeat" class="size-3"></i>Routines: jobs that repeat</button>
         </div>
         <button onclick="closeTasksPanel()" class="p-1 -mr-1 rounded-lg text-zinc-500 hover:text-white hover:bg-surface-700" title="Close">
           <i data-lucide="x" class="size-4"></i>
@@ -141,6 +142,11 @@
         <span class="hidden sm:inline">Cockpit</span>
       </button>
 
+      <!-- Activity log (what Xod did, with undo) -->
+      <button onclick="openActivityPanel()" class="p-2 rounded-lg text-zinc-300 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Activity: what Xod did, with undo">
+        <i data-lucide="history" class="size-3.5"></i>
+      </button>
+
       <!-- Task inbox -->
       <button onclick="openTasksPanel()" class="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Jobs Xod is doing for you">
         <i data-lucide="inbox" class="size-3.5"></i>
@@ -167,30 +173,46 @@
               <i data-lucide="heart-pulse" class="size-4 text-emerald-400 shrink-0"></i>
               <div class="min-w-0"><p class="flex items-center gap-2">Health <span id="healthMenuDot" class="hidden size-2 rounded-full"></span></p><p>Checks and fixes itself</p></div>
             </button>
-            <button onclick="closeToolsMenu();openModelLabModal()" class="tools-menu-item">
+            <button onclick="closeToolsMenu();openRoutinesPanel()" class="tools-menu-item">
+              <i data-lucide="repeat" class="size-4 text-brand-400 shrink-0"></i>
+              <div class="min-w-0"><p class="flex items-center gap-2">Routines</p><p>Jobs Xod repeats for you</p></div>
+            </button>
+            <button onclick="closeToolsMenu();openActivityPanel()" class="tools-menu-item">
+              <i data-lucide="history" class="size-4 text-zinc-300 shrink-0"></i>
+              <div class="min-w-0"><p class="flex items-center gap-2">Activity</p><p>What Xod did, with undo</p></div>
+            </button>
+            <button onclick="closeToolsMenu();openMcpPanel()" class="tools-menu-item">
+              <i data-lucide="blocks" class="size-4 text-brand-400 shrink-0"></i>
+              <div class="min-w-0"><p class="flex items-center gap-2">Connected apps</p><p>MCP tools in, Xod out</p></div>
+            </button>
+            <button onclick="closeToolsMenu();openRoutingPanel()" class="tools-menu-item">
+              <i data-lucide="split" class="size-4 text-indigo-300 shrink-0"></i>
+              <div class="min-w-0"><p class="flex items-center gap-2">Model routing</p><p>Cloud help for hard steps, costs</p></div>
+            </button>
+            <button onclick="closeToolsMenu();openModelLabModal()" class="tools-menu-item" data-pack="model-lab">
               <i data-lucide="cpu" class="size-4 text-indigo-400 shrink-0"></i>
               <div class="min-w-0"><p class="flex items-center gap-2">Model Lab</p><p>Train small, fast models</p></div>
             </button>
-            <button onclick="closeToolsMenu();openMediaStudioModal()" class="tools-menu-item">
+            <button onclick="closeToolsMenu();openMediaStudioModal()" class="tools-menu-item" data-pack="media-studio">
               <i data-lucide="film" class="size-4 text-rose-400 shrink-0"></i>
               <div class="min-w-0"><p class="flex items-center gap-2">Media Studio</p><p>Images, GIFs and videos</p></div>
             </button>
           </div>
-          <p class="tools-group-label">Research</p>
+          <p class="tools-group-label">Workspace &amp; add-ons</p>
           <div class="tools-grid">
-            <button onclick="closeToolsMenu();openDealsModal()" class="tools-menu-item">
+            <button onclick="closeToolsMenu();openDealsModal()" class="tools-menu-item" data-pack="startup-intel">
               <i data-lucide="shopping-bag" class="size-4 text-amber-400 shrink-0"></i>
               <div class="min-w-0"><p class="flex items-center gap-2">Businesses for sale</p><p>Online businesses to buy</p></div>
             </button>
-            <button onclick="closeToolsMenu();openTechAuditModal()" class="tools-menu-item">
+            <button onclick="closeToolsMenu();openTechAuditModal()" class="tools-menu-item" data-pack="web-recon">
               <i data-lucide="code-2" class="size-4 text-indigo-400 shrink-0"></i>
               <div class="min-w-0"><p class="flex items-center gap-2">Site tech lookup</p><p>What a website is built with</p></div>
             </button>
-            <button onclick="closeToolsMenu();openHunterSuiteModal()" class="tools-menu-item">
+            <button onclick="closeToolsMenu();openHunterSuiteModal()" class="tools-menu-item" data-pack="people-finder">
               <i data-lucide="crosshair" class="size-4 text-rose-400 shrink-0"></i>
               <div class="min-w-0"><p class="flex items-center gap-2">People & emails</p><p>Founders, contacts, jobs</p></div>
             </button>
-            <button onclick="closeToolsMenu();openKnowledgeGraphModal()" class="tools-menu-item">
+            <button onclick="closeToolsMenu();openKnowledgeGraphModal()" class="tools-menu-item" data-pack="startup-intel">
               <i data-lucide="library" class="size-4 text-emerald-400 shrink-0"></i>
               <div class="min-w-0"><p class="flex items-center gap-2">Startup library</p><p>Companies you've researched</p></div>
             </button>
@@ -206,6 +228,12 @@
 
           <div class="h-px bg-white/[0.06] my-1.5"></div>
           <div class="tools-grid">
+            <button onclick="closeToolsMenu();openPacksPanel()" class="tools-menu-item">
+              <i data-lucide="puzzle" class="size-4 text-zinc-300"></i><p class="text-zinc-300">Add-ons</p>
+            </button>
+            <button onclick="closeToolsMenu();openSetupWizard()" class="tools-menu-item">
+              <i data-lucide="wand-sparkles" class="size-4 text-brand-400"></i><p class="text-zinc-300">Setup &amp; AI model</p>
+            </button>
             <button onclick="closeToolsMenu();clearChat()" class="tools-menu-item">
               <i data-lucide="eraser" class="size-4 text-zinc-400"></i><p class="text-zinc-300">Clear this chat</p>
             </button>
@@ -217,11 +245,15 @@
           <!-- Connections (status rows; updated by app.js) -->
           <details class="mt-1">
             <summary class="tools-group-label cursor-pointer select-none list-none flex items-center gap-1.5"><i data-lucide="plug" class="size-3"></i>Connections</summary>
+            <button onclick="closeToolsMenu();openMcpPanel()" class="conn-row">
+              <i data-lucide="blocks" class="size-3.5 text-brand-400"></i>
+              <span class="truncate">Connected apps (MCP): add tools, use Xod elsewhere</span>
+            </button>
             <button id="btnLMStudioStatus" onclick="closeToolsMenu();openLMStudioModal()" class="conn-row">
               <span class="size-2 rounded-full bg-emerald-400" id="lmStudioPulseDot"></span>
               <span id="llmStatusText" class="truncate">AI model</span>
             </button>
-            <button id="btnTrustMRRStatus" onclick="closeToolsMenu();openSettingsModal()" class="conn-row">
+            <button id="btnTrustMRRStatus" onclick="closeToolsMenu();openSettingsModal()" class="conn-row" data-pack="startup-intel">
               <i data-lucide="shield-check" class="size-3.5 text-zinc-500" id="trustmrrStatusIcon"></i>
               <span id="trustmrrStatusText" class="truncate">Checking…</span>
             </button>
@@ -370,36 +402,19 @@
           <div id="welcomeHeroIconWrap" class="size-12 mx-auto rounded-2xl bg-gradient-to-tr from-brand-600 via-indigo-500 to-purple-600 flex items-center justify-center shadow-xl shadow-brand-500/30">
             <i data-lucide="sparkles" class="size-6 text-white" id="welcomeHeroIcon"></i>
           </div>
-          <h2 id="welcomeHeroTitle" class="text-2xl sm:text-3xl font-bold tracking-tight text-white">What do you want to find out?</h2>
-          <p id="welcomeHeroDesc" class="text-[15px] text-zinc-400 max-w-md mx-auto">Ask about any company, website or market. Xod does the digging for you.</p>
+          <h2 id="welcomeHeroTitle" class="text-2xl sm:text-3xl font-bold tracking-tight text-white">What should Xod do?</h2>
+          <p id="welcomeHeroDesc" class="text-[15px] text-zinc-400 max-w-md mx-auto">Research anything, work with your files, or hand off a whole job. It runs on your Mac.</p>
         </div>
 
         <!-- Optional key banner (only if not set up) -->
-        <div id="missingKeyBanner" class="hidden max-w-md mx-auto px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-left flex items-center gap-3">
+        <div id="missingKeyBanner" data-pack="startup-intel" class="hidden max-w-md mx-auto px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/25 text-left flex items-center gap-3">
           <i data-lucide="key-round" class="size-4 text-amber-400 shrink-0"></i>
           <p class="text-[13px] text-amber-200/90 flex-1">Connect TrustMRR to see real revenue numbers.</p>
           <button onclick="openSettingsModal()" class="px-3 py-1.5 rounded-lg bg-amber-500 text-black text-[12px] font-semibold hover:bg-amber-400 transition-colors shrink-0">Set up</button>
         </div>
 
         <!-- 4 simple starters -->
-        <div id="welcomeHeroStarters" class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-xl mx-auto text-left">
-          <button onclick="usePrompt('Compare nike.com vs adidas.com: traffic share, dominance ratio, and checkout funnel path activity')" class="starter-card group">
-            <i data-lucide="scale" class="size-4 text-teal-400 shrink-0"></i>
-            <span>Compare Nike vs Adidas online</span>
-          </button>
-          <button onclick="usePrompt('Do a deep research teardown on ShipFast: verified revenue, MRR, traffic, cofounders, and competitive moat')" class="starter-card group">
-            <i data-lucide="file-search" class="size-4 text-indigo-400 shrink-0"></i>
-            <span>How much does ShipFast make?</span>
-          </button>
-          <button onclick="usePrompt('What are the best SaaS businesses currently for sale on TrustMRR under 3x revenue multiple?')" class="starter-card group">
-            <i data-lucide="shopping-bag" class="size-4 text-amber-400 shrink-0"></i>
-            <span>Find good businesses for sale</span>
-          </button>
-          <button onclick="usePrompt('Find the top 5 highest MRR bootstrapped AI startups and analyze their tech stacks')" class="starter-card group">
-            <i data-lucide="trending-up" class="size-4 text-emerald-400 shrink-0"></i>
-            <span>Top money-making AI startups</span>
-          </button>
-        </div>
+        <div id="welcomeHeroStarters" class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-w-xl mx-auto text-left"></div>
       </div>
     </div>
 
@@ -4133,11 +4148,18 @@
     </div>
   </div>
 
-  <script src="/static/js/app.js?v=moonlit20"></script>
-  <script src="/static/js/sidebar.js?v=moonlit20"></script>
-  <script src="/static/js/tasks.js?v=moonlit20"></script>
-  <script src="/static/js/health.js?v=moonlit20"></script>
-  <script src="/static/js/whimsy.js?v=moonlit20"></script>
+  <script src="/static/js/app.js?v=moonlit31"></script>
+  <script src="/static/js/sidebar.js?v=moonlit31"></script>
+  <script src="/static/js/tasks.js?v=moonlit31"></script>
+  <script src="/static/js/health.js?v=moonlit31"></script>
+  <script src="/static/js/whimsy.js?v=moonlit31"></script>
+  <script src="/static/js/setup.js?v=moonlit31"></script>
+  <script src="/static/js/activity.js?v=moonlit31"></script>
+  <script src="/static/js/routines.js?v=moonlit31"></script>
+  <script src="/static/js/mcp.js?v=moonlit31"></script>
+  <script src="/static/js/routing.js?v=moonlit31"></script>
+  <script src="/static/js/reports.js?v=moonlit31"></script>
+  <script src="/static/js/packs.js?v=moonlit31"></script>
 </body>
 </html>
 

@@ -54,15 +54,23 @@ PROTECTED_FILES = {
     "app/services/secret_store.py",       # API keys
     "app/services/credential_vault.py",   # saved logins
     "app/config.py",                      # where keys are loaded
+    "app/paths.py",                       # where personal data lives
+    "app/services/mcp_client.py",         # approval gate for outside tools, their Keychain secrets
+    "app/services/activity.py",           # the undo log
+    "app/services/llm_routing.py",        # when Xod may spend money on cloud models (budget)
+    "app/static/js/safe-html.js",         # sanitizer for everything the AI writes
 }
 # file -> top-level names whose source must stay byte-for-byte the same
 PROTECTED_SYMBOLS = {
     "app/services/browser_sandbox.py": {"_looks_like_final_submit", "_value_is_grounded", "_OUTWARD_WORDS", "_ACCOUNT_WORDS"},
     "app/agent/healing.py": {"SIDE_EFFECT_TOOLS", "MAX_REPAIRS_PER_CALL"},
     "app/services/media_worker.py": {"_memory_watchdog", "MEMORY_FLOOR_GB"},
+    "app/main.py": {"local_only_guard", "_host_only", "_LOCAL_HOSTS", "_SECURITY_HEADERS"},   # localhost-only + CSP
+    "app/services/reports.py": {"clean", "build_html", "_BAD_BLOCKS", "_EVENT_ATTR", "_JS_URL"},   # reports can't run code
 }
 # Text an edit may not add or remove anywhere: the approval flow for irreversible clicks.
-PROTECTED_TEXT = ("pending_submit", "allow_submit", "done_gated", "_mission_lock")
+PROTECTED_TEXT = ("pending_submit", "allow_submit", "done_gated", "_mission_lock",
+                  "packs.tool_allowed(", "mcp_hub.call(")   # add-on gate and MCP routing in the tool dispatcher
 
 # (pattern on "provider:model", tier, why). First match wins.
 DEFAULT_RULES: List[Tuple[str, str, str]] = [
@@ -113,7 +121,7 @@ def tier_for(provider: str, model: str) -> Dict[str, str]:
         size = float(m.group(1))
         return ({"tier": "yellow", "why": f"{size:g}B local model: can propose changes for your approval"} if size >= YELLOW_MIN_B
                 else {"tier": "red", "why": f"{size:g}B model: too small to change code"})
-    if provider in ("lm_studio", "ollama"):
+    if provider in ("lm_studio", "ollama", "xod"):
         return {"tier": "red", "why": "unknown local model size"}
     return {"tier": "yellow", "why": "unrecognised API model: can propose changes for your approval"}
 
@@ -124,7 +132,7 @@ def editor_model() -> Dict[str, Any]:
     ed = get_settings().get("editor") or {}
     if ed.get("provider") and ed.get("model"):
         key_field = f"{ed['provider']}_api_key"
-        if ed["provider"] in ("lm_studio", "ollama") or getattr(settings, key_field, ""):
+        if ed["provider"] in ("lm_studio", "ollama", "xod") or getattr(settings, key_field, ""):
             return {"provider": ed["provider"], "model": ed["model"], "source": "editor setting",
                     **tier_for(ed["provider"], ed["model"])}
         missing = f"the {ed['provider']} API key isn't set"
@@ -192,7 +200,9 @@ def _symbol_sources(src: str, names: set) -> Dict[str, str]:
             targets = [node.target.id]
         for t in targets:
             if t in names:
-                out[t] = ast.get_source_segment(src, node) or ""
+                # Decorators count: removing @app.middleware(...) would switch a guard off.
+                decos = "".join("@" + (ast.get_source_segment(src, d) or "") + "\n" for d in getattr(node, "decorator_list", []))
+                out[t] = decos + (ast.get_source_segment(src, node) or "")
     return out
 
 
@@ -201,7 +211,7 @@ def check_edit_policy(rel: str, before: Optional[str], after: str) -> Optional[s
     if rel.startswith("../") or not rel.startswith(EDITABLE_ROOTS):
         return f"{rel}: only files under app/ and tests/ can be changed"
     if rel in PROTECTED_FILES:
-        return f"{rel} is protected (keys, logins, or the self-edit gate itself)"
+        return f"{rel} is protected safety code (keys, logins, approvals, undo, budget or the self-edit gate)"
     if "/__pycache__/" in rel or rel.endswith((".pyc", ".db", ".env")):
         return f"{rel}: not a source file"
     if rel in PROTECTED_SYMBOLS and before is not None:
@@ -505,7 +515,7 @@ async def _ask_editor(ed: Dict[str, Any], messages: List[Dict[str, Any]]) -> Dic
     # Local models think at ~15-20 tokens/s here: a long think blew past the 5-minute timeout three times
     # in a row. They answer directly (the staged checks still catch mistakes, with one retry);
     # API models think.
-    local = ed["provider"] in ("lm_studio", "ollama")
+    local = ed["provider"] in ("lm_studio", "ollama", "xod")
     reply = await llm_service.chat_completion(messages=messages, temperature=0.1, max_tokens=3500 if local else 8000,
                                               endpoint_override=override, think=not local, task="self_edit")
     return parse_llm_json(reply.get("content", "")) or {}
@@ -525,7 +535,7 @@ async def request_change(goal: str, hint_files: Optional[List[str]] = None, requ
                 "error": f"{ed['model']} isn't allowed to change Xod's code ({ed['why']}). Set a stronger editor model "
                          "in Tools → Health → Self-editing, e.g. Claude Opus with an Anthropic key."}
     change_id = f"edit-{uuid.uuid4().hex[:8]}"
-    local = ed["provider"] in ("lm_studio", "ollama")
+    local = ed["provider"] in ("lm_studio", "ollama", "xod")
     # Local models are slow to read long prompts: a tighter excerpt keeps them under the timeout.
     context = _gather_context(goal, [_rel(f) for f in hint_files or []], 22_000 if local else 150_000)
     messages = [{"role": "system", "content": EDITOR_PROMPT},

@@ -423,6 +423,10 @@ class FineTuningService:
         """Unloads the LM Studio model during training; returns what to reload afterwards."""
         try:
             from app.config import settings
+            if settings.llm_provider == "xod":
+                from app.services.local_engine import local_engine
+                await local_engine.stop()   # restarts by itself on the next chat message
+                return None
             if settings.llm_provider != "lm_studio":
                 return None
             from app.services.llm import llm_service

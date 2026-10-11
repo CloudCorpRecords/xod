@@ -868,10 +868,20 @@ Deliver an engaging asset delivery walkthrough:
 
 Format your response in articulate Markdown with bold highlights. Do not emit any tool call tags.
 """
+        elif scorecard_clause:
+            task_instruction = f"""
+Synthesize a research brief on: "{user_query}".
+{scorecard_clause}Use markdown tables for numbers, bold the key findings, and cover the tech stack and any security or infrastructure takeaways the evidence supports.
+Cite sources inline as markdown links [name](url) using URLs from the Evidence Board.
+"""
         else:
             task_instruction = f"""
-Synthesize the comprehensive Research Dossier addressing: "{user_query}".
-{scorecard_clause}Use markdown tables, bold key findings, list architectural layers, highlight security and infrastructure takeaways.
+Answer: "{user_query}"
+- Lead with the direct answer in one to three sentences, then the supporting detail. Match the length to the question: a simple question gets a short answer.
+- Use a table only when comparing several things; use headings only if the answer is long.
+- Only include sections that fit the question (no "architecture", "security" or "dossier" framing unless it's about that).
+- Cite sources inline as markdown links [name](url) using the URLs in the Evidence Board, and end with a short "Sources" list of the links you used.
+- If the evidence doesn't cover part of the question, say so in one line rather than padding.
 """
 
         synthesis_content = f"""The empirical research investigation has completed. Here is the verified Evidence Board containing all live observations:
@@ -1008,6 +1018,22 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                         yield chunk
             except Exception as e:
                 logger.error(f"Recovery synthesis failed: {e}")
+
+        # Small local models often name sources without linking them. Add the real links from
+        # what the searches returned, so every answer can be checked (and Share report lists them).
+        if "](http" not in accumulated_text:
+            links = []
+            for src in getattr(evidence_board, "sources", []) or []:
+                url, title = str(src.get("url") or ""), str(src.get("title") or "").strip()
+                if url.startswith("http") and "tavily.com" not in url and url not in [u for _, u in links]:
+                    links.append((title[:90] or url, url))
+            if links:
+                yield {"type": "content", "content": "\n\n**Source links**\n" + "\n".join(
+                    f"{i}. [{t.replace('[', '(').replace(']', ')')}]({u})" for i, (t, u) in enumerate(links[:6], 1))}
+            elif any("search" in (t.get("tool") or "") for t in getattr(evidence_board, "tool_audit_trail", [])):
+                # Searched, found nothing usable: don't let a from-memory answer pass as researched.
+                yield {"type": "content", "content": "\n\n> ⚠️ Web search didn't return anything usable this time, so this answer "
+                       "comes from the model's own knowledge and may be out of date. Try again, or add a search key in Settings."}
 
         final_step["status"] = "completed"
         yield {"type": "plan_step", "step_id": final_step["id"], "status": "completed"}

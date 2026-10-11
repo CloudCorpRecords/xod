@@ -197,6 +197,7 @@
         ${(t.history || []).length ? `<details><summary class="text-[12px] text-zinc-400 cursor-pointer">How it went (${t.history.length} notes)</summary>${progressList(t, 40)}</details>` : ""}
         <div class="flex flex-wrap gap-2">
           ${t.status !== "done" ? `<button class="task-btn" onclick="taskAction('${t.id}','retry')">Try again</button>` : ""}
+          ${t.status === "done" && !String(t.title).startsWith("↻") ? `<button class="task-btn" onclick="openRoutineEditor({source:'task:${t.id}'})">Save as routine</button>` : ""}
           <button class="task-btn task-btn-quiet" onclick="taskAction('${t.id}','delete')">Remove</button>
         </div>
       </div>

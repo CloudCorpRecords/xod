@@ -111,6 +111,12 @@ class LLMService:
                 m = "google/gemma-4-12b-qat"
             else:
                 m = cand
+        elif provider == "xod":
+            from app.services.local_engine import local_engine, recommend
+            base_url = local_engine.base_url
+            api_key = "local"
+            cand = model or settings.llm_model or ""
+            m = cand if cand.startswith("mlx-community/") or "/" in cand else recommend()["repo"]
         elif provider == "ollama":
             base_url = settings.llm_base_url or "http://localhost:11434/v1"
             api_key = "ollama"
@@ -172,7 +178,7 @@ class LLMService:
         if settings.anthropic_api_key and settings.anthropic_api_key.strip():
             cloud_options.append({"provider": "anthropic", "model": "claude-opus-5-5", "label": "Anthropic Claude Opus"})
 
-        local_configured = settings.llm_provider in ("lm_studio", "ollama")
+        local_configured = settings.llm_provider in ("lm_studio", "ollama", "xod")
         return {
             "local_ready": True,
             "local_provider": settings.llm_provider if local_configured else "lm_studio",
@@ -395,6 +401,10 @@ class LLMService:
     # ------------------------------------------------------------------
     async def list_models(self, provider_override: Optional[str] = None) -> List[Dict[str, Any]]:
         active_provider = provider_override or settings.llm_provider
+        if active_provider == "xod":
+            from app.services.local_engine import CATALOG, is_downloaded
+            return [{"id": m["repo"], "name": f"{m['label']} (built-in){'' if is_downloaded(m['repo']) else ' (not downloaded)'}",
+                     "is_loaded": False, "context_length": None} for m in CATALOG]
         # If LM Studio, use the enhanced native v1 API
         if active_provider == "lm_studio":
             status = await self.get_lmstudio_status()
@@ -486,6 +496,11 @@ class LLMService:
         label it once the outcome is known. If a trained specialist is active for this
         task, fast (think=False) calls go to it instead of the big model.
         """
+        if not endpoint_override and not tier:
+            from app.services import llm_routing
+            route = llm_routing.current()
+            if route and route.endpoint:   # this turn runs on the stronger (cloud) model
+                endpoint_override = route.endpoint
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
         if task and think is False and not endpoint_override:
             from app.services.specialists import active_endpoint_for
@@ -505,9 +520,12 @@ class LLMService:
         if info["provider"] in ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic") and info["api_key"] == "missing":
             raise Exception(f"No API key configured for {info['provider'].upper()}. Please configure your {info['provider'].replace('_', ' ').title()} API key in Settings!")
 
-        if info["provider"] == "lm_studio":
+        if info["provider"] in ("lm_studio", "xod"):
             from app.services.memory_broker import memory_broker
             await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
+        if info["provider"] == "xod":
+            from app.services.local_engine import local_engine
+            await local_engine.ensure_running(info["model"])   # built-in engine starts on first use
         url = f"{info['base_url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {info['api_key']}",
@@ -524,6 +542,8 @@ class LLMService:
             payload["tool_choice"] = tool_choice
         if think is False and info["provider"] in ("lm_studio", "ollama"):
             payload["reasoning_effort"] = "none"
+        if think is False and info["provider"] == "xod":
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
 
         last_err: Optional[Exception] = None
         started = time.time()
@@ -540,9 +560,14 @@ class LLMService:
                     if res.status_code != 200:
                         raise Exception(f"LLM API returned HTTP {res.status_code}: {res.text}")
                     data = res.json()
+                    from app.services import llm_routing
+                    llm_routing.record(info["provider"], info["model"], data.get("usage"),
+                                       prompt_chars=len(json.dumps(messages)), completion_chars=len(str(data)))
                     choice = data["choices"][0]
                     msg = choice.get("message", {})
                     answered = bool(msg.get("content"))
+                    if msg.get("reasoning") and not msg.get("reasoning_content"):
+                        msg["reasoning_content"] = msg["reasoning"]   # mlx_lm.server's name for it
                     if not msg.get("content") and msg.get("reasoning_content"):
                         if choice.get("finish_reason") == "length":
                             logger.warning(
@@ -584,14 +609,22 @@ class LLMService:
         """Streams text chunks and reasoning tokens directly. task: see chat_completion."""
         streamed: List[str] = []
         started = time.time()
+        if not endpoint_override and not tier:
+            from app.services import llm_routing
+            route = llm_routing.current()
+            if route and route.endpoint:   # this turn runs on the stronger (cloud) model
+                endpoint_override = route.endpoint
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
         if info["provider"] in ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic") and info["api_key"] == "missing":
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}
             return
 
-        if info["provider"] == "lm_studio":
+        if info["provider"] in ("lm_studio", "xod"):
             from app.services.memory_broker import memory_broker
             await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
+        if info["provider"] == "xod":
+            from app.services.local_engine import local_engine
+            await local_engine.ensure_running(info["model"])   # built-in engine starts on first use
         url = f"{info['base_url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {info['api_key']}",
@@ -604,6 +637,9 @@ class LLMService:
             "max_tokens": max_tokens,
             "stream": True
         }
+        if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini"):
+            payload["stream_options"] = {"include_usage": True}   # token counts for cost tracking
+        _usage: Optional[Dict[str, Any]] = None
 
         async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
             for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -633,10 +669,14 @@ class LLMService:
                                         logger.error(f"LLM streaming error: {err_msg}")
                                         yield {"type": "error", "content": f"LLM error: {err_msg}"}
                                         return
+                                    if chunk.get("usage"):
+                                        _usage = chunk["usage"]
                                     choice = chunk.get("choices", [{}])[0]
                                     delta = choice.get("delta", {})
 
                                     # Reasoning / thought tokens
+                                    if delta.get("reasoning") and not delta.get("reasoning_content"):
+                                        delta["reasoning_content"] = delta["reasoning"]
                                     if delta.get("reasoning_content"):
                                         yield {"type": "reasoning", "content": delta["reasoning_content"]}
                                     # Final content tokens
@@ -650,6 +690,9 @@ class LLMService:
                                         logger.warning(f"LLM stream hit max_tokens={max_tokens}; output was cut off.")
                                 except Exception:
                                     continue
+                    from app.services import llm_routing
+                    llm_routing.record(info["provider"], info["model"], _usage,
+                                       prompt_chars=len(json.dumps(messages)), completion_chars=sum(len(x) for x in streamed))
                     if task and streamed:
                         from app.services import dataset_recorder
                         ex_id = dataset_recorder.capture(
@@ -685,14 +728,22 @@ class LLMService:
         Streams reasoning tokens live, detects whether tool calls or conversational answers
         are being formulated, and yields live tokens + final deliberation structure.
         """
+        if not endpoint_override and not tier:
+            from app.services import llm_routing
+            route = llm_routing.current()
+            if route and route.endpoint:   # this turn runs on the stronger (cloud) model
+                endpoint_override = route.endpoint
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
         if info["provider"] in ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic") and info["api_key"] == "missing":
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}
             return
 
-        if info["provider"] == "lm_studio":
+        if info["provider"] in ("lm_studio", "xod"):
             from app.services.memory_broker import memory_broker
             await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
+        if info["provider"] == "xod":
+            from app.services.local_engine import local_engine
+            await local_engine.ensure_running(info["model"])   # built-in engine starts on first use
         url = f"{info['base_url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {info['api_key']}",
@@ -705,6 +756,9 @@ class LLMService:
             "max_tokens": max_tokens,
             "stream": True
         }
+        if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini"):
+            payload["stream_options"] = {"include_usage": True}   # token counts for cost tracking
+        _usage: Optional[Dict[str, Any]] = None
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
@@ -743,6 +797,8 @@ class LLMService:
                                         logger.error(f"LLM streaming error from provider: {err_msg}")
                                         yield {"type": "error", "content": f"LLM error: {err_msg}"}
                                         return
+                                    if chunk.get("usage"):
+                                        _usage = chunk["usage"]
 
                                     choices = chunk.get("choices", [])
                                     if not choices:
@@ -750,6 +806,8 @@ class LLMService:
                                     delta = choices[0].get("delta", {})
 
                                     # Live reasoning stream
+                                    if delta.get("reasoning") and not delta.get("reasoning_content"):
+                                        delta["reasoning_content"] = delta["reasoning"]
                                     if delta.get("reasoning_content"):
                                         r_tok = delta["reasoning_content"]
                                         full_reasoning += r_tok
@@ -822,6 +880,9 @@ class LLMService:
                 })
             full_content = cleaned_content
 
+        from app.services import llm_routing
+        llm_routing.record(info["provider"], info["model"], _usage,
+                           prompt_chars=len(json.dumps(messages)), completion_chars=len(full_content) + len(full_reasoning))
         yield {
             "type": "deliberation_complete",
             "tool_calls": formatted_tool_calls,

@@ -232,7 +232,16 @@ class TaskQueue:
 
     # ------------------------------------------------------------------ worker
     def _kick(self) -> None:
-        if self._wake:
+        if not self._wake:
+            return
+        loop = getattr(self, "_loop_ref", None)
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if loop and running is not loop:
+            loop.call_soon_threadsafe(self._wake.set)   # called from a worker thread (e.g. the routine scheduler)
+        else:
             self._wake.set()
 
     def stuck(self, max_quiet_sec: float = 1200) -> List[Dict[str, Any]]:
@@ -269,6 +278,7 @@ class TaskQueue:
         c.commit()
         c.close()
         self._wake = asyncio.Event()
+        self._loop_ref = asyncio.get_event_loop()
         self._worker = asyncio.create_task(self._loop())
 
     async def _loop(self) -> None:
@@ -322,6 +332,8 @@ class TaskQueue:
             pass
 
     async def _run(self, task_id: str) -> None:
+        from app.services import activity
+        activity.origin.set(f"task:{task_id}")   # tool calls in this task are logged as the task's
         from app.agent.researcher import AgenticResearcher
         from app.services.browser_sandbox import browser_sandbox_service as sb
 

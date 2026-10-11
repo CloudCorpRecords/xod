@@ -1,200 +1,121 @@
-# ⚡ XOD — The Autonomous Intelligence & Computer Action Agent
+# Xod
+
+**A private AI that works on your Mac while you're away, and gets better at your tasks every week.**
+
+Xod runs on your own Mac with a local model. It researches the web with its own browser, works with your files, makes images and video on-device, and takes on whole jobs in the background. It stops and asks before anything is sent, paid, posted or deleted, and every change it makes to your files can be undone.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Python: 3.9+](https://img.shields.io/badge/Python-3.9+-green.svg)](https://python.org)
-[![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688.svg)](https://fastapi.tiangolo.com)
-[![100% Local Capable](https://img.shields.io/badge/Local%20AI-LM%20Studio%20%7C%20Ollama-purple.svg)](https://lmstudio.ai)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10+-green.svg)](https://python.org)
+[![Apple silicon](https://img.shields.io/badge/Mac-Apple%20silicon-black.svg)](#requirements)
 
-**XOD** is an autonomous, embodied AI intelligence agent designed to run **locally on your machine** with a reactive web UI. Xod combines multimodal perception, an isolated Chrome browser sandbox, host system controls, workspace code intelligence, and live multi-source web research into a unified autonomous execution loop.
+![Xod answering a research question, with sources](docs/screenshots/answer.png)
 
-Xod is built to work **100% locally and offline** using local models via [LM Studio](https://lmstudio.ai) or [Ollama](https://ollama.com), or with leading cloud providers (Fireworks AI, OpenAI, Anthropic, Google Gemini, Groq, OpenRouter).
+## What you can hand it
 
----
+- **"Every weekday at 8, give me the five biggest tech stories with sources."** Save it once as a routine; Xod runs it on schedule and the report is waiting for you.
+- **"Find the junior Python roles on these three job boards and fill in the applications."** Xod works through the sites in its own browser and pauses for your OK before each submit.
+- **"Tidy my Downloads folder and tell me what's taking the space."** It sorts the files, shows you exactly what it moved, and one click puts everything back.
 
-## 🌟 Core Pillars & Capabilities
+## Why Xod
 
-### 1. 🌐 Autonomous Chrome Browser Sandbox
-* **Direct CDP Control (Port 9228)**: Interacts with an isolated Chrome instance via the Chrome DevTools Protocol.
-* **Set-of-Marks (SoM) Visual Tags**: Numbers visible interactive DOM elements (`[1]`, `[2]`, ...) so the agent can click, type, and navigate with high precision.
-* **Embodied Form Automation**: Auto-detects inputs, checkboxes, and selects, filling forms in a single turn.
-* **Smart Overlay Dismissal**: Automatically clears cookie banners, GDPR consent prompts, and newsletter popups.
-* **Headless & Visible Desktop Modes**: Toggle between background headless execution and visible desktop Chrome so you can observe live or solve CAPTCHAs.
-* **Page Exporting**: High-resolution screenshots and full-page PDF exports.
+- **Private by default.** Chats, files, voice and images stay on your Mac. Pick a model in LM Studio or Ollama, or use Xod's built-in engine (no other apps needed).
+- **It does things, not just chat.** A real browser, your files, the terminal, background jobs, a task inbox that keeps working when you walk away.
+- **You stay in charge.** Approval for every outward action, an activity log of everything it did, and undo for file changes.
+- **Teach once, repeat forever.** Turn any chat or task into a routine; Xod remembers the steps that worked and re-checks them each run.
+- **It learns from its mistakes.** When a step fails, Xod repairs it, remembers the fix, and can train small on-device models on its own work.
+- **Plays well with your other AI apps.** Uses any MCP tool (email, calendars, Notion, GitHub…) and lets Claude Desktop, Cursor and others hand work to Xod.
+- **Cloud only when it helps.** Optionally hand the hard steps to Claude, GPT or Gemini, with your permission, shown costs, and a monthly budget.
 
-### 2. 💻 Host Computer Control & Telemetry
-* **Background Shell Execution**: Runs terminal commands in persistent working directories without stealing UI window focus.
-* **Port Listener Inspections**: Probes active listening TCP ports (3000, 8000, 5432, 9228) and identifies bound process PIDs.
-* **System Telemetry**: Real-time monitoring of CPU load, RAM pressure, disk usage, and background daemons.
-* **Fast Spotlight Discovery**: Instant Mac-wide file and directory search via Spotlight (`mdfind`).
-* **Safe File Operations**: Move files, create directories, or safely send items to macOS Finder Trash (fully recoverable).
+## Install
 
-### 3. 📁 Controlled Workspace & Filesystem Agency
-* **Project Code Inspection**: Explores directory trees, reads source files, and audits configurations (`package.json`, `pyproject.toml`, `.env`).
-* **Symbol & Keyword Grep**: Searches codebases for symbols, classes, functions, and TODOs.
-* **Folder Creation & File Organization**: Creates target directories and batch organizes files into folders on command.
+### Desktop app
 
-### 4. 🧠 True Conversational Memory & Multi-Turn Synthesis
-* **Preserved Conversational Context**: Multi-turn history is preserved and formatted into final synthesis so the agent never suffers amnesia across follow-ups.
-* **In-Memory Follow-Up Fast-Path**: Follow-up formatting requests (*"summarize that in a table"*, *"compare those two"*, *"explain point 2"*) are synthesized directly from prior context without launching redundant web crawls.
-* **Pronoun Grounding**: Automatically resolves pronouns (*"what is their pricing?"*) to previously discussed entities.
+Download `Xod-<version>-arm64.dmg` from [Releases](../../releases), drag Xod to Applications and open it. On first launch Xod sets up its Python environment (a few GB, one time) and walks you through picking a model.
 
-### 5. 🔍 Multi-Source Intelligence & Deal Screening
-* **Tavily AI Search**: Purpose-built search engine for autonomous AI agents.
-* **You.com Web & News API**: High-precision web snippets and live news search with automatic DuckDuckGo fallback.
-* **TrustMRR SaaS Intelligence**: Live verified SaaS metrics (MRR, ARR, active subscribers, valuation multiples, and M&A deal screening).
-* **Tech Stack & Infra Recon**: Scans SSL/CT logs, frameworks, package ecosystems (npm/PyPI), and DNS health.
+> The app isn't signed by Apple yet, so macOS will warn the first time: right-click Xod.app → **Open**, or allow it in System Settings → Privacy & Security.
 
-### 6. 📄 Multimodal & Document Intelligence
-* **Image Perception**: Full-fidelity vision support for screenshots, diagrams, and visual scenes.
-* **Document Parsing**: Native text, section, and table extraction for `.pdf`, `.docx`, and `.csv` files.
+### From source
 
-### 7. 🎵 Media & Video Extraction
-* **YouTube Downloader**: High-speed extraction of YouTube videos (MP4) and audio songs (MP3 at 192kbps) directly into your `~/Downloads` folder via `yt-dlp`.
-
-### 8. ⚡ Multi-Agent JIT Swarm Conductor
-* **Just-In-Time Specialist Delegation**: Automatically spawns domain-specific micro-agents in parallel for complex multi-faceted research missions.
-
----
-
-## 🚀 Quick Start
-
-### 1. Prerequisites
-* **Python**: 3.10 or newer (3.12 recommended). Python 3.9 is no longer supported because it stopped getting security updates.
-* **A Mac with Apple silicon** for on-device images, video, voice and training (MLX).
-* **Google Chrome**: For the autonomous browser sandbox.
-* **LLM Engine**: [LM Studio](https://lmstudio.ai), [Ollama](https://ollama.com), or an API key for any supported cloud provider.
-
-### 2. Clone and Setup
 ```bash
-# Clone the repository
 git clone https://github.com/your-username/xod.git
 cd xod
-
-# Create and activate a virtual environment
-python3.12 -m venv .venv   # any Python 3.10+
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
+./run.sh                      # sets up .venv the first time, then serves http://localhost:8000
 ```
 
-### 3. Configure Environment
-```bash
-# Copy the example environment template
-cp .env.example .env
-```
-Open `.env` in your editor. If you are using **LM Studio** locally, the default configuration already works out of the box!
+Or run the desktop shell from source: `cd electron && npm install && npm start`.
 
-### 4. Launch Xod
+The first time you open Xod, a short setup checks your Mac and helps you choose a model:
 
-**As a desktop app (Electron):**
-```bash
-cd electron
-npm install
-npm start
-```
-It starts Xod's server on a free local port and stops it when you quit. If `.venv` is missing it's created first (a few GB of packages, one time).
+| Your Mac | Suggested model | Download |
+|---|---|---|
+| 8 GB | Qwen 3.5 4B (built-in engine) | 3.1 GB |
+| 16–24 GB | Qwen 3.5 9B (built-in engine), or any model you already run in LM Studio / Ollama | 6 GB |
+| 32 GB+ | Qwen 3.8 27B (built-in engine) | 16 GB |
 
-**Build the installer** (`electron/dist/Xod-<version>-arm64.dmg`):
-```bash
-cd electron && npm run dist
-```
-The installed app keeps its Python environment in the data folder and installs packages on first launch. It isn't signed yet, so macOS will say it can't verify the developer: right-click Xod.app → **Open**, or allow it in System Settings → Privacy & Security.
+![First-run setup](docs/screenshots/setup.png)
 
-**In your browser:**
-```bash
-./run.sh
-```
-Then open 👉 **[http://localhost:8000](http://localhost:8000)**
+## A quick tour
 
-### Where your data lives
-Everything personal is kept outside the code, in a folder only your user account can read:
-`~/Library/Application Support/Xod` (chats and memories in `xod.db`, projects, downloaded models, generated media, the agent's browser profile). Set `XOD_DATA_DIR` to put it somewhere else. API keys and saved site logins are in the macOS Keychain instead.
+**Routines.** Jobs Xod repeats for you, by hand or on a schedule. Each run shows up in Tasks and still asks before sending or paying.
 
-### Voice input
-The mic button (or Option+Space) records until you pause, then transcribes **on your Mac** with Whisper (MLX). Audio is never uploaded. The speech model (~150 MB) downloads on first use; pick another with `XOD_WHISPER_MODEL`.
+![Routines](docs/screenshots/routines.png)
 
----
+**Activity and undo.** Everything Xod did, in plain words. File writes, edits, moves and trash can be undone; Xod won't overwrite a file you changed afterwards without asking.
 
-## 🤖 Model Providers & Local Inference
+![Activity](docs/screenshots/activity.png)
 
-Xod supports seamless hot-swapping between model providers via `.env` or directly through the in-app **Settings ⚙️** modal:
+**Shareable reports.** Turn any answer into a polished page and PDF with numbered sources, ready to send.
 
-| Provider | Type | Default Model / Target |
-| :--- | :--- | :--- |
-| **LM Studio** | Local | `google/gemma-4-12b-qat` (Runs on `http://localhost:1234/v1`) |
-| **Ollama** | Local | `llama3.2`, `mistral`, `qwen2.5-coder` (`http://localhost:11434/v1`) |
-| **Fireworks AI** | Cloud | `accounts/fireworks/models/deepseek-v3` |
-| **OpenAI** | Cloud | `gpt-4o`, `gpt-4o-mini`, `o3-mini` |
-| **Anthropic** | Cloud | `claude-3-5-sonnet-latest`, `claude-3-5-haiku-latest` |
-| **Google Gemini** | Cloud | `gemini-2.5-flash`, `gemini-2.5-pro` |
-| **Groq** | Cloud | `llama-3.3-70b-versatile` |
-| **OpenRouter** | Cloud | Any model on OpenRouter |
+![A report](docs/screenshots/report.png)
 
----
+**Connected apps (MCP).** Paste a server's config to give Xod new tools; secrets go into your Keychain. Copy the snippet shown to use Xod from Claude Desktop, Cursor or Claude Code.
 
-## 📁 Repository Structure
+![Connected apps](docs/screenshots/connected-apps.png)
+
+**Add-ons.** Specialist abilities are optional packs: startup and market intel, people and email lookup, website forensics, creators and trends, Media Studio and Model Lab.
+
+![Add-ons](docs/screenshots/add-ons.png)
+
+Also in the box: on-device images and video (FLUX, AnimateDiff), voice input transcribed on your Mac (Whisper), long-term memory, projects to organize chats and files, a self-check that fixes common problems, and a gated way for Xod to improve its own code (with tests, approval and one-click revert).
+
+## Requirements
+
+- A Mac with Apple silicon (M1 or newer). 16 GB of memory is comfortable; 8 GB works with the small model.
+- macOS 13 or newer, Google Chrome (Xod's browser), and about 10 GB of free space for the app and a model.
+- Python 3.10+ only if you run from source (the desktop app brings its own).
+
+## Privacy and security
+
+- **Your data stays on your Mac**, in `~/Library/Application Support/Xod`, readable only by your user account. No telemetry. Set `XOD_DATA_DIR` to keep it elsewhere.
+- **Keys and logins live in the macOS Keychain**, never in files, logs or prompts.
+- **Local only:** the server listens on `127.0.0.1` and refuses requests from websites (Host and Origin checks), so a page you visit can't drive Xod.
+- **Untrusted text stays text:** everything the AI writes is sanitized before it's shown, the UI runs under a strict Content-Security-Policy, and all UI code is bundled at pinned versions.
+- **It asks first** before any submit, send, payment, post or delete on a website, and before running outside (MCP) tools that change things.
+- **Audited dependencies:** exact versions with no known vulnerabilities when pinned; CI re-checks weekly.
+
+Found a security problem? Please report it privately; see [SECURITY.md](SECURITY.md).
+
+## For developers
 
 ```
 xod/
 ├── app/
-│   ├── main.py                  # FastAPI server, endpoints & SSE event stream
-│   ├── config.py                # Environment & dynamic SQLite settings sync
-│   ├── paths.py                 # Where personal data lives (outside the repo)
-│   ├── agent/
-│   │   ├── prompts.py           # Specialist persona system prompts
-│   │   ├── tools.py             # 40+ function tool definitions & execution router
-│   │   ├── researcher.py        # Autonomous ReAct agent loop & deliberation engine
-│   │   ├── evidence.py          # EvidenceBoard observation aggregator
-│   │   └── swarm.py             # JIT multi-agent specialist swarm conductor
-│   ├── services/
-│   │   ├── browser_sandbox.py   # Chrome CDP browser sandbox & Set-of-Marks engine
-│   │   ├── system_control.py    # Host computer terminal, specs & background jobs
-│   │   ├── filesystem.py        # Safe file & folder manipulation engine
-│   │   ├── llm.py               # Unified local & cloud LLM streaming client
-│   │   ├── storage.py           # Persistent SQLite database operations
-│   │   ├── tavily_search.py     # Tavily AI Search client
-│   │   ├── you_search.py        # You.com YDC Index Search client
-│   │   ├── trustmrr.py          # TrustMRR SaaS verified financials & deals
-│   │   ├── media_downloader.py  # yt-dlp video & audio converter
-│   │   └── document_parser.py   # PDF, DOCX, and CSV structure parser
-│   └── static/
-│       ├── index.html           # Dark-mode dashboard UI & cockpit inspector
-│       ├── css/style.css        # Responsive styling & status badge animations
-│       └── js/app.js            # Reactive SSE streaming client & modals
-├── electron/                    # Desktop app (Electron) and installer build
-├── scripts/check_release.py     # Blocks keys, personal files and home paths from commits
-├── .github/                     # CI: secret scan, dependency audit, desktop checks
-├── run.sh                       # One-click startup script
-├── requirements.txt             # Python dependencies
-├── .env.example                 # Clean environment variable template
-├── .gitignore                   # Comprehensive git protection rules
-└── LICENSE                      # MIT License
+│   ├── main.py              # FastAPI server and API
+│   ├── paths.py             # where personal data lives (outside the repo)
+│   ├── mcp_server.py        # Xod as an MCP server for other apps
+│   ├── agent/               # planner, tools, self-healing, evidence board
+│   ├── services/            # browser, files, memory, tasks, routines, activity, reports,
+│   │                        #   local engine, model routing, MCP client, media, packs…
+│   ├── static/              # the web UI (vanilla JS + Tailwind, libraries vendored)
+│   └── vendor/              # mflux (MIT), patched
+├── electron/                # desktop app and .dmg build
+├── scripts/                 # release checker, screenshots
+├── tests/                   # end-to-end suites
+└── run.sh
 ```
 
----
+Tests: `.venv/bin/python tests/features/run_features_test.py` (and the suites in `tests/self_heal` and `tests/self_edit`). They use a throwaway data folder, never yours. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## 🔒 Security & Privacy Notice
+## License
 
-* **Local only**: the server listens on `127.0.0.1` and refuses requests from other sites (Host and Origin checks), so a web page you visit can't drive Xod.
-* **Untrusted text stays text**: everything the AI writes can contain words from web pages, so replies are sanitized (DOMPurify) and the page runs under a strict Content-Security-Policy: no outside scripts, no requests anywhere but Xod itself. All UI libraries and fonts are bundled at pinned versions; nothing loads from CDNs.
-* **Keys in the Keychain**: API keys and saved site logins live in the macOS Keychain, never in files, logs or prompts. Keys put in a `.env` file are moved into the Keychain on the next start.
-* **Your data stays on your Mac**: everything personal is in `~/Library/Application Support/Xod`, outside the code. Xod has no telemetry, and voice is transcribed locally.
-* **It asks first**: anything that submits, sends, pays, posts or deletes on a website waits for your approval, one action at a time.
-* **Self-editing is gated**: Xod can only change its own code with a strong enough model, after tests pass, never the safety code, and never inside the installed app. Every change can be reverted.
-* **Computer access is real**: Xod can run commands and edit files on your Mac when you ask it to. Review what it proposes.
-* **Dependencies are audited**: exact versions in `requirements.txt` with no known vulnerabilities when pinned; CI re-audits weekly and Dependabot proposes updates.
-
-See [SECURITY.md](SECURITY.md) to report a vulnerability.
-
----
-
-## 🤝 Contributing
-
-Contributions, feedback, and issue reports are warmly welcomed! Please check out [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
-
----
-
-## 📄 License
-
-This project is open-sourced under the [MIT License](LICENSE).
+[MIT](LICENSE). Bundled third-party code keeps its own license (see `app/vendor/` and `app/static/vendor/`).

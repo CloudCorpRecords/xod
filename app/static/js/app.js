@@ -2045,6 +2045,25 @@ function usePrompt(text) {
 // -------------------------------------------------------------
 // loadSessions(): see sidebar.js
 
+// Welcome-screen ideas: core ones, plus examples from add-on packs that are on (packs.js).
+const WELCOME_STARTERS = [
+  { icon: "newspaper", color: "text-teal-400", label: "Today's top tech news, briefly", prompt: "What are today's 5 biggest tech news stories? One line each, with sources." },
+  { icon: "folder-search", color: "text-cyan-400", label: "What's filling up my Downloads?", prompt: "Look through my Downloads folder and tell me what's taking up the most space, and what looks safe to delete." },
+  { icon: "scale", color: "text-indigo-400", label: "Compare and make a report", prompt: "Research the best noise-cancelling headphones under $300, compare the top 4 in a table, and cite sources." },
+  { icon: "image", color: "text-rose-400", label: "Make an image", prompt: "Make an image of a cozy cabin under the northern lights.", pack: "media-studio" },
+  { icon: "file-search", color: "text-amber-400", label: "How much does ShipFast make?", prompt: "Do a deep research teardown on ShipFast: verified revenue, MRR, traffic, cofounders, and competitive moat", pack: "startup-intel" },
+  { icon: "shopping-bag", color: "text-amber-400", label: "Find good businesses for sale", prompt: "What are the best SaaS businesses currently for sale on TrustMRR under 3x revenue multiple?", pack: "startup-intel" },
+];
+
+function welcomeStartersHtml() {
+  const on = window.enabledPacks;   // set by packs.js; undefined until loaded = show core only
+  return WELCOME_STARTERS.filter((s) => !s.pack || (on && on.has(s.pack))).slice(0, 4).map((s) => `
+    <button onclick="usePrompt(${escapeHtml(JSON.stringify(s.prompt))})" class="starter-card group">
+      <i data-lucide="${s.icon}" class="size-4 ${s.color} shrink-0"></i>
+      <span>${escapeHtml(s.label)}</span>
+    </button>`).join("");
+}
+
 async function selectSession(sessionId) {
   if (isStreaming) return;
   currentSessionId = sessionId;
@@ -2269,7 +2288,7 @@ function buildThoughtAccordionHtml(id, reasoning, totalSeconds = null) {
             <i data-lucide="brain" class="size-3.5 text-indigo-400 shrink-0"></i>
             <span class="thinking-label font-medium text-zinc-300">${totalSeconds ? "Thought for" : "Thought process"}</span>
             <span class="thinking-timer font-mono text-[11px] text-zinc-300 bg-white/5 px-2 py-0.5 rounded-full border border-white/10">${timeStr || `${wordCount} words`}</span>
-            <span class="text-[11px] text-zinc-500 hidden sm:inline">(${wordCount} words)</span>
+            ${timeStr ? `<span class="text-[11px] text-zinc-500 hidden sm:inline">(${wordCount} words)</span>` : ""}
           </div>
           <div class="flex items-center gap-2 shrink-0">
             <span class="text-[10px] text-zinc-500 uppercase tracking-wider font-mono">COMPLETE</span>
@@ -2527,6 +2546,15 @@ function renderStoredAssistantMessage(m) {
         </button>
         <button class="btn-export hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors">
           <i data-lucide="download" class="size-3.5"></i> Export Markdown
+        </button>
+        <button data-save-routine class="hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors" title="Teach Xod to repeat this, by hand or on a schedule">
+          <i data-lucide="repeat" class="size-3.5"></i> Save as routine
+        </button>
+        <button onclick="retryWithStrongerModel()" class="hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors" title="Ask this again with your cloud model (shows in Model routing)">
+          <i data-lucide="sparkles" class="size-3.5"></i> Try a stronger model
+        </button>
+        <button data-share-report class="hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors" title="Make a polished page and PDF with sources">
+          <i data-lucide="share-2" class="size-3.5"></i> Share report
         </button>
         <button class="btn-open-trace hover:text-indigo-300 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-indigo-400 transition-colors font-medium ml-auto" title="Open full LLM Observability & Action Trace">
           <i data-lucide="activity" class="size-3.5"></i> Observability Trace
@@ -2904,7 +2932,8 @@ async function handleChatSubmit(e) {
         persona: currentPersona,
         session_id: currentSessionId,
         active_workspace_path: activeWorkingScope ? activeWorkingScope.path : null,
-        attached_document: currentAttachedDoc
+        attached_document: currentAttachedDoc,
+        route: window.__nextRoute || undefined   // "cloud": this turn uses the stronger model (routing.js)
       }),
       signal: currentAbortController.signal
     });
@@ -3297,6 +3326,15 @@ function createAssistantMessageContainer() {
         </button>
         <button class="btn-export hover:text-white flex items-center gap-1 ml-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors">
           <i data-lucide="download" class="size-3.5"></i> Export Markdown
+        </button>
+        <button data-save-routine class="hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors" title="Teach Xod to repeat this, by hand or on a schedule">
+          <i data-lucide="repeat" class="size-3.5"></i> Save as routine
+        </button>
+        <button onclick="retryWithStrongerModel()" class="hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors" title="Ask this again with your cloud model (shows in Model routing)">
+          <i data-lucide="sparkles" class="size-3.5"></i> Try a stronger model
+        </button>
+        <button data-share-report class="hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-white/[0.06] transition-colors" title="Make a polished page and PDF with sources">
+          <i data-lucide="share-2" class="size-3.5"></i> Share report
         </button>
         <button class="btn-open-trace hover:text-indigo-300 flex items-center gap-1 ml-auto px-2.5 py-1 rounded-lg bg-indigo-500/10 border border-indigo-500/25 text-indigo-400 transition-colors font-medium" title="Open full LLM Observability & Action Trace">
           <i data-lucide="activity" class="size-3.5"></i> Observability Trace
@@ -4251,6 +4289,9 @@ function handleResearchEvent(event, assistantBubble) {
     }
   } else if (event.type === "tool_result") {
     assistantBubble.updateToolResult(event.name, event.summary, event.data, event.id);
+    if (event.data && event.data.needs_approval && window.renderMcpApproval) window.renderMcpApproval(event.data);
+  } else if (event.type === "escalation_offer" || event.type === "route_info") {
+    if (window.renderRouteEvent) window.renderRouteEvent(event);
   } else if (event.type === "content") {
     assistantBubble.finishReasoning();
     assistantBubble.appendContent(event.content);
@@ -7687,31 +7728,13 @@ function renderWelcomeHeroForScope() {
       </button>
     `;
   } else {
-    if (title) title.textContent = "What do you want to find out?";
-    if (desc) desc.textContent = "Ask about any company, website or market. Xod does the digging for you.";
+    if (title) title.textContent = "What should Xod do?";
+    if (desc) desc.textContent = "Research anything, work with your files, or hand off a whole job. It runs on your Mac.";
     if (iconEl) iconEl.setAttribute("data-lucide", "sparkles");
     if (iconWrap) {
       iconWrap.className = "size-12 mx-auto rounded-2xl bg-gradient-to-tr from-brand-600 via-indigo-500 to-purple-600 flex items-center justify-center shadow-xl shadow-brand-500/30";
     }
-
-    starters.innerHTML = `
-      <button onclick="usePrompt('Compare nike.com vs adidas.com: traffic share, dominance ratio, and checkout funnel path activity')" class="starter-card group">
-        <i data-lucide="scale" class="size-4 text-teal-400 shrink-0"></i>
-        <span>Compare Nike vs Adidas online</span>
-      </button>
-      <button onclick="usePrompt('Do a deep research teardown on ShipFast: verified revenue, MRR, traffic, cofounders, and competitive moat')" class="starter-card group">
-        <i data-lucide="file-search" class="size-4 text-indigo-400 shrink-0"></i>
-        <span>How much does ShipFast make?</span>
-      </button>
-      <button onclick="usePrompt('What are the best SaaS businesses currently for sale on TrustMRR under 3x revenue multiple?')" class="starter-card group">
-        <i data-lucide="shopping-bag" class="size-4 text-amber-400 shrink-0"></i>
-        <span>Find good businesses for sale</span>
-      </button>
-      <button onclick="usePrompt('Find the top 5 highest MRR bootstrapped AI startups and analyze their tech stacks')" class="starter-card group">
-        <i data-lucide="trending-up" class="size-4 text-emerald-400 shrink-0"></i>
-        <span>Top money-making AI startups</span>
-      </button>
-    `;
+    starters.innerHTML = welcomeStartersHtml();
   }
 
   if (window.lucide) lucide.createIcons();

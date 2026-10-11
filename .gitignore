@@ -97,3 +97,4 @@ electron/out/
 *.bak
 *.empty-*
 !electron/build/
+electron/python-runtime/

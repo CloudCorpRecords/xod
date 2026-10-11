@@ -6,6 +6,7 @@
 
 # Web framework & server
 fastapi==0.143.0
+mcp==2.2.0                   # connected apps (MCP client and Xod's MCP server)
 starlette==1.7.0
 uvicorn==0.54.0
 httpx==0.28.1
@@ -23,6 +24,7 @@ fsspec>=2026.9.0
 
 # HTML scraping & web parsing
 beautifulsoup4==4.15.0
+ddgs==9.16.0                 # keyless web search (no API key needed)
 soupsieve>=3.0.1
 
 # Agent browser (Chrome DevTools Protocol)
@@ -31,6 +33,7 @@ websockets==17.2
 # Documents
 pypdf==6.20.0
 python-docx==1.2.0
+markdown==3.10.3             # shareable reports from the agent
 
 # Media downloads (uses the ffmpeg bundled with imageio-ffmpeg)
 yt-dlp==2026.8.19

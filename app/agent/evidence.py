@@ -664,8 +664,9 @@ class EvidenceBoard:
 
         if self.sources:
             lines.append(f"* Verified Web Sources ({len(self.sources)}):")
-            for s in self.sources[:5]:
-                lines.append(f"  - [{s.get('title')}]({s.get('url')}): {s.get('snippet', '')[:120]}...")
+            # Enough of each source for the answer to actually use (5 x 120 chars dropped most facts).
+            for s in self.sources[:10]:
+                lines.append(f"  - [{s.get('title')}]({s.get('url')}): {s.get('snippet', '')[:400]}")
 
         return "\n".join(lines)
 

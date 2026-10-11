@@ -1,5 +1,7 @@
 import re
 import json
+import asyncio
+import logging
 from typing import Dict, Any, List
 from app.services.trustmrr import trustmrr_client, TrustMRRError
 from app.services.web_search import search_web, scrape_webpage
@@ -20,6 +22,8 @@ from app.services.sec_edgar import sec_edgar_service
 from app.services.ip_intel import ip_intel_service
 from app.services.traffic_intel import traffic_intel_service
 from pathlib import Path
+
+logger = logging.getLogger("xod.tools")
 from typing import Dict, Any, List, Optional
 from app.services.trend_intel import trend_intel_service
 from app.services.email_intel import email_intel_service
@@ -2440,6 +2444,18 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "xod_make_report",
+            "description": "Saves a finished answer as a shareable report: a polished web page and PDF with numbered sources, in Xod's reports folder. Use when the user asks for a report, a PDF, something to share or send, or when a routine says to save a report. Put the full answer in markdown, with sources as [name](url) links.",
+            "parameters": {"type": "object", "properties": {
+                "title": {"type": "string", "description": "Short title, e.g. 'Morning tech brief, Oct 10'"},
+                "markdown": {"type": "string", "description": "The full report in Markdown, with [name](url) source links"},
+                "question": {"type": "string", "description": "What was asked (optional)"}},
+                "required": ["title", "markdown"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "xod_doctor",
             "description": "Checks Xod's own health (chat model, memory, browser, image/video engine, task inbox, API keys, recent tool errors) and can fix problems: reload the chat model, restart Xod's browser, free memory, stop hung jobs. Use when tools keep failing, something seems broken, or the user asks Xod to check/fix itself.",
             "parameters": {
@@ -2572,7 +2588,34 @@ def compact_startup(s: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None) -> Dict[str, Any]:
+    """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first."""
+    from app.services import activity
+    ctx = None
+    try:
+        ctx = await asyncio.to_thread(activity.before, name, arguments or {}, active_workspace_path)
+    except Exception as e:
+        logger.warning(f"activity log skipped for {name}: {e}")
+    result = await _execute_tool(name, arguments, active_workspace_path)
+    try:
+        await asyncio.to_thread(activity.after, ctx, result)
+    except Exception as e:
+        logger.warning(f"activity log failed for {name}: {e}")
+    return result
+
+
+async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None) -> Dict[str, Any]:
     """Dispatches tool execution to the appropriate service."""
+    if name.startswith("mcp__"):
+        from app.services.mcp_client import mcp_hub
+        return await mcp_hub.call(name, arguments or {})
+    if name == "xod_make_report":
+        from app.services import reports
+        r = await asyncio.to_thread(reports.make_report_from_markdown, arguments.get("title", ""), arguments.get("markdown", ""),
+                                    arguments.get("question", ""))
+        return {**r, "note": f"Report saved. Open it at {r['html_url']}" + (f" (PDF: {r['pdf_url']})" if r.get("pdf_url") else "")}
+    from app.services import packs
+    if not packs.tool_allowed(name):
+        return {"success": False, "error": f"{name} belongs to the '{packs.TOOL_PACK[name]}' add-on, which is turned off (Tools → Add-ons)."}
     try:
         if name == "trustmrr_list_startups":
             min_rev_cents = int(arguments["min_revenue_usd"] * 100) if "min_revenue_usd" in arguments else None
@@ -3402,6 +3445,21 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
 
 
 def select_tools_for_query(query: str, persona: str = "ultimate_researcher", max_tools: int = 25, active_workspace_path: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Xod's own tools for this request, plus any connected MCP tools that look relevant."""
+    tools = _select_builtin_tools(query, persona, max_tools, active_workspace_path)
+    if any(k in (query or "").lower() for k in ("report", "pdf", "share", "send this", "write up", "write-up")):
+        tools = tools + [t for t in TOOL_DEFINITIONS if t["function"]["name"] == "xod_make_report"]
+    from app.services import packs
+    tools = [t for t in tools if packs.tool_allowed(t["function"]["name"])]   # add-ons that are off stay hidden
+    try:
+        from app.services.mcp_client import mcp_hub
+        tools = tools + mcp_hub.tools_for_query(query)
+    except Exception as e:
+        logger.warning(f"MCP tools unavailable: {e}")
+    return tools
+
+
+def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_tools: int = 25, active_workspace_path: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Selects the most high-affinity, context-optimal subset of tools for a given query and persona.
     Guarantees foundational representation across all core pillars: Computer Control, Controlled

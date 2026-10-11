@@ -70,6 +70,9 @@ async function pickPort() {
 }
 
 function findPython() {
+  // Installed app: the Python bundled in Xod.app (electron/scripts/bundle-python.js).
+  const bundled = path.join(process.resourcesPath || "", "python", "bin", "python3.12");
+  if (PACKAGED && fs.existsSync(bundled)) return bundled;
   for (const cmd of ["python3.12", "python3.13", "python3.11", "python3.10", "python3"]) {
     const r = spawnSync(cmd, ["-c", "import sys; print(sys.version_info[:2] >= (3, 10))"], { encoding: "utf8" });
     if (r.status === 0 && r.stdout.trim() === "True") return cmd;
@@ -94,6 +97,11 @@ function run(cmd, args, label) {
 // Installs again when requirements.txt changes (e.g. after an update of Xod.app).
 async function ensurePythonEnv() {
   const reqs = fs.readFileSync(path.join(ROOT, "requirements.txt"), "utf8");
+  // The environment points at the Python it was made from; if Xod.app moved, that link is broken.
+  if (fs.existsSync(VENV_DIR) && spawnSync(VENV_PY, ["-c", "import sys"]).status !== 0) {
+    status("Repairing Xod's Python environment…");
+    fs.rmSync(VENV_DIR, { recursive: true, force: true });
+  }
   const ready = fs.existsSync(VENV_PY) && (!PACKAGED || (fs.existsSync(STAMP) && fs.readFileSync(STAMP, "utf8") === reqs));
   if (ready) return;
   if (!fs.existsSync(VENV_PY)) {

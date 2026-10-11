@@ -99,6 +99,19 @@ class Doctor:
     # ------------------------------------------------------------------ individual checks
     async def _check_chat_model(self) -> Dict[str, Any]:
         from app.config import settings
+        if settings.llm_provider == "xod":
+            from app.services.local_engine import local_engine, is_downloaded, catalog_entry
+            from app.services.llm import llm_service
+            repo = llm_service.get_endpoint_info()["model"]
+            label = (catalog_entry(repo) or {}).get("label", repo)
+            if not is_downloaded(repo):
+                return _check("chat_model", "Chat model", "fail", f"Built-in model {label} isn't downloaded yet.")
+            if local_engine.running():
+                return _check("chat_model", "Chat model", "ok", f"{label} running (built-in)")
+            if local_engine.last_error:
+                return _check("chat_model", "Chat model", "fail", f"{label} failed to start: {local_engine.last_error[-160:]}",
+                              "load_chat_model", "Start it")
+            return _check("chat_model", "Chat model", "ok", f"{label} ready (starts with your next message)")
         if settings.llm_provider != "lm_studio":
             key_field = f"{settings.llm_provider}_api_key"
             has = bool(getattr(settings, key_field, "")) if hasattr(settings, key_field) else True
@@ -227,6 +240,12 @@ class Doctor:
     async def fix(self, fix_id: str) -> Dict[str, Any]:
         try:
             if fix_id == "load_chat_model":
+                from app.config import settings
+                if settings.llm_provider == "xod":
+                    from app.services.local_engine import local_engine
+                    from app.services.llm import llm_service
+                    await local_engine.ensure_running(llm_service.get_endpoint_info()["model"])
+                    return {"ok": True, "detail": self._did("Started the built-in model")}
                 return {"ok": await self._load_chat_model(), "detail": self.fixes[-1]["text"] if self.fixes else ""}
             if fix_id == "start_lmstudio":
                 from app.services.memory_broker import LMS_CLI

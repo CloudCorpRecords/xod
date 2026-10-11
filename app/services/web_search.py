@@ -11,6 +11,22 @@ DEFAULT_USER_AGENT = (
 )
 
 async def search_web(query: str, max_results: int = 5) -> List[Dict[str, str]]:
+    """Keyless web search: ddgs first (rotates search engines, handles their bot checks), then
+    DuckDuckGo's HTML page directly. Returns [{title, url, snippet}]."""
+    try:
+        import asyncio
+        from ddgs import DDGS
+        hits = await asyncio.wait_for(asyncio.to_thread(lambda: DDGS().text(query, max_results=max_results)), 20)
+        results = [{"title": h.get("title", ""), "url": h.get("href", ""), "snippet": h.get("body", "")}
+                   for h in hits or [] if h.get("href")]
+        if results:
+            return results
+    except Exception:
+        pass
+    return await _search_duckduckgo_html(query, max_results)
+
+
+async def _search_duckduckgo_html(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     """Searches the live web via DuckDuckGo HTML and returns list of {title, url, snippet}."""
     url = "https://html.duckduckgo.com/html/"
     headers = {

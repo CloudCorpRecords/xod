@@ -32,6 +32,7 @@ Thank you for your interest in contributing to **Xod**! We welcome contributions
 
 5. **Run the tests** before opening a pull request:
    ```bash
+   .venv/bin/python tests/features/run_features_test.py   # undo, routines, routing, add-ons, reports, MCP
    .venv/bin/python tests/self_heal/run_heal_test.py
    .venv/bin/python tests/self_heal/run_learning_jobs_test.py
    .venv/bin/python tests/self_edit/run_self_edit_test.py   # needs a local model in LM Studio

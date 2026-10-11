@@ -304,6 +304,10 @@ class Repairer:
                 yield {"type": "status", "content": f"↪ Worked around it with {cur_tool} instead of {tool}"}
         elif not check["ok"]:
             reason = next((h["gave_up"] for h in reversed(history) if h.get("gave_up")), None)
+            from app.services import llm_routing
+            switched = llm_routing.note_failure(f"{cur_tool}: {check['detail']}"[:200])
+            if switched:   # auto mode: the rest of this turn uses the stronger model
+                yield {"type": "status", "content": switched}
             if isinstance(cur_result, dict):
                 cur_result = {**cur_result, "verified": False, "problem": check["detail"],
                               **({"what_to_do": reason} if reason else {})}

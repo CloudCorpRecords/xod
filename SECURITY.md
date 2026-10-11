@@ -22,4 +22,7 @@ Include what you found, how to reproduce it, and what an attacker could do with 
 - Personal data lives outside the code in `~/Library/Application Support/Xod` (`app/paths.py`), readable only by the user.
 - Secrets live only in the macOS Keychain (`app/services/secret_store.py`, `app/services/credential_vault.py`).
 - Outward actions on websites (submit, send, pay, post, delete, create account) need one approval per action (`app/services/browser_sandbox.py`).
-- Self-editing rules and the protected code list are in `app/services/self_edit.py`.
+- Outside tools (MCP) run only after approval unless the user trusts that server; read-only detection uses the tool's own annotations (`app/services/mcp_client.py`). Their secrets go to the Keychain.
+- Every tool call is logged, and file changes are snapshotted first so they can be undone (`app/services/activity.py`).
+- Cloud models are used only if the user turns that on, within a monthly budget (`app/services/llm_routing.py`).
+- Self-editing rules and the protected code list are in `app/services/self_edit.py`. Self-edits can't touch any of the safety code above.

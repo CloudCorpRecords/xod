@@ -91,6 +91,9 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 MEDIA_DIR = DATA_DIR / "media_studio"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+REPORTS_DIR = DATA_DIR / "reports"
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
 
 from app.services.storage import (
     init_db,
@@ -135,6 +138,7 @@ from app.services.memory_service import memory_service
 
 class ChatRequest(BaseModel):
     messages: List[Dict[str, Any]]
+    route: Optional[str] = None   # "cloud": run this turn on the stronger cloud model (llm_routing)
     persona: Optional[str] = "ultimate_researcher"
     session_id: Optional[str] = None
     active_workspace_path: Optional[str] = None
@@ -431,6 +435,180 @@ async def _start_task_worker():
     from app.services.doctor import doctor
     task_queue.start()
     doctor.start()
+    from app.services import activity, routines
+    activity.prune()
+    routines.start()
+    from app.services.mcp_client import mcp_hub
+    asyncio.create_task(mcp_hub.start())   # connect outside tool servers in the background
+
+
+@app.get("/api/mcp")
+async def mcp_status_endpoint():
+    from app.services.mcp_client import mcp_hub
+    return {"servers": mcp_hub.status(), "pending": list(mcp_hub.pending.values())}
+
+
+@app.get("/api/mcp/self-config")
+async def mcp_self_config_endpoint(request: Request):
+    """The snippet other MCP apps need to use Xod (paths of this install, this server's port)."""
+    import sys as _sys
+    from app.paths import APP_ROOT
+    port = request.url.port or 8000
+    return {"config": {"mcpServers": {"xod": {
+        "command": _sys.executable, "args": ["-m", "app.mcp_server"], "cwd": str(APP_ROOT),
+        "env": {"XOD_URL": f"http://127.0.0.1:{port}"}}}}}
+
+
+@app.post("/api/mcp/servers")
+async def mcp_add_endpoint(request: Request):
+    """Body: a Claude-Desktop-style block {"mcpServers": {...}}. Secret env values go to the Keychain."""
+    from app.services import mcp_client
+    try:
+        block = await request.json()
+    except Exception:
+        return {"success": False, "error": "That isn't valid JSON."}
+    res = mcp_client.add_servers(block)
+    if res["success"]:
+        await mcp_client.mcp_hub.start()
+    return res
+
+
+class MCPServerUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    trust: Optional[str] = None
+
+
+@app.patch("/api/mcp/servers/{name}")
+async def mcp_update_endpoint(name: str, req: MCPServerUpdate):
+    from app.services import mcp_client
+    ok = mcp_client.update_server(name, req.enabled, req.trust)
+    if ok and req.enabled is not None:
+        await mcp_client.mcp_hub.start()
+    return {"success": ok}
+
+
+@app.delete("/api/mcp/servers/{name}")
+async def mcp_remove_endpoint(name: str):
+    from app.services import mcp_client
+    ok = mcp_client.remove_server(name)
+    await mcp_client.mcp_hub.start()
+    return {"success": ok}
+
+
+@app.post("/api/mcp/reconnect")
+async def mcp_reconnect_endpoint():
+    from app.services.mcp_client import mcp_hub
+    await mcp_hub.start()
+    return {"servers": mcp_hub.status()}
+
+
+class MCPCall(BaseModel):
+    tool: str
+    args: Dict[str, Any] = {}
+
+
+@app.post("/api/mcp/call")
+async def mcp_call_endpoint(req: MCPCall):
+    """Try an MCP tool from the UI. Same rules as the agent: non-read-only tools wait for approval."""
+    if not req.tool.startswith("mcp__"):
+        return {"success": False, "error": "Only MCP tools can be called here."}
+    from app.agent.tools import execute_tool
+    return await execute_tool(req.tool, req.args or {})
+
+
+@app.post("/api/mcp/approve/{pid}")
+async def mcp_approve_endpoint(pid: str):
+    from app.services.mcp_client import mcp_hub
+    return await mcp_hub.approve(pid)
+
+
+@app.post("/api/mcp/decline/{pid}")
+async def mcp_decline_endpoint(pid: str):
+    from app.services.mcp_client import mcp_hub
+    return {"success": mcp_hub.decline(pid)}
+
+
+class RoutineCreate(BaseModel):
+    name: Optional[str] = None
+    instructions: str
+    schedule: Optional[Dict[str, Any]] = None
+    source: Optional[str] = None      # "chat:<session id>" or "task:<task id>": learn the steps from it
+
+
+class RoutineUpdate(BaseModel):
+    name: Optional[str] = None
+    instructions: Optional[str] = None
+    schedule: Optional[Dict[str, Any]] = None
+    enabled: Optional[bool] = None
+    steps: Optional[List[str]] = None
+
+
+@app.get("/api/routines")
+async def routines_list_endpoint():
+    from app.services import routines
+    return {"routines": routines.list_all()}
+
+
+@app.post("/api/routines")
+async def routines_create_endpoint(req: RoutineCreate):
+    from app.services import routines
+    try:
+        return {"success": True, "routine": routines.create(req.name or "", req.instructions, req.schedule, req.source)}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.patch("/api/routines/{rid}")
+async def routines_update_endpoint(rid: str, req: RoutineUpdate):
+    from app.services import routines
+    r = routines.update(rid, **req.model_dump())
+    return {"success": bool(r), "routine": r}
+
+
+@app.post("/api/routines/{rid}/run")
+async def routines_run_endpoint(rid: str):
+    from app.services import routines
+    return routines.run_now(rid)
+
+
+@app.delete("/api/routines/{rid}")
+async def routines_delete_endpoint(rid: str):
+    from app.services import routines
+    return {"success": routines.delete(rid)}
+
+
+@app.get("/api/routines/suggest")
+async def routines_suggest_endpoint(source: str):
+    """Prefill for "Save as routine": the request and the steps that worked."""
+    from app.services import routines
+    from app.services.task_queue import task_queue
+    instructions, name = "", ""
+    if source.startswith("task:"):
+        t = task_queue.get(source.split(":", 1)[1]) or {}
+        instructions, name = t.get("request", ""), t.get("title", "")
+    elif source.startswith("chat:"):
+        msgs = get_session_messages(source.split(":", 1)[1])
+        first = next((m for m in msgs if m.get("role") == "user"), None)
+        instructions = (first or {}).get("content", "")
+        name = (get_session(source.split(":", 1)[1]) or {}).get("title", "")
+    return {"name": name[:80], "instructions": instructions, "steps": routines.steps_from(source)}
+
+
+@app.get("/api/activity")
+async def activity_list_endpoint(since: Optional[float] = None, limit: int = 200):
+    """What Xod did (newest first), with which entries can be undone."""
+    from app.services import activity
+    return {"items": activity.recent(limit=min(limit, 1000), since=since)}
+
+
+class UndoRequest(BaseModel):
+    force: bool = False
+
+
+@app.post("/api/activity/{entry_id}/undo")
+async def activity_undo_endpoint(entry_id: str, req: UndoRequest):
+    from app.services import activity
+    return await asyncio.to_thread(activity.undo, entry_id, req.force)
 
 
 @app.get("/api/doctor")
@@ -544,6 +722,14 @@ async def chat_endpoint(request: ChatRequest):
     researcher = AgenticResearcher(persona=request.persona or "ultimate_researcher")
 
     async def event_generator():
+        from app.services import activity
+        activity.origin.set(f"chat:{session_id}")   # tool calls in this reply are logged against this chat
+        from app.services import llm_routing
+        cloud_ep = llm_routing.cloud_endpoint() if request.route == "cloud" else None
+        if request.route == "cloud" and not cloud_ep:
+            yield f"data: {json.dumps({'type': 'error', 'content': 'No cloud model is set up. Add an API key in Settings first.'})}\n\n"
+            return
+        route = llm_routing.start_turn(cloud_ep)
         yield f"data: {json.dumps({'type': 'session_info', 'session_id': session_id, 'is_new': is_new_session})}\n\n"
 
         assistant_content = ""
@@ -569,6 +755,13 @@ async def chat_endpoint(request: ChatRequest):
                     tool_events.append(event)
 
                 yield f"data: {json.dumps(event)}\n\n"
+
+            # Smart routing: say which model answered and what it cost, or offer a stronger one.
+            if route.endpoint:
+                yield f"data: {json.dumps({'type': 'route_info', 'model': route.endpoint.get('label') or route.endpoint['model'], 'reason': route.escalated_reason, 'cost_usd': round(route.cost_usd, 4), 'calls': route.cloud_calls})}\n\n"
+            elif llm_routing.should_offer():
+                ep = llm_routing.cloud_endpoint()
+                yield f"data: {json.dumps({'type': 'escalation_offer', 'model': ep['label'], 'est_cost_usd': llm_routing.estimate_turn_cost(request.messages, ep), 'failures': route.failures})}\n\n"
 
         except Exception as e:
             logger.exception(f"Chat stream exception: {e}")
@@ -2169,6 +2362,103 @@ class TraceFeedbackRequest(BaseModel):
 
 class LabExportRequest(BaseModel):
     specialist: Optional[str] = "intent_router"
+
+# ---------------------------------------------------------------- first-run setup (services/setup_wizard.py)
+class SetupChoice(BaseModel):
+    provider: str
+    model: str
+
+class SetupDownload(BaseModel):
+    repo: str
+
+class RoutingSettings(BaseModel):
+    mode: Optional[str] = None
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    monthly_budget_usd: Optional[float] = None
+    price_overrides: Optional[Dict[str, List[float]]] = None
+
+
+@app.get("/api/routing")
+async def routing_status_endpoint():
+    from app.services import llm_routing
+    return llm_routing.summary()
+
+
+@app.post("/api/routing")
+async def routing_save_endpoint(req: RoutingSettings):
+    from app.services import llm_routing
+    llm_routing.save_settings(**req.model_dump())
+    return llm_routing.summary()
+
+
+class ReportRequest(BaseModel):
+    title: Optional[str] = None
+    question: Optional[str] = None
+    html: str
+    sources: Optional[List[Dict[str, str]]] = None
+    pdf: bool = True
+
+
+@app.post("/api/reports")
+async def report_create_endpoint(req: ReportRequest):
+    """Turns an answer into a shareable page (+ PDF) in the data folder's reports/."""
+    from app.services import reports
+    title = await reports.better_title(req.title or "", req.question or "")
+    return await asyncio.to_thread(reports.make_report, title, req.question or "", req.html, req.sources, req.pdf)
+
+
+class PackToggle(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/packs")
+async def packs_list_endpoint():
+    from app.services import packs
+    return {"packs": packs.status()}
+
+
+@app.post("/api/packs/{pack_id}")
+async def packs_toggle_endpoint(pack_id: str, req: PackToggle):
+    from app.services import packs
+    return packs.set_enabled(pack_id, req.enabled)
+
+
+@app.get("/api/setup")
+async def setup_status_endpoint():
+    from app.services import setup_wizard
+    return await setup_wizard.status()
+
+@app.post("/api/setup/download")
+async def setup_download_endpoint(req: SetupDownload):
+    from app.services.local_engine import start_download
+    return start_download(req.repo)
+
+@app.get("/api/setup/download")
+async def setup_download_status_endpoint(repo: str):
+    from app.services.local_engine import download_status
+    return download_status(repo)
+
+@app.post("/api/setup/choose")
+async def setup_choose_endpoint(req: SetupChoice):
+    from app.services import setup_wizard
+    return setup_wizard.choose(req.provider, req.model)
+
+@app.post("/api/setup/test")
+async def setup_test_endpoint():
+    """Says hello to the chosen model, starting the built-in engine if that's the one."""
+    import time as _t
+    t = _t.time()
+    try:
+        msg = await llm_service.chat_completion([{"role": "user", "content": "Say hi in five words or fewer."}], max_tokens=40, think=False)
+        return {"success": True, "reply": (msg.get("content") or "").strip()[:200], "seconds": round(_t.time() - t, 1)}
+    except Exception as e:
+        return {"success": False, "error": str(e)[:300]}
+
+@app.post("/api/setup/complete")
+async def setup_complete_endpoint():
+    from app.services import setup_wizard
+    return setup_wizard.complete()
 
 @app.post("/api/voice/transcribe")
 async def voice_transcribe_endpoint(request: Request):
