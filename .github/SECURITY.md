@@ -13,6 +13,8 @@ Include what you found, how to reproduce it, and what an attacker could do with 
 - Ways for a website, file, or document to make Xod act without the user's approval (prompt injection that bypasses the approval gates, cross-site requests to the local server).
 - Ways to read API keys or saved logins from the Keychain, logs, prompts, or the UI.
 - Ways for the self-editing feature to change protected safety code or skip its checks.
+- Agent Mail: reading or forging messages, getting a message shown as someone else's, making Xod send or run something without approval, or a relay learning more than recipient, size, time and IP.
+- Connected-app sign-in: stealing OAuth tokens or completing someone else's sign-in through `/oauth/callback`.
 - The Electron shell loading or navigating to content other than Xod itself.
 
 ## Design notes
@@ -25,4 +27,6 @@ Include what you found, how to reproduce it, and what an attacker could do with 
 - Outside tools (MCP) run only after approval unless the user trusts that server; read-only detection uses the tool's own annotations (`app/services/mcp_client.py`). Their secrets go to the Keychain.
 - Every tool call is logged, and file changes are snapshotted first so they can be undone (`app/services/activity.py`).
 - Cloud models are used only if the user turns that on, within a monthly budget (`app/services/llm_routing.py`).
+- Agent Mail (`app/services/agent_mail.py`, `mail_crypto.py`): Ed25519-signed, X25519/ChaCha20-Poly1305 sealed messages; keys pinned on first contact and checked on every message; anything another agent writes reaches the model as marked, untrusted text; sending and running requested tasks need approval. The relay (`relay/`) stores only sealed envelopes.
+- OAuth for connected apps (`app/services/mcp_oauth.py`): PKCE with the SDK's state and issuer checks; tokens in the Keychain; `/oauth/callback` is the only route reachable from another site, and it only completes a sign-in Xod started.
 - Self-editing rules and the protected code list are in `app/services/self_edit.py`. Self-edits can't touch any of the safety code above.

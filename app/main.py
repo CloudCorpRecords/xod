@@ -63,7 +63,10 @@ async def local_only_guard(request, call_next):
     own = request.headers.get("host", "").lower()
     if origin and origin != "null" and origin.lower().split("://", 1)[-1].rstrip("/") != own:
         return JSONResponse({"detail": "Cross-site request blocked."}, status_code=403)
-    if origin == "null" or request.headers.get("sec-fetch-site") == "cross-site":
+    # One exception: a sign-in provider sends the browser back to /oauth/callback from its own site.
+    # That page only completes a sign-in Xod itself started, matched by a random one-time state.
+    oauth_return = request.method == "GET" and request.url.path == "/oauth/callback" and not origin
+    if (origin == "null" or request.headers.get("sec-fetch-site") == "cross-site") and not oauth_return:
         return JSONResponse({"detail": "Cross-site request blocked."}, status_code=403)
     response = await call_next(request)
     for k, v in _SECURITY_HEADERS.items():
@@ -451,6 +454,8 @@ async def _start_task_worker():
     routines.start()
     from app.services.mcp_client import mcp_hub
     asyncio.create_task(mcp_hub.start())   # connect outside tool servers in the background
+    from app.services import agent_mail
+    agent_mail.start()                      # picks up Agent Mail every 30 s once an address is set up
 
 
 @app.get("/api/mcp")
@@ -525,6 +530,187 @@ async def mcp_call_endpoint(req: MCPCall):
         return {"success": False, "error": "Only MCP tools can be called here."}
     from app.agent.tools import execute_tool
     return await execute_tool(req.tool, req.args or {})
+
+
+# ---- Agent Mail (services/agent_mail.py): encrypted messages between Xods
+
+class MailSetup(BaseModel):
+    name: str
+    relay: Optional[str] = None
+
+
+class MailSend(BaseModel):
+    to: Any
+    text: str
+    subject: Optional[str] = ""
+    kind: Optional[str] = "message"
+    thread: Optional[str] = None
+    in_reply_to: Optional[str] = None
+
+
+class MailDraftEdit(BaseModel):
+    text: str
+    subject: Optional[str] = None
+
+
+class MailContactEdit(BaseModel):
+    trust: Optional[str] = None
+    nickname: Optional[str] = None
+    verified: Optional[bool] = None
+
+
+def _mail_call(fn):
+    from app.services.agent_mail import MailError
+    async def run(*a, **kw):
+        try:
+            res = fn(*a, **kw)
+            return (await res) if asyncio.iscoroutine(res) else res
+        except MailError as e:
+            return {"success": False, "error": str(e)}
+    return run
+
+
+@app.get("/api/mail/status")
+async def mail_status():
+    from app.services import agent_mail
+    return agent_mail.status()
+
+
+@app.post("/api/mail/setup")
+async def mail_setup(req: MailSetup):
+    from app.services import agent_mail
+    return await agent_mail.setup(req.name, req.relay or "")
+
+
+@app.post("/api/mail/check")
+async def mail_check():
+    from app.services import agent_mail
+    return await agent_mail.check(notify=False)
+
+
+@app.get("/api/mail/threads")
+async def mail_threads(box: str = "inbox"):
+    from app.services import agent_mail
+    return {"threads": agent_mail.threads(box)}
+
+
+@app.get("/api/mail/thread/{thread_id}")
+async def mail_thread(thread_id: str):
+    from app.services import agent_mail
+    return {"messages": agent_mail.thread(thread_id)}
+
+
+@app.post("/api/mail/send")
+async def mail_send(req: MailSend):
+    from app.services import agent_mail
+    return await _mail_call(agent_mail.send)(req.to, req.text, req.subject or "", req.kind or "message",
+                                              req.thread, req.in_reply_to, origin="you")
+
+
+@app.post("/api/mail/drafts/{draft_id}/approve")
+async def mail_draft_approve(draft_id: str):
+    from app.services import agent_mail
+    return await agent_mail.approve_draft(draft_id)
+
+
+@app.post("/api/mail/drafts/{draft_id}/discard")
+async def mail_draft_discard(draft_id: str):
+    from app.services import agent_mail
+    return {"success": agent_mail.discard_draft(draft_id)}
+
+
+@app.patch("/api/mail/drafts/{draft_id}")
+async def mail_draft_edit(draft_id: str, req: MailDraftEdit):
+    from app.services import agent_mail
+    return {"success": agent_mail.edit_draft(draft_id, req.text, req.subject)}
+
+
+@app.post("/api/mail/messages/{mid}/run")
+async def mail_run_request(mid: str):
+    from app.services import agent_mail
+    return await _mail_call(agent_mail.run_request)(mid)
+
+
+@app.post("/api/mail/messages/{mid}/draft-reply")
+async def mail_draft_reply(mid: str):
+    from app.services import agent_mail
+    return await _mail_call(agent_mail.draft_reply)(mid)
+
+
+@app.get("/api/mail/contacts")
+async def mail_contacts():
+    from app.services import agent_mail
+    return {"contacts": agent_mail.contacts()}
+
+
+@app.get("/api/mail/lookup")
+async def mail_lookup(address: str):
+    from app.services import agent_mail, mail_crypto
+    async def go():
+        d = await agent_mail.lookup(address)
+        return {"success": True, "address": d["address"], "safety_number": mail_crypto.safety_number(d["sign_pub"], d["box_pub"]),
+                "contact": agent_mail.contact(d["address"])}
+    return await _mail_call(go)()
+
+
+@app.patch("/api/mail/contacts/{address}")
+async def mail_contact_edit(address: str, req: MailContactEdit):
+    from app.services import agent_mail
+    return {"success": agent_mail.set_contact(address, req.trust, req.nickname, req.verified)}
+
+
+@app.post("/api/mail/contacts/{address}/accept-keys")
+async def mail_contact_accept_keys(address: str):
+    from app.services import agent_mail
+    return await _mail_call(agent_mail.accept_new_keys)(address)
+
+
+# ---- One-click connected apps (services/connectors.py) and OAuth sign-in returns
+
+class ConnectorConnect(BaseModel):
+    token: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+
+
+@app.get("/api/connectors")
+async def connectors_list():
+    from app.services import connectors
+    return {"connectors": connectors.catalog()}
+
+
+@app.post("/api/connectors/{cid}/connect")
+async def connectors_connect(cid: str, req: ConnectorConnect, request: Request):
+    from app.services import connectors
+    redirect_uri = f"http://{request.headers.get('host', '127.0.0.1:8000')}/oauth/callback"
+    return await connectors.connect(cid, redirect_uri, token=req.token, client_id=req.client_id,
+                                    client_secret=req.client_secret)
+
+
+@app.delete("/api/connectors/{cid}")
+async def connectors_disconnect(cid: str):
+    from app.services import connectors
+    from app.services.mcp_client import mcp_hub
+    if cid in mcp_hub.conns:
+        await mcp_hub.conns.pop(cid).stop()
+    return {"success": connectors.disconnect(cid)}
+
+
+@app.get("/oauth/callback", response_class=HTMLResponse)
+async def oauth_callback(code: str = "", state: str = "", error: str = "", iss: Optional[str] = None):
+    from app.services import mcp_oauth
+    import html as _html
+    ok = mcp_oauth.fail(state, error) if error else mcp_oauth.finish(code, state, iss) if code else False
+    if ok and not error:
+        title, text = "Connected", "You're signed in. You can close this tab and go back to Xod."
+    elif error:
+        title, text = "Not connected", f"The sign-in was cancelled or refused ({_html.escape(error[:80])}). You can close this tab."
+    else:
+        title, text = "Nothing to finish", "This sign-in link has expired or was already used. Start again from Xod."
+    return HTMLResponse(f"""<!doctype html><meta charset="utf-8"><title>Xod · {title}</title>
+<style>body{{margin:0;height:100vh;display:grid;place-items:center;background:#0f1222;color:#fffaf0;font:16px system-ui}}
+div{{text-align:center;max-width:420px}}h1{{font:600 40px Georgia,serif;margin:.2em 0}}p{{color:#a39e97}}</style>
+<div><div style="font-size:48px">🌙</div><h1>{title}</h1><p>{text}</p></div>""")
 
 
 @app.post("/api/mcp/approve/{pid}")

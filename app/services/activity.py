@@ -207,6 +207,7 @@ def describe(name: str, args: Dict[str, Any], result: Any, ok: bool, ops: List[D
         "fs_move_file": f"Moved {base(path)}", "fs_create_folder": f"Made folder {base(path)}",
         "fs_organize_files": f"Moved {moves} file{'s' if moves != 1 else ''} into {base(_arg(args, 'target_folder', 'folder'))}",
         "xod_make_report": f"Made a report: {str(args.get('title', ''))[:60]}",
+        "agent_mail_send": f"Agent Mail to {str(args.get('to', ''))[:60]}",
         "computer_batch_organize": f"Sorted {moves} file{'s' if moves != 1 else ''} in {base(_arg(args, 'source_dir', 'directory') or '~/Downloads')}",
     }
     title = titles.get(name) or NOT_UNDOABLE.get(name) or name.replace("_", " ").capitalize()

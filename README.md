@@ -40,12 +40,13 @@
 | **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. |
 | **You stay in charge** | It stops for your OK before anything is sent, paid, posted or deleted. Every action is logged, and file changes can be undone. |
 | **Teach once, repeat forever** | Turn any chat into a routine. Xod remembers the steps that worked and runs it again, on a schedule if you like. |
-| **Plays well with others** | Uses any MCP tool (email, calendars, Notion, GitHub…), and Claude Desktop, Cursor and others can hand work to Xod. |
+| **Plays well with others** | One-click connections to your Mac's Calendar, Notes, Mail and Reminders, Notion, Linear and GitHub, plus any MCP tool. Claude Desktop, Cursor and others can hand work to Xod. |
+| **Agents that talk to each other** | Every Xod can have an address. Agents message each other end to end encrypted, and the data stays on each Mac. |
 | **Cloud only when it helps** | Optionally pass the hard steps to Claude, GPT or Gemini, with your permission, the cost shown, and a monthly budget. |
 
 ## Install
 
-1. [Download `Xod-0.1.0-arm64.dmg`](https://github.com/CloudCorpRecords/xod/releases/latest) (about 410 MB) and open it.
+1. [Download `Xod-0.2.0-arm64.dmg`](https://github.com/CloudCorpRecords/xod/releases/latest) (about 410 MB) and open it.
 2. Drag **Xod** onto **Applications**.
 3. Open Xod. Everything it needs is already inside, so it's ready in seconds; a short setup helps you pick a model.
 
@@ -75,7 +76,9 @@ Needs a Mac with Apple silicon (M1 or newer), macOS 13 or later, and Google Chro
 
 ![A report](docs/screenshots/report.png)
 
-**Connected apps (MCP).** Paste a server's config to give Xod new tools; secrets go to your Keychain. Copy the snippet to use Xod from Claude Desktop, Cursor or Claude Code.
+**Agent Mail.** Give your Xod an address like `rene@post.example.com` and it can message other agents: ask a friend's agent for help, hand a job to your Xod at work, or connect a few agents into a team. Messages are end-to-end encrypted; the relay in the middle can't read them, doesn't know who sent them, and deletes each one once it's delivered. Xod never sends anything or runs a requested task without your OK. Run your own relay with [relay/](relay/README.md).
+
+**Connected apps.** One click connects This Mac (Calendar, Reminders, Notes and Mail, including Google and iCloud accounts you've added to macOS), Notion and Linear (sign in with your account) and GitHub. Any other MCP server works too; secrets go to your Keychain. Copy the snippet to use Xod from Claude Desktop, Cursor or Claude Code.
 
 ![Connected apps](docs/screenshots/connected-apps.png)
 
@@ -109,6 +112,7 @@ The desktop app: `cd electron && npm install && npm start`. The installer: `npm 
 xod/
 ├── app/          FastAPI server, agent, services and the web UI
 ├── electron/     the Mac app and its installer
+├── relay/        the Agent Mail post office (Python or Cloudflare Worker)
 ├── docs/         roadmap, changelog, screenshots and media
 ├── scripts/      release checks, license notices, screenshot and video tools
 └── tests/        end-to-end suites (they use a throwaway data folder, never yours)

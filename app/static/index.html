@@ -58,10 +58,10 @@
   <!-- Marked for Markdown -->
   <script src="/static/vendor/marked.min.js"></script>
   <script src="/static/vendor/purify.min.js"></script>
-  <script src="/static/js/safe-html.js?v=moonlit35"></script>
+  <script src="/static/js/safe-html.js?v=moonlit37"></script>
   <!-- Custom Styles -->
-  <link rel="stylesheet" href="/static/css/style.css?v=moonlit35">
-  <link rel="stylesheet" href="/static/css/whimsy.css?v=moonlit35">
+  <link rel="stylesheet" href="/static/css/style.css?v=moonlit37">
+  <link rel="stylesheet" href="/static/css/whimsy.css?v=moonlit37">
 </head>
 <body class="bg-surface-900 text-zinc-100 flex flex-col h-screen overflow-hidden font-sans antialiased selection:bg-brand-600 selection:text-white relative">
   <!-- ============================================================== -->
@@ -152,6 +152,13 @@
         <i data-lucide="inbox" class="size-3.5"></i>
         <span>Tasks</span>
         <span id="tasksBadge" class="hidden tasks-badge"></span>
+      </button>
+
+      <!-- Agent Mail -->
+      <button onclick="openMailPanel()" class="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Agent Mail: messages with other AI agents">
+        <i data-lucide="send" class="size-3.5"></i>
+        <span>Mail</span>
+        <span id="mailBadge" class="hidden tasks-badge"></span>
       </button>
 
       <!-- Tools menu -->
@@ -4148,19 +4155,20 @@
     </div>
   </div>
 
-  <script src="/static/js/app.js?v=moonlit35"></script>
-  <script src="/static/js/sidebar.js?v=moonlit35"></script>
-  <script src="/static/js/tasks.js?v=moonlit35"></script>
-  <script src="/static/js/health.js?v=moonlit35"></script>
-  <script src="/static/js/whimsy.js?v=moonlit35"></script>
-  <script src="/static/js/mascot.js?v=moonlit35"></script>
-  <script src="/static/js/setup.js?v=moonlit35"></script>
-  <script src="/static/js/activity.js?v=moonlit35"></script>
-  <script src="/static/js/routines.js?v=moonlit35"></script>
-  <script src="/static/js/mcp.js?v=moonlit35"></script>
-  <script src="/static/js/routing.js?v=moonlit35"></script>
-  <script src="/static/js/reports.js?v=moonlit35"></script>
-  <script src="/static/js/packs.js?v=moonlit35"></script>
+  <script src="/static/js/app.js?v=moonlit37"></script>
+  <script src="/static/js/sidebar.js?v=moonlit37"></script>
+  <script src="/static/js/tasks.js?v=moonlit37"></script>
+  <script src="/static/js/health.js?v=moonlit37"></script>
+  <script src="/static/js/whimsy.js?v=moonlit37"></script>
+  <script src="/static/js/mascot.js?v=moonlit37"></script>
+  <script src="/static/js/setup.js?v=moonlit37"></script>
+  <script src="/static/js/activity.js?v=moonlit37"></script>
+  <script src="/static/js/routines.js?v=moonlit37"></script>
+  <script src="/static/js/mcp.js?v=moonlit37"></script>
+  <script src="/static/js/mail.js?v=moonlit37"></script>
+  <script src="/static/js/routing.js?v=moonlit37"></script>
+  <script src="/static/js/reports.js?v=moonlit37"></script>
+  <script src="/static/js/packs.js?v=moonlit37"></script>
 </body>
 </html>
 

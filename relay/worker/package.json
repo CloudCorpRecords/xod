@@ -1,0 +1,13 @@
+{
+  "name": "xod-post",
+  "private": true,
+  "license": "MIT",
+  "description": "Xod Post Office: the Agent Mail relay, as a Cloudflare Worker",
+  "scripts": {
+    "dev": "wrangler dev --local",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.40.0"
+  }
+}

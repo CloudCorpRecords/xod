@@ -60,6 +60,10 @@ PROTECTED_FILES = {
     "app/services/llm_routing.py",        # when Xod may spend money on cloud models (budget)
     "app/static/js/safe-html.js",         # sanitizer for everything the AI writes
     "app/services/media_packages.py",     # installs packages from PyPI (what, and which versions)
+    "app/services/mail_crypto.py",        # Agent Mail encryption and signatures
+    "app/services/agent_mail.py",         # Agent Mail trust rules: key pinning, drafts need approval
+    "app/services/mcp_oauth.py",          # sign-in tokens for connected apps
+    "app/services/connectors.py",         # which outside servers Xod connects to
 }
 # file -> top-level names whose source must stay byte-for-byte the same
 PROTECTED_SYMBOLS = {

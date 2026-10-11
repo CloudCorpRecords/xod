@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 import keyring
 
 from app.paths import DATA_DIR
+from app.services import mcp_oauth
 
 logger = logging.getLogger("xod.mcp")
 
@@ -46,6 +47,21 @@ def _attr(obj: Any, snake: str, camel: str, default: Any = None) -> Any:
 
 def _read_only(tool: Any) -> bool:
     return bool(_attr(getattr(tool, "annotations", None), "read_only_hint", "readOnlyHint", False))
+
+
+def _find_exc(e: BaseException, kind: type) -> Optional[BaseException]:
+    if isinstance(e, kind):
+        return e
+    for sub in getattr(e, "exceptions", None) or []:
+        hit = _find_exc(sub, kind)
+        if hit:
+            return hit
+    return _find_exc(e.__cause__, kind) if e.__cause__ else None
+
+
+def _first_leaf(e: BaseException) -> BaseException:
+    subs = getattr(e, "exceptions", None)
+    return _first_leaf(subs[0]) if subs else e
 
 
 def _clean(name: str) -> str:
@@ -125,6 +141,11 @@ def remove_server(name: str) -> bool:
     spec = cfg.pop(name, None)
     if spec is None:
         return False
+    mcp_oauth.forget(name)
+    try:
+        keyring.delete_password(KEYCHAIN, f"{name}:bearer_token")
+    except Exception:
+        pass
     for key in spec.get("secret_env") or []:
         try:
             keyring.delete_password(KEYCHAIN, f"{name}:{key}")
@@ -137,11 +158,13 @@ def remove_server(name: str) -> bool:
 # ---------------------------------------------------------------- connections
 
 class ServerConn:
-    def __init__(self, name: str, spec: Dict[str, Any]):
+    def __init__(self, name: str, spec: Dict[str, Any], interactive: bool = False, redirect_uri: Optional[str] = None):
         self.name, self.spec = name, spec
+        self.interactive, self.redirect_uri = interactive, redirect_uri
         self.client = None
         self.tools: List[Any] = []
         self.error: Optional[str] = None
+        self.needs_sign_in = False
         self.ready = asyncio.Event()
         self._stop = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
@@ -149,27 +172,58 @@ class ServerConn:
     def start(self) -> None:
         self._task = asyncio.create_task(self._run())
 
+    def _http_target(self) -> Any:
+        """A Streamable HTTP connection, signed in with OAuth or a bearer token from the Keychain."""
+        from mcp.client.streamable_http import streamable_http_client
+        from mcp.shared._httpx_utils import create_mcp_http_client
+        url, auth_kind = self.spec["url"], self.spec.get("auth")
+        headers, auth = {}, None
+        if auth_kind == "bearer":
+            token = keyring.get_password(KEYCHAIN, f"{self.name}:bearer_token")
+            if not token:
+                raise mcp_oauth.SignInNeeded(self.name)
+            headers["Authorization"] = f"Bearer {token}"
+        elif auth_kind == "oauth":
+            if not self.interactive and not mcp_oauth.has_tokens(self.name):
+                raise mcp_oauth.SignInNeeded(self.name)
+            auth = mcp_oauth.provider(self.name, url, self.redirect_uri, self.interactive, self.spec.get("scope"))
+        return streamable_http_client(url, http_client=create_mcp_http_client(headers=headers or None, auth=auth))
+
     async def _run(self) -> None:
         from mcp import Client
         from mcp.client.stdio import StdioServerParameters
         try:
             if self.spec.get("url"):
-                target: Any = self.spec["url"]
+                target: Any = self._http_target()
             else:
                 env = {**{k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "USER", "LANG", "TMPDIR", "SHELL")},
                        **_env_for(self.name, self.spec)}
-                target = StdioServerParameters(command=self.spec["command"], args=self.spec.get("args") or [], env=env,
+                command = self.spec["command"]
+                if command == "{xod_python}":          # Xod's own built-in connectors
+                    import sys
+                    from app.paths import APP_ROOT
+                    command = sys.executable
+                    env.update({k: v for k, v in os.environ.items() if k.startswith("XOD_") or k == "PYTHONPATH"})
+                    self.spec = {**self.spec, "cwd": str(APP_ROOT)}
+                target = StdioServerParameters(command=command, args=self.spec.get("args") or [], env=env,
                                                 cwd=self.spec.get("cwd") or None)
             async with Client(target, read_timeout_seconds=120) as client:
                 self.client = client
                 self.tools = (await client.list_tools()).tools
-                self.error = None
+                self.error, self.needs_sign_in = None, False
                 self.ready.set()
                 logger.info(f"MCP {self.name}: {len(self.tools)} tools")
                 await self._stop.wait()
-        except Exception as e:
-            self.error = f"{type(e).__name__}: {e}"[:300]
-            logger.warning(f"MCP {self.name} failed: {self.error}")
+        except BaseException as e:   # the SDK wraps failures in exception groups
+            sign_in = _find_exc(e, mcp_oauth.SignInNeeded)
+            if sign_in:
+                self.needs_sign_in, self.error = True, None
+            else:
+                inner = _first_leaf(e)
+                self.error = f"{type(inner).__name__}: {inner}"[:300]
+                logger.warning(f"MCP {self.name} failed: {self.error}")
+            if isinstance(e, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+                raise
         finally:
             self.client = None
             self.ready.set()
@@ -200,13 +254,33 @@ class MCPHub:
                 conn.start()
         await asyncio.gather(*(asyncio.wait_for(c.ready.wait(), 30) for c in self.conns.values()), return_exceptions=True)
 
+    async def connect(self, name: str, interactive: bool = False, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
+        """(Re)connects one server. interactive=True may open a sign-in page in the browser."""
+        spec = load_config().get(name)
+        if not spec:
+            return {"success": False, "error": "No such server."}
+        if name in self.conns:
+            await self.conns.pop(name).stop()
+        conn = ServerConn(name, spec, interactive=interactive, redirect_uri=redirect_uri)
+        self.conns[name] = conn
+        conn.start()
+        try:
+            await asyncio.wait_for(conn.ready.wait(), mcp_oauth.SIGN_IN_TIMEOUT + 30 if interactive else 45)
+        except asyncio.TimeoutError:
+            return {"success": False, "error": "It didn't answer in time."}
+        if conn.client:
+            return {"success": True, "tools": len(conn.tools)}
+        return {"success": False, "needs_sign_in": conn.needs_sign_in, "error": conn.error or "Not connected."}
+
     def status(self) -> List[Dict[str, Any]]:
         out = []
         for name, spec in load_config().items():
             c = self.conns.get(name)
             out.append({"name": name, "enabled": spec.get("enabled", True), "trust": spec.get("trust", "ask"),
                         "command": " ".join([spec.get("command") or "", *spec.get("args", [])]).strip() or spec.get("url"),
-                        "secret_env": spec.get("secret_env", []),
+                        "secret_env": spec.get("secret_env", []), "connector": spec.get("connector"),
+                        "auth": spec.get("auth"), "needs_sign_in": bool(c and c.needs_sign_in),
+                        "signing_in": name in mcp_oauth.sign_in_pages,
                         "connected": bool(c and c.client), "error": c.error if c else None,
                         "tools": [{"name": t.name, "description": (t.description or "")[:160],
                                    "read_only": _read_only(t)}

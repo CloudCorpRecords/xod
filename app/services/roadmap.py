@@ -7,8 +7,10 @@ ROADMAP = [
      "description": "Fewer model calls per answer and a smaller default model, so a researched answer takes well under a minute."},
     {"status": "next", "name": "Signed, notarized Mac app",
      "description": "No security warning on first open."},
-    {"status": "next", "name": "One-click connected apps",
-     "description": "Ready-made setups for Gmail, Calendar, Notion and GitHub, instead of pasting a config."},
+    {"status": "next", "name": "GitHub sign-in in the browser",
+     "description": "Connect GitHub with your account instead of pasting a token."},
+    {"status": "next", "name": "Agent Mail attachments",
+     "description": "Send files and images between agents, still end-to-end encrypted."},
     {"status": "next", "name": "Spoken replies",
      "description": "Xod answers out loud, with an on-device voice."},
     # ---- later
@@ -18,7 +20,11 @@ ROADMAP = [
      "description": "A companion to approve or decline Xod's pending actions when you're away from the Mac."},
     {"status": "later", "name": "More Macs and Linux",
      "description": "Intel Macs (cloud or Ollama models) and Linux."},
-    # ---- shipped in 0.1
+    # ---- shipped
+    {"status": "shipped", "name": "Agent Mail",
+     "description": "An address for your Xod; encrypted messages and approved tasks between agents."},
+    {"status": "shipped", "name": "One-click connected apps",
+     "description": "This Mac (Calendar, Reminders, Notes, Mail), Notion, Linear, GitHub and Google."},
     {"status": "shipped", "name": "One-download install",
      "description": "Drag Xod to Applications and open it; everything it needs comes inside the app."},
     {"status": "shipped", "name": "Built-in AI engine and setup",
@@ -39,4 +45,4 @@ ROADMAP = [
 
 
 def get_project_roadmap() -> Dict[str, Any]:
-    return {"title": "What's coming next", "version": "0.1.0", "items": ROADMAP}
+    return {"title": "What's coming next", "version": "0.2.0", "items": ROADMAP}
