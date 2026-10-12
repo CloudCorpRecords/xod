@@ -61,9 +61,13 @@
     const lm = s.lm_studio, ol = s.ollama;
     if (lm.online && (lm.loaded || lm.models.length)) {
       const m = lm.loaded || lm.models[0];
+      // A model over ~6 GB on a 16 GB Mac pushes it into swap, and every answer waits on the disk.
+      const gb = (lm.sizes || {})[m];
+      const heavy = gb && s.mac.ram_gb && gb > s.mac.ram_gb * 0.38;
       opts.push({ provider: "lm_studio", model: m, label: m, icon: "server", title: `LM Studio: ${m}`,
-                  sub: lm.loaded ? "Already running. Nothing to download." : "Installed in LM Studio. Xod loads it when needed." ,
-                  recommended: !!lm.loaded });
+                  sub: (lm.loaded ? "Already running. Nothing to download." : "Installed in LM Studio. Xod loads it when needed.")
+                       + (heavy ? ` At ${gb.toFixed(1)} GB it's large for a ${s.mac.ram_gb} GB Mac, so answers will be slow; the built-in ${(s.builtin.find((x) => x.recommended) || {}).label || "model"} is about three times faster.` : ""),
+                  recommended: !!lm.loaded && !heavy });
     }
     if (ol.online && ol.models.length) {
       opts.push({ provider: "ollama", model: ol.models[0], label: ol.models[0], icon: "server", title: `Ollama: ${ol.models[0]}`,

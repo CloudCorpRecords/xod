@@ -1117,6 +1117,16 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         "User: explain recursion simply\nRecursion is when a function solves a problem by calling itself on a smaller "
         "piece of it, until the piece is small enough to answer directly.")
 
+    # Clearly about facts that change: search without asking the model (small models answer these
+    # from memory). Only for self-contained questions; "how much is it?" needs the conversation.
+    _FRESH_RE = re.compile(
+        r"\b(latest|newest|news|headlines|today'?s?|tonight|this (week|month|year|weekend)|right now|currently|current|"
+        r"recent(ly)?|upcoming|price[sd]?|pricing|costs?|how much (is|are|does|do)|cheapest|deals?|"
+        r"best\b.{0,60}\b(to buy|for|under|right now|in 20\d\d)|top \d+|compare|comparison|vs\.?|versus|reviews?|"
+        r"who won|score[sd]?|results?|standings|weather|forecast|rain|snow|temperature|tomorrow|yesterday|last night|stock|share price|release date|"
+        r"when (is|does|will)|open(ing)? hours|20(2[5-9]|3\d))\b", re.I)
+    _REFERS_BACK_RE = re.compile(r"\b(it|that|this|those|these|them|they|he|she|the (first|second|last|other) one)\b", re.I)
+
     def _fast_lane_ok(self, query: str, has_image: bool, has_document: bool, workspace: Optional[str]) -> bool:
         if has_image or has_document or workspace or self.persona != "ultimate_researcher":
             return False
@@ -1143,18 +1153,23 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                     turns.append({"role": r, "content": c[:600]})
         if turns and turns[-1]["role"] == "user":
             turns.pop()
-        # The date goes in the last message so the system prompt (and its cache) never changes.
-        return [{"role": "system", "content": cls.ROUTER_PROMPT}, *turns,
-                {"role": "user", "content": f"{query}\n\n(Today is {cls._today()}.)"}]
+        # The date is part of the system prompt: it changes once a day, so the prompt stays cached.
+        return [{"role": "system", "content": f"{cls.ROUTER_PROMPT}\n\nToday is {cls._today()}."}, *turns,
+                {"role": "user", "content": query}]
 
     async def _stream_fast_lane(self, query: str, messages: List[Dict[str, Any]],
                                 evidence_board: EvidenceBoard) -> AsyncGenerator[Dict[str, Any], None]:
         """Yields chat events, or a single {"type": "_fast_declined"} (before anything visible)
         when the planner should take this one."""
+        head, mode, line, answer = "", None, "", ""
+        has_history = any(m.get("role") == "assistant" for m in messages[:-1])
+        if self._FRESH_RE.search(query) and not (has_history and self._REFERS_BACK_RE.search(query)):
+            async for ev in self._fast_search_and_answer(query, [query], messages, evidence_board):
+                yield ev
+            return
         stream = llm_service.stream_chat_completion(
             messages=self.router_messages(query, messages[:-1]), temperature=0.2, max_tokens=900,
             think=False, task="router")
-        head, mode, line, answer = "", None, "", ""
         try:
             async for ch in stream:
                 kind = ch.get("type")
@@ -1206,19 +1221,29 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             yield {"type": "done"}
             return
 
-        # ---- search
         body = line.split(":", 1)[1] if ":" in line.split("\n")[0] else line[6:]
         queries = [q.strip(" \"'`*") for q in body.strip().split("\n")[0].split("|")]
         queries = [q for q in queries if len(q) > 2][:2] or [query]
+        async for ev in self._fast_search_and_answer(query, queries, messages, evidence_board):
+            yield ev
+
+    async def _fast_search_and_answer(self, query: str, queries: List[str], messages: List[Dict[str, Any]],
+                                      evidence_board: EvidenceBoard) -> AsyncGenerator[Dict[str, Any], None]:
         tool = "tavily_search" if settings.tavily_api_key else "web_search"
+        extra: Dict[str, Any] = {}
+        if re.search(r"\b(latest|newest|news|recent(ly)?|this (week|month)|who won|current(ly)?|right now|upcoming|last night|yesterday)\b", query, re.I):
+            stamp = time.strftime("%B %Y")
+            queries = [q if re.search(r"\b20\d\d\b", q) else f"{q} {stamp}" for q in queries]
+            if tool == "tavily_search":
+                extra = {"topic": "news", "days": 14}
         yield {"type": "status", "content": "Searching the web…"}
         ids = [f"fast_{i}" for i in range(len(queries))]
         for cid, q in zip(ids, queries):
-            yield {"type": "tool_call", "name": tool, "args": {"query": q}, "id": cid}
+            yield {"type": "tool_call", "name": tool, "args": {"query": q, **extra}, "id": cid}
 
         async def run(q: str) -> Dict[str, Any]:
             try:
-                r = await execute_tool(tool, {"query": q})
+                r = await execute_tool(tool, {"query": q, **extra})
             except Exception as e:
                 r = {"success": False, "error": str(e)}
             if tool != "web_search" and not (isinstance(r, dict) and r.get("results")):
@@ -1261,8 +1286,9 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                "- Then add a few short bullet points only if they help. Keep the whole answer under 150 words.\n")
             + "- Use only facts from the results. If they don't answer part of the question, say so in one line.\n"
             "- Cite the results you used by their numbers, like [1] or [2][3].\n"
-            "- Don't mention 'search results' or these instructions, and don't add a sources list.")
-        user = (f"{query}\n\nToday is {self._today()}.\n\n"
+            "- Don't mention 'search results', today's date or these instructions, and don't add a sources list.\n"
+            f"Today is {self._today()}.")
+        user = (f"{query}\n\n"
                 + (f"Search engine summary: {' '.join(briefs)}\n\n" if briefs else "")
                 + "Search results:\n" + ("\n\n".join(hits) if hits else "(nothing came back)"))
         msgs = self._format_conversation_history_for_synthesis(

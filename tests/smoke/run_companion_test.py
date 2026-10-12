@@ -89,9 +89,11 @@ async def main():
             await s.js("const i = document.getElementById('chatInput'); i.focus(); i.value = 'what is this?'; i.dispatchEvent(new Event('input')); true")
             await asyncio.sleep(0.3)
             check("asking a question shows a ?", bool(await s.js("!!document.querySelector('.xm-heart.is-ask')")))
-            await s.js("document.getElementById('chatInput').value = ''; openPacksPanel(); true")
-            await asyncio.sleep(0.6)
-            check("opening a panel casts a beam", bool(await s.js("!!document.querySelector('.xp-beam')")))
+            # The beam only lasts about a second: watch for it rather than looking once.
+            await s.js("""window.__beam = false; new MutationObserver(() => { if (document.querySelector('.xp-beam')) window.__beam = true; })
+                .observe(document.body, { childList: true }); document.getElementById('chatInput').value = ''; openPacksPanel(); true""")
+            await asyncio.sleep(1.5)
+            check("opening a panel casts a beam", bool(await s.js("window.__beam")))
             await s.js("document.querySelector('[data-close-packs]').click(); true")
             await asyncio.sleep(0.5)
 

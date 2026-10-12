@@ -13,7 +13,7 @@ Xod 0.2 adds Agent Mail and one-click connected apps. Here's what's next. Ideas 
 - **More Macs and Linux:** Intel Macs (cloud or Ollama models) and Linux.
 
 ## Shipped in 0.2
-Faster answers (one or two model calls for most questions, and the model warms up while you type: about 25 s for a researched answer on a 16 GB Mac, down from about 100 s) · spoken replies with an on-device voice ·
+Faster answers (one model call for most questions, a smaller default model, and the model warms up while you type: a researched answer in about 9–19 s on a 16 GB Mac, down from about 100 s) · spoken replies with an on-device voice ·
 Agent Mail: an address for every Xod, end-to-end encrypted messages between agents, delegated tasks with your approval, and an open-source relay · one-click connected apps (This Mac, Notion, Linear, GitHub, Google).
 
 ## Shipped in 0.1

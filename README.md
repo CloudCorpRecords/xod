@@ -51,8 +51,8 @@
 
 | Your Mac | Suggested model | Download |
 |---|---|---|
-| 8 GB | Qwen 3.5 4B (built-in engine) | 3.1 GB |
-| 16–24 GB | Qwen 3.5 9B (built-in engine), or any model you already use in LM Studio or Ollama | 6 GB |
+| 8–16 GB | Qwen 3.5 4B (built-in engine): a researched answer in about 10 seconds | 3.1 GB |
+| 24 GB | Qwen 3.5 9B (built-in engine), or any model you already use in LM Studio or Ollama | 6 GB |
 | 32 GB or more | Qwen 3.8 27B (built-in engine) | 16 GB |
 
 > Xod isn't notarized by Apple yet, so the first time you open it macOS says it can't check it. Click **Done**, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Xod. You only do this once.

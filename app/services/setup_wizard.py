@@ -50,9 +50,11 @@ async def _lm_studio() -> Dict[str, Any]:
         s = await llm_service.get_lmstudio_status()
         if not s or s.get("online") is False or "models" not in s:
             return {"online": False, "models": [], "loaded": None}
-        chat = [m["key"] for m in s.get("models", []) if m.get("type") != "embedding" and "embed" not in (m.get("key") or "")]
+        chat_models = [m for m in s.get("models", []) if m.get("type") != "embedding" and "embed" not in (m.get("key") or "")]
+        chat = [m["key"] for m in chat_models]
         loaded = (s.get("loaded_model") or {}).get("key")
-        return {"online": True, "models": chat, "loaded": loaded}
+        sizes = {m["key"]: m.get("size_gb") for m in chat_models}
+        return {"online": True, "models": chat, "loaded": loaded, "sizes": sizes}
     except Exception:
         return {"online": False, "models": [], "loaded": None}
 

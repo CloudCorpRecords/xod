@@ -99,8 +99,13 @@ async def main():
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--label", default="")
     ap.add_argument("--warm", action="store_true", help="warm the model first, as typing a question does in the app")
+    ap.add_argument("--provider", help="try another model without changing your settings, e.g. --provider xod")
+    ap.add_argument("--model", help="with --provider, e.g. mlx-community/Qwen3.5-4B-MLX-4bit")
     a = ap.parse_args()
     from app.services.llm import llm_service
+    if a.provider:   # this run only; nothing is saved
+        from app.config import settings
+        settings.llm_provider, settings.llm_model = a.provider, a.model or settings.llm_model
     info = llm_service.get_endpoint_info()
     print(f"Model: {info['provider']} / {info['model']}\n")
     qs = [q for i, q in enumerate(QUESTIONS, 1) if not a.only or i in a.only]

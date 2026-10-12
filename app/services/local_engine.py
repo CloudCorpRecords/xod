@@ -35,10 +35,12 @@ CATALOG: List[Dict[str, Any]] = [
      "blurb": "Tiny and quick. Fine for chat and simple tasks; struggles with long multi-step jobs."},
     {"id": "qwen3.5-4b", "repo": "mlx-community/Qwen3.5-4B-MLX-4bit", "label": "Qwen 3.5 4B",
      "download_gb": 3.1, "need_gb": 4.0, "min_ram_gb": 8, "thinks": True,
-     "blurb": "Best pick for 8 GB Macs. Good at tools and planning for its size."},
+     "blurb": "Best pick for 8–16 GB Macs. Fast: a researched answer in about 10 seconds on an M1 Pro.",
+     "recommended_up_to_gb": 23},
     {"id": "qwen3.5-9b", "repo": "mlx-community/Qwen3.5-9B-MLX-4bit", "label": "Qwen 3.5 9B",
      "download_gb": 6.0, "need_gb": 7.0, "min_ram_gb": 16, "thinks": True,
-     "blurb": "Best pick for 16–24 GB Macs. Reliable at browsing, files and multi-step tasks."},
+     "blurb": "More careful on long, multi-step jobs and details. About twice as slow as 4B; best on 24 GB+ Macs.",
+     "recommended_up_to_gb": 31},
     {"id": "qwen3.8-27b", "repo": "mlx-community/Qwen3.8-27B-4bit", "label": "Qwen 3.8 27B",
      "download_gb": 16.1, "need_gb": 18.0, "min_ram_gb": 32, "thinks": True,
      "blurb": "For 32 GB+ Macs. Close to cloud quality on research and planning."},
@@ -54,10 +56,15 @@ def total_ram_gb() -> float:
 
 
 def recommend(ram_gb: Optional[float] = None) -> Dict[str, Any]:
-    """The biggest catalog model that fits comfortably next to macOS and Xod itself."""
+    """The model to suggest for this Mac: the smallest good one for its memory class. On 16 GB the 4B
+    model leaves room for the browser and everything else (a 9B or 12B model there pushes the Mac
+    into swap, and every answer waits on the disk); bigger Macs get the bigger models."""
     ram = ram_gb or total_ram_gb()
     fits = [m for m in CATALOG if m["min_ram_gb"] <= ram and m["id"] != "qwen2.5-1.5b"]
-    return (fits[-1] if fits else CATALOG[0])
+    for m in fits:
+        if ram <= m.get("recommended_up_to_gb", 10 ** 6):
+            return m
+    return fits[-1] if fits else CATALOG[0]
 
 
 def catalog_entry(repo_or_id: str) -> Optional[Dict[str, Any]]:

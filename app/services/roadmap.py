@@ -18,7 +18,7 @@ ROADMAP = [
      "description": "Intel Macs (cloud or Ollama models) and Linux."},
     # ---- shipped
     {"status": "shipped", "name": "Faster answers",
-     "description": "Most questions take one or two model calls, and the model warms up while you type: a researched answer in about 25 seconds on a 16 GB Mac."},
+     "description": "One model call for most questions, a smaller default model, and the model warms up while you type: a researched answer in about 10–20 seconds on a 16 GB Mac."},
     {"status": "shipped", "name": "Spoken replies",
      "description": "Xod answers out loud with a voice that runs on your Mac, while the answer is still being written."},
     {"status": "shipped", "name": "Agent Mail",

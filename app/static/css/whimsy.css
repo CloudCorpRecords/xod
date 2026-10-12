@@ -567,7 +567,7 @@ h3.font-bold, h2.font-bold { font-weight: 600; }
 .speech-row select { background: #0f1222; border: 1px solid #252b47; border-radius: 9px; padding: 0.35rem 0.5rem; color: var(--paper); font-size: 12.5px; }
 .speech-row input[type="range"] { accent-color: var(--lamp); }
 .speech-actions { display: flex; align-items: center; gap: 0.6rem; }
-.speech-btn { padding: 0.35rem 0.75rem; border-radius: 9px; font-size: 12px; font-weight: 600; background: rgba(255, 250, 240, 0.08); color: var(--paper); }
+.speech-btn { white-space: nowrap; padding: 0.35rem 0.75rem; border-radius: 9px; font-size: 12px; font-weight: 600; background: rgba(255, 250, 240, 0.08); color: var(--paper); }
 .speech-btn:hover { background: rgba(255, 250, 240, 0.14); }
 .speech-note { font-size: 11px; color: #7d7b85; line-height: 1.3; }
 .speech-tip { padding: 0.6rem 0.7rem; border-radius: 11px; background: rgba(242, 178, 74, 0.07); border: 1px solid rgba(242, 178, 74, 0.2); display: flex; flex-direction: column; gap: 0.5rem; font-size: 11.5px; line-height: 1.4; }

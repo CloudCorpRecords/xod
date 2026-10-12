@@ -2728,7 +2728,9 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                 query=query,
                 count=count,
                 search_depth=depth,
-                include_answer=inc_ans
+                include_answer=inc_ans,
+                topic=arguments.get("topic"),
+                days=arguments.get("days"),
             )
 
         elif name in ("you_search", "web_search"):

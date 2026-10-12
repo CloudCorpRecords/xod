@@ -3,11 +3,12 @@
 ## 0.2.0
 
 **Faster answers**
-- Most questions now take one or two model calls instead of a full plan: a small routing step either answers straight away or picks one or two web searches, which run at the same time. Jobs that need files, apps, sites or media still get the full planner.
+- Most questions now take one model call instead of a full plan. Questions about things that change (news, prices, "best … right now", comparisons, results, weather) go straight to a web search; others get a small routing step that answers right away or picks the searches. Recent-news questions search recent articles. Jobs that need files, apps, sites or media still get the full planner.
+- On 16 GB Macs the suggested model is now Qwen 3.5 4B (Qwen 3.5 9B on 24 GB). Setup points out when an LM Studio model is too big for the Mac's memory.
 - The model starts loading while you type, so it's ready when you press Enter.
 - Answers lead with the point and stay short unless you ask for detail ("in depth", "thorough").
 - Sources are numbered, and the list shows only the ones the answer actually used.
-- On a 16 GB M1 Pro with Gemma 4 12B: a researched answer went from about 98 s to about 25 s; a simple question answers in about 5 s, with the first words in about a second.
+- On a 16 GB M1 Pro: with Gemma 4 12B in LM Studio a researched answer went from about 98 s to about 19 s; with the built-in Qwen 3.5 4B it takes about 9 s. A simple question answers in 2–5 s, with the first words in about a second.
 - `tests/perf/run_speed_bench.py` times every model call, search and phase, so changes can be measured.
 
 **Spoken replies**

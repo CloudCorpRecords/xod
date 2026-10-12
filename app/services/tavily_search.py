@@ -101,7 +101,9 @@ class TavilySearchClient:
         include_answer: bool = True,
         max_results: Optional[int] = None,
         include_domains: Optional[List[str]] = None,
-        exclude_domains: Optional[List[str]] = None
+        exclude_domains: Optional[List[str]] = None,
+        topic: Optional[str] = None,
+        days: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Executes a real-time web search via Tavily API.
@@ -129,6 +131,9 @@ class TavilySearchClient:
             payload["include_domains"] = include_domains
         if exclude_domains:
             payload["exclude_domains"] = exclude_domains
+        if topic == "news":          # recent articles only ("latest", "who won", "this week")
+            payload["topic"] = "news"
+            payload["days"] = max(1, min(60, int(days or 14)))
 
         try:
             async with httpx.AsyncClient(timeout=14.0) as client:
