@@ -234,6 +234,16 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                 yield ev
             return
 
+        # "Make me a game", "build a timer", then "make it harder": the builder writes real files, runs
+        # them in headless Chrome, fixes what breaks, and opens the result in the preview pane.
+        if not has_image:
+            from app.agent import builder
+            decision = builder.route(user_query, messages, active_workspace_path)
+            if decision:
+                async for ev in builder.stream(user_query, messages, active_workspace_path, execute_tool, decision, spoken=spoken):
+                    yield ev
+                return
+
         # Most questions either need no tools or need a web search or two. One small routing call
         # (its prompt stays cached by the model server) decides which, and streams the answer itself
         # when no search is needed: one or two model calls instead of a full plan, which on a local
@@ -948,7 +958,10 @@ CRITICAL INSTRUCTIONS:
             system_instruction_text = "You are Xod, an embodied autonomous AI agent with direct browser automation and computer capabilities. You proactively navigate job portals, inspect application forms, map candidate data, locate resumes on the host machine, and prepare live submissions. NEVER give canned AI refusals ('As an AI, I cannot physically...'). Present an articulate, high-agency execution dossier with live findings, open roles table, form field mapping, and next actions. Do NOT output any raw tool call tags."
             synthesis_user_content = f"{user_query}\n\n{synthesis_content}"
         elif is_file_organization_task:
-            system_instruction_text = "You are Xod, an autonomous system with workspace and file management capabilities. You create folders, move files, and organize directories as requested. Report file operations clearly in clean Markdown tables and lists."
+            system_instruction_text = ("You are Xod, the user's AI on their Mac. Report what you actually did to their files, in plain Markdown. "
+                                       "Name ONLY files and folders that a tool result above shows were really created, written, moved or "
+                                       "trashed, and say plainly if something wasn't done. Never describe files you didn't write, never "
+                                       "present a plan as finished work, and don't call yourself a 'system' or list your limitations.")
             synthesis_user_content = f"{user_query}\n\n{task_instruction}\n\n{synthesis_content}"
         elif is_followup_memory_task:
             system_instruction_text = "You are Xod, an intelligent assistant with seamless conversational memory. You remember prior turns, prior facts, and prior research findings. Address the user's follow-up request directly using your memory of the previous discussion. Do not output any tool call tags."

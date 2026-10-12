@@ -574,6 +574,21 @@
     requestAnimationFrame(tick);
   }
 
+  // A build finished: the companion sends it to the preview with a beam and a shower of sparks.
+  window.addEventListener("xod:build", (e) => {
+    const d = e.detail || {};
+    const pane = document.getElementById("previewPane");
+    if (d.phase !== "done" || !pane || pane.classList.contains("hidden")) return;
+    setTimeout(() => {
+      const r = pane.getBoundingClientRect();
+      const to = { x: r.left + r.width / 2, y: r.top + Math.min(160, r.height / 3) };
+      const from = F.out ? { x: F.x, y: F.y } : (liveAvatar() ? centerOf(liveAvatar()) : null);
+      if (from) beam(from, to, { dotted: d.ok === false });
+      burst(to.x, to.y, d.ok === false ? 6 : 16, d.ok === false ? 24 : 60);
+      try { const p = F.out && puppet(); if (p) p.kick(d.ok === false ? { rot: -60 } : { y: -50, sy: 4 }); } catch (_) {}
+    }, 250);
+  });
+
   window.XodPowers = { cast, beam, burst, goHome, hide, state: () => ({ out: F.out, target: F.target && (F.target.writing ? "writing" : F.target.home ? "home" : F.target.el && F.target.el.className) }) };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();

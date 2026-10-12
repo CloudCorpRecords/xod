@@ -23,6 +23,7 @@ NON_PYTHON = [
     ("Lucide icons", "ISC", "https://github.com/lucide-icons/lucide/blob/main/LICENSE"),
     ("marked", "MIT", "https://github.com/markedjs/marked/blob/master/LICENSE.md"),
     ("DOMPurify", "Apache-2.0 OR MPL-2.0", "https://github.com/cure53/DOMPurify/blob/main/LICENSE"),
+    ("three.js", "MIT", "https://github.com/mrdoob/three.js/blob/dev/LICENSE"),
     ("Fraunces font", "SIL Open Font License 1.1", "https://github.com/undercasetype/Fraunces/blob/master/OFL.txt"),
     ("Figtree font", "SIL Open Font License 1.1", "https://github.com/erikdkennedy/figtree/blob/master/OFL.txt"),
     ("mflux (vendored, patched; app/vendor/mflux)", "MIT", "https://github.com/filipstrand/mflux/blob/main/LICENSE"),

@@ -48,6 +48,7 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 | **Private by default** | Chats, files, voice and images stay on your Mac. Use Xod's built-in engine, LM Studio or Ollama. No account, no telemetry. |
 | **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. |
 | **You stay in charge** | It stops for your OK before anything is sent, paid, posted or deleted. Every action is logged, and file changes can be undone. |
+| **Builds what you ask for** | Apps and games written, run, tested and fixed on your Mac, with a live preview beside the chat. |
 | **Talk to it** | Say "Hey Xod" and have a spoken back-and-forth, hands-free. It answers out loud, takes follow-ups and stops when you talk over it, all on your Mac. |
 | **Teach once, repeat forever** | Turn any chat into a routine. Xod remembers the steps that worked and runs it again, on a schedule if you like. |
 | **Plays well with others** | One-click connections to your Mac's Calendar, Notes, Mail and Reminders, Notion, Linear and GitHub, plus any MCP tool. Claude Desktop, Cursor and others can hand work to Xod. |
@@ -100,6 +101,18 @@ While Xod works, its companion leaves its spot by the reply and does the work wh
 **Add-ons.** Optional packs for startup and market intel, people lookup, website forensics, creators and trends, Media Studio and Model Lab.
 
 ![Add-ons](docs/screenshots/add-ons.png)
+
+### Build apps and games
+
+<p align="center"><img src="docs/screenshots/builder.png" width="760" alt="Xod built a 3D game from one sentence; it's running in the preview pane beside the chat"></p>
+
+Ask for something you can use or play, like **"make me a 3D game where you dodge falling cubes"** or **"build a pomodoro timer"**, and Xod writes it for real:
+
+- **It writes it, runs it and fixes it.** Xod plans the files and writes each one in full. Then it opens the app in a hidden browser, plays it for a few seconds and fixes any errors before telling you it's done. The answer lists only files that really exist.
+- **A preview beside the chat.** The app runs in a pane next to the chat, with its **Files** and a **Console** that shows errors, plus an "Ask Xod to fix these" button. Switch it to phone size, open it in your browser, or collapse it to a tab on the edge.
+- **Change it by asking.** Say "make it harder" or "add a high score" and Xod edits just the lines that need it, runs the app again, and keeps every change in Activity with Undo.
+- **3D and art included.** three.js is built in and works offline. Ask for sprites or textures and Xod paints them with Media Studio.
+- **Safely fenced off.** Previews run sandboxed, with no access to Xod, your files or its API. Each app lives in a folder of your project and shows under the project on the left.
 
 ### Talk to it
 

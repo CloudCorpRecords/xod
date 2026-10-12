@@ -60,6 +60,11 @@ async def trustmrr_error_handler(request: Request, exc: _TrustMRRError):
 async def local_only_guard(request, call_next):
     if _host_only(request.headers.get("host", "")) not in _LOCAL_HOSTS:
         return JSONResponse({"detail": "Xod only answers on localhost."}, status_code=403)
+    from app.services import previews as _previews
+    if request.method in ("GET", "HEAD") and request.url.path.startswith(_previews.PREFIX):
+        # A sandboxed preview page (opaque origin) loading its own files; nothing else is reachable here.
+        return await call_next(request)
+    _previews.SERVER_BASE = "http://" + request.headers.get("host", "127.0.0.1:8000")
     origin = request.headers.get("origin")
     own = request.headers.get("host", "").lower()
     if origin and origin != "null" and origin.lower().split("://", 1)[-1].rstrip("/") != own:
@@ -87,7 +92,7 @@ _SECURITY_HEADERS = {
         "font-src 'self' data:",
         "connect-src 'self'",
         "object-src 'none'",
-        "frame-src 'none'",
+        "frame-src 'self'",                          # the preview pane (sandboxed, see services/previews.py)
         "base-uri 'self'",
         "form-action 'self'",
         "frame-ancestors 'none'",
@@ -997,9 +1002,15 @@ async def chat_endpoint(request: ChatRequest):
                 elif event_type in (
                     "tool_call", "tool_result", "scorecard",
                     "swarm_plan", "subagent_status", "subagent_tool_call",
-                    "subagent_tool_result", "swarm_complete"
+                    "subagent_tool_result", "swarm_complete", "build_done"
                 ):
                     tool_events.append(event)
+                if event_type == "build_done" and (event.get("project") or {}).get("slug"):
+                    try:
+                        from app.services.project_storage import project_storage_service as project_storage
+                        project_storage.assign_session_to_project(session_id, event["project"]["slug"])
+                    except Exception as e:
+                        logger.warning(f"couldn't file the chat under the new project: {e}")
 
                 yield f"data: {json.dumps(event)}\n\n"
 
@@ -3270,3 +3281,70 @@ async def memory_index_workspace_endpoint(req: Optional[MemoryIndexWorkspaceRequ
 
 
 
+
+
+# ---------------------------------------------------------------------------------------------
+# Previews of apps the builder makes (services/previews.py). The pages are untrusted code, served
+# sandboxed under a per-start secret path; the API below is for Xod's own UI.
+
+@app.get("/preview/{token}/{rid}/{path:path}")
+async def preview_file(token: str, rid: str, path: str = ""):
+    from fastapi.responses import Response
+    from app.services import previews
+    if token != previews.TOKEN:
+        raise HTTPException(status_code=404, detail="This preview link has expired. Open the preview again.")
+    p = previews.lib_file(path) if rid == "__lib" else previews.resolve(rid, path)
+    if not p:   # with the preview headers, so the page's console says "404" rather than a CORS error
+        return Response(content=b"Not found", status_code=404, media_type="text/plain", headers=dict(previews.PREVIEW_HEADERS))
+    body = p.read_bytes()
+    if p.suffix.lower() in (".html", ".htm") and rid != "__lib":
+        body = previews.inject(body.decode("utf-8", errors="replace"), rid).encode()
+    return Response(content=body, media_type=previews.content_type(p), headers=dict(previews.PREVIEW_HEADERS))
+
+
+@app.get("/api/preview/apps")
+async def preview_apps(folder: Optional[str] = None):
+    from app.services import previews
+    return {"apps": previews.find_apps(folder)}
+
+
+@app.get("/api/preview/files")
+async def preview_files(root: str):
+    from app.services import previews
+    r = previews.root_of(root)
+    if not r:
+        raise HTTPException(status_code=404, detail="Unknown preview")
+    return {"root": root, "path": str(r), "files": [f for f in previews.list_files(root) if f["path"] != previews.APP_MARK]}
+
+
+@app.get("/api/preview/file")
+async def preview_file_text(root: str, path: str):
+    from app.services import previews
+    p = previews.resolve(root, path)
+    if not p or p.suffix.lower() not in previews.TEXT_EXT:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"path": path, "text": p.read_text(errors="replace")[:400000]}
+
+
+class PreviewStorageRequest(BaseModel):
+    root: str
+    data: Dict[str, Any]
+
+
+@app.post("/api/preview/storage")
+async def preview_storage(req: PreviewStorageRequest):
+    """What a preview saved in localStorage (its high scores, settings), kept in the app's folder."""
+    from app.services import previews
+    return {"ok": previews.save_storage(req.root, req.data)}
+
+
+class PreviewCheckRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/preview/check")
+async def preview_check(req: PreviewCheckRequest):
+    from app.services import previews
+    if not req.url.startswith(previews.PREFIX):
+        raise HTTPException(status_code=400, detail="Not a preview")
+    return await previews.check(req.url)

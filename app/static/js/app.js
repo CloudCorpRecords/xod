@@ -2612,6 +2612,7 @@ function renderStoredAssistantMessage(m) {
   }
 
   container.appendChild(wrapper);
+  if (window.XodPreview) XodPreview.fromHistory(m, wrapper);
 
   // Initialize interactive Thought Reviewer
   if (m.reasoning && m.reasoning.trim()) {
@@ -2672,6 +2673,7 @@ function formatRelativeTime(timestamp) {
 }
 
 function clearChat() {
+  if (window.XodPreview) XodPreview.reset();
   startNewSession();
 }
 
@@ -4289,6 +4291,7 @@ function handleResearchEvent(event, assistantBubble) {
     assistantBubble.setScorecard(event.scorecard, event.entity);
   } else if (event.type === "status") {
     updateLiveStatusBar(true, event.content);
+    if (window.XodPreview) XodPreview.onStatus(event.content);
   } else if (event.type === "reasoning") {
     assistantBubble.appendReasoning(event.content);
   } else if (event.type === "tool_call") {
@@ -4298,8 +4301,13 @@ function handleResearchEvent(event, assistantBubble) {
     if (assistantBubble && assistantBubble.appendToolStream) {
       assistantBubble.appendToolStream(event.name, event.stream_type, event.text, event.id);
     }
+  } else if (event.type === "build_started") {
+    if (window.XodPreview) XodPreview.onBuildStarted(event);
+  } else if (event.type === "build_done") {
+    if (window.XodPreview) XodPreview.onBuildDone(event, assistantBubble);
   } else if (event.type === "tool_result") {
     assistantBubble.updateToolResult(event.name, event.summary, event.data, event.id);
+    if (window.XodPreview) XodPreview.onToolResult(event);
     if (event.data && event.data.needs_approval && window.renderMcpApproval) window.renderMcpApproval(event.data);
   } else if (event.type === "escalation_offer" || event.type === "route_info") {
     if (window.renderRouteEvent) window.renderRouteEvent(event);
@@ -4764,6 +4772,7 @@ function auditEntityStack(target) {
 // -------------------------------------------------------------
 function formatToolName(name) {
   const map = {
+    "preview_check": "Ran it",
     "find_work_email": "Founder Work-Email Hunter",
     "verify_email_bounce_risk": "Email Bounce-Risk Verifier",
     "scan_live_job_firehose": "Live Job Firehose & Liveness",
@@ -4838,6 +4847,7 @@ function formatToolName(name) {
 
 function getToolIcon(name) {
   const map = {
+    "preview_check": "bug-play",
     "tavily_search": "sparkles",
     "computer_directory_tree": "folder-tree",
     "computer_list_directory": "folder-search",
@@ -7676,6 +7686,7 @@ function renderActiveWorkingScopeUI() {
       pathEl.textContent = p.replace(/^\/Users\/[^\/]+/, "~");
       pathEl.title = p;
     }
+    if (window.XodPreview) XodPreview.refreshForScope(activeWorkingScope.path);
     if (statsEl) {
       const fCount = activeWorkingScope.total_folders || 0;
       const fileCount = activeWorkingScope.total_files || 0;

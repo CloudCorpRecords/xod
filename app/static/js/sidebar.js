@@ -92,7 +92,7 @@ function renderProjectsSidebar() {
     shownProjects++;
     const open = expandedProjectFolders.has(p.slug) || (filtering && (sessions.length || files.length));
     const isScoped = activeWorkingScope && (activeWorkingScope.slug === p.slug || activeWorkingScope.path === p.path);
-    const count = (p.sessions || []).length + (p.files || []).length;
+    const count = (p.sessions || []).length + (p.files || []).length + (p.apps || []).length;
     const icon = (!p.icon || p.icon === "folder") ? (open ? "folder-open" : "folder") : p.icon;
     projHtml += `
       <div class="sb-project" data-drop="project" data-slug="${escapeHtml(p.slug)}">
@@ -106,6 +106,11 @@ function renderProjectsSidebar() {
         </div>
         ${open ? `
           <div class="sb-children">
+            ${(p.apps || []).map(a => `
+              <div class="sb-row sb-app" data-action="open-app" data-path="${escapeHtml(a.path)}" title="Open ${escapeHtml(a.title)} in the preview">
+                <i data-lucide="play" class="size-3 shrink-0 text-brand-400"></i>
+                <span class="sb-title">${escapeHtml(a.title)}</span>
+              </div>`).join("")}
             ${sessions.map(s => chatRowHtml(s, p.slug)).join("")}
             ${files.map(f => `
               <div class="sb-row sb-file" draggable="true" data-kind="file" data-slug="${escapeHtml(p.slug)}"
@@ -113,7 +118,7 @@ function renderProjectsSidebar() {
                 <i data-lucide="file-text" class="size-3 shrink-0 text-amber-400/80"></i>
                 <span class="sb-title">${escapeHtml(f.filename)}</span>
               </div>`).join("")}
-            ${!sessions.length && !files.length ? `<div class="sb-empty">Empty — drag chats or files here</div>` : ""}
+            ${!sessions.length && !files.length && !(p.apps || []).length ? `<div class="sb-empty">Empty — drag chats or files here</div>` : ""}
           </div>` : ""}
       </div>`;
   }
@@ -321,6 +326,11 @@ function initSidebarEvents() {
         return;
       }
       if (a === "toggle-project") { toggleProjectFolder(act.dataset.slug); return; }
+      if (a === "open-app") {
+        const app = localProjects.flatMap(p => p.apps || []).find(x => x.path === act.dataset.path);
+        if (app && window.XodPreview) XodPreview.open({ url: app.url, root: app.root, title: app.title, path: app.path });
+        return;
+      }
     }
     if (row && row.dataset.kind === "chat") selectSession(row.dataset.id);
     else if (row && row.dataset.kind === "file") previewProjectFile(row.dataset.slug, row.dataset.subfolder, row.dataset.filename);

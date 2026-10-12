@@ -176,8 +176,10 @@ function lockDown() {
 
   app.on("web-contents-created", (_e, contents) => {
     contents.setWindowOpenHandler(({ url }) => {
-      if (/^https?:\/\//.test(url) && !isAppUrl(url)) shell.openExternal(url);
-      return { action: isAppUrl(url) ? "allow" : "deny" };
+      // Previews of apps Xod built are untrusted pages: they open in the user's browser, not in an app window.
+      const preview = isAppUrl(url) && new URL(url).pathname.startsWith("/preview/");
+      if (/^https?:\/\//.test(url) && (!isAppUrl(url) || preview)) shell.openExternal(url);
+      return { action: isAppUrl(url) && !preview ? "allow" : "deny" };
     });
     contents.on("will-navigate", (e, url) => {
       if (url.startsWith("file://") && contents === (splash && splash.webContents)) return;

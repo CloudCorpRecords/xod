@@ -27,6 +27,16 @@ def format_relative_time(timestamp: float) -> str:
     else:
         return f"{int(diff // 86400)}d"
 
+def _apps_in(folder) -> List[Dict[str, Any]]:
+    """Apps the builder made in this project (they show under it in the sidebar)."""
+    try:
+        from app.services import previews
+        return [{"title": a.get("title") or Path(a["path"]).name, "path": a["path"], "url": a["url"], "root": a["root"]}
+                for a in previews.find_apps(str(folder))]
+    except Exception:
+        return []
+
+
 class ProjectStorageService:
     """
     Manages physical project folders on the local computer, storing data, dossiers,
@@ -224,7 +234,8 @@ class ProjectStorageService:
                 "total_size_bytes": total_bytes,
                 "total_sessions": len(proj_sessions),
                 "files": sorted(files_list, key=lambda x: x["updated_at"], reverse=True),
-                "sessions": proj_sessions
+                "sessions": proj_sessions,
+                "apps": _apps_in(p_path)
             })
 
         # Also retrieve linked computer folders from SQLite
@@ -321,7 +332,8 @@ class ProjectStorageService:
                     "total_size_bytes": total_bytes,
                     "total_sessions": len(proj_sessions),
                     "files": sorted(files_list, key=lambda x: x["updated_at"], reverse=True)[:50],
-                    "sessions": proj_sessions
+                    "sessions": proj_sessions,
+                    "apps": _apps_in(l_path)
                 })
 
         except Exception as e:
