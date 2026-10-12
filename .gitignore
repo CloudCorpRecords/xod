@@ -105,3 +105,6 @@ electron/python-runtime/
 relay/*.db
 relay/worker/.wrangler/
 test_runs/
+
+# --- Demo videos shown in the README (made from demo data only) ---
+!docs/media/*.mp4

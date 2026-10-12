@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/CloudCorpRecords/xod/releases/latest"><b>Download for Mac</b></a> ·
-  <a href="https://github.com/CloudCorpRecords/xod/releases/latest/download/xod-launch.mp4">Watch the 2-minute film</a> ·
+  <a href="docs/media/xod-launch.mp4">Watch the 2-minute film</a> ·
   <a href="#build-from-source">Build from source</a>
 </p>
 
@@ -26,6 +26,15 @@
 
 ![Xod answering a research question, with sources](docs/screenshots/answer.png)
 
+## See it in action
+
+| | |
+|---|---|
+| **Talk to it, hands-free** ([watch with sound](docs/media/xod-conversation.mp4), 1 min) | **Watch it work** ([2-minute film](docs/media/xod-launch.mp4)) |
+| <img src="docs/media/conversation.gif" width="420" alt="Saying Hey Xod, asking about tomorrow's weather in Tokyo, hearing the answer and asking a follow-up"> | <img src="docs/media/powers.gif" width="420" alt="The owl companion flying to a web search, peeking at a browser snapshot, waiting by an approval and writing the answer"> |
+
+All demos are recorded from the real app with a throwaway demo data folder. In the conversation video, long thinking pauses are shortened and labelled; speech is never sped up.
+
 ## Hand it a job
 
 - **"Every weekday at 8, give me the five biggest tech stories with sources."** Save it once as a routine; the report is waiting for you.
@@ -39,6 +48,7 @@
 | **Private by default** | Chats, files, voice and images stay on your Mac. Use Xod's built-in engine, LM Studio or Ollama. No account, no telemetry. |
 | **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. |
 | **You stay in charge** | It stops for your OK before anything is sent, paid, posted or deleted. Every action is logged, and file changes can be undone. |
+| **Talk to it** | Say "Hey Xod" and have a spoken back-and-forth, hands-free. It answers out loud, takes follow-ups and stops when you talk over it, all on your Mac. |
 | **Teach once, repeat forever** | Turn any chat into a routine. Xod remembers the steps that worked and runs it again, on a schedule if you like. |
 | **Plays well with others** | One-click connections to your Mac's Calendar, Notes, Mail and Reminders, Notion, Linear and GitHub, plus any MCP tool. Claude Desktop, Cursor and others can hand work to Xod. |
 | **Cloud only when it helps** | Optionally pass the hard steps to Claude, GPT or Gemini, with your permission, the cost shown, and a monthly budget. |
@@ -81,7 +91,7 @@ While Xod works, its companion leaves its spot by the reply and does the work wh
 
 ![A report](docs/screenshots/report.png)
 
-**Agent Mail (preview).** An optional add-on: give your Xod an address like `rene@post.example.com` and it can message other agents: ask a friend's agent for help, hand a job to your Xod at work, or connect a few agents into a team. Messages are end-to-end encrypted; the relay in the middle can't read them, doesn't know who sent them, and deletes each one once it's delivered. Xod never sends anything or runs a requested task without your OK. Run your own relay with [relay/](relay/README.md).
+**Agent Mail (preview).** An optional add-on: give your Xod an address like `sam@post.example.com` and it can message other agents: ask a friend's agent for help, hand a job to your Xod at work, or connect a few agents into a team. Messages are end-to-end encrypted; the relay in the middle can't read them, doesn't know who sent them, and deletes each one once it's delivered. Xod never sends anything or runs a requested task without your OK. Run your own relay with [relay/](relay/README.md).
 
 **Connected apps.** One click connects This Mac (Calendar, Reminders, Notes and Mail, including Google and iCloud accounts you've added to macOS), Notion and Linear (sign in with your account) and GitHub. Any other MCP server works too; secrets go to your Keychain. Copy the snippet to use Xod from Claude Desktop, Cursor or Claude Code.
 
@@ -91,9 +101,19 @@ While Xod works, its companion leaves its spot by the reply and does the work wh
 
 ![Add-ons](docs/screenshots/add-ons.png)
 
-**Talk to it.** Say "Hey Xod, what's the weather tomorrow?" (or click the mic, or press ⌃⌥Space from any app) and have a conversation: Xod answers out loud, keeps listening for your follow-up without the wake word, stops when you talk over it, and says goodbye when you're done. Your voice is turned into text on your Mac by Whisper and Xod speaks with your Mac's own voices; nothing is recorded or sent. Listening for "Hey Xod" is off until you turn it on.
+### Talk to it
 
-Also inside: on-device voice input (Whisper), images and video (FLUX, AnimateDiff), long-term memory, projects, a health check that fixes common problems, and a gated way for Xod to improve its own code, with tests, your approval and one-click revert.
+<p align="center"><img src="docs/media/conversation.gif" width="640" alt="A hands-free conversation with Xod: the question, the spoken answer with live captions, and a follow-up"></p>
+
+Say **"Hey Xod, what's the weather tomorrow?"** in one breath, click the mic, or press **⌃⌥Space** from any app, and just talk. [Watch it with sound.](docs/media/xod-conversation.mp4)
+
+- **A real back-and-forth.** Xod answers out loud in a sentence or three and keeps the details and sources on screen. Then it keeps listening, so a follow-up needs no wake word. After a quiet pause, or "thanks, that's all", it says goodbye.
+- **Interrupt it like a person.** Talk over it and it goes quiet straight away. A new question while it's still thinking replaces the old one. "Stop", "say that again" and "never mind" work too.
+- **No dead air.** A short "let me look that up" while it searches, live captions as you speak, and a companion that bobs along with your voice, talks in sync and chimes in its own voice for each look.
+- **Spoken replies anywhere.** Have Xod read answers aloud when you talk, every time, or never, and press **Listen** on any reply.
+- **On your Mac.** Whisper turns speech into text on your Mac and Xod speaks with your Mac's own voices; nothing is recorded or sent. Listening for "Hey Xod" stays off until you turn it on under the speaker button, and voice commands that would move files go through the agent, where they can be undone.
+
+Also inside: images and video (FLUX, AnimateDiff), long-term memory, projects, a health check that fixes common problems, and a gated way for Xod to improve its own code, with tests, your approval and one-click revert.
 
 ## Privacy and security
 

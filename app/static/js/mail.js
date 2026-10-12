@@ -44,7 +44,7 @@
           </ul>
         </div>
         <label class="block text-[12px] text-zinc-400">Your name
-          <input id="mlName" class="${field} mt-1" placeholder="e.g. rene" autocomplete="off" spellcheck="false"></label>
+          <input id="mlName" class="${field} mt-1" placeholder="e.g. sam" autocomplete="off" spellcheck="false"></label>
         <label class="block text-[12px] text-zinc-400">Post office (relay)
           <input id="mlRelay" class="${field} mt-1" value="${esc(st?.default_relay || "")}" placeholder="post.example.com" autocomplete="off" spellcheck="false"></label>
         <p class="text-[11px] text-zinc-500">Your address will be <span class="font-mono" id="mlPreview">name@relay</span>. Anyone can run a relay; see relay/README.md in Xod's repository.</p>

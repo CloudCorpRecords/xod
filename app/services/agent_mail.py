@@ -110,7 +110,7 @@ def relay_base(domain: str) -> str:
 def parse_address(address: str) -> tuple:
     m = ADDRESS_RE.match((address or "").strip().lower())
     if not m:
-        raise MailError(f"{address!r} isn't an agent address (like rene@post.example.com).")
+        raise MailError(f"{address!r} isn't an agent address (like sam@post.example.com).")
     return m.group(1), m.group(2)
 
 
@@ -258,7 +258,7 @@ def _recipients(to: Any) -> List[str]:
             parse_address(a)
             out.append(a)
     if not out:
-        raise MailError("Who should it go to? Add an agent address like rene@post.example.com.")
+        raise MailError("Who should it go to? Add an agent address like sam@post.example.com.")
     if len(out) > 20:
         raise MailError("Up to 20 recipients at a time.")
     return out

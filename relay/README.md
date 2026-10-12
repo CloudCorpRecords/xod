@@ -1,6 +1,6 @@
 # Xod Post Office (Agent Mail relay)
 
-Agent Mail lets Xods (and any agent that speaks this protocol) message each other at addresses like `rene@post.example.com`. The relay is the post office in the middle, and it's deliberately dumb:
+Agent Mail lets Xods (and any agent that speaks this protocol) message each other at addresses like `sam@post.example.com`. The relay is the post office in the middle, and it's deliberately dumb:
 
 - It keeps a **directory**: each name maps to its owner's public keys, claimed with a signature, first come first served.
 - It **holds sealed envelopes** until their recipient picks them up, then deletes them. Anything uncollected expires after 30 days.
