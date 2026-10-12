@@ -25,6 +25,13 @@
 - Apps live in a folder of the project you're in, and show under it on the left; outside a project, Xod makes one.
 - Previews are sandboxed: they run with no access to Xod, your files or its API, from a secret address that changes each time Xod starts. localStorage works and is kept in the app's folder.
 
+**Find jobs and apply**
+- "Find me FDE jobs" now returns real, open roles instead of a web summary: Xod expands job acronyms (FDE is Forward Deployed Engineer, plus SWE, SRE, MLE, TPM and more), finds the companies hiring for it on Ashby, Greenhouse and Lever, and reads their public job boards for title, location, remote/hybrid/on-site, pay and a direct apply link.
+- A jobs card in the chat lists them with filters and Apply buttons. Follow-ups narrow the same list ("only remote", "in New York", "senior", "not at Google") and "apply to 2" means the second one you see.
+- A job profile (from the jobs card, or asked for when you first apply) holds your name, email, résumé and answers, on your Mac only (readable just by you).
+- Each application is a task in Xod's browser: it fills the form from your profile, uploads your résumé, answers questions, and stops for your OK before submitting. If the page asks to confirm, that becomes the same approval instead of a question.
+- Xod's browser now uses its own port per data folder, so a test or second copy can never take over your signed-in browser.
+
 **Fixes**
 - File tasks no longer describe files that weren't written: the write-up names only what a tool actually did.
 

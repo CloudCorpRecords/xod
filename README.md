@@ -115,6 +115,13 @@ Ask for something you can use or play, like **"make me a 3D game where you dodge
 - **3D and art included.** three.js is built in and works offline. Ask for sprites or textures and Xod paints them with Media Studio.
 - **Safely fenced off.** Previews run sandboxed, with no access to Xod, your files or its API. Each app lives in a folder of your project and shows under the project on the left.
 
+### Find jobs and apply
+
+Say **"find me FDE jobs"** or **"remote staff ML engineer roles in New York"** and Xod goes to the source. It understands job acronyms (FDE, SWE, SRE, MLE, TPM, …), finds the companies hiring on Ashby, Greenhouse and Lever, and reads their public job boards directly. You get a list of real, open roles with company, location, remote or hybrid, pay when it's posted, and a direct apply link, usually in about ten seconds.
+
+- **Narrow it by asking.** "Only remote", "in San Francisco", "senior only", "not at Google", "newest first". The numbers stay matched to what's on screen.
+- **Apply from the list.** Pick roles and press **Apply**, or say "apply to 1 and 3". The first time, Xod asks for a short job profile (name, email, résumé, links, work authorization) and keeps it on your Mac only. Each application runs as a task in Xod's own browser: it fills the form from your profile, uploads your résumé, answers the questions, and **stops for your OK before it presses Submit**.
+
 ### Xod's heart
 
 <p align="center"><img src="docs/screenshots/heart.png" width="760" alt="Xod's heart: its stage, bond, mood, what it learned about you, and its journal"></p>

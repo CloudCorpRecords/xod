@@ -2613,6 +2613,7 @@ function renderStoredAssistantMessage(m) {
 
   container.appendChild(wrapper);
   if (window.XodPreview) XodPreview.fromHistory(m, wrapper);
+  if (window.XodJobs) XodJobs.fromHistory(m, wrapper);
 
   // Initialize interactive Thought Reviewer
   if (m.reasoning && m.reasoning.trim()) {
@@ -4303,6 +4304,10 @@ function handleResearchEvent(event, assistantBubble) {
     }
   } else if (event.type === "build_started") {
     if (window.XodPreview) XodPreview.onBuildStarted(event);
+  } else if (event.type === "jobs") {
+    if (window.XodJobs) XodJobs.attach(event, assistantBubble.wrapper);
+  } else if (event.type === "job_profile_needed") {
+    if (window.XodJobs) XodJobs.onProfileNeeded(event);
   } else if (event.type === "soul") {
     if (window.XodSoul) XodSoul.onEvent(event);
   } else if (event.type === "launch_app") {

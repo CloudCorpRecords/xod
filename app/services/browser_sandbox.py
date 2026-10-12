@@ -10,6 +10,7 @@ import subprocess
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import websockets
 from app.services import credential_vault
@@ -27,7 +28,19 @@ CHROME_BINARIES = [
     shutil.which("chromium") or "",
 ]
 
-DEBUG_PORT = 9228
+def _debug_port() -> int:
+    """9228 for your normal Xod. Any other data folder (tests, a second copy) gets its own port, so it can
+    never attach to, and drive, another Xod's browser with that one's logins."""
+    if os.environ.get("XOD_BROWSER_PORT"):
+        return int(os.environ["XOD_BROWSER_PORT"])
+    from app.paths import _default_data_dir
+    if Path(str(XOD_DATA_DIR)).resolve() == _default_data_dir().expanduser().resolve():
+        return 9228
+    import hashlib
+    return 9300 + int(hashlib.sha1(str(XOD_DATA_DIR).encode()).hexdigest(), 16) % 600
+
+
+DEBUG_PORT = _debug_port()
 # Chrome profile (cookies, logins, local storage). Lives in the git-ignored data/ folder
 # so sessions survive reboots; /tmp is wiped by macOS. The folder name must keep
 # "xod_ai_browser_sandbox" because restart code finds Chrome by it.
@@ -568,7 +581,7 @@ class BrowserSandboxService:
             self.proc = None
 
         try:
-            subprocess.run(["pkill", "-9", "-f", "xod_ai_browser_sandbox"], stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-9", "-f", f"--user-data-dir={re.escape(DATA_DIR)}"], stderr=subprocess.DEVNULL)   # only this Xod's browser
             await asyncio.sleep(0.3)
         except Exception:
             pass
@@ -702,7 +715,7 @@ class BrowserSandboxService:
 
             # Step 2: Kill any orphaned or zombie Chrome processes on Mac
             try:
-                subprocess.run(["pkill", "-9", "-f", "xod_ai_browser_sandbox"], stderr=subprocess.DEVNULL)
+                subprocess.run(["pkill", "-9", "-f", f"--user-data-dir={re.escape(DATA_DIR)}"], stderr=subprocess.DEVNULL)   # only this Xod's browser
                 subprocess.run(f"lsof -ti:{DEBUG_PORT} | xargs kill -9", shell=True, stderr=subprocess.DEVNULL)
                 await asyncio.sleep(0.4)
             except Exception:
@@ -3848,10 +3861,20 @@ class BrowserSandboxService:
                 return await finish("completed", plan.get("answer") or reasoning or "Done.")
 
             if action == "ask_user":
-                dataset_recorder.label(step_example, 1, "asked the user")
                 question = plan.get("question") or plan.get("answer") or "I need more information to continue."
-                record("ask_user", True, question, status="waiting")
-                return await finish("needs_input", question)
+                # "Shall I submit?" is what the safety pause is for: press the final button and let the system
+                # ask, with the screenshot and the Approve button, instead of a plain question.
+                if re.search(r"\b(submit|send|proceed|apply|place (the )?order|confirm)\b", question, re.I) and \
+                        re.search(r"\?|\b(shall|should|may|can|ready|ok(ay)?|want)\b", question, re.I):
+                    final = next((el for el in (self.indexed_elements or []) if _looks_like_final_submit(el.get("text", ""), el)), None)
+                    if final is not None:
+                        plan = {**plan, "action": "click", "index": final.get("index"),
+                                "reasoning": f"The form is complete; pressing \"{final.get('text', 'Submit')}\" (the system asks the user first)."}
+                        action, reasoning = "click", plan["reasoning"]
+                if action == "ask_user":
+                    dataset_recorder.label(step_example, 1, "asked the user")
+                    record("ask_user", True, question, status="waiting")
+                    return await finish("needs_input", question)
 
             # --- Safety pause before anything that sends, pays, posts or deletes ----------
             index = plan.get("index")

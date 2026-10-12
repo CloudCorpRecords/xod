@@ -1,4 +1,5 @@
 import asyncio
+import os
 import json
 import logging
 import re
@@ -1014,7 +1015,7 @@ async def chat_endpoint(request: ChatRequest):
                 elif event_type in (
                     "tool_call", "tool_result", "scorecard",
                     "swarm_plan", "subagent_status", "subagent_tool_call",
-                    "subagent_tool_result", "swarm_complete", "build_done"
+                    "subagent_tool_result", "swarm_complete", "build_done", "jobs"
                 ):
                     tool_events.append(event)
                 if event_type == "build_done" and (event.get("check") or {}).get("ok"):
@@ -3459,3 +3460,92 @@ async def soul_muse(request: Request):
     activity.origin.set("xod (on its own)")
     entry = await soul.muse(body.get("activity") if body.get("activity") in soul.ACTIVITIES else None)
     return {"entry": entry, "state": soul.public()}
+
+
+# ---------------------------------------------------------------------------------------------
+# Job hunting (services/job_hunt.py, agent/jobs.py): results, your job profile, applying.
+
+PROFILE_FIELDS = ("full_name", "email", "phone", "location", "linkedin", "github", "portfolio", "resume_path", "work_authorization",
+                  "needs_sponsorship", "years_of_experience", "desired_salary", "willing_to_relocate", "short_bio", "common_answers")
+
+
+@app.get("/api/jobs/last")
+async def jobs_last():
+    from app.services import job_hunt
+    return job_hunt.last() or {"jobs": []}
+
+
+@app.get("/api/jobs/profile")
+async def jobs_profile():
+    """Your details for job applications (on this Mac only; the form shows them back to you)."""
+    from app.services.browser_sandbox import PROFILE_PATH
+    from app.agent.jobs import profile_status
+    try:
+        data = json.loads(Path(PROFILE_PATH).read_text())
+    except Exception:
+        data = {}
+    return {"profile": {k: data.get(k, "") for k in PROFILE_FIELDS}, "status": profile_status()}
+
+
+@app.post("/api/jobs/profile")
+async def jobs_profile_save(request: Request):
+    from app.services.browser_sandbox import PROFILE_PATH
+    from app.agent.jobs import profile_status
+    body = await request.json()
+    p = Path(PROFILE_PATH)
+    try:
+        data = json.loads(p.read_text())
+    except Exception:
+        data = {"_note": "Your details for filling forms (job applications). Stays on this Mac."}
+    for k in PROFILE_FIELDS:
+        if k in body:
+            v = body[k]
+            data[k] = v.strip()[:4000] if isinstance(v, str) else v
+    p.write_text(json.dumps(data, indent=2))
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+    return {"ok": True, "status": profile_status()}
+
+
+@app.get("/api/jobs/resumes")
+async def jobs_resumes():
+    """Résumé / CV files on this Mac (Spotlight), so you can pick yours instead of typing a path."""
+    import subprocess as _sp
+    q = ('(kMDItemFSName == "*resume*"cd || kMDItemFSName == "*résumé*"cd || kMDItemFSName == "*cv*"cd || kMDItemFSName == "*curriculum*"cd) && '
+         '(kMDItemContentTypeTree == "com.adobe.pdf" || kMDItemFSName == "*.docx"cd || kMDItemFSName == "*.doc"cd)')
+    try:
+        out = _sp.run(["mdfind", "-onlyin", str(Path.home()), q], capture_output=True, text=True, timeout=8).stdout
+    except Exception:
+        out = ""
+    files = []
+    for line in out.splitlines():
+        if "/Library/" in line or "/." in line:
+            continue
+        try:
+            st = os.stat(line)
+        except OSError:
+            continue
+        files.append({"path": line, "name": os.path.basename(line), "modified": st.st_mtime})
+    files.sort(key=lambda f: -f["modified"])
+    return {"files": files[:12]}
+
+
+class JobsApplyRequest(BaseModel):
+    ids: List[str]
+
+
+@app.post("/api/jobs/apply")
+async def jobs_apply(req: JobsApplyRequest):
+    """Starts application tasks for jobs from the last search. Each stops for your OK before submitting."""
+    from app.services import job_hunt
+    from app.agent import jobs as job_lane
+    status = job_lane.profile_status()
+    if not status["ready"]:
+        return {"ok": False, "needs_profile": True, "missing": status["missing"]}
+    last = job_hunt.last() or {}
+    chosen = [j for j in last.get("jobs", []) if j.get("id") in set(req.ids)]
+    if not chosen:
+        return {"ok": False, "error": "Those jobs aren't in the last search any more. Search again."}
+    return {"ok": True, "tasks": job_lane.apply(chosen)}

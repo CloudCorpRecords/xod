@@ -213,6 +213,16 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
             *messages
         ]
 
+        # "Find me FDE jobs", "only remote ones", "apply to 2 and 5": real openings from companies' own
+        # job boards, and applications as tasks that stop for an OK before submitting.
+        if not has_image and not has_document:
+            from app.agent import jobs as job_lane
+            jd = job_lane.route(user_query, messages)
+            if jd:
+                async for ev in job_lane.stream(user_query, messages, jd, execute_tool, spoken=spoken):
+                    yield ev
+                return
+
         # Clear-cut web tasks and "submit it" / "continue" replies skip planning entirely.
         early_mission = self._mission_request(user_query, {})
         if early_mission:

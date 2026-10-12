@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Forward Deployed Engineer · Testco Careers</title>
+<style>body{font:15px system-ui;max-width:680px;margin:40px auto;padding:0 16px;color:#111}label{display:block;margin:14px 0 4px;font-weight:600}
+input,select,textarea{width:100%;padding:8px;border:1px solid #bbb;border-radius:6px;font:inherit}button{margin-top:20px;padding:10px 18px;background:#111;color:#fff;border:0;border-radius:6px;font-weight:600}
+.req::after{content:" *";color:#c00}</style></head>
+<body>
+<h1>Forward Deployed Engineer</h1>
+<p>Testco · New York, NY (Hybrid) · Full time</p>
+<p>You'll work directly with customers to deploy our platform, write production code, and turn what you learn into product.</p>
+<h2>Apply for this job</h2>
+<form id="app" action="/submit" method="post" enctype="multipart/form-data">
+  <label class="req" for="name">Full name</label><input id="name" name="name" required>
+  <label class="req" for="email">Email</label><input id="email" name="email" type="email" required>
+  <label for="phone">Phone</label><input id="phone" name="phone" type="tel">
+  <label for="linkedin">LinkedIn profile</label><input id="linkedin" name="linkedin">
+  <label class="req" for="resume">Resume/CV</label><input id="resume" name="resume" type="file" accept=".pdf,.doc,.docx" required>
+  <label class="req" for="auth">Are you legally authorized to work in the United States?</label>
+  <select id="auth" name="auth" required><option value="">Select…</option><option>Yes</option><option>No</option></select>
+  <label class="req" for="why">Why do you want to work at Testco?</label><textarea id="why" name="why" rows="4" required></textarea>
+  <button type="submit">Submit application</button>
+</form>
+</body></html>
