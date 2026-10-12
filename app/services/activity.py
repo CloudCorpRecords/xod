@@ -257,6 +257,22 @@ def _trash(p: Path) -> None:
         raise RuntimeError(r.stderr.strip() or "couldn't move it to the Trash")
 
 
+def _put_back(name: str, original: Path) -> None:
+    """Out of the Trash and back where it was. Xod can't read the Trash itself (macOS keeps it private),
+    so Finder does it; the first time, macOS asks whether Xod may control Finder."""
+    import subprocess
+    original.parent.mkdir(parents=True, exist_ok=True)
+    script = ["on run argv", 'tell application "Finder"',
+              "set hits to (every item of trash whose name is (item 1 of argv))",
+              'if (count of hits) is 0 then error "It isn\'t in the Trash any more."',
+              "move (item 1 of hits) to (POSIX file (item 2 of argv) as alias)",
+              "end tell", "end run"]
+    argv = ["osascript"] + [x for line in script for x in ("-e", line)] + [name, str(original.parent)]
+    r = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr.strip() or "Finder couldn't put it back") + " You can use Put Back in the Trash.")
+
+
 def undo(entry_id: str, force: bool = False) -> Dict[str, Any]:
     with _conn() as c:
         r = c.execute("SELECT * FROM activity WHERE id = ?", (entry_id,)).fetchone()
@@ -272,11 +288,12 @@ def undo(entry_id: str, force: bool = False) -> Dict[str, Any]:
         for op in ops:
             if op["kind"] in ("restore_file", "remove_created") and op.get("after_sha") and _sha(Path(op["path"])) not in (op["after_sha"], None):
                 return {"ok": False, "conflict": True, "detail": f"{Path(op['path']).name} changed after Xod edited it. Undo anyway?"}
-            if op["kind"] == "move_back" and Path(op["from"]).exists():
+            if op["kind"] in ("move_back", "put_back") and Path(op["from"]).exists():
                 return {"ok": False, "conflict": True, "detail": f"Something is already at {op['from']}. Undo anyway?"}
     done, problems = [], []
     # Newest change first; empty folders last, once the files are out of them.
-    ordered = [o for o in reversed(ops) if o["kind"] != "remove_empty_dir"] + [o for o in ops if o["kind"] == "remove_empty_dir"]
+    ordered = [o for o in reversed(ops) if o["kind"] != "remove_empty_dir"] + \
+        sorted((o for o in ops if o["kind"] == "remove_empty_dir"), key=lambda o: -len(o["path"]))   # deepest first
     for op in ordered:
         try:
             k = op["kind"]
@@ -297,6 +314,8 @@ def undo(entry_id: str, force: bool = False) -> Dict[str, Any]:
                 if src.exists():
                     Path(op["from"]).parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(src), op["from"]); done.append(f"moved {Path(op['from']).name} back")
+            elif k == "put_back":
+                _put_back(op["name"], Path(op["from"])); done.append(f"put {op['name']} back")
             elif k == "remove_copy":
                 p = Path(op.get("now_at") or op["to_hint"])
                 if p.exists():
