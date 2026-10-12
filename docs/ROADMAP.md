@@ -3,11 +3,9 @@
 Xod 0.2 adds Agent Mail and one-click connected apps. Here's what's next. Ideas and pull requests are welcome; see [CONTRIBUTING.md](../.github/CONTRIBUTING.md).
 
 ## Next
-- **Faster answers on 16 GB Macs.** Fewer model calls per answer and a smaller default model, so a researched answer takes well under a minute.
 - **Signed, notarized Mac app.** No security warning on first open.
 - **GitHub sign-in in the browser** instead of a pasted token, once Xod has a registered GitHub app.
 - **Agent Mail attachments** (files and images, still end-to-end encrypted).
-- **Spoken replies.** Xod answers out loud with an on-device voice.
 
 ## Later
 - **Shareable routine templates**, like "weekly competitor check" or "morning brief".
@@ -15,6 +13,7 @@ Xod 0.2 adds Agent Mail and one-click connected apps. Here's what's next. Ideas 
 - **More Macs and Linux:** Intel Macs (cloud or Ollama models) and Linux.
 
 ## Shipped in 0.2
+Faster answers (one or two model calls for most questions, and the model warms up while you type: about 25 s for a researched answer on a 16 GB Mac, down from about 100 s) · spoken replies with an on-device voice ·
 Agent Mail: an address for every Xod, end-to-end encrypted messages between agents, delegated tasks with your approval, and an open-source relay · one-click connected apps (This Mac, Notion, Linear, GitHub, Google).
 
 ## Shipped in 0.1

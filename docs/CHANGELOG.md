@@ -2,6 +2,22 @@
 
 ## 0.2.0
 
+**Faster answers**
+- Most questions now take one or two model calls instead of a full plan: a small routing step either answers straight away or picks one or two web searches, which run at the same time. Jobs that need files, apps, sites or media still get the full planner.
+- The model starts loading while you type, so it's ready when you press Enter.
+- Answers lead with the point and stay short unless you ask for detail ("in depth", "thorough").
+- Sources are numbered, and the list shows only the ones the answer actually used.
+- On a 16 GB M1 Pro with Gemma 4 12B: a researched answer went from about 98 s to about 25 s; a simple question answers in about 5 s, with the first words in about a second.
+- `tests/perf/run_speed_bench.py` times every model call, search and phase, so changes can be measured.
+
+**Spoken replies**
+- Xod can read its answers aloud with a voice that runs on your Mac (macOS's own voices; the free Premium voices sound natural). It starts speaking while the answer is still being written, and the companion's mouth moves with the sound.
+- By default it answers aloud when you ask by talking; the speaker button by the composer switches to "Read every reply" or off, and picks the voice and speed. Every reply also gets a Listen button.
+- Code, tables, links and the source list aren't read out. Typing, talking, Escape or the speaker button stop it, and hands-free listening waits until it's finished so it never hears itself.
+
+**Fixes**
+- The old text-to-speech endpoint built a shell command from the text, so text with `$(…)` in it could run a command. Speech now runs the voice directly with the text in a file.
+
 **Xod's look**
 - Six looks for the companion: Moon, Cat, Ghost, Robot, Owl and Sprout. Pick one in Tools → Xod's look, or right-click Xod on the home screen.
 - Each has its own moving parts and a trick: the moon's eclipse, the cat's ear twitch and tail swish, the ghost's vanishing "boo", the robot's scan and status light, the owl's head turn and wing flaps, the sprout's flower.

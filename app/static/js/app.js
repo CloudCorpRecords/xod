@@ -182,7 +182,16 @@ function autoResizeTextarea() {
   const textarea = document.getElementById("chatInput");
   if (!textarea) return;
 
+  // Start loading the local model as soon as a question is on its way (services/warmup.py).
+  let warmedAt = 0;
+  const warm = () => {
+    if (Date.now() - warmedAt < 45000 || isStreaming) return;
+    warmedAt = Date.now();
+    fetch("/api/llm/warm", { method: "POST" }).catch(() => {});
+  };
+  textarea.addEventListener("focus", warm);
   textarea.addEventListener("input", function() {
+    warm();
     this.style.height = "auto";
     this.style.height = Math.min(this.scrollHeight, 150) + "px";
     updateCharCounter();

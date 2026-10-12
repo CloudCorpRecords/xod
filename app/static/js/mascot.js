@@ -666,6 +666,8 @@
       mw = 2.3; mc = 1.4;
       mo = clamp(S.talk, 0, 1) * (1.1 + Math.sin(ts * 21) * 0.9 + Math.sin(ts * 13) * 0.5);
     }
+    // Spoken replies (speech.js): the mouth follows the actual sound.
+    if (t - (S.voiceAt || 0) < 180 && !r.preview) { mw = 2.1; mc = 1.1; mo = clamp(S.voiceLevel * 11, 0.15, 2.8); }
     if (yawn) { mw = 1.9; mc = 0.3; mo = 3.2 * Math.sin(Math.PI * clamp(1 - (S.yawnUntil - t) / 1500, 0, 1)); }
     if (happy || r.petting > 0.6) { mw = 3.3; mc = 3.1; mo = 1.6; }
     r.mw.t = mw; r.mc.t = mc; r.mo.t = Math.max(0, mo);
@@ -1160,6 +1162,7 @@
     character: () => character, setCharacter, puppet, glyph,
     info: () => ({ id: character, ...CHARACTERS[character] }),
     lookAt: (x, y, ms = 1200) => { S.lookAtPoint = { x, y }; S.lookAtUntil = now() + ms; },
+    voice: (level) => { S.voiceLevel = level; S.voiceAt = now(); S.lastActivity = Date.now(); },
     // For recordings and checks: hold a mood (idle, thinking, searching, working, waiting, listening, sleepy) or flash one (happy, error, dizzy).
     demo: (mood, ms = 4000) => {
       const t = now();

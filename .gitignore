@@ -104,3 +104,4 @@ electron/python-runtime/
 # --- Agent Mail relay (local runs) ---
 relay/*.db
 relay/worker/.wrangler/
+test_runs/

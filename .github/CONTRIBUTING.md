@@ -34,6 +34,8 @@ Thank you for your interest in contributing to **Xod**! We welcome contributions
    ```bash
    .venv/bin/python tests/smoke/run_smoke_test.py         # every endpoint and panel, security headers (needs Chrome)
    .venv/bin/python tests/smoke/run_companion_test.py     # the companion through a whole chat, every look (needs Chrome)
+   .venv/bin/python tests/smoke/run_speech_test.py        # spoken replies, end to end (needs Chrome)
+   .venv/bin/python tests/perf/run_speed_bench.py --warm  # how long answers take, call by call, on your model
    .venv/bin/python tests/features/run_features_test.py   # undo, routines, routing, add-ons, reports, MCP
    .venv/bin/python tests/features/run_connectors_test.py # connected apps and sign-in (needs internet)
    .venv/bin/python tests/features/run_agent_mail_test.py # Agent Mail: a relay and three Xods, encryption, approvals

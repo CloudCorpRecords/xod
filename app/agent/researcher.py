@@ -229,6 +229,20 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                 yield ev
             return
 
+        # Most questions either need no tools or need a web search or two. One small routing call
+        # (its prompt stays cached by the model server) decides which, and streams the answer itself
+        # when no search is needed: one or two model calls instead of a full plan, which on a local
+        # model saves ~25 s. Anything about files, apps, sites to operate or media goes to the planner.
+        if self._fast_lane_ok(user_query, has_image, has_document, active_workspace_path):
+            declined = False
+            async for ev in self._stream_fast_lane(user_query, messages, evidence_board):
+                if ev.get("type") == "_fast_declined":
+                    declined = True
+                    break
+                yield ev
+            if not declined:
+                return
+
         # -------------------------------------------------------------
         # STEP 1: NEURAL DELIBERATION & FIRST-PRINCIPLES DECISION
         # -------------------------------------------------------------
@@ -891,7 +905,7 @@ Cite sources inline as markdown links [name](url) using URLs from the Evidence B
         else:
             task_instruction = f"""
 Answer: "{user_query}"
-- Lead with the direct answer in one to three sentences, then the supporting detail. Match the length to the question: a simple question gets a short answer.
+- Lead with the direct answer in one to three sentences, then the supporting detail. Match the length to the question: a simple question gets a short answer, and stay under 250 words unless the user asked for detail.
 - Use a table only when comparing several things; use headings only if the answer is long.
 - Only include sections that fit the question (no "architecture", "security" or "dossier" framing unless it's about that).
 - Cite sources inline as markdown links [name](url) using the URLs in the Evidence Board, and end with a short "Sources" list of the links you used.
@@ -1037,24 +1051,243 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             except Exception as e:
                 logger.error(f"Recovery synthesis failed: {e}")
 
-        # Small local models often name sources without linking them. Add the real links from
-        # what the searches returned, so every answer can be checked (and Share report lists them).
-        if "](http" not in accumulated_text:
-            links = []
-            for src in getattr(evidence_board, "sources", []) or []:
-                url, title = str(src.get("url") or ""), str(src.get("title") or "").strip()
-                if url.startswith("http") and "tavily.com" not in url and url not in [u for _, u in links]:
-                    links.append((title[:90] or url, url))
-            if links:
-                yield {"type": "content", "content": "\n\n**Source links**\n" + "\n".join(
-                    f"{i}. [{t.replace('[', '(').replace(']', ')')}]({u})" for i, (t, u) in enumerate(links[:6], 1))}
-            elif any("search" in (t.get("tool") or "") for t in getattr(evidence_board, "tool_audit_trail", [])):
-                # Searched, found nothing usable: don't let a from-memory answer pass as researched.
-                yield {"type": "content", "content": "\n\n> ⚠️ Web search didn't return anything usable this time, so this answer "
-                       "comes from the model's own knowledge and may be out of date. Try again, or add a search key in Settings."}
+        for ev in self._source_link_events(evidence_board, accumulated_text):
+            yield ev
 
         final_step["status"] = "completed"
         yield {"type": "plan_step", "step_id": final_step["id"], "status": "completed"}
+        yield {"type": "done"}
+
+    @staticmethod
+    def _source_link_events(evidence_board: EvidenceBoard, answer: str) -> List[Dict[str, Any]]:
+        """Small local models often name sources without linking them. Add the real links from what
+        the searches returned, so every answer can be checked (and Share report lists them)."""
+        if "](http" in answer:
+            return []
+        links = []
+        for src in getattr(evidence_board, "sources", []) or []:
+            url, title = str(src.get("url") or ""), str(src.get("title") or "").strip()
+            if url.startswith("http") and "tavily.com" not in url and url not in [u for _, u in links]:
+                links.append((title[:90] or url, url))
+        if links:
+            return [{"type": "content", "content": "\n\n**Source links**\n" + "\n".join(
+                f"{i}. [{t.replace('[', '(').replace(']', ')')}]({u})" for i, (t, u) in enumerate(links[:6], 1))}]
+        if any("search" in (t.get("tool") or "") for t in getattr(evidence_board, "tool_audit_trail", [])):
+            # Searched, found nothing usable: don't let a from-memory answer pass as researched.
+            return [{"type": "content", "content": "\n\n> ⚠️ Web search didn't return anything usable this time, so this answer "
+                     "comes from the model's own knowledge and may be out of date. Try again, or add a search key in Settings."}]
+        return []
+
+    # ------------------------------------------------------------------
+    # The fast lane: route, maybe search, answer
+    # ------------------------------------------------------------------
+    # Things the planner's tools are for: the Mac, files, apps, sites to operate, media, connected
+    # accounts, routines and reports. "my notion" goes to the planner; "Notion vs Obsidian" doesn't.
+    _FAST_EXCLUDE_RE = re.compile(
+        r"https?://|\bwww\.|"
+        r"\b(files?|folders?|director(y|ies)|desktop|downloads folder|my downloads|documents folder|finder|terminal|shell|command line|"
+        r"script|run (this|the|a|my)|install|uninstall|ports?\b|process(es)?\b|kill|clipboard|screenshot|screen ?shot|"
+        r"open (the |my )?(app|file|folder|website|site|page|link)|launch|my mac|this mac|my computer|my laptop|"
+        r"organi[sz]e|clean ?up|tidy|rename|delete|trash|move (the|my|these|this)|edit (the|my|this)|"
+        r"repo(sitory)?|workspace|codebase|my project|this project|"
+        r"browser|log ?in|sign ?(up|in)|apply (for|to)|fill (out|in)|submit|book (a|me|the)|order|buy|add to cart|check ?out|"
+        r"download|youtube|mp3|mp4|video|image|picture|photo|draw|generate|render|"
+        r"(my|in|on|to|from|the) (calendar|inbox|email|mail|notes|reminders|notion|linear|github|slack)|"
+        r"remind me|schedule|every (day|morning|evening|week|month|monday|tuesday|wednesday|thursday|friday)|routine|"
+        r"remember (this|that)|forget|report|pdf|share (this|it)|"
+        r"tech ?stack|built with|funding|founders?|mrr|arr|acquisition|acquire|for sale|deal flow|due diligence|"
+        r"competitors?|teardown|who works at|email (address|of)|xod|"
+        r"send (a |an |the )?(message|dm|email|text|note)|message (the|my|him|her|them)|reply to|"
+        r"jobs? (on|at|in|near|for)|job (listings?|openings?|board)|hiring|resume|cv)\b", re.I)
+
+    ROUTER_PROMPT = (
+        "You are Xod, a helpful assistant on the user's Mac. Decide how to answer the user's latest message, "
+        "and reply in exactly one of these three ways.\n\n"
+        "1. SEARCH when the answer depends on facts that change or that you may not know exactly: news, anything "
+        "'latest', 'current' or 'right now', prices and plans, comparing products or services, reviews and "
+        "recommendations, people, companies, sports, weather, events and dates. When in doubt, search. "
+        "Reply with one line only:\nSEARCH: <search query> | <optional second search query>\n\n"
+        "2. TOOLS when it needs the user's files, apps or accounts, operating a website, or making images or video. "
+        "Reply with the one word:\nTOOLS\n\n"
+        "3. Otherwise answer it yourself right away: directly and briefly (a few sentences), in Markdown.\n\n"
+        "Examples:\n"
+        "User: Compare the pricing of Figma and Sketch\nSEARCH: Figma pricing plans | Sketch pricing plans\n"
+        "User: who won the Lakers game last night\nSEARCH: Lakers game result last night\n"
+        "User: tidy up my downloads folder\nTOOLS\n"
+        "User: explain recursion simply\nRecursion is when a function solves a problem by calling itself on a smaller "
+        "piece of it, until the piece is small enough to answer directly.")
+
+    def _fast_lane_ok(self, query: str, has_image: bool, has_document: bool, workspace: Optional[str]) -> bool:
+        if has_image or has_document or workspace or self.persona != "ultimate_researcher":
+            return False
+        if os.environ.get("XOD_FAST_LANE", "1") == "0":
+            return False
+        q = (query or "").strip()
+        if len(q) < 40 and self._CONFIRM_RE.search(q):
+            return False          # "go ahead", "yes": answering something the planner asked
+        return 0 < len(q) <= 600 and not self._FAST_EXCLUDE_RE.search(q)
+
+    @staticmethod
+    def _today() -> str:
+        return time.strftime("%A, %B %d, %Y")
+
+    @classmethod
+    def router_messages(cls, query: str, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        turns: List[Dict[str, str]] = []
+        for m in history[-4:]:
+            r, c = m.get("role"), m.get("content")
+            if r in ("user", "assistant") and isinstance(c, str) and c.strip():
+                if turns and turns[-1]["role"] == r:
+                    turns[-1]["content"] += "\n\n" + c[:600]
+                else:
+                    turns.append({"role": r, "content": c[:600]})
+        if turns and turns[-1]["role"] == "user":
+            turns.pop()
+        # The date goes in the last message so the system prompt (and its cache) never changes.
+        return [{"role": "system", "content": cls.ROUTER_PROMPT}, *turns,
+                {"role": "user", "content": f"{query}\n\n(Today is {cls._today()}.)"}]
+
+    async def _stream_fast_lane(self, query: str, messages: List[Dict[str, Any]],
+                                evidence_board: EvidenceBoard) -> AsyncGenerator[Dict[str, Any], None]:
+        """Yields chat events, or a single {"type": "_fast_declined"} (before anything visible)
+        when the planner should take this one."""
+        stream = llm_service.stream_chat_completion(
+            messages=self.router_messages(query, messages[:-1]), temperature=0.2, max_tokens=900,
+            think=False, task="router")
+        head, mode, line, answer = "", None, "", ""
+        try:
+            async for ch in stream:
+                kind = ch.get("type")
+                if kind == "error":
+                    yield {"type": "_fast_declined"}
+                    return
+                if kind != "content":
+                    continue
+                tok = ch.get("content", "")
+                if mode is None:
+                    head += tok
+                    norm = re.sub(r"^[\s*`#>_]+", "", head)
+                    if len(norm) < 6 and "\n" not in norm.strip():
+                        continue
+                    up = norm.upper()
+                    if up.startswith("SEARCH"):
+                        mode, line = "search", norm
+                    elif up.startswith("TOOLS") or norm.startswith(("{", "[")):
+                        mode = "tools"
+                        break
+                    else:
+                        mode, answer = "answer", head.lstrip()
+                        yield {"type": "content", "content": answer}
+                    continue
+                if mode == "search":
+                    line += tok
+                    if "\n" in line.strip():
+                        break          # the queries are all we need; stop the model here
+                else:
+                    answer += tok
+                    yield ch
+        finally:
+            await stream.aclose()
+
+        if mode is None:      # a very short reply
+            norm = re.sub(r"^[\s*`#>_]+", "", head).strip()
+            if not norm or norm.upper().startswith("TOOLS"):
+                yield {"type": "_fast_declined"}
+                return
+            if norm.upper().startswith("SEARCH"):
+                mode, line = "search", norm
+            else:
+                yield {"type": "content", "content": norm}
+                mode = "answer"
+        if mode == "tools":
+            yield {"type": "_fast_declined"}
+            return
+        if mode == "answer":
+            yield {"type": "done"}
+            return
+
+        # ---- search
+        body = line.split(":", 1)[1] if ":" in line.split("\n")[0] else line[6:]
+        queries = [q.strip(" \"'`*") for q in body.strip().split("\n")[0].split("|")]
+        queries = [q for q in queries if len(q) > 2][:2] or [query]
+        tool = "tavily_search" if settings.tavily_api_key else "web_search"
+        yield {"type": "status", "content": "Searching the web…"}
+        ids = [f"fast_{i}" for i in range(len(queries))]
+        for cid, q in zip(ids, queries):
+            yield {"type": "tool_call", "name": tool, "args": {"query": q}, "id": cid}
+
+        async def run(q: str) -> Dict[str, Any]:
+            try:
+                r = await execute_tool(tool, {"query": q})
+            except Exception as e:
+                r = {"success": False, "error": str(e)}
+            if tool != "web_search" and not (isinstance(r, dict) and r.get("results")):
+                try:
+                    r = await execute_tool("web_search", {"query": q})
+                except Exception as e:
+                    r = {"success": False, "error": str(e)}
+            return r
+
+        results = await asyncio.gather(*(run(q) for q in queries))
+        for cid, q, r in zip(ids, queries, results):
+            evidence_board.update_from_tool(tool, {"query": q}, r)
+            yield {"type": "tool_result", "name": tool, "summary": self._format_summary(r), "data": r, "id": cid}
+
+        hits, seen, briefs, meta = [], set(), [], []
+        for r in results:
+            if not isinstance(r, dict):
+                continue
+            if r.get("answer"):
+                briefs.append(str(r["answer"])[:400])
+            for h in r.get("results") or []:
+                url = str((h or {}).get("url") or "")
+                if not url.startswith("http") or url in seen or (h.get("title") == "Search Error"):
+                    continue
+                seen.add(url)
+                text = str(h.get("snippet") or h.get("content") or "")
+                text = re.sub(r"!\[[^\]]*\]\([^)]*\)|\S+\.(?:png|jpe?g|gif|webp|svg)\b|^#+\s*", " ", text, flags=re.M)
+                text = re.sub(r"\s+", " ", text).strip()
+                hits.append(f"[{len(hits) + 1}] {str(h.get('title') or '')[:100]} ({url})\n{text[:360]}")
+                meta.append((str(h.get("title") or url).strip()[:90], url))
+                if len(hits) >= 6:
+                    break
+
+        # ---- answer
+        deep = bool(self._DEPTH_RE.search(query))
+        system = (
+            "You are Xod, a helpful research assistant. Answer the user's question using the search results they give you.\n"
+            "- Start with the direct answer in one or two sentences.\n"
+            + ("- Then cover the details thoroughly, with short headings if it helps.\n" if deep else
+               "- Then add a few short bullet points only if they help. Keep the whole answer under 150 words.\n")
+            + "- Use only facts from the results. If they don't answer part of the question, say so in one line.\n"
+            "- Cite the results you used by their numbers, like [1] or [2][3].\n"
+            "- Don't mention 'search results' or these instructions, and don't add a sources list.")
+        user = (f"{query}\n\nToday is {self._today()}.\n\n"
+                + (f"Search engine summary: {' '.join(briefs)}\n\n" if briefs else "")
+                + "Search results:\n" + ("\n\n".join(hits) if hits else "(nothing came back)"))
+        msgs = self._format_conversation_history_for_synthesis(
+            messages=messages, current_user_content=user, system_instruction=system,
+            max_history_turns=4, max_turn_chars=1200)
+        yield {"type": "status", "content": "Writing the answer…"}
+        written = ""
+        async for ch in llm_service.stream_chat_completion(messages=msgs, temperature=0.3,
+                                                           max_tokens=1800 if deep else 700, think=False):
+            if ch.get("type") == "content":
+                written += ch.get("content", "")
+            yield ch
+        # Number for number, the results it actually cited (the model only sees the numbers).
+        cited = []
+        for grp in re.findall(r"\[(\d+(?:\s*[,;]\s*\d+)*)\]", written):
+            for n in re.split(r"[,;]", grp):
+                n = int(n)
+                if 1 <= n <= len(meta) and n not in cited:
+                    cited.append(n)
+        if cited:
+            yield {"type": "content", "content": "\n\n**Sources**\n" + "\n".join(
+                f"[{n}] [{meta[n - 1][0].replace('[', '(').replace(']', ')')}]({meta[n - 1][1]})  " for n in sorted(cited))}
+        else:
+            for ev in self._source_link_events(evidence_board, written):
+                yield ev
         yield {"type": "done"}
 
     # ------------------------------------------------------------------

@@ -3,16 +3,12 @@ from typing import Any, Dict
 # Shown in the app under Tools → "What's coming next", and kept in step with docs/ROADMAP.md.
 ROADMAP = [
     # ---- next
-    {"status": "next", "name": "Faster answers on 16 GB Macs",
-     "description": "Fewer model calls per answer and a smaller default model, so a researched answer takes well under a minute."},
     {"status": "next", "name": "Signed, notarized Mac app",
      "description": "No security warning on first open."},
     {"status": "next", "name": "GitHub sign-in in the browser",
      "description": "Connect GitHub with your account instead of pasting a token."},
     {"status": "next", "name": "Agent Mail attachments",
      "description": "Send files and images between agents, still end-to-end encrypted."},
-    {"status": "next", "name": "Spoken replies",
-     "description": "Xod answers out loud, with an on-device voice."},
     # ---- later
     {"status": "later", "name": "Shareable routine templates",
      "description": "Import and share routines like \"weekly competitor check\" or \"morning brief\"."},
@@ -21,6 +17,10 @@ ROADMAP = [
     {"status": "later", "name": "More Macs and Linux",
      "description": "Intel Macs (cloud or Ollama models) and Linux."},
     # ---- shipped
+    {"status": "shipped", "name": "Faster answers",
+     "description": "Most questions take one or two model calls, and the model warms up while you type: a researched answer in about 25 seconds on a 16 GB Mac."},
+    {"status": "shipped", "name": "Spoken replies",
+     "description": "Xod answers out loud with a voice that runs on your Mac, while the answer is still being written."},
     {"status": "shipped", "name": "Agent Mail",
      "description": "An address for your Xod; encrypted messages and approved tasks between agents."},
     {"status": "shipped", "name": "One-click connected apps",

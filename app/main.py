@@ -552,6 +552,13 @@ async def update_settings(req: UpdateSettings):
     return {"success": True, "enabled": updates.enabled()}
 
 
+@app.post("/api/llm/warm")
+async def llm_warm():
+    """Called when the user starts typing: loads the local model ahead of the question (services/warmup.py)."""
+    from app.services import warmup
+    return warmup.warm()
+
+
 # ---- Xod's look (static/js/mascot.js): which character the companion is drawn as
 
 class CompanionSettings(BaseModel):
@@ -2592,7 +2599,17 @@ class VoiceCommandRequest(BaseModel):
 
 class VoiceTTSRequest(BaseModel):
     text: str
-    voice: Optional[str] = "Samantha"
+    voice: Optional[str] = None
+
+class SpeechRequest(BaseModel):
+    text: str
+    voice: Optional[str] = None
+    rate: Optional[int] = None
+
+class SpeechSettings(BaseModel):
+    mode: Optional[str] = None
+    voice: Optional[str] = None
+    rate: Optional[int] = None
 
 class TraceFeedbackRequest(BaseModel):
     trace_id: str
@@ -2712,8 +2729,45 @@ async def voice_command_endpoint(req: VoiceCommandRequest):
 @app.post("/api/voice/tts")
 async def voice_tts_endpoint(req: VoiceTTSRequest):
     """Speaks text using macOS native speech synthesizer without blocking."""
-    success = await voice_engine.speak_native(text=req.text, voice=req.voice or "Samantha")
+    success = await voice_engine.speak_native(text=req.text, voice=req.voice)
     return {"success": success, "text": req.text}
+
+
+# ---- Spoken replies (services/speech.py): the reply as audio, a sentence or so at a time
+
+@app.get("/api/speech")
+async def speech_status():
+    from app.services import speech
+    return await speech.status()
+
+
+@app.post("/api/speech/say")
+async def speech_say(req: SpeechRequest):
+    from fastapi.responses import Response
+    from app.services import speech
+    try:
+        audio = await speech.synthesize(req.text, voice=req.voice, rate=req.rate)
+    except Exception as e:
+        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+    if not audio:
+        return Response(status_code=204)
+    return Response(content=audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/speech/settings")
+async def speech_settings(req: SpeechSettings):
+    from app.services import speech
+    try:
+        return {"success": True, "settings": await speech.save_settings(req.mode, req.voice, req.rate)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/speech/open-voice-settings")
+async def speech_open_voice_settings():
+    """Opens System Settings at Spoken Content, where Premium voices are downloaded."""
+    from app.services import speech
+    return {"success": await speech.open_voice_settings()}
 
 @app.get("/api/lab/stats")
 async def lab_stats_endpoint():

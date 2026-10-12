@@ -91,6 +91,8 @@ While Xod works, its companion leaves its spot by the reply and does the work wh
 
 ![Add-ons](docs/screenshots/add-ons.png)
 
+**It talks back.** Ask by voice and Xod answers out loud with a voice that runs on your Mac, starting while the answer is still being written. Turn on "Read every reply" with the speaker button, or press Listen on any answer.
+
 Also inside: on-device voice input (Whisper), images and video (FLUX, AnimateDiff), long-term memory, projects, a health check that fixes common problems, and a gated way for Xod to improve its own code, with tests, your approval and one-click revert.
 
 ## Privacy and security

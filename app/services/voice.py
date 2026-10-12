@@ -299,16 +299,12 @@ class VoiceEngine:
 
         return None
 
-    async def speak_native(self, text: str, voice: str = "Samantha") -> bool:
-        """Speaks text using macOS native `say` command non-blocking."""
+    async def speak_native(self, text: str, voice: Optional[str] = None) -> bool:
+        """Speaks text through the Mac's speakers with the user's chosen voice (services/speech.py).
+        The text never goes through a shell."""
+        from app.services import speech
         try:
-            # clean text for speech
-            clean = re.sub(r"[\*\#\_\`]", "", text).replace('"', '\\"')
-            cmd = f'say -v "{voice}" "{clean}"'
-            proc = await asyncio.create_subprocess_shell(cmd)
-            # do not block entirely if long, but give it a moment
-            asyncio.create_task(proc.wait())
-            return True
+            return await speech.speak_out_loud(text, voice)
         except Exception:
             return False
 
