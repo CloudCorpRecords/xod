@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
+
+**Updates itself**
+- When a new version is out, Xod downloads it in the background, checks it (the release's SHA-256 checksum, the app's version and signature), and asks "Restart now / Later"; Later installs it when you quit. Your chats, projects and settings aren't touched. Xod → Check for Updates… checks right away, and "Tell me about new versions" in Settings turns it off. (0.2.0 and earlier can't do this: install 0.3.0 by hand once.)
 
 **Xod's inner life**
 - The companion has a mood (joy, energy, curiosity, calm), a bond with you that grows when you work together, say thanks or give it a pet, and it grows up through five stages (Hatchling, Sprout, Companion, Kindred, Luminary), each with its own glow, and a moment when it happens.

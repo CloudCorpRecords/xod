@@ -1,12 +1,13 @@
 // Xod desktop shell: starts the Python server on a free local port, shows a loading screen,
 // then opens the app. The window can only show Xod itself; links to other sites open in the
 // normal browser. The server is stopped when the app quits.
-const { app, BrowserWindow, shell, session, dialog, systemPreferences, globalShortcut, ipcMain } = require("electron");
+const { app, BrowserWindow, Menu, shell, session, dialog, systemPreferences, globalShortcut, ipcMain } = require("electron");
 const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const http = require("http");
 const net = require("net");
 const path = require("path");
+const updater = require("./updater");
 
 // Electron's own cache goes in a subfolder; Xod's data (xod.db, projects, models…) is next to it.
 app.setPath("userData", path.join(app.getPath("appData"), "Xod", "Electron"));
@@ -290,6 +291,21 @@ function offerMoveToApplications() {
   }
 }
 
+// The standard Mac menus, plus "Check for Updates…" (electron/updater.js).
+function setMenu(checkForUpdates) {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: app.name, submenu: [
+      { role: "about" },
+      { label: "Check for Updates…", click: checkForUpdates, enabled: app.isPackaged },
+      { type: "separator" }, { role: "services" }, { type: "separator" },
+      { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, { role: "quit" },
+    ] },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+  ]));
+}
+
 app.whenReady().then(async () => {
   if (offerMoveToApplications()) return;    // macOS relaunches it from Applications
   lockDown();
@@ -298,6 +314,8 @@ app.whenReady().then(async () => {
     appUrl = await startServer();
     showMain();
     registerTalkShortcut();
+    const updates = updater.start(() => mainWindow, () => appUrl);
+    setMenu(() => updates.check(true));
   } catch (err) {
     dialog.showErrorBox("Xod couldn't start", String(err.message || err));
     app.quit();
