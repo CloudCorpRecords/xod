@@ -19,6 +19,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 logger = logging.getLogger("researcher")
 
+# The user's pick for games: three.js (Xod ships it, so it works offline). A nudge, not a rule.
+GAME_TALK_RE = re.compile(r"\b(video ?games?|games?|gaming|game ?dev|game engine|shooter|platformer|fps)\b", re.I)
+GAME_NOTE = ("When the talk is about making a video game, lean toward three.js (Xod builds and runs three.js games "
+             "itself, offline) unless the user prefers something else; other engines are fine when asked for.")
+
 class AgenticResearcher:
     """
     Next-Generation Autonomous Research Director.
@@ -995,6 +1000,8 @@ CRITICAL INSTRUCTIONS:
                 system_instruction_text += " " + note
         except Exception:
             pass
+        if GAME_TALK_RE.search(user_query):
+            system_instruction_text += " " + GAME_NOTE
         if spoken:
             system_instruction_text += (" This reply will also be read aloud: begin with one or two plain, spoken sentences "
                                         "that answer directly, then put any lists, tables or details after a blank line.")
@@ -1206,6 +1213,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         prompt = cls.ROUTER_PROMPT_SPOKEN if spoken else cls.ROUTER_PROMPT
         from app.services import soul
         note = soul.prompt_note()
+        if GAME_TALK_RE.search(query):
+            note = (note + "\n" if note else "") + GAME_NOTE
         return [{"role": "system", "content": f"{prompt}\n\nToday is {cls._today()}." + (f"\n{note}" if note else "")}, *turns,
                 {"role": "user", "content": query}]
 

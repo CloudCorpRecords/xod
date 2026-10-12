@@ -112,7 +112,8 @@ Ask for something you can use or play, like **"make me a 3D game where you dodge
 - **It writes it, runs it and fixes it.** Xod plans the files and writes each one in full. Then it opens the app in a hidden browser, plays it for a few seconds and fixes any errors before telling you it's done. The answer lists only files that really exist.
 - **A preview beside the chat.** The app runs in a pane next to the chat, with its **Files** and a **Console** that shows errors, plus an "Ask Xod to fix these" button. Switch it to phone size, open it in your browser, or collapse it to a tab on the edge.
 - **Change it by asking.** Say "make it harder" or "add a high score" and Xod edits just the lines that need it, runs the app again, and keeps every change in Activity with Undo. Say "launch it" to open it in its own window.
-- **3D and art included.** three.js is built in and works offline. Ask for sprites or textures and Xod paints them with Media Studio.
+- **3D and art included.** Games use three.js unless you ask for something else; it's built in and works offline. Ask for sprites or textures and Xod paints them with Media Studio.
+- **Move it around by asking.** "Move it to my Desktop", "rename it", "zip it up", "show it in Finder", "open main.js in VS Code". Deleting asks first, and everything has Undo.
 - **Safely fenced off.** Previews run sandboxed, with no access to Xod, your files or its API. Each app lives in a folder of your project and shows under the project on the left.
 
 ### Find jobs and apply

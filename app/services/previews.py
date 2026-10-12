@@ -291,7 +291,7 @@ async def check(url: str, seconds: float = 3.0, keys: bool = True) -> Dict[str, 
                     meth, p = msg.get("method"), msg.get("params") or {}
                     if blank_id is not None and msg.get("id") == blank_id:
                         blank = (msg.get("result", {}).get("result", {}) or {}).get("value")
-                        return {"ran": True, "ok": not errors and not failed and not blank, "errors": _dedupe(errors)[:12],
+                        return {"ran": True, "ok": not _dedupe(errors) and not failed and not blank, "errors": _dedupe(errors)[:12],
                                 "failed": _dedupe(failed)[:12], "blank": bool(blank), "logs": _dedupe(logs)[:12]}
                     if meth == "Network.requestWillBeSent":
                         urls[p.get("requestId")] = p.get("request", {}).get("url", "")
@@ -333,7 +333,7 @@ async def check(url: str, seconds: float = 3.0, keys: bool = True) -> Dict[str, 
                         "(() => { const b = document.body; if (!b) return true; const vis = [...b.querySelectorAll('canvas,svg,img,video,button,input,h1,h2,p,div')]"
                         ".some(e => { const r = e.getBoundingClientRect(); return r.width > 20 && r.height > 20; });"
                         " return !vis && b.innerText.trim().length < 3; })()"})
-            return {"ran": True, "ok": not errors and not failed and loaded_at is not None, "errors": _dedupe(errors)[:12],
+            return {"ran": True, "ok": not _dedupe(errors) and not failed and loaded_at is not None, "errors": _dedupe(errors)[:12],
                     "failed": _dedupe(failed)[:12], "blank": False, "logs": _dedupe(logs)[:12],
                     "note": None if loaded_at else "The page didn't finish loading."}
     except Exception as e:
@@ -344,9 +344,16 @@ async def check(url: str, seconds: float = 3.0, keys: bool = True) -> Dict[str, 
         shutil.rmtree(prof, ignore_errors=True)
 
 
+# Headless Chrome can't capture the mouse, so a shooter that locks the pointer on click always "fails" there;
+# in the preview pane and its own window it works (the sandbox allows pointer lock). Not a bug to fix.
+HEADLESS_ONLY_RE = re.compile(r"pointer ?lock|WrongDocumentError|requestPointerLock", re.I)
+
+
 def _dedupe(items: List[str]) -> List[str]:
     seen, out = set(), []
     for i in items:
+        if i and HEADLESS_ONLY_RE.search(i):
+            continue
         if i and i not in seen:
             seen.add(i)
             out.append(i)

@@ -17,8 +17,10 @@ Activity with Undo, and the companion reacts to it.
 Apps live in a folder of the project you're in. Outside a project, the builder makes a new
 project for the app so it shows up on the left.
 """
+import asyncio
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -37,7 +39,9 @@ _THINGS = (r"game|app|application|web ?site|web ?page|webpage|landing page|html 
            r"planner|portfolio|platformer|shooter|puzzle|snake|tetris|pong|breakout|chess|checkers|demo|widget|generator|"
            r"converter|drum machine|synth|piano|paint program|drawing app|kanban|flashcards?|playground|screensaver|3d scene|scene")
 BUILD_RE = re.compile(rf"\b(make|build|create|code|write|program|generate|develop|design|whip up|put together|spin up)\b"
-                      rf"(?:(?!\b(?:image|picture|photo|video|logo|essay|email|report|poem|story)\b).){{0,80}}?\b({_THINGS})s?\b", re.I)
+                      rf"(?:(?!\b(?:image|picture|photo|video(?! ?games?)|logo|essay|email|report|poem|story)\b).){{0,80}}?\b({_THINGS})s?\b", re.I)
+WANT_GAME_RE = re.compile(r"^\s*(?:hey |so |ok(?:ay)? |yo )?(?:i (?:want|need|wanna)|i'?d like|let'?s (?:make|build|do|create)|can (?:i|we) (?:get|have|make))"
+                          r"(?: to (?:make|build|play|have))?(?: me| us)? (?:a|an|my own|some)\b.{0,60}?\b(?:video ?)?games?\b", re.I)
 NOT_BUILD_RE = re.compile(r"\b(image|picture|photo|drawing of|video|essay|poem|story|email|report on)\b", re.I)
 CHANGE_RE = re.compile(r"^\s*(please |can you |could you |now |ok(ay)? |also |and )*(make|change|add|remove|delete|fix|turn|let|give|use|put|"
                        r"move|speed|slow|increase|decrease|replace|rename|swap|set|show|hide|include|improve|polish|update|tweak|"
@@ -45,10 +49,22 @@ CHANGE_RE = re.compile(r"^\s*(please |can you |could you |now |ok(ay)? |also |an
 RUN_RE = re.compile(r"^\s*(please |can you |could you |now )*(test|check|debug)( it| this| the (game|app|preview|site))?( again| for (errors|bugs))?\s*[.!?]*$", re.I)
 LAUNCH_RE = re.compile(r"^\s*(please |can you |could you |now |ok(?:ay)? |let'?s )*(launch|open|start|play|run|fire up|boot up)( up)?"
                        r"( it| this| that| the (game|app|site|page|thing)| my (game|app))?( (up|in|as) (a |its own |the )?(window|app|browser))?( again| now)?\s*[.!?]*$", re.I)
+_IT = r"(?:it|this|that|the (?:game|app|project|folder|thing)|(?:the |its |the game'?s? |the app'?s? )?folder|my (?:game|app))"
+MANAGE_RE = re.compile(rf"^\s*(?:please |can you |could you |now |ok(?:ay)? |also |and )*(?:"
+                       rf"(?P<move>move|put) {_IT}(?: folder)? (?:to|into|in|onto|on) (?P<mdst>.+)|"
+                       rf"(?P<copy>copy|duplicate) {_IT}(?: folder)?(?: (?:to|into|in|onto|on) (?P<cdst>.+))?|"
+                       rf"(?P<rename>rename) {_IT}(?: folder)?(?: to| as)? (?P<newname>.+)|"
+                       rf"(?P<trash>delete|trash|remove|get rid of|throw away) {_IT}(?: folder)?|"
+                       rf"(?P<zip>zip|compress)(?: up)? {_IT}(?: up)?|"
+                       rf"(?P<reveal>(?:show|reveal|find) {_IT} in (?:the )?finder|open (?:the |its |the game'?s? |the app'?s? )?folder|where(?:'s| is) {_IT}(?: saved)?)|"
+                       rf"open (?:{_IT}|(?P<file>[\w.-]+\.(?:js|html|css|json|md))) (?:in|with) (?P<app>[\w .-]+?)"
+                       rf")\s*[.!?]*$", re.I)
+YES_RE = re.compile(r"^\s*(yes|yeah|yep|sure|ok(ay)?|do it|go ahead|confirm(ed)?|delete it|trash it)\b", re.I)
 FIX_PREVIEW_RE = re.compile(r"\b(fix|repair)\b.*\b(error|errors|bug|bugs|console|preview|broken|crash|it)\b", re.I)
 NEW_RE = re.compile(r"\b(new|another|different|separate|second)\b|^\s*(?:please |can you |could you |now |ok(?:ay)? |also )*"
                     r"(?:make|build|create|code|write|program|generate|develop|design|whip up|put together|spin up)(?: me| us)? (?:a|an)\b", re.I)
 MARK = "<!-- xod-build:"
+PLACE_RE = re.compile(r"\b(?:in|inside|into|under|on)\s+(?:my\s+|the\s+)?(documents|desktop|downloads)\b", re.I)
 ART_RE = re.compile(r"\b(images?|sprites?|textures?|art ?work|artwork|art|pictures?|backgrounds?|illustrat\w*|graphics|pixel art|photos?|portraits?|characters? art)\b", re.I)
 
 ART_PLAN = """
@@ -57,23 +73,34 @@ ART_PLAN = """
 
 PLAN_PROMPT = """You plan small apps and games that run in a web browser. Reply with JSON only:
 {"title": "Short name", "folder": "short-kebab-folder-name", "summary": "One sentence: what it is.",
- "files": [{"path": "main.js", "purpose": "..."}, {"path": "index.html", "purpose": "..."}],
+ "features": ["6 to 12 concrete must-haves, each one testable, e.g. 'enemies shoot back and lower your health'"],
+ "files": [{"path": "main.js", "purpose": "...and which features it holds"}, {"path": "index.html", "purpose": "..."}],
  "how_to_use": "One line: controls or how to use it."}
 
 Rules:
 - Plain HTML, CSS and JavaScript. No build step, no npm, no frameworks that need installing.
-- 1 to 3 files. Always index.html. Best: index.html (page + its CSS in a <style> tag) and main.js (all the logic).
-- 3D: use three.js with `import * as THREE from 'three'` (and 'three/addons/controls/OrbitControls.js' or
+- Always index.html.
+- Games: use three.js unless the user names something else (plain canvas, a 2D library…). 3D gets a perspective
+  camera; a 2D game can use three.js with an OrthographicCamera. Set "three": true in the JSON when you use it.
+- three.js: `import * as THREE from 'three'` (and 'three/addons/controls/OrbitControls.js' or
   'three/addons/controls/PointerLockControls.js'); it is available offline. Load main.js as <script type="module">.
 - Make art in code: shapes, colors, gradients, canvas drawing, CSS. Don't use image or sound files unless listed below.
-- Keep it small enough to write well, but make it genuinely fun or useful and polished."""
+- Make the whole thing in one go, playable right away: a start screen, the full core loop, a HUD (score, health…),
+  game over and restart. Never a skeleton, a folder layout or "step 1".
+- "Like <a famous game>": build that game's core loop in miniature. A shooter like Call of Duty = first-person with
+  PointerLockControls, WASD + mouse look, shooting with hit detection (Raycaster), enemies that move toward you and
+  shoot back, health and ammo with reload, cover/walls, waves that get harder. Split it across up to 4 files
+  (e.g. main.js, world.js, enemies.js) so each one is written well.
+- Otherwise 1 to 3 files: index.html (page + its CSS in a <style> tag) and main.js (all the logic) is best."""
 
 FILE_PROMPT = """You are an expert web and game developer. Write the complete file `{path}` for the project below.
 
 Reply with ONLY the file, in one ```{lang} code block. No explanation before or after.
 It must work as is: no placeholders, no TODOs, no "..." or "rest of code here".
 Use exactly these file names, and only these files: {files}.
-{extra}Under 450 lines. Clean, readable, commented where it helps."""
+Build every item in the project's "features" list that belongs in this file, for real: a HUD shows live numbers
+that change, enemies act, counters count. Nothing static, faked or left for later.
+{extra}Under 550 lines. Clean, readable, commented where it helps."""
 
 THREE_RULES = """For 3D: `import * as THREE from 'three';` and addons from 'three/addons/...'. Don't add an import map or a CDN link.
 Resize the renderer with the window. Use requestAnimationFrame. Put lights in the scene.
@@ -179,13 +206,22 @@ def extract_files(text: str) -> Dict[str, str]:
     return out
 
 
+OTHER_ENGINE_RE = re.compile(r"\b(2d canvas|plain canvas|canvas only|no three|without three|phaser|pixi|kaboom|p5(\.js)?|babylon|"
+                             r"unity|godot|pygame|vanilla js only)\b", re.I)
+
+
 def is_three(spec: Dict[str, Any], query: str) -> bool:
+    """three.js unless asked otherwise: 3D always, and games by default (the user's pick)."""
     blob = (json.dumps(spec) + " " + query).lower()
-    return bool(re.search(r"\b3d\b|three\.?js|webgl|first[- ]person|third[- ]person", blob))
+    if spec.get("three") is True or re.search(r"\b3d\b|three\.?js|\b3js\b|webgl|first[- ]person|third[- ]person", blob):
+        return True
+    return bool(re.search(r"\bgames?\b", query, re.I)) and not OTHER_ENGINE_RE.search(query)
 
 
 def wants_build(query: str) -> bool:
     q = (query or "").strip()
+    if q and len(q) < 400 and WANT_GAME_RE.search(q) and not re.search(r"\b(recommend|suggest|buy|download|steam|xbox|playstation|switch|best)\b", q, re.I):
+        return True
     return bool(q) and len(q) < 1500 and bool(BUILD_RE.search(q)) and not (NOT_BUILD_RE.search(q) and not re.search(r"\b(game|app)\b", q, re.I))
 
 
@@ -208,11 +244,15 @@ def route(query: str, messages: List[Dict[str, Any]], workspace: Optional[str]) 
     app_dir = Path(prev["path"]) if prev and prev.get("path") and Path(prev["path"]).is_dir() else None
     if not app_dir and workspace:
         apps = previews.find_apps(workspace)
-        if apps and (CHANGE_RE.search(q) or RUN_RE.search(q) or LAUNCH_RE.search(q) or FIX_PREVIEW_RE.search(q)) and not wants_build(q):
+        if apps and (MANAGE_RE.search(q) or CHANGE_RE.search(q) or RUN_RE.search(q) or LAUNCH_RE.search(q) or FIX_PREVIEW_RE.search(q)) and not wants_build(q):
             app_dir = Path(apps[0]["path"])
     if app_dir:
-        if LAUNCH_RE.search(q):
+        if prev and prev.get("pending") == "trash" and YES_RE.search(q):
+            return {"mode": "manage", "dir": app_dir, "confirmed": True}
+        if LAUNCH_RE.search(q):   # first: "open it in its own window" is a launch, not "open it in <an app>"
             return {"mode": "launch", "dir": app_dir}
+        if MANAGE_RE.search(q):
+            return {"mode": "manage", "dir": app_dir}
         if RUN_RE.search(q):
             return {"mode": "run", "dir": app_dir}
         if FIX_PREVIEW_RE.search(q) and not wants_build(q):
@@ -357,10 +397,13 @@ class Builder:
             problems = result.get("errors", []) + [f"Couldn't load {f}" for f in result.get("failed", [])]
             if result.get("blank"):
                 problems.append("The page is blank: nothing visible was drawn.")
-            summary = ("Ran it: no errors" if result.get("ok") else f"Ran it: {len(problems)} problem{'s' if len(problems) != 1 else ''}") \
+            summary = ("Ran it: no errors" if result.get("ok") else
+                       f"Ran it: {len(problems)} problem{'s' if len(problems) != 1 else ''}" if problems else
+                       f"Ran it: {(result.get('note') or 'no errors, but the check was cut short').rstrip('.')}") \
                 if result.get("ran") else (result.get("note") or "Couldn't run it")
             yield {"type": "tool_result", "name": "preview_check", "id": cid, "summary": summary, "data": result}
-            if not result.get("ran") or result.get("ok") or attempt == rounds:
+            # Nothing concrete to fix (e.g. the check timed out): rewriting code blind only makes it worse.
+            if not result.get("ran") or result.get("ok") or not problems or attempt == rounds:
                 break
             yield {"type": "status", "content": f"Fixing {len(problems)} problem{'s' if len(problems) != 1 else ''}…"}
             task = (f"The user asked for: {request}\n\nWhen run in a browser it has these problems:\n- " + "\n- ".join(problems[:10]) +
@@ -388,10 +431,10 @@ class Builder:
         art_ready = art_wanted and image_generation_ready()
         spec = await self._plan(query, art_ready)
         three = is_three(spec, query)
-        base, project = self._where(workspace, spec)
+        base, project = self._where(workspace, spec, query)
         app_dir = self._free_dir(base / slugify(spec.get("folder") or spec.get("title")))
         app_dir.mkdir(parents=True, exist_ok=True)
-        files = [f for f in spec["files"] if safe_rel(f.get("path", ""))][:4]
+        files = [f for f in spec["files"] if safe_rel(f.get("path", ""))][:5]
         if not any(f["path"] == "index.html" for f in files):
             files.insert(0, {"path": "index.html", "purpose": "the page"})
         # index.html last: it should load exactly what the other files turned out to be.
@@ -505,13 +548,169 @@ class Builder:
         async for ev in self._finish(app_dir, "run", check, None):
             yield ev
 
+    # ---------------------------------------------------------------- moving it around
+
+    async def _tool(self, name: str, args: Dict[str, Any], done: str) -> AsyncGenerator[Dict[str, Any], None]:
+        self.n += 1
+        cid = f"build_{self.n}"
+        yield {"type": "tool_call", "name": name, "args": args, "id": cid}
+        res = await self.execute_tool(name, args)
+        ok = isinstance(res, dict) and res.get("success", True) and not res.get("error")
+        yield {"type": "tool_result", "name": name, "id": cid, "summary": done if ok else f"Couldn't: {(res or {}).get('error')}", "data": res}
+        yield {"type": "_ok", "ok": ok, "error": (res or {}).get("error")}
+
+    @staticmethod
+    def _place(text: str, app_dir: Path) -> Optional[Path]:
+        """'my desktop', 'documents', 'a folder called games', 'a games folder on my desktop', '~/Projects'."""
+        t = re.sub(r"[.!?]+$", "", text.strip()).strip().strip("\"'")
+        home = Path.home()
+        named = {"desktop": home / "Desktop", "documents": home / "Documents", "downloads": home / "Downloads", "home": home}
+        m = re.search(r"\b(?:a |the )?(?:new )?folder (?:called|named) [\"']?([\w .-]{1,60}?)[\"']?(?: (?:in|on|inside) (?:my |the )?(\w+))?$", t, re.I) or \
+            re.search(r"\b(?:a |the |my )?(?:new )?[\"']?([\w.-]{1,40})[\"']? folder(?: (?:in|on|inside) (?:my |the )?(\w+))?$", t, re.I)
+        if m:
+            base = named.get((m.group(2) or "").lower(), app_dir.parent)
+            return base / m.group(1).strip()
+        m = re.fullmatch(r"(?:my |the )?(desktop|documents|downloads|home)(?: folder)?", t, re.I)
+        if m:
+            return named[m.group(1).lower()]
+        if t.startswith(("/", "~")):
+            return Path(t).expanduser()
+        return None
+
+    @staticmethod
+    def _safe_target(p: Path) -> bool:
+        try:
+            r = p.expanduser().resolve()
+            home = Path.home().resolve()
+            rel = r.relative_to(home)
+        except (ValueError, OSError):
+            return str(p).startswith(("/Volumes/", "/tmp/", "/private/tmp/"))
+        return not (rel.parts and (rel.parts[0] in ("Library", "Applications") or rel.parts[0].startswith(".")))
+
+    def _done(self, text: str, app_dir: Path, title: str, **extra) -> Dict[str, Any]:
+        return {"type": "content", "content": text + "\n\n" + MARK + json.dumps({"path": str(app_dir), "title": title, **extra}) + " -->"}
+
+    async def manage(self, query: str, app_dir: Path, confirmed: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
+        """Moves, copies, renames, zips, trashes, shows or opens the app's folder, with Xod's own file tools
+        (so every change is in Activity with Undo)."""
+        info = self._info(app_dir)
+        title = info.get("title") or app_dir.name
+        m = MANAGE_RE.search(query) if not confirmed else None
+        ok_ev: Dict[str, Any] = {}
+
+        async def run(name, args, done):
+            async for ev in self._tool(name, args, done):
+                if ev["type"] == "_ok":
+                    ok_ev.clear(); ok_ev.update(ev)
+                else:
+                    yield ev
+
+        if confirmed or (m and m.group("trash")):
+            if not confirmed:
+                yield self._done(f"That moves **{title}** (`{self._short(app_dir)}`) to the Trash. You can put it back from Activity. "
+                                 f"Say **yes** to go ahead.", app_dir, title, pending="trash")
+                yield {"type": "done"}
+                return
+            async for ev in run("computer_manage_file", {"action": "trash", "src": str(app_dir)}, f"Moved {app_dir.name} to the Trash"):
+                yield ev
+            yield {"type": "content", "content": f"**Moved {title} to the Trash.** Undo in Activity puts it back." if ok_ev.get("ok")
+                   else f"I couldn't move it to the Trash: {ok_ev.get('error')}"}
+            yield {"type": "done"}
+            return
+
+        if m.group("move") or m.group("copy") or m.group("rename"):
+            if m.group("rename"):
+                name = re.sub(r"[\\/:*?\"<>|]+", "", re.sub(r"[.!?]+$", "", m.group("newname").strip()).strip("\"'")).strip()
+                dst = app_dir.parent / name if name else None
+            else:
+                where = self._place(m.group("mdst") or m.group("cdst") or "", app_dir) if (m.group("mdst") or m.group("cdst")) else app_dir.parent
+                dst = (where / (app_dir.name if not m.group("copy") or where != app_dir.parent else app_dir.name + " copy")) if where else None
+            if not dst:
+                yield self._done("Where should it go? Say something like \"move it to my Desktop\" or \"into a folder called Games\".", app_dir, title)
+                yield {"type": "done"}
+                return
+            if not self._safe_target(dst):
+                yield self._done(f"I keep apps inside your home folder (not Library or hidden folders), so I didn't put it in `{dst}`.", app_dir, title)
+                yield {"type": "done"}
+                return
+            if dst.exists():
+                dst = self._free_dir(dst)
+            if not dst.parent.exists():
+                async for ev in run("computer_manage_file", {"action": "mkdir", "src": str(dst.parent)}, f"Made the folder {dst.parent.name}"):
+                    yield ev
+            action = "copy" if m.group("copy") else "move"
+            verb = {"copy": "Copied", "move": "Renamed" if m.group("rename") else "Moved"}[action]
+            async for ev in run("computer_manage_file", {"action": action, "src": str(app_dir), "dst": str(dst)}, f"{verb} {app_dir.name} to {self._short(dst)}"):
+                yield ev
+            if not ok_ev.get("ok"):
+                yield self._done(f"I couldn't do that: {ok_ev.get('error')}", app_dir, title)
+                yield {"type": "done"}
+                return
+            new_dir = dst if action == "move" else app_dir
+            if action == "move":
+                previews.register(new_dir)
+            yield {"type": "build_done", "title": title, "path": str(new_dir), "url": previews.url_for(new_dir), "root": previews.register(new_dir)}
+            where_txt = f"`{self._short(dst)}`"
+            msg = {"Copied": f"**Copied {title}** to {where_txt}. The copy is its own app; I'll keep working on the original.",
+                   "Moved": f"**Moved {title}** to {where_txt}. Everything still works from there, and Undo in Activity moves it back.",
+                   "Renamed": f"**Renamed it** to {where_txt}. Undo in Activity changes it back."}[verb]
+            yield self._done(msg, new_dir, title)
+            yield {"type": "done"}
+            return
+
+        if m.group("zip"):
+            import shutil as _sh
+            zip_base, i = app_dir.parent / app_dir.name, 2
+            while zip_base.with_name(zip_base.name + ".zip").exists():
+                zip_base, i = app_dir.parent / f"{app_dir.name}-{i}", i + 1
+            self.n += 1
+            cid = f"build_{self.n}"
+            yield {"type": "tool_call", "name": "computer_zip", "args": {"folder": str(app_dir)}, "id": cid}
+            out = await asyncio.to_thread(_sh.make_archive, str(zip_base), "zip", str(app_dir.parent), app_dir.name)
+            yield {"type": "tool_result", "name": "computer_zip", "id": cid, "summary": f"Made {Path(out).name}", "data": {"success": True, "path": out}}
+            yield self._done(f"**Zipped it:** `{self._short(Path(out))}`, ready to send. Whoever opens it just double-clicks `index.html`"
+                             f"{' (three.js is loaded from Xod, so it needs Xod or a copy of three.js next to it)' if info.get('three') else ''}.", app_dir, title)
+            yield {"type": "done"}
+            return
+
+        if m.group("reveal"):
+            async for ev in run("computer_reveal_finder", {"path": str(app_dir)}, f"Showed {app_dir.name} in Finder"):
+                yield ev
+            yield self._done(f"**{title}** is in `{self._short(app_dir)}`; I opened it in Finder.", app_dir, title)
+            yield {"type": "done"}
+            return
+
+        # open it / a file in an app
+        app = (m.group("app") or "").strip().lower()
+        apps = {"chrome": "Google Chrome", "google chrome": "Google Chrome", "safari": "Safari", "firefox": "Firefox", "arc": "Arc",
+                "vs code": "Visual Studio Code", "vscode": "Visual Studio Code", "code": "Visual Studio Code", "visual studio code": "Visual Studio Code",
+                "cursor": "Cursor", "textedit": "TextEdit", "finder": "Finder", "xcode": "Xcode", "sublime": "Sublime Text", "zed": "Zed"}
+        app_name = apps.get(app, app.title())
+        browser = app_name in ("Google Chrome", "Safari", "Firefox", "Arc")
+        if browser:
+            base = previews.SERVER_BASE or "http://127.0.0.1:" + os.environ.get("XOD_PORT", "8000")
+            target = base + previews.url_for(app_dir)
+        else:
+            f = m.group("file")
+            target = str(app_dir / safe_rel(f)) if f and safe_rel(f) and (app_dir / safe_rel(f)).is_file() else str(app_dir)
+        async for ev in run("computer_open_item", {"target": target, "app_name": app_name}, f"Opened it in {app_name}"):
+            yield ev
+        yield self._done(f"**Opened {Path(target).name if not browser and target != str(app_dir) else title}** in {app_name}." if ok_ev.get("ok")
+                         else f"I couldn't open it in {app_name}: {ok_ev.get('error')}", app_dir, title)
+        yield {"type": "done"}
+
+    @staticmethod
+    def _short(p: Path) -> str:
+        home = str(Path.home())
+        return "~" + str(p)[len(home):] if str(p).startswith(home) else str(p)
+
     # ---------------------------------------------------------------- pieces
 
     async def _plan(self, query: str, art: bool = False) -> Dict[str, Any]:
         spec: Dict[str, Any] = {}
         try:
             msg = await llm_service.chat_completion(messages=[{"role": "system", "content": PLAN_PROMPT + (ART_PLAN if art else "")}, {"role": "user", "content": query}],
-                                                    temperature=0.3, max_tokens=500, think=False, task="builder_plan")
+                                                    temperature=0.3, max_tokens=900, think=False, task="builder_plan")
             spec = parse_llm_json(msg.get("content") or "") or {}
         except Exception as e:
             logger.warning(f"builder plan failed, using a default: {e}")
@@ -549,7 +748,12 @@ class Builder:
         yield {"type": "_assets", "files": made}
 
     @staticmethod
-    def _where(workspace: Optional[str], spec: Dict[str, Any]) -> Tuple[Path, Optional[Dict[str, Any]]]:
+    def _where(workspace: Optional[str], spec: Dict[str, Any], query: str = "") -> Tuple[Path, Optional[Dict[str, Any]]]:
+        m = PLACE_RE.search(query)   # "make a new folder in Documents for it"
+        if m:
+            base = Path.home() / m.group(1).capitalize()
+            if base.is_dir():
+                return base, None
         if workspace and Path(workspace).expanduser().is_dir():
             return Path(workspace).expanduser().resolve(), None
         from app.services.project_storage import project_storage_service as project_storage
@@ -645,6 +849,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], workspace: Optional
             gen = b.change(query, decision["dir"])
         elif decision["mode"] == "launch":
             gen = b.launch(decision["dir"])
+        elif decision["mode"] == "manage":
+            gen = b.manage(query, decision["dir"], decision.get("confirmed", False))
         else:
             gen = b.run(decision["dir"])
         async for ev in gen:

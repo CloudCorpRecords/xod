@@ -23,6 +23,9 @@
 - Ask for changes in the same chat ("make it harder", "add a high score"): Xod makes small, exact edits instead of rewriting files, then runs it again. Every write is in Activity with Undo.
 - 3D works offline: three.js ships with Xod. Ask for sprites, textures or backgrounds and Xod paints them with Media Studio when image generation is set up.
 - Apps live in a folder of the project you're in, and show under it on the left; outside a project, Xod makes one.
+- Games use three.js unless you ask for something else, and "like Call of Duty" means that game's core loop in miniature: Xod plans a checklist of must-haves (enemies that fight back, live health and ammo, waves, game over and restart) and builds all of it in one go, then opens it to play.
+- "Make a new folder in Documents for it" (or Desktop, Downloads) puts the app there. "Let's make a video game" and "I want a racing game" start a build too.
+- Move it around by asking: "move it to my Desktop", "into a folder called Games", "rename it", "copy it", "zip it up", "show it in Finder", "open main.js in VS Code", "open it in Chrome". "Delete the game" asks first, then moves it to the Trash. Each change is in Activity with Undo, and follow-ups keep working from the new place.
 - Previews are sandboxed: they run with no access to Xod, your files or its API, from a secret address that changes each time Xod starts. localStorage works and is kept in the app's folder.
 
 **Find jobs and apply**
