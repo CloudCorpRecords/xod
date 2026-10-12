@@ -39,4 +39,5 @@ echo " 🌐 Web UI available at: http://localhost:8000"
 echo "========================================================"
 
 # Start FastAPI server with Uvicorn
-exec python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+# Only app/ is watched: the bundled runtime and node_modules are ~30,000 files, and watching them kept a CPU core busy.
+exec python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload --reload-dir app

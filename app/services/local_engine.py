@@ -165,11 +165,13 @@ class LocalEngine:
         return self._lock
 
     async def ensure_running(self, repo: str) -> None:
-        """Starts the engine with this model (or switches to it). Raises with a clear message if it can't."""
-        if self.running() and self.repo == repo:
+        """Starts the engine with this model (or switches to it). Raises with a clear message if it can't.
+        Ready means started *and* answering (started_at is set then): a request that arrives while
+        another is still starting the engine waits for it instead of being refused."""
+        if self.running() and self.repo == repo and self.started_at:
             return
         async with self._lk():
-            if self.running() and self.repo == repo:
+            if self.running() and self.repo == repo and self.started_at:
                 return
             if not is_downloaded(repo):
                 raise RuntimeError(f"The built-in model {repo} isn't downloaded yet. Open Settings → AI model to download it.")

@@ -165,7 +165,7 @@ async def main():
 
         # ---- 1. the whole thing, from the wake word
         errors = []
-        audio = compose("wake_ask", [2.0, "Hey Xod, how far away is the moon?", 40.0])
+        audio = compose("wake_ask", [2.0, "Hey Xod, how far away is the moon?", 180.0])   # the fake mic loops: keep it quiet long enough
         s = await page(base, mic_args(audio), errors)
         try:
             await s.js("XodConversation.setWake(true).then(() => true)")

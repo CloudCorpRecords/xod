@@ -91,7 +91,7 @@ While Xod works, its companion leaves its spot by the reply and does the work wh
 
 ![Add-ons](docs/screenshots/add-ons.png)
 
-**It talks back.** Ask by voice and Xod answers out loud with a voice that runs on your Mac, starting while the answer is still being written. Turn on "Read every reply" with the speaker button, or press Listen on any answer.
+**Talk to it.** Say "Hey Xod, what's the weather tomorrow?" (or click the mic, or press ⌃⌥Space from any app) and have a conversation: Xod answers out loud, keeps listening for your follow-up without the wake word, stops when you talk over it, and says goodbye when you're done. Your voice is turned into text on your Mac by Whisper and Xod speaks with your Mac's own voices; nothing is recorded or sent. Listening for "Hey Xod" is off until you turn it on.
 
 Also inside: on-device voice input (Whisper), images and video (FLUX, AnimateDiff), long-term memory, projects, a health check that fixes common problems, and a gated way for Xod to improve its own code, with tests, your approval and one-click revert.
 

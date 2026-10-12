@@ -213,7 +213,11 @@
       if (words(text) >= 2) return handle(text, { interrupt: true });    // "actually, what about tomorrow?"
       if (window.XodSpeech) XodSpeech.duck(false);
     }
-    // While it's still thinking, only "stop" and friends count; anything else is probably not for Xod.
+    // While it's still thinking, a clear new question replaces the old one ("Actually, …", "Wait, …",
+    // or anything said as a question). Other chatter in the room is left alone.
+    if (words(text) >= 3 && (/^(actually|wait|no|instead|sorry|hmm|oh|also|and|but|what about|how about)\b/i.test(text) || /\?\s*$/.test(text))) {
+      return handle(text, { interrupt: true });
+    }
   }
 
   const words = (t) => (t.match(/[A-Za-z0-9']+/g) || []).length;
@@ -374,6 +378,16 @@
     setFollow(1);
   }
 
+  // The short lines it says without thinking are made ahead of time, in one background request
+  // (many at once would queue your question behind them).
+  let linesPreparedAt = 0;
+  function prepareLines() {
+    if (Date.now() - linesPreparedAt < 10 * 60 * 1000) return;
+    linesPreparedAt = Date.now();
+    fetch("/api/speech/prepare", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ texts: [...FILLERS.search, ...FILLERS.other, ...GOODBYES, "The rest is on screen.", "You're welcome.", "Glad to help."] }) }).catch(() => {});
+  }
+
   // ---------------------------------------------------------------- starting and ending
   async function start({ source = "button", quiet = false } = {}) {
     if (C.active) return;
@@ -384,9 +398,7 @@
     showDock(source);
     fetch("/api/llm/warm?voice=1", { method: "POST" }).catch(() => {});
     fetch("/api/voice/prepare", { method: "POST" }).catch(() => {});
-    // One request, made in the background on the server: many at once would queue your question behind them.
-    fetch("/api/speech/prepare", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ texts: [...FILLERS.search, ...FILLERS.other, ...GOODBYES, "The rest is on screen.", "You're welcome.", "Anytime.", "Glad to help."] }) }).catch(() => {});
+    prepareLines();
     if (!quiet) chime("start");
     try { window.XodMascot && XodMascot.setVoiceMood("listening"); } catch (_) {}
     backToListening(false);
@@ -415,6 +427,7 @@
     document.body.classList.toggle("xod-wake-on", C.wakeOn);
     if (C.wakeOn && !C.active) {
       fetch("/api/voice/prepare", { method: "POST" }).catch(() => {});
+      prepareLines();
       if (await openMic()) setState("wake");
       else { C.wakeOn = false; document.body.classList.remove("xod-wake-on"); }
     }
@@ -542,6 +555,7 @@
     robot: { type: "square", base: 880, gain: 0.035 }, owl: { type: "sine", base: 392, owl: true }, sprout: { type: "triangle", base: 988 },
   };
   function chime(kind) {
+    try { window.dispatchEvent(new CustomEvent("xod:chime", { detail: kind })); } catch (_) {}
     try {
       earCtx = earCtx || new AudioContext();
       if (earCtx.state === "suspended") earCtx.resume();

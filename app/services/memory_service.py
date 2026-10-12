@@ -80,10 +80,14 @@ class MemoryService:
         if not text_clean:
             return np.zeros(self.embedding_dim, dtype=np.float32), "empty"
 
-        # 1. Try LM Studio or local OpenAI-compatible embedding endpoint
+        # 1. Try LM Studio or local OpenAI-compatible embedding endpoint. Every answer looks up
+        # memories first, so this must never hold one up: a short timeout, and after a failure
+        # (no embedding model, or LM Studio busy loading one) skip it for a few minutes.
         base_url = settings.llm_base_url or "http://localhost:1234/v1"
         try:
-            async with httpx.AsyncClient(timeout=3.5) as client:
+            if time.time() < getattr(self, "_local_embed_down_until", 0):
+                raise RuntimeError("skipped: failed recently")
+            async with httpx.AsyncClient(timeout=1.5) as client:
                 res = await client.post(
                     f"{base_url.rstrip('/')}/embeddings",
                     json={
@@ -100,8 +104,11 @@ class MemoryService:
                         if norm > 0:
                             v /= norm
                         return v, "lm_studio_nomic_embed"
+            self._local_embed_down_until = time.time() + 300
         except Exception as e:
             logger.debug(f"Local LM Studio embeddings unavailable: {e}")
+            if "skipped" not in str(e):
+                self._local_embed_down_until = time.time() + 300
 
         # 2. Try OpenAI API if key configured
         if settings.openai_api_key and settings.openai_api_key.startswith("sk-"):
