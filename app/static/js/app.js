@@ -2942,6 +2942,7 @@ async function handleChatSubmit(e) {
         session_id: currentSessionId,
         active_workspace_path: activeWorkingScope ? activeWorkingScope.path : null,
         attached_document: currentAttachedDoc,
+        voice: window.__xodVoiceTurn ? true : undefined,   // asked out loud in a conversation (conversation.js)
         route: window.__nextRoute || undefined   // "cloud": this turn uses the stronger model (routing.js)
       }),
       signal: currentAbortController.signal

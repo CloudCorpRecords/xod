@@ -570,9 +570,66 @@ h3.font-bold, h2.font-bold { font-weight: 600; }
 .speech-btn { white-space: nowrap; padding: 0.35rem 0.75rem; border-radius: 9px; font-size: 12px; font-weight: 600; background: rgba(255, 250, 240, 0.08); color: var(--paper); }
 .speech-btn:hover { background: rgba(255, 250, 240, 0.14); }
 .speech-note { font-size: 11px; color: #7d7b85; line-height: 1.3; }
+.speech-check { display: flex; align-items: center; gap: 0.5rem; color: var(--paper); cursor: pointer; }
+.speech-check input { accent-color: var(--lamp); width: 15px; height: 15px; }
+.speech-sep { height: 1px; background: rgba(255, 250, 240, 0.07); margin: 0.1rem 0; }
 .speech-tip { padding: 0.6rem 0.7rem; border-radius: 11px; background: rgba(242, 178, 74, 0.07); border: 1px solid rgba(242, 178, 74, 0.2); display: flex; flex-direction: column; gap: 0.5rem; font-size: 11.5px; line-height: 1.4; }
 .speech-tip b { color: var(--lamp-soft); }
 @media (prefers-reduced-motion: reduce) { .speak-btn .speak-bars i { animation: none; height: 9px; } .speech-menu { animation: none; } }
+
+/* --- Conversation (conversation.js) --- */
+.talk-dock {
+  --lvl: 0; --follow: 0;
+  position: fixed; left: 50%; bottom: 112px; z-index: 72; width: min(560px, calc(100vw - 32px));
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0.9rem;
+  padding: 0.75rem 0.85rem 0.75rem 0.75rem; border-radius: 22px;
+  background: rgba(19, 23, 42, 0.86); backdrop-filter: blur(18px) saturate(1.3); -webkit-backdrop-filter: blur(18px) saturate(1.3);
+  border: 1px solid rgba(255, 250, 240, 0.1);
+  box-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.9), 0 0 0 1px color-mix(in srgb, var(--xp-glow, #f2b24a) calc(var(--lvl) * 40%), transparent);
+  translate: -50% 24px; opacity: 0; pointer-events: none; visibility: hidden;
+  transition: translate 0.5s var(--spring), opacity 0.3s ease, visibility 0s linear 0.5s;
+}
+.talk-dock.is-open { translate: -50% 0; opacity: 1; pointer-events: auto; visibility: visible; transition: translate 0.5s var(--spring), opacity 0.25s ease; }
+.talk-dock.is-leaving { translate: -50% 18px; opacity: 0; }
+.talk-stage { position: relative; width: 72px; height: 72px; display: grid; place-items: center; }
+.xod-mascot--talk { width: 64px; height: 64px; z-index: 1; }
+.xod-mascot--talk .xm-glow { opacity: 0.9; }
+.talk-ring {
+  position: absolute; inset: 2px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--xp-glow, #f2b24a) 70%, transparent);
+  opacity: calc(0.15 + var(--lvl) * 0.85); transform: scale(calc(0.92 + var(--lvl) * 0.38));
+  transition: transform 0.08s linear, opacity 0.12s linear;
+}
+.talk-ring--2 { inset: -6px; border-width: 1px; opacity: calc(var(--lvl) * 0.6); transform: scale(calc(0.9 + var(--lvl) * 0.55)); transition-duration: 0.16s; }
+.talk-dock[data-state="thinking"] .talk-ring { animation: talkThink 1.4s linear infinite; border-style: dashed; opacity: 0.6; transform: none; }
+.talk-dock[data-state="transcribing"] .talk-ring { animation: talkThink 0.8s linear infinite; border-style: dotted; opacity: 0.7; transform: none; }
+@keyframes talkThink { to { rotate: 360deg; } }
+.talk-body { min-width: 0; display: flex; flex-direction: column; gap: 0.2rem; }
+.talk-state { font-family: 'Fraunces', Georgia, serif; font-style: italic; font-size: 15px; color: var(--paper); line-height: 1.2;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.talk-caption { font-size: 13px; line-height: 1.35; color: var(--paper-dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.talk-caption:empty { display: none; }
+.talk-caption--you::before { content: "You  "; color: #7d7b85; font-size: 11px; font-weight: 600; letter-spacing: 0.04em; }
+.talk-caption--xod { color: var(--lamp-soft); }
+.talk-caption.is-partial { color: #a39e97; }
+.talk-follow { height: 2px; border-radius: 2px; background: rgba(255, 250, 240, 0.06); overflow: hidden; margin-top: 0.25rem; }
+.talk-follow span { display: block; height: 100%; width: calc(var(--follow) * 100%); background: color-mix(in srgb, var(--xp-glow, #f2b24a) 70%, transparent); transition: width 0.12s linear; }
+.talk-actions { display: flex; flex-direction: column; gap: 0.3rem; }
+.talk-actions button { width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center; color: #a39e97; background: rgba(255, 250, 240, 0.05); transition: color 0.15s, background 0.15s; }
+.talk-actions button:hover { color: var(--paper); background: rgba(255, 250, 240, 0.12); }
+.talk-dock.is-muted .talk-actions [data-talk="mute"] { color: var(--ink); background: var(--lamp); }
+.talk-dock.is-muted .talk-ring { opacity: 0.1; }
+/* Listening for "Hey Xod": a small, honest ear on the header companion */
+body.xod-wake-on .xod-mascot--small::after {
+  content: ''; position: absolute; right: -2px; bottom: 0; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--sage); box-shadow: 0 0 0 2px var(--ink); animation: glowBreath 2.4s ease-in-out infinite;
+}
+/* Room under the last answer so the dock never hides it */
+body.xod-talking #chatMessages { padding-bottom: calc(9rem + var(--talk-dock-h, 140px)); }
+@media (prefers-reduced-motion: reduce) {
+  .talk-dock, .talk-dock.is-open { transition: opacity 0.2s ease; translate: -50% 0; }
+  .talk-ring, .talk-ring--2 { transition: none; animation: none !important; transform: none; }
+}
 
 /* --- Chat avatars & user bubble --- */
 .xod-mascot--chat { width: 34px; height: 34px; }

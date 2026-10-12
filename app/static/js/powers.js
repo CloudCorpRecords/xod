@@ -125,6 +125,8 @@
 
   function goTo(target, { quick = false } = {}) {
     F.lastEventAt = now();
+    // In a spoken conversation the companion in the conversation dock does the reacting.
+    if (window.XodConversation && XodConversation.active() && !F.out) return;
     if (!F.out && !leavePerch()) return;
     const same = F.target && F.target.el === target.el && !F.trip;
     F.target = target;

@@ -158,6 +158,7 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     active_workspace_path: Optional[str] = None
     attached_document: Optional[Dict[str, Any]] = None
+    voice: Optional[bool] = None   # asked out loud in a conversation: answer in a spoken style
 
 class CreateSessionRequest(BaseModel):
     title: Optional[str] = "New Research Session"
@@ -553,10 +554,10 @@ async def update_settings(req: UpdateSettings):
 
 
 @app.post("/api/llm/warm")
-async def llm_warm():
-    """Called when the user starts typing: loads the local model ahead of the question (services/warmup.py)."""
+async def llm_warm(voice: bool = False):
+    """Called when the user starts typing or talking: loads the local model ahead of the question (services/warmup.py)."""
     from app.services import warmup
-    return warmup.warm()
+    return warmup.warm(spoken=voice)
 
 
 # ---- Xod's look (static/js/mascot.js): which character the companion is drawn as
@@ -985,7 +986,8 @@ async def chat_endpoint(request: ChatRequest):
             async for event in researcher.run_research_stream(
                 messages=request.messages,
                 active_workspace_path=request.active_workspace_path,
-                attached_document=request.attached_document
+                attached_document=request.attached_document,
+                spoken=bool(request.voice),
             ):
                 event_type = event.get("type")
                 if event_type == "content":
@@ -2596,6 +2598,7 @@ from app.services.trace_recorder import get_lab_stats, export_training_data, set
 class VoiceCommandRequest(BaseModel):
     query: str
     speak_back: Optional[bool] = True
+    safe_only: Optional[bool] = False   # hands-free conversation: nothing that changes files
 
 class VoiceTTSRequest(BaseModel):
     text: str
@@ -2610,6 +2613,7 @@ class SpeechSettings(BaseModel):
     mode: Optional[str] = None
     voice: Optional[str] = None
     rate: Optional[int] = None
+    wake: Optional[bool] = None
 
 class TraceFeedbackRequest(BaseModel):
     trace_id: str
@@ -2721,10 +2725,24 @@ async def voice_transcribe_endpoint(request: Request):
     from app.services import speech_to_text
     return await speech_to_text.transcribe(await request.body())
 
+
+@app.post("/api/voice/prepare")
+async def voice_prepare_endpoint():
+    """Loads speech recognition ahead of time (a conversation or "Hey Xod" listening is starting)."""
+    from app.services import speech_to_text
+    return await speech_to_text.prepare()
+
+
+@app.post("/api/voice/wake")
+async def voice_wake_endpoint(request: Request):
+    """Hands-free: was this short clip "Hey Xod…"? Returns the transcript, wake and the rest of the sentence."""
+    from app.services import speech_to_text
+    return await speech_to_text.wake(await request.body())
+
 @app.post("/api/voice/command")
 async def voice_command_endpoint(req: VoiceCommandRequest):
     """Executes spoken computer command with sub-400ms regex routing and trace capture."""
-    return await voice_engine.process_voice_command(query=req.query, speak_back=bool(req.speak_back))
+    return await voice_engine.process_voice_command(query=req.query, speak_back=bool(req.speak_back), safe_only=bool(req.safe_only))
 
 @app.post("/api/voice/tts")
 async def voice_tts_endpoint(req: VoiceTTSRequest):
@@ -2754,11 +2772,21 @@ async def speech_say(req: SpeechRequest):
     return Response(content=audio, media_type="audio/wav", headers={"Cache-Control": "no-store"})
 
 
+class SpeechLines(BaseModel):
+    texts: List[str]
+
+
+@app.post("/api/speech/prepare")
+async def speech_prepare(req: SpeechLines):
+    from app.services import speech
+    return {"preparing": speech.prepare_lines(req.texts)}
+
+
 @app.post("/api/speech/settings")
 async def speech_settings(req: SpeechSettings):
     from app.services import speech
     try:
-        return {"success": True, "settings": await speech.save_settings(req.mode, req.voice, req.rate)}
+        return {"success": True, "settings": await speech.save_settings(req.mode, req.voice, req.rate, req.wake)}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

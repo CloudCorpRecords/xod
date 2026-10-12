@@ -34,6 +34,7 @@
     },
     "files": [
       "main.js",
+      "preload.js",
       "splash.html",
       "package.json"
     ],
@@ -74,7 +75,7 @@
       "minimumSystemVersion": "13.0",
       "hardenedRuntime": false,
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Xod listens when you use voice input. Audio is transcribed on this Mac and never uploaded.",
+        "NSMicrophoneUsageDescription": "Xod listens when you talk to it, and for \"Hey Xod\" if you turn that on. Audio is transcribed on this Mac and never uploaded.",
         "NSHumanReadableCopyright": "Copyright \u00a9 2026 Xod Contributors. MIT License."
       },
       "entitlements": "build/entitlements.mac.plist",

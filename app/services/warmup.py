@@ -19,25 +19,26 @@ _last = 0.0
 _task: "asyncio.Task | None" = None
 
 
-async def _warm() -> None:
+async def _warm(spoken: bool = False) -> None:
     from app.agent.researcher import AgenticResearcher
     from app.services.llm import llm_service
     try:
         await llm_service.chat_completion(
-            messages=AgenticResearcher.router_messages("hi", []), max_tokens=1, temperature=0, think=False)
+            messages=AgenticResearcher.router_messages("hi", [], spoken=spoken), max_tokens=1, temperature=0, think=False)
     except Exception as e:
         logger.debug(f"warm-up skipped: {e}")
 
 
-def warm() -> Dict[str, Any]:
+def warm(spoken: bool = False) -> Dict[str, Any]:
+    """spoken: a conversation is starting, so warm the out-loud version of the router prompt."""
     global _last, _task
     from app.services.llm import llm_service
     info = llm_service.get_endpoint_info()
     if info.get("provider") not in ("lm_studio", "ollama", "xod"):
         return {"warmed": False, "reason": "not a local model"}
     now = time.time()
-    if now - _last < EVERY or (_task and not _task.done()):
+    if (now - _last < EVERY and not spoken) or (_task and not _task.done()):
         return {"warmed": False, "reason": "recently warmed"}
     _last = now
-    _task = asyncio.create_task(_warm())
+    _task = asyncio.create_task(_warm(spoken))
     return {"warmed": True}

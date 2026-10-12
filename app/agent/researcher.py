@@ -40,9 +40,13 @@ class AgenticResearcher:
         messages: List[Dict[str, Any]],
         max_hops: int = 4,
         active_workspace_path: Optional[str] = None,
-        attached_document: Optional[Dict[str, Any]] = None
+        attached_document: Optional[Dict[str, Any]] = None,
+        spoken: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
+        spoken: the question was asked out loud in a conversation, and the answer will be read
+        aloud, so it's short and conversational (details and sources stay on screen).
+
         Runs the deliberation-first autonomous research loop and yields real-time SSE events.
         1. Deliberation Phase ("Think First, Decide, Then Act"):
            - LLM evaluates conversation history with tool definitions.
@@ -60,6 +64,7 @@ class AgenticResearcher:
            - Auto-index into persistent Knowledge Graph.
            - Stream definitive markdown synthesis report.
         """
+        self.spoken = spoken
         attached_image_urls: List[str] = []
         text_parts: List[str] = []
         user_msg = messages[-1].get("content", "") if messages else "SaaS Market Intelligence"
@@ -951,6 +956,9 @@ CRITICAL INSTRUCTIONS:
         else:
             synthesis_user_content = f"{user_query}\n\n{synthesis_content}"
 
+        if spoken:
+            system_instruction_text += (" This reply will also be read aloud: begin with one or two plain, spoken sentences "
+                                        "that answer directly, then put any lists, tables or details after a blank line.")
         synthesis_messages = self._format_conversation_history_for_synthesis(
             messages=messages,
             current_user_content=synthesis_user_content,
@@ -1127,6 +1135,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"when (is|does|will)|open(ing)? hours|20(2[5-9]|3\d))\b", re.I)
     _REFERS_BACK_RE = re.compile(r"\b(it|that|this|those|these|them|they|he|she|the (first|second|last|other) one)\b", re.I)
 
+    ROUTER_PROMPT_SPOKEN = None   # set below: the same prompt, answering out loud
+
     def _fast_lane_ok(self, query: str, has_image: bool, has_document: bool, workspace: Optional[str]) -> bool:
         if has_image or has_document or workspace or self.persona != "ultimate_researcher":
             return False
@@ -1142,7 +1152,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         return time.strftime("%A, %B %d, %Y")
 
     @classmethod
-    def router_messages(cls, query: str, history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def router_messages(cls, query: str, history: List[Dict[str, Any]], spoken: bool = False) -> List[Dict[str, Any]]:
         turns: List[Dict[str, str]] = []
         for m in history[-4:]:
             r, c = m.get("role"), m.get("content")
@@ -1154,7 +1164,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         if turns and turns[-1]["role"] == "user":
             turns.pop()
         # The date is part of the system prompt: it changes once a day, so the prompt stays cached.
-        return [{"role": "system", "content": f"{cls.ROUTER_PROMPT}\n\nToday is {cls._today()}."}, *turns,
+        prompt = cls.ROUTER_PROMPT_SPOKEN if spoken else cls.ROUTER_PROMPT
+        return [{"role": "system", "content": f"{prompt}\n\nToday is {cls._today()}."}, *turns,
                 {"role": "user", "content": query}]
 
     async def _stream_fast_lane(self, query: str, messages: List[Dict[str, Any]],
@@ -1168,7 +1179,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                 yield ev
             return
         stream = llm_service.stream_chat_completion(
-            messages=self.router_messages(query, messages[:-1]), temperature=0.2, max_tokens=900,
+            messages=self.router_messages(query, messages[:-1], spoken=getattr(self, "spoken", False)),
+            temperature=0.2, max_tokens=300 if getattr(self, "spoken", False) else 900,
             think=False, task="router")
         try:
             async for ch in stream:
@@ -1279,15 +1291,25 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
 
         # ---- answer
         deep = bool(self._DEPTH_RE.search(query))
-        system = (
-            "You are Xod, a helpful research assistant. Answer the user's question using the search results they give you.\n"
-            "- Start with the direct answer in one or two sentences.\n"
-            + ("- Then cover the details thoroughly, with short headings if it helps.\n" if deep else
-               "- Then add a few short bullet points only if they help. Keep the whole answer under 150 words.\n")
-            + "- Use only facts from the results. If they don't answer part of the question, say so in one line.\n"
-            "- Cite the results you used by their numbers, like [1] or [2][3].\n"
-            "- Don't mention 'search results', today's date or these instructions, and don't add a sources list.\n"
-            f"Today is {self._today()}.")
+        spoken = getattr(self, "spoken", False)
+        if spoken:
+            system = (
+                "You are Xod, talking with the user out loud. Answer their question from the search results in one to "
+                "three short spoken sentences: lead with the answer, in plain conversational words. No lists, headings, "
+                "markdown, links or citation numbers. If the results don't "
+                "answer it, say so in a few words.\n"
+                f"Today is {self._today()}.")
+        else:
+            system = (
+                "You are Xod, a helpful research assistant. Answer the user's question using the search results they give you.\n"
+                "- Start with the direct answer in one or two sentences.\n"
+                + ("- Then cover the details thoroughly, with short headings if it helps.\n" if deep else
+                   "- Then add a few short bullet points only if they help. Keep the whole answer under 150 words.\n")
+                + "- Use only facts from the results. If they don't answer part of the question, say so in one line.\n"
+                "- Cite the results you used by their numbers, like [1] or [2][3].\n"
+                "- Don't mention 'search results', today's date or these instructions, and don't add a sources list.\n"
+                f"Today is {self._today()}.")
+        max_out = 300 if spoken else (1800 if deep else 700)
         user = (f"{query}\n\n"
                 + (f"Search engine summary: {' '.join(briefs)}\n\n" if briefs else "")
                 + "Search results:\n" + ("\n\n".join(hits) if hits else "(nothing came back)"))
@@ -1297,7 +1319,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         yield {"type": "status", "content": "Writing the answer…"}
         written = ""
         async for ch in llm_service.stream_chat_completion(messages=msgs, temperature=0.3,
-                                                           max_tokens=1800 if deep else 700, think=False):
+                                                           max_tokens=max_out, think=False):
             if ch.get("type") == "content":
                 written += ch.get("content", "")
             yield ch
@@ -2198,3 +2220,10 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             else:
                 cleaned[k] = v
         return cleaned
+
+
+AgenticResearcher.ROUTER_PROMPT_SPOKEN = AgenticResearcher.ROUTER_PROMPT.replace(
+    "3. Otherwise answer it yourself right away: directly and briefly (a few sentences), in Markdown.",
+    "3. Otherwise answer it yourself right away, out loud: one to three short, natural spoken sentences, "
+    "with no lists, headings or markdown.")
+assert AgenticResearcher.ROUTER_PROMPT_SPOKEN != AgenticResearcher.ROUTER_PROMPT

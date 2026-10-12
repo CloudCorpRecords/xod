@@ -18,7 +18,7 @@
   }
 
   // ---------------------------------------------------------------- playing
-  let ctx = null, analyser = null, current = null, levelRaf = 0;
+  let ctx = null, analyser = null, gain = null, current = null, levelRaf = 0, nowSaying = "", lastLevel = 0;
   const queue = [];          // [{ text, audio: Promise<AudioBuffer|null> }]
   let playing = false, generation = 0, idleWaiters = [];
 
@@ -27,7 +27,9 @@
       ctx = new (window.AudioContext || window.webkitAudioContext)();
       analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
-      analyser.connect(ctx.destination);
+      gain = ctx.createGain();            // ducked while someone starts talking over Xod
+      analyser.connect(gain);
+      gain.connect(ctx.destination);
     }
     if (ctx.state === "suspended") ctx.resume().catch(() => {});
     return ctx;
@@ -66,6 +68,8 @@
     src.buffer = buffer;
     src.connect(analyser);
     current = src;
+    nowSaying = item.text;
+    emit("piece", item.text);
     src.onended = () => {
       if (current === src) current = null;
       playing = false;
@@ -85,14 +89,23 @@
       let sum = 0;
       for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
       const rms = Math.sqrt(sum / data.length);
+      lastLevel = rms;
       try { window.XodMascot && XodMascot.voice(rms); } catch (_) {}
       levelRaf = requestAnimationFrame(tick);
     };
     levelRaf = requestAnimationFrame(tick);
   }
 
+  // Lets the conversation (conversation.js) follow along: "piece" as each part starts, "end" when quiet.
+  function emit(type, text = "") {
+    try { window.dispatchEvent(new CustomEvent("xod:speech", { detail: { type, text } })); } catch (_) {}
+  }
+
   function finishedAll() {
+    const was = playing || !!nowSaying;
     playing = false;
+    nowSaying = "";
+    if (was) emit("end");
     paintButton();
     if (!speaking()) { const w = idleWaiters; idleWaiters = []; w.forEach((f) => f()); }
   }
@@ -106,6 +119,8 @@
     playing = false;
     if (reply) reply.active = false;
     cancelAnimationFrame(levelRaf);
+    if (gain) gain.gain.value = 1;
+    if (nowSaying) { nowSaying = ""; emit("end"); }
     paintButton();
     const w = idleWaiters; idleWaiters = []; w.forEach((f) => f());
   }
@@ -118,9 +133,11 @@
     stop();
     const mode = info.settings.mode;
     const asked = Date.now() - voiceAskedAt < 15000;
-    const active = forceSpeak || mode === "always" || (mode === "voice" && asked);
+    const talking = !!(window.XodConversation && XodConversation.active());
+    const active = forceSpeak || talking || mode === "always" || (mode === "voice" && asked);
     voiceAskedAt = 0;
-    reply = { buf: "", pos: 0, active, done: false, finished: false, inCode: false, lineStart: true, pending: "", first: true };
+    reply = { buf: "", pos: 0, active, done: false, finished: false, inCode: false, lineStart: true, pending: "", first: true,
+              words: 0, maxWords: talking ? 75 : Infinity };
     if (active) audioCtx();
     paintButton();
   }
@@ -167,6 +184,17 @@
       }
       BOUNDARY.lastIndex = 0;
       const m = BOUNDARY.exec(rest);
+      // The first piece may end at a comma, so the voice starts as soon as there's a phrase to say.
+      if (r.first) {
+        const c = /[,;:\u2014](?=\s)/.exec(rest);
+        if (c && r.pending.length + c.index >= 28 && (!m || m.index > c.index)) {
+          r.pending += rest.slice(0, c.index + 1);
+          r.pos += c.index + 1;
+          r.lineStart = false;
+          flushPending(r, true);
+          continue;
+        }
+      }
       if (!m) {
         if (r.done) { r.pending += rest; r.pos = r.buf.length; flushPending(r, true); }
         break;
@@ -183,9 +211,17 @@
   function flushPending(r, force) {
     const text = r.pending.trim();
     const enough = r.first ? 18 : 90;
-    if (!text || (!force && text.length < enough)) return;
+    if (!text || (!force && text.length < enough) || r.capped) return;
     r.pending = "";
     r.first = false;
+    // In a conversation, a long answer is summed up out loud and the rest stays on screen.
+    if (r.words >= r.maxWords) {
+      r.capped = true;
+      enqueue("The rest is on screen.");
+      r.finished = true; r.pos = r.buf.length;
+      return;
+    }
+    r.words += text.split(/\s+/).length;
     enqueue(text);
   }
 
@@ -258,6 +294,14 @@
         <button type="button" data-preview class="speech-btn">Hear it</button>
         <span class="speech-note">Runs on this Mac. Nothing is sent anywhere.</span>
       </div>
+      <div class="speech-sep"></div>
+      <p class="speech-menu-title">Conversation</p>
+      <div class="speech-actions">
+        <button type="button" data-convo-start class="speech-btn">Start talking</button>
+        <span class="speech-note">Or click the mic${window.xodDesktop ? ", press ⌃⌥Space anywhere" : ""}, or say “Hey Xod”.</span>
+      </div>
+      <label class="speech-check"><input type="checkbox" data-wake ${s.wake ? "checked" : ""}> Listen for “Hey Xod”</label>
+      <p class="speech-note">While Xod is open it listens for its name. Sound is checked on this Mac and thrown away; nothing is recorded or sent. macOS shows the orange mic dot while it listens.</p>
       ${info.has_natural ? "" : `
       <div class="speech-tip">
         <p>For a far more natural voice, download a free <b>Premium</b> voice (Zoe or Ava, for example) in System Settings → Accessibility → Spoken Content → System voice → Manage Voices. Xod picks it up automatically.</p>
@@ -287,6 +331,14 @@
       }
     });
     el.querySelector("[data-voice]").addEventListener("change", (e) => save({ voice: e.target.value }));
+    el.querySelector("[data-wake]").addEventListener("change", (e) => {
+      save({ wake: e.target.checked });
+      if (window.XodConversation) XodConversation.setWake(e.target.checked);
+    });
+    el.querySelector("[data-convo-start]").addEventListener("click", () => {
+      el.remove();
+      if (window.XodConversation) XodConversation.start({ source: "button" });
+    });
     el.querySelector("[data-rate]").addEventListener("change", (e) => save({ rate: Number(e.target.value) }));
     setTimeout(() => document.addEventListener("pointerdown", function away(e) {
       if (!el.contains(e.target) && !e.target.closest("#chatSpeakBtn")) { el.remove(); document.removeEventListener("pointerdown", away, true); }
@@ -375,7 +427,27 @@
     load();
   }
 
-  window.XodSpeech = { stop, speaking, speakText, reload: load, state: () => ({ playing, queued: queue.length, mode: info.settings.mode, reply: reply && { active: reply.active, finished: reply.finished } }) };
+  // A short line said right away (conversation fillers like "Let me look that up.").
+  function say(text) {
+    if (!reply || !reply.active) {
+      startReply(true);
+      reply.done = reply.finished = true;      // a one-off line, not a reply still being written
+    }
+    enqueue(text);
+  }
+  // Turn the voice down while someone starts talking over it; back up if it was nothing.
+  function duck(on) {
+    if (!gain || !ctx) return;
+    gain.gain.cancelScheduledValues(ctx.currentTime);
+    gain.gain.setTargetAtTime(on ? 0.18 : 1, ctx.currentTime, 0.05);
+  }
+  function prefetch(text) { fetch("/api/speech/say", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) }).catch(() => {}); }
+
+  window.XodSpeech = { stop, speaking, speakText, say, duck, prefetch, reload: load, saying: () => nowSaying,
+    audioPlaying: () => playing || !!current,
+    level: () => (current ? lastLevel : 0),
+    settings: () => info.settings,
+    state: () => ({ playing, queued: queue.length, mode: info.settings.mode, reply: reply && { active: reply.active, finished: reply.finished } }) };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
   else init();
 })();

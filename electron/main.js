@@ -1,7 +1,7 @@
 // Xod desktop shell: starts the Python server on a free local port, shows a loading screen,
 // then opens the app. The window can only show Xod itself; links to other sites open in the
 // normal browser. The server is stopped when the app quits.
-const { app, BrowserWindow, shell, session, dialog, systemPreferences } = require("electron");
+const { app, BrowserWindow, shell, session, dialog, systemPreferences, globalShortcut, ipcMain } = require("electron");
 const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const http = require("http");
@@ -206,7 +206,8 @@ function showSplash() {
 function showMain() {
   mainWindow = new BrowserWindow({
     width: 1440, height: 920, minWidth: 900, minHeight: 600, show: false,
-    title: "Xod", backgroundColor: "#0f1222", webPreferences: SECURE_PREFS,
+    title: "Xod", backgroundColor: "#0f1222",
+    webPreferences: { ...SECURE_PREFS, preload: path.join(__dirname, "preload.js") },
   });
   mainWindow.loadURL(appUrl);
   mainWindow.once("ready-to-show", () => {
@@ -214,6 +215,28 @@ function showMain() {
     if (splash && !splash.isDestroyed()) splash.close();
   });
   mainWindow.on("closed", () => { mainWindow = null; });
+}
+
+// ------------------------------------------------------------------ talking to Xod
+
+// While Xod is listening (a conversation, or waiting for "Hey Xod"), keep the page running at full
+// speed in the background: macOS would otherwise slow its timers once the window isn't in front.
+ipcMain.on("xod:listening", (e, on) => {
+  if (!mainWindow || e.sender !== mainWindow.webContents) return;
+  e.sender.setBackgroundThrottling(!on);
+});
+
+// ⌃⌥Space from any app starts (or ends) a conversation. Xod answers out loud, so the window
+// doesn't need to come forward; it's only shown (without taking focus) if it was minimized.
+const TALK_SHORTCUT = "Control+Alt+Space";
+function registerTalkShortcut() {
+  try {
+    globalShortcut.register(TALK_SHORTCUT, () => {
+      if (!mainWindow) return;
+      if (mainWindow.isMinimized()) mainWindow.showInactive();
+      mainWindow.webContents.send("xod:talk");
+    });
+  } catch (e) { /* taken by another app: the in-app button and "Hey Xod" still work */ }
 }
 
 // Opened straight from the download (the disk image or Downloads)? Offer to install it properly.
@@ -247,6 +270,7 @@ app.whenReady().then(async () => {
   try {
     appUrl = await startServer();
     showMain();
+    registerTalkShortcut();
   } catch (err) {
     dialog.showErrorBox("Xod couldn't start", String(err.message || err));
     app.quit();
@@ -256,3 +280,4 @@ app.whenReady().then(async () => {
 app.on("activate", () => { if (!mainWindow && appUrl) showMain(); });
 app.on("window-all-closed", () => app.quit());
 app.on("before-quit", () => { quitting = true; stopServer(); });
+app.on("will-quit", () => globalShortcut.unregisterAll());

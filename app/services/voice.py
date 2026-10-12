@@ -69,12 +69,18 @@ class VoiceEngine:
             return os.path.join(home, "Documents")
         return home
 
-    async def execute_fastpath(self, text: str) -> Optional[Dict[str, Any]]:
-        clean_text = text.strip()
+    # Fast-path actions that change files. In a hands-free conversation a misheard sentence must not
+    # move anything, so those go through the agent instead (logged, and undoable in Activity).
+    CHANGES_FILES = {"organize"}
+
+    async def execute_fastpath(self, text: str, safe_only: bool = False) -> Optional[Dict[str, Any]]:
+        clean_text = text.strip().rstrip(".!?")
         for pattern, action in self.fast_patterns:
             m = pattern.match(clean_text)
             if not m:
                 continue
+            if safe_only and action in self.CHANGES_FILES:
+                return None
 
             if action == "open_app":
                 target = m.group(1).strip()
@@ -308,7 +314,7 @@ class VoiceEngine:
         except Exception:
             return False
 
-    async def process_voice_command(self, query: str, speak_back: bool = True) -> Dict[str, Any]:
+    async def process_voice_command(self, query: str, speak_back: bool = True, safe_only: bool = False) -> Dict[str, Any]:
         """
         Main entrypoint:
         1. Fast-path pattern match (<400ms)
@@ -317,7 +323,7 @@ class VoiceEngine:
         4. Optional macOS native TTS
         """
         t0 = time.time()
-        fast_res = await self.execute_fastpath(query)
+        fast_res = await self.execute_fastpath(query, safe_only=safe_only)
 
         if fast_res:
             latency = int((time.time() - t0) * 1000)

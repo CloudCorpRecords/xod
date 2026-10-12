@@ -40,7 +40,7 @@ NOVELTY = {
 # Good standard voices, best first, for when no Premium/Enhanced voice is installed.
 PREFERRED = ["Samantha", "Daniel", "Karen", "Moira", "Tessa", "Rishi", "Serena", "Alex"]
 
-DEFAULTS = {"mode": "voice", "voice": "", "rate": RATE_DEFAULT}
+DEFAULTS = {"mode": "voice", "voice": "", "rate": RATE_DEFAULT, "wake": False}   # wake: listen for "Hey Xod"
 MODES = ("off", "voice", "always")   # voice: reply aloud when you asked by talking
 
 
@@ -109,10 +109,12 @@ def get_settings() -> Dict[str, Any]:
     if out["mode"] not in MODES:
         out["mode"] = DEFAULTS["mode"]
     out["rate"] = int(min(RATE_MAX, max(RATE_MIN, int(out.get("rate") or RATE_DEFAULT))))
+    out["wake"] = bool(out.get("wake"))
     return out
 
 
-async def save_settings(mode: Optional[str] = None, voice: Optional[str] = None, rate: Optional[int] = None) -> Dict[str, Any]:
+async def save_settings(mode: Optional[str] = None, voice: Optional[str] = None, rate: Optional[int] = None,
+                        wake: Optional[bool] = None) -> Dict[str, Any]:
     from app.services.storage import set_setting
     cur = get_settings()
     if mode is not None:
@@ -125,6 +127,8 @@ async def save_settings(mode: Optional[str] = None, voice: Optional[str] = None,
         cur["voice"] = voice
     if rate is not None:
         cur["rate"] = int(min(RATE_MAX, max(RATE_MIN, int(rate))))
+    if wake is not None:
+        cur["wake"] = bool(wake)
     set_setting("speech", json.dumps(cur))
     return cur
 
@@ -244,3 +248,24 @@ async def status() -> Dict[str, Any]:
     return {"settings": s, "voice": s["voice"] or best, "best": best, "voices": voices,
             "has_natural": any(v["quality"] != "standard" and v["lang"].startswith("en") for v in voices),
             "rate": {"min": RATE_MIN, "max": RATE_MAX, "default": RATE_DEFAULT}}
+
+
+_preparing: Optional[asyncio.Task] = None
+
+
+def prepare_lines(texts: List[str]) -> int:
+    """Makes the audio for short lines it may need to say instantly ("Let me look that up.") in the
+    background, one at a time, so the first time it says one there's no wait."""
+    global _preparing
+    todo = [t for t in texts if isinstance(t, str) and 0 < len(t) <= 200][:20]
+
+    async def run():
+        for t in todo:
+            try:
+                await synthesize(t)
+            except Exception:
+                pass
+    if _preparing and not _preparing.done():
+        return 0
+    _preparing = asyncio.create_task(run())
+    return len(todo)

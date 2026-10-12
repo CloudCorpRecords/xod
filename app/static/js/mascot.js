@@ -588,7 +588,11 @@
     if (r.c.float) y = Math.sin(ts * 1.8) * 18;                       // ghosts don't touch the ground
     if (mood === "waiting") rot = 9;
     if (t < S.curiousUntil) rot = -10;
-    if (mood === "listening") { y -= 10; sy += 0.03; }
+    if (mood === "listening") {
+      y -= 10; sy += 0.03;
+      // Hearing you: it bobs with your voice (conversation.js reports the mic level).
+      if (t - (S.hearAt || 0) < 200) { sy += clamp(S.hearLevel * 2.2, 0, 0.12); sx -= clamp(S.hearLevel * 1.1, 0, 0.06); }
+    }
     if (mood === "thinking" || mood === "working") rot = Math.sin(ts * 1.3) * 4;
     if (dizzy) rot = Math.sin(ts * 7) * 10;
     if (mood === "error") x = Math.sin(ts * 40) * (t < S.errorUntil - 3200 ? 0.6 : 0);
@@ -623,7 +627,7 @@
       const d = Math.hypot(pt.x - cx, pt.y - cy);
       pupil = d < 90 ? 1.18 : 1;                                       // a little delighted when you're close
     }
-    if (mood === "listening" || ooh) pupil = 1.25;
+    if (mood === "listening" || ooh) pupil = 1.25 + (t - (S.hearAt || 0) < 200 ? clamp(S.hearLevel * 3, 0, 0.2) : 0);
     r.pupil.t = pupil;
     r.wink.t = fid === "wink" && fp > 0.15 && fp < 0.75 ? 0.06 : 1;
 
@@ -1060,8 +1064,8 @@
     let busy = false;
     try { busy = typeof isStreaming !== "undefined" && !!isStreaming; } catch (_) {}
     busy = busy || !!window.__xodTasksWorking;
-    let listening = false;
-    try { listening = typeof isJarvisListening !== "undefined" && !!isJarvisListening; } catch (_) {}
+    let listening = S.voiceMood === "listening";
+    try { listening = listening || (typeof isJarvisListening !== "undefined" && !!isJarvisListening); } catch (_) {}
 
     if (listening) setMood("listening");
     else if (busy) {
@@ -1163,6 +1167,9 @@
     info: () => ({ id: character, ...CHARACTERS[character] }),
     lookAt: (x, y, ms = 1200) => { S.lookAtPoint = { x, y }; S.lookAtUntil = now() + ms; },
     voice: (level) => { S.voiceLevel = level; S.voiceAt = now(); S.lastActivity = Date.now(); },
+    // Conversation mode: "listening" while it's your turn, null otherwise; hear() is your mic level.
+    setVoiceMood: (m) => { S.voiceMood = m || null; if (m) noteActivity(); },
+    hear: (level) => { S.hearLevel = level; S.hearAt = now(); },
     // For recordings and checks: hold a mood (idle, thinking, searching, working, waiting, listening, sleepy) or flash one (happy, error, dizzy).
     demo: (mood, ms = 4000) => {
       const t = now();
