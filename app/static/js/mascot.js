@@ -28,6 +28,7 @@
     moon: {
       name: "Moon", blurb: "The original. Follows tonight's real phase.",
       glow: "#f2b24a",
+      travel: "fly", trail: "star",
       body: (id) => `
         <defs>${grad(`${id}-b`, [[0, "#fff7e2"], [55, "#ffdb8f"], [100, "#e9a443"]])}</defs>
         <circle cx="32" cy="34" r="22" fill="url(#${id}-b)"/>
@@ -41,6 +42,7 @@
     cat: {
       name: "Cat", blurb: "Twitchy ears, a swishy tail, and opinions.",
       glow: "#a196ec",
+      travel: "pounce", trail: "paw",
       behind: () => `
         <path ${part("tail", "46 51")} d="M45 51 C55 53 60 47 58.5 38 C57.8 33 59.5 29.5 63 29.5" fill="none" stroke="#8a7fd6" stroke-width="4.2" stroke-linecap="round"/>
         <g ${part("earL", "20 22")}><path d="M12 28 L15 7 L28 17Z" fill="#a59bea"/><path d="M15.5 22 L16.8 12 L23.5 17.5Z" fill="#ee8fae" opacity="0.65"/></g>
@@ -58,6 +60,7 @@
     ghost: {
       name: "Ghost", blurb: "Floats, waves, and sometimes vanishes.",
       glow: "#9fe7ff",
+      travel: "phase", trail: "wisp",
       float: true,
       behind: () => `
         <ellipse ${part("armL", "14 38")} cx="10" cy="40" rx="4" ry="3" fill="#cfe7f3"/>
@@ -71,6 +74,7 @@
     robot: {
       name: "Robot", blurb: "A tidy little bot. The light shows what it's doing.",
       glow: "#6fd0bf",
+      travel: "zip", trail: "pixel",
       ink: "#7cf3e0", cheek: "#ee8fae",
       behind: () => `
         <g ${part("antenna", "32 14")}>
@@ -92,6 +96,7 @@
     owl: {
       name: "Owl", blurb: "A night owl. Big eyes, small wings, wise-ish.",
       glow: "#f2b24a",
+      travel: "flap", trail: "feather",
       behind: () => `
         <ellipse ${part("wingL", "15 33")} cx="12" cy="41" rx="5" ry="10" fill="#9a6337"/>
         <ellipse ${part("wingR", "49 33")} cx="52" cy="41" rx="5" ry="10" fill="#9a6337"/>
@@ -114,6 +119,7 @@
     sprout: {
       name: "Sprout", blurb: "Bouncy and green. Blooms when it's happy.",
       glow: "#93d17f",
+      travel: "hop", trail: "leaf",
       bounce: 1.35,
       behind: () => `
         <g ${part("leaves", "32 17")}>
@@ -195,10 +201,16 @@
             <path class="xm-swirl" d="M39 33 m-0.6 0 a0.6 0.6 0 1 1 1.2 0 a1.4 1.4 0 1 1 -2.8 0 a2.2 2.2 0 1 1 4.4 0"/>
           </g>
         </g>
-        <path class="xm-mouth" fill="${ink}" stroke="${ink}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path class="xm-mouth" d="${mouthPath(2.6, 2.6, 0)}" fill="${ink}" stroke="${ink}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
       </g>
       ${c.front ? c.front(id) : ""}
       <path class="xm-sweat" d="M49 24 q2.2 3.4 0 4.6 q-2.2 -1.2 0 -4.6z" fill="#9fd8f0" opacity="0"/>
+    </g>
+    <g class="xm-props">
+      <g class="xp xp-mag"><circle cx="52" cy="43" r="5" fill="rgba(159,216,240,0.28)" stroke="#fffaf0" stroke-width="1.6"/><path d="M55.6 46.6 L60 51" stroke="#c98a2e" stroke-width="2.4" stroke-linecap="round"/><path d="M49.6 41 Q50.6 39.6 52.2 39.4" fill="none" stroke="#fffaf0" stroke-width="0.9" stroke-linecap="round" opacity="0.8"/></g>
+      <g class="xp xp-wrench"><path d="M49 53 L57 45" stroke="#c4d0dd" stroke-width="2.6" stroke-linecap="round"/><circle cx="58" cy="44" r="3.4" fill="#c4d0dd"/><path d="M58 44 L61.5 40.5" stroke="#151a33" stroke-width="2" stroke-linecap="round"/></g>
+      <g class="xp xp-quill"><path d="M50 54 Q55 42 62.5 33.5 Q61.5 43 52.5 52.5 Z" fill="#fffaf0"/><path d="M50.2 53.8 Q56 44 62 34.5" fill="none" stroke="#c9c2b4" stroke-width="0.6"/><circle class="xp-ink" cx="49.6" cy="54.6" r="0.9" fill="#0f1222"/></g>
+      <g class="xp xp-wand"><path d="M49 54 L58 42" stroke="#e4dccd" stroke-width="1.8" stroke-linecap="round"/><path class="xp-wand-star" d="M58.5 35.5 L59.8 39 L63.3 40.2 L59.8 41.4 L58.5 44.9 L57.2 41.4 L53.7 40.2 L57.2 39 Z" fill="${c.glow}"/></g>
     </g>
     <g class="xm-cap">
       <path d="M17 18.5 Q31 7 44 11.5 Q54 15 57 25 Q50 19.5 43 18 Q30 15.5 17 18.5Z" fill="#6f63c9"/>
@@ -320,7 +332,7 @@
     const live = [...document.querySelectorAll(".xod-mascot:not(.xod-mascot--chat)")];
     const chat = document.querySelectorAll(".xod-mascot--chat");
     if (chat.length) live.push(chat[chat.length - 1]);
-    return live.filter((m) => m.querySelector("svg") && m.offsetParent !== null);
+    return live.filter((m) => m.querySelector("svg") && (m.offsetParent !== null || m.dataset.live === "1"));
   }
 
   function mount(m) {
@@ -357,6 +369,7 @@
     const changed = cid !== character;
     character = cid;
     try { localStorage.setItem("xod.character", cid); } catch (_) {}
+    try { window.dispatchEvent(new CustomEvent("xod:character", { detail: cid })); } catch (_) {}
     if (save) {
       fetch("/api/companion", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ character: cid }) }).catch(() => {});
     }
@@ -371,6 +384,7 @@
       setTimeout(() => {
         m.classList.remove("is-poofing");
         mount(m);
+        mountMascots();
         void m.offsetWidth;
         m.classList.add("is-arriving");
         const r = rigs.get(m);
@@ -469,6 +483,10 @@
     const drowsy = S.mood === "idle" && idleMs > 75 * 1000;
     if (drowsy && t > S.yawnUntil + 9000 && Math.random() < dt * 0.15) S.yawnUntil = t + 1500;
 
+    if (t - (S.purgedAt || 0) > 5000) {
+      S.purgedAt = t;
+      for (const el of [...rigs.keys()]) if (!el.isConnected) rigs.delete(el);
+    }
     for (const el of liveMascots()) {
       const r = rigFor(el);
       if (r.settled) continue;
@@ -530,10 +548,16 @@
     const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
     const pt = attentionPoint(r, t);
     let toward = 0;
+    const own = r.lookUntil > t ? r.lookPoint : null;
     const pdist = S.pointer ? Math.hypot(S.pointer.x - cx, S.pointer.y - cy) : 1e9;
     // Shy: you've parked the cursor right next to it and gone still.
     const shy = r.hero && mood === "idle" && pdist < box.width * 0.9 && t - S.pointerAt > 1800 && t - S.pointerAt < 20000;
-    if (mood === "searching") {
+    if (own && !dizzy) {
+      const dx = own.x - cx, dy = own.y - cy, dist = Math.hypot(dx, dy) || 1;
+      const reach = Math.min(1, dist / 120);
+      lx = (dx / dist) * 2.7 * reach; ly = (dy / dist) * 2.3 * reach;
+      toward = clamp(dx / 400, -1, 1);
+    } else if (mood === "searching") {
       lx = Math.sin(ts * 5.2) * 2.6; ly = -0.4;                      // reading across a page
     } else if (mood === "thinking" || mood === "working") {
       if (Math.random() < dt * 1.2) S.wander = { x: Math.random() * 2 - 1, y: -0.3 - Math.random() * 0.7 };
@@ -543,7 +567,8 @@
     } else if (shy) {
       lx = -1.6; ly = 1.6;
     } else if (pt && !r.preview) {
-      const dx = pt.x - cx, dy = pt.y - cy, dist = Math.hypot(dx, dy) || 1;
+      const q = pt;
+      const dx = q.x - cx, dy = q.y - cy, dist = Math.hypot(dx, dy) || 1;
       const reach = Math.min(1, dist / 160);
       lx = (dx / dist) * 2.6 * reach; ly = (dy / dist) * 2.2 * reach;
       toward = clamp(dx / 400, -1, 1);
@@ -582,7 +607,7 @@
     if (fid === "wiggle") rot = Math.sin(fp * Math.PI * 6) * 9 * (1 - fp);
     if (fid === "headturn") { sx = fp > 0.42 && fp < 0.55 ? 0.82 : 1; rot = fp < 0.42 ? -4 : fp > 0.55 ? 4 : 0; }
     if (fid === "bloom" && !f.kicked && fp > 0.1) { f.kicked = true; r.y.kick(-70); }
-    r.rot.t = rot; r.y.t = y; r.x.t = x;
+    r.rot.t = rot + (r.lean || 0); r.y.t = y; r.x.t = x;
     r.sy.t = sy; r.sx.t = sx;
 
     // ---- eyelids and pupils
@@ -648,6 +673,16 @@
     const cheekBase = r.c.cheekOpacity ?? 0.5;
     r.cheek.t = happy || r.petting > 0.3 || shy || fid === "wink" ? 0.95 : mood === "error" ? 0.15 : cheekBase;
     r.petting = Math.max(0, (r.petting || 0) - dt * 0.5);
+
+    // ---- something to hold: a magnifier while searching, a wrench while working, a quill while talking
+    let prop = "";
+    if (!r.preview) {
+      if (mood === "searching") prop = "mag";
+      else if (mood === "working") prop = "wrench";
+      else if (talking) prop = "quill";
+      if (r.propUntil > t) prop = r.prop;
+    }
+    if (r.el.dataset.prop !== prop) r.el.dataset.prop = prop;
 
     // ---- the character's own parts
     drive(r, { t, ts, dt, mood, happy, talking, fid, fp, shy, petting: r.petting || 0 });
@@ -722,6 +757,7 @@
           if (!r.twitched || r.twitched < fp - 0.3) { r.twitched = fp; kick(fp < 0.5 ? "earL" : "earR", fp < 0.5 ? -260 : 260); }
         } else r.twitched = 0;
         if (Math.random() < k.dt * 0.25 && mood === "idle") kick(Math.random() < 0.5 ? "earL" : "earR", (Math.random() - 0.5) * 300);
+        if (r.traveling) { tail = -35; earL = -18; earR = 18; }       // streamlined mid-pounce
         set("tail", tail); set("earL", earL); set("earR", earR);
         break;
       }
@@ -731,6 +767,7 @@
         if (happy || k.petting > 0.5) { armL = -40 + Math.sin(ts * 12) * 15; armR = 40 - Math.sin(ts * 12) * 15; }
         if (fid === "vanish" && fp > 0.6 && fp < 0.85) { armL = -55; armR = 55; }
         if (mood === "error") { armL = 25; armR = -25; }
+        if (r.traveling) { armL = 50; armR = -50; }
         set("armL", armL); set("armR", armR);
         r.fade.t = fid === "vanish" && fp > 0.1 && fp < 0.6 ? 0.08 : sleepy ? 0.7 : 1;
         if (fid === "vanish" && fp > 0.6 && !r.booed) {
@@ -747,6 +784,7 @@
         if (mood === "thinking" || mood === "searching" || mood === "working") ant = Math.sin(ts * 9) * 9;
         if (happy) ant = Math.sin(ts * 14) * 14;
         if (sleepy) ant = 25;
+        if (r.traveling) ant = -30 * Math.sign(r.lean || 1);
         set("antenna", ant);
         if (r.scan) {
           const scanning = fid === "scan" || mood === "searching";
@@ -764,6 +802,7 @@
         if (mood === "listening" || fid === "headturn") tuft = 10;
         if (mood === "error" || sleepy) tuft = -14;
         if (mood === "thinking") { wL = 8; wR = -8; }                // wings folded, hmm
+        if (r.traveling) { wL = -45 + Math.sin(ts * 22) * 35; wR = 45 - Math.sin(ts * 22) * 35; }
         set("wingL", wL); set("wingR", wR);
         set("tuftL", -tuft); set("tuftR", tuft);
         if (fid === "headturn" && !r.hooted && fp > 0.6) { r.hooted = true; if (r.hero && Math.random() < 0.4) say("Hoo.", 1200); }
@@ -777,6 +816,7 @@
         if (sleepy) sway = -18;
         if (mood === "error") sway = 20;
         if (mood === "thinking" || mood === "working") sway = Math.sin(ts * 3) * 9;
+        if (r.traveling) sway = Math.sin(ts * 16) * 16;
         set("leaves", sway); set("flower", bloom);
         break;
       }
@@ -1098,11 +1138,28 @@
     requestAnimationFrame(frame);
   }
 
+  // For powers.js: let a companion look somewhere, lean, hold something, or get a nudge.
+  function puppet(el) {
+    if (!el || !el.querySelector("svg")) return null;
+    const r = rigFor(el);
+    return {
+      el, info: { id: r.cid, ...r.c },
+      lookAt(x, y, ms = 1200) { r.lookPoint = { x, y }; r.lookUntil = now() + ms; },
+      lean(deg) { r.lean = deg; },
+      hold(prop, ms = 1200) { r.prop = prop; r.propUntil = now() + ms; },
+      traveling(on) { r.traveling = !!on; },
+      kick({ x = 0, y = 0, rot = 0, sx = 0, sy = 0 } = {}) { r.x.kick(x); r.y.kick(y); r.rot.kick(rot); r.sx.kick(sx); r.sy.kick(sy); },
+      fidget(name) { const dur = SPECIAL_MS[name] || (FIDGETS.find((f) => f[0] === name) || [, 1200])[1]; r.fidget = { name, start: now(), until: now() + dur, dur }; },
+    };
+  }
+
   window.openCompanionPicker = openPicker;
   window.XodMascot = {
     say, sparkleBurst, beHappy, flip, lunarPhase, phaseName, mood: () => S.mood,
     characters: () => ORDER.map((id) => ({ id, name: CHARACTERS[id].name, blurb: CHARACTERS[id].blurb })),
-    character: () => character, setCharacter,
+    character: () => character, setCharacter, puppet, glyph,
+    info: () => ({ id: character, ...CHARACTERS[character] }),
+    lookAt: (x, y, ms = 1200) => { S.lookAtPoint = { x, y }; S.lookAtUntil = now() + ms; },
     // For recordings and checks: hold a mood (idle, thinking, searching, working, waiting, listening, sleepy) or flash one (happy, error, dizzy).
     demo: (mood, ms = 4000) => {
       const t = now();

@@ -439,6 +439,106 @@ h3.font-bold, h2.font-bold { font-weight: 600; }
   .xod-mascot.is-flipping svg, .xod-mascot.is-poofing svg, .xod-mascot.is-arriving svg, .xm-puff, .xod-mascot .xc-bulb { animation: none !important; }
 }
 
+/* --- Things it holds --- */
+.xod-mascot .xp { opacity: 0; transform: translate(-3px, 4px) scale(0.6) rotate(-20deg); transform-box: fill-box; transform-origin: 20% 90%;
+  transition: opacity 0.18s ease, transform 0.35s var(--spring); }
+.xod-mascot[data-prop="mag"] .xp-mag, .xod-mascot[data-prop="wrench"] .xp-wrench,
+.xod-mascot[data-prop="quill"] .xp-quill, .xod-mascot[data-prop="wand"] .xp-wand { opacity: 1; transform: none; }
+.xod-mascot[data-prop="mag"] .xp-mag { animation: propSweep 1.1s ease-in-out infinite; }
+.xod-mascot[data-prop="wrench"] .xp-wrench { animation: propTurn 0.7s ease-in-out infinite; }
+.xod-mascot[data-prop="quill"] .xp-quill { animation: propScribble 0.32s ease-in-out infinite; }
+.xod-mascot[data-prop="wand"] .xp-wand-star { transform-box: fill-box; transform-origin: center; animation: wandTwinkle 0.9s ease-in-out infinite; }
+@keyframes propSweep { 50% { transform: translate(-3px, -1px) rotate(-8deg); } }
+@keyframes propTurn { 50% { transform: rotate(-24deg); } }
+@keyframes propScribble { 50% { transform: translate(-0.8px, 0.6px) rotate(-7deg); } }
+@keyframes wandTwinkle { 50% { transform: scale(1.35) rotate(25deg); } }
+
+/* --- Powers: the companion that leaves its perch (powers.js) --- */
+.xod-familiar { position: fixed; left: 0; top: 0; z-index: 66; width: 44px; height: 44px; pointer-events: none; display: none; will-change: transform, opacity; }
+.xod-familiar.is-out { display: block; }
+.xod-mascot--familiar { width: 44px; height: 44px; pointer-events: none; }
+.xod-mascot--familiar .xm-glow { opacity: 0.8; }
+.xod-mascot--chat.is-away svg { opacity: 0.16; filter: saturate(0.2); transition: opacity 0.25s ease, filter 0.25s ease; }
+.xod-mascot--chat.is-away::after {
+  content: ''; position: absolute; inset: 4px; border-radius: 50%;
+  border: 1.5px dashed color-mix(in srgb, var(--xp-glow, #f2b24a) 60%, transparent);
+  animation: perchSpin 6s linear infinite;
+}
+@keyframes perchSpin { to { transform: rotate(360deg); } }
+
+.xp-p { position: fixed; z-index: 65; pointer-events: none; line-height: 0; animation: xpDrift 0.9s var(--ease-out) forwards; }
+.xp-p svg { fill: var(--xp-glow, #f2b24a); filter: drop-shadow(0 0 3px color-mix(in srgb, var(--xp-glow, #f2b24a) 70%, transparent)); }
+.xp-p-wisp svg { fill: #e3f2fa; filter: blur(1.2px); }
+.xp-p-paw svg { fill: color-mix(in srgb, var(--xp-glow, #a196ec) 75%, #fffaf0); filter: none; opacity: 0.85; }
+.xp-p.is-still { animation-name: xpFade; }
+@keyframes xpDrift {
+  0% { opacity: 0; transform: translate(0, 0) rotate(0) scale(0.5); }
+  15% { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--dx), var(--dy)) rotate(var(--r)) scale(1); }
+}
+@keyframes xpFade {
+  0% { opacity: 0; transform: rotate(var(--r)) scale(0.6); }
+  15% { opacity: 0.9; transform: rotate(var(--r)) scale(1); }
+  100% { opacity: 0; transform: rotate(var(--r)) scale(1); }
+}
+
+/* Tools appear like they were conjured, glow while running, and pop when done */
+.tool-pill.xp-conjure { animation: xpConjure 0.55s var(--spring); }
+.tool-pill.xp-charged { animation: xpConjure 0.55s var(--spring), xpCharge 1.4s ease-in-out 0.55s infinite; }
+.tool-pill.xp-done { animation: xpPop 0.45s var(--spring); }
+@keyframes xpConjure {
+  0% { opacity: 0; transform: translateY(6px) scale(0.6); filter: blur(4px) brightness(1.8); }
+  60% { opacity: 1; filter: blur(0) brightness(1.3); }
+  100% { transform: none; filter: none; }
+}
+@keyframes xpCharge {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--xp-glow, #f2b24a) 0%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--xp-glow, #f2b24a) 22%, transparent), 0 0 18px -2px color-mix(in srgb, var(--xp-glow, #f2b24a) 55%, transparent); }
+}
+@keyframes xpPop { 0% { transform: scale(1); } 40% { transform: scale(1.12); } 100% { transform: scale(1); } }
+
+/* Something needs your OK: lassoed in light */
+.xp-lasso { position: relative; animation: xpLasso 1.6s ease-in-out infinite; }
+@keyframes xpLasso {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--xp-glow, #f2b24a) 0%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--xp-glow, #f2b24a) 25%, transparent), 0 0 30px -6px var(--xp-glow, #f2b24a); }
+}
+.xp-wobble { animation: xpWobble 0.6s ease-in-out; }
+@keyframes xpWobble { 20% { transform: translateX(-4px) rotate(-0.4deg); } 40% { transform: translateX(4px) rotate(0.4deg); } 60% { transform: translateX(-2px); } 80% { transform: translateX(2px); } }
+
+/* The flourish under a finished answer */
+.xp-signature { margin-top: -0.25rem; line-height: 0; transition: opacity 0.8s ease; }
+.xp-signature path { stroke: var(--xp-glow, #f2b24a); stroke-width: 2; fill: none; stroke-linecap: round; filter: drop-shadow(0 0 4px color-mix(in srgb, var(--xp-glow, #f2b24a) 60%, transparent)); }
+.xp-signature.is-fading { opacity: 0; }
+
+/* Spells: a beam from the companion to whatever it opened */
+.xp-beam { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 64; pointer-events: none; overflow: visible; }
+.xp-beam path { fill: none; stroke: var(--xp-glow, #f2b24a); stroke-width: 2.2; stroke-linecap: round;
+  stroke-dasharray: var(--len); stroke-dashoffset: var(--len);
+  filter: drop-shadow(0 0 6px var(--xp-glow, #f2b24a));
+  animation: xpBeam 1s var(--ease-out) forwards; }
+.xp-beam.is-dotted path { stroke-dasharray: 2 7; stroke-dashoffset: 0; animation: xpBeamDots 1s ease-out forwards; }
+@keyframes xpBeam { 45% { stroke-dashoffset: 0; opacity: 1; } 100% { stroke-dashoffset: 0; opacity: 0; } }
+@keyframes xpBeamDots { 0% { opacity: 0; } 30% { opacity: 1; } 100% { opacity: 0; stroke-dashoffset: -30; } }
+.xp-summoned { animation: xpSummon 0.9s var(--ease-out); }
+@keyframes xpSummon {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--xp-glow, #f2b24a) 50%, transparent); }
+  100% { box-shadow: 0 0 0 26px color-mix(in srgb, var(--xp-glow, #f2b24a) 0%, transparent); }
+}
+.starter-card.xp-levitate { animation: xpLevitate 1.9s var(--ease-out); }
+@keyframes xpLevitate {
+  0% { transform: none; }
+  25% { transform: translateY(-9px) rotate(-1.2deg); box-shadow: 0 18px 26px -16px rgba(0, 0, 0, 0.9), 0 0 0 1px color-mix(in srgb, var(--xp-glow, #f2b24a) 40%, transparent); }
+  55% { transform: translateY(-11px) rotate(1deg); }
+  100% { transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xod-familiar, .xp-p, .xp-beam, .xp-signature { display: none !important; }
+  .tool-pill.xp-conjure, .tool-pill.xp-charged, .tool-pill.xp-done, .xp-lasso, .xp-wobble, .xp-summoned, .starter-card.xp-levitate,
+  .xod-mascot .xp, .xod-mascot--chat.is-away::after { animation: none !important; }
+}
+
 /* --- Chat avatars & user bubble --- */
 .xod-mascot--chat { width: 34px; height: 34px; }
 .xod-mascot--chat .xm-glow { opacity: 0.3; }

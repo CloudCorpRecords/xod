@@ -65,6 +65,10 @@ Needs a Mac with Apple silicon (M1 or newer), macOS 13 or later, and Google Chro
 
 <p align="center"><img src="docs/media/looks.gif" width="720" alt="Six looks for Xod: moon, cat, ghost, robot, owl and sprout, each doing its own little trick"></p>
 
+While Xod works, its companion leaves its spot by the reply and does the work where you can see it: it conjures each tool as it starts and taps it when it's done, peeks over browser snapshots, writes the answer with a quill that follows the words, lassoes anything that needs your OK and waits by it, then signs the answer and flies home. Each look travels its own way: the moon flies, the cat pounces, the ghost phases, the robot zips, the owl flaps and the sprout hops. Opening a panel takes a little spell, and on the home screen it sometimes lifts a card just to see if it can.
+
+<p align="center"><img src="docs/media/powers.gif" width="640" alt="The owl companion flying to a web search, peeking at a browser snapshot, waiting by an approval and writing the answer with a quill"></p>
+
 **Routines.** Jobs Xod repeats for you, by hand or on a schedule. Each run lands in Tasks and still asks before sending or paying.
 
 ![Routines](docs/screenshots/routines.png)
