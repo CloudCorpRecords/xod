@@ -3,8 +3,8 @@ API keys and tokens live in the macOS Keychain, nowhere else.
 
 Before this, keys sat in plain text in three places: .env, the settings table in data/xod.db,
 and data/media_models_config.json. migrate() moves each one into the Keychain, reads it back
-to be sure, and only then removes the plain-text copies. Keychain items show up as
-"Xod API keys" in Keychain Access, one per key (account = the setting name).
+to be sure, and only then removes the plain-text copies. All of Xod's secrets share one Keychain
+item ("Xod API keys", account "_vault"; see keychain.py), so macOS asks at most once.
 
 Keys are held in this process's memory while Xod runs (it needs them to call the APIs), but
 they are never written to disk again, never put in the environment (child processes such as
@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import keyring
+from app.services import keychain
 from app.paths import DATA_DIR, ENV_PATH, DEV_ENV_PATH
 
 logger = logging.getLogger("xod.secrets")
@@ -53,7 +53,7 @@ def canonical(name: str) -> str:
 
 def get(name: str) -> str:
     try:
-        return keyring.get_password(SERVICE, canonical(name)) or ""
+        return keychain.get_password(SERVICE, canonical(name)) or ""
     except Exception as e:
         logger.warning(f"Keychain read failed for {canonical(name)}: {type(e).__name__}")
         return ""
@@ -63,13 +63,13 @@ def save(name: str, value: str) -> None:
     """Saves a key (an empty value deletes it). Raises if the Keychain refuses."""
     field, value = canonical(name), (value or "").strip()
     if value:
-        keyring.set_password(SERVICE, field, value)
-        if keyring.get_password(SERVICE, field) != value:
+        keychain.set_password(SERVICE, field, value)
+        if keychain.get_password(SERVICE, field) != value:
             raise RuntimeError(f"Keychain didn't keep {field}")
     else:
         try:
-            keyring.delete_password(SERVICE, field)
-        except keyring.errors.PasswordDeleteError:
+            keychain.delete_password(SERVICE, field)
+        except keychain.errors.PasswordDeleteError:
             pass
 
 

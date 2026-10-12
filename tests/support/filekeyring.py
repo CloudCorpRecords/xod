@@ -30,6 +30,8 @@ class FileKeyring(KeyringBackend):
 
     def delete_password(self, service, username):
         d = self._load()
-        d.pop(f"{service}\x00{username}", None)
+        if d.pop(f"{service}\x00{username}", None) is None:  # like the real Keychain
+            from keyring.errors import PasswordDeleteError
+            raise PasswordDeleteError(username)
         with open(self._path(), "w") as f:
             json.dump(d, f)

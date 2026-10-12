@@ -47,7 +47,7 @@ class MemoryKeyring(KeyringBackend):
 
 keyring.set_keyring(MemoryKeyring())
 
-from app.services import connectors, mcp_client, mcp_oauth  # noqa: E402
+from app.services import connectors, keychain, mcp_client, mcp_oauth  # noqa: E402
 
 results = []
 
@@ -115,7 +115,7 @@ async def main():
 
     # C6
     connectors.disconnect("github")
-    check("C6 removing forgets the token", keyring.get_password(mcp_client.KEYCHAIN, "github:bearer_token") is None)
+    check("C6 removing forgets the token", keychain.get_password(mcp_client.KEYCHAIN, "github:bearer_token") is None)
 
     for c in list(hub.conns.values()):
         await c.stop()

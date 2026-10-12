@@ -79,7 +79,7 @@ async def connect(cid: str, redirect_uri: str, token: Optional[str] = None,
     c = _BY_ID.get(cid)
     if not c:
         return {"success": False, "error": "Unknown connector."}
-    import keyring
+    from app.services import keychain
     cfg = mcp_client.load_config()
     spec = cfg.get(cid) or {"enabled": True, "trust": c.get("trust", "ask"), "connector": cid}
     spec["enabled"] = True
@@ -92,13 +92,13 @@ async def connect(cid: str, redirect_uri: str, token: Optional[str] = None,
             spec["scope"] = c["scope"]
     if c["kind"] == "token":
         if token:
-            keyring.set_password(mcp_client.KEYCHAIN, f"{cid}:bearer_token", token.strip())
-        elif not keyring.get_password(mcp_client.KEYCHAIN, f"{cid}:bearer_token"):
+            keychain.set_password(mcp_client.KEYCHAIN, f"{cid}:bearer_token", token.strip())
+        elif not keychain.get_password(mcp_client.KEYCHAIN, f"{cid}:bearer_token"):
             return {"success": False, "needs_token": True, "error": "Paste a token first."}
     if c["kind"] == "own":
         if client_id:
             mcp_oauth.set_own_client(cid, client_id, client_secret or "", redirect_uri)
-        elif not keyring.get_password(mcp_client.KEYCHAIN, f"{cid}:oauth_client"):
+        elif not keychain.get_password(mcp_client.KEYCHAIN, f"{cid}:oauth_client"):
             return {"success": False, "needs_client": True, "error": "Enter your Google OAuth client ID first."}
     cfg[cid] = spec
     mcp_client._save_config(cfg)

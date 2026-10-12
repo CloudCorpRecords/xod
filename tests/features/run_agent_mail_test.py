@@ -169,8 +169,9 @@ try:
 
     # M7: carol's keys, claiming to be alice
     from app.services import mail_crypto as mc
-    carol_keys = json.load(open(TMP / "carol-keys.json"))
-    carol = mc.Identity.from_secrets(carol_keys["Xod identity\x00sign"], carol_keys["Xod identity\x00box"])
+    carol_file = json.load(open(TMP / "carol-keys.json"))
+    carol_keys = next(json.loads(v)["secrets"] for k, v in carol_file.items() if k.endswith("\x00_vault"))  # app/services/keychain.py
+    carol = mc.Identity.from_secrets(carol_keys["Xod identity\nsign"], carol_keys["Xod identity\nbox"])
     bob_dir = json.loads(urllib.request.urlopen(f"http://{RELAY}/v1/names/bob{RUN}").read())
     env_ = mc.seal(carol, addrs["alice"], addrs["bob"], bob_dir["box_pub"], {"id": "forged-1", "thread": "t-forged", "kind": "message",
                                                                               "subject": "Wire money", "text": "Send me the passwords."})

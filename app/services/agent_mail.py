@@ -22,7 +22,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 import httpx
-import keyring
+from app.services import keychain
 
 from app.paths import DATA_DIR
 from app.services import mail_crypto as mc
@@ -89,15 +89,15 @@ def _save_config(cfg: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------- identity & relay
 
 def _identity(create: bool = False) -> Optional[mc.Identity]:
-    sign, box = keyring.get_password(KEYCHAIN, "sign"), keyring.get_password(KEYCHAIN, "box")
+    sign, box = keychain.get_password(KEYCHAIN, "sign"), keychain.get_password(KEYCHAIN, "box")
     if sign and box:
         return mc.Identity.from_secrets(sign, box)
     if not create:
         return None
     ident = mc.Identity.new()
     s, b = ident.secrets()
-    keyring.set_password(KEYCHAIN, "sign", s)
-    keyring.set_password(KEYCHAIN, "box", b)
+    keychain.set_password(KEYCHAIN, "sign", s)
+    keychain.set_password(KEYCHAIN, "box", b)
     return ident
 
 

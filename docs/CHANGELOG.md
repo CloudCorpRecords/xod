@@ -33,6 +33,7 @@
 - Xod's browser now uses its own port per data folder, so a test or second copy can never take over your signed-in browser.
 
 **Fixes**
+- Starting Xod no longer asks for your Keychain password over and over. Every API key, connector token and identity key was its own Keychain item, and macOS asks for each one; now they share one item, read once per launch. Click "Always Allow" once and it stops asking. Older items move over on their own the first time they're needed.
 - File tasks no longer describe files that weren't written: the write-up names only what a tool actually did.
 
 ## 0.2.0

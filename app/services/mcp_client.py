@@ -23,7 +23,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-import keyring
+from app.services import keychain
 
 from app.paths import DATA_DIR
 from app.services import mcp_oauth
@@ -101,7 +101,7 @@ def _save_config(servers: Dict[str, Dict[str, Any]]) -> None:
 def _env_for(name: str, spec: Dict[str, Any]) -> Dict[str, str]:
     env = {k: str(v) for k, v in (spec.get("env") or {}).items()}
     for key in spec.get("secret_env") or []:
-        val = keyring.get_password(KEYCHAIN, f"{name}:{key}")
+        val = keychain.get_password(KEYCHAIN, f"{name}:{key}")
         if val:
             env[key] = val
     return env
@@ -122,7 +122,7 @@ def add_servers(block: Dict[str, Any]) -> Dict[str, Any]:
         env, secret_env = {}, []
         for k, v in (spec.get("env") or {}).items():
             if SECRETISH.search(k) and v:
-                keyring.set_password(KEYCHAIN, f"{name}:{k}", str(v))
+                keychain.set_password(KEYCHAIN, f"{name}:{k}", str(v))
                 secret_env.append(k)
             else:
                 env[k] = str(v)
@@ -155,12 +155,12 @@ def remove_server(name: str) -> bool:
         return False
     mcp_oauth.forget(name)
     try:
-        keyring.delete_password(KEYCHAIN, f"{name}:bearer_token")
+        keychain.delete_password(KEYCHAIN, f"{name}:bearer_token")
     except Exception:
         pass
     for key in spec.get("secret_env") or []:
         try:
-            keyring.delete_password(KEYCHAIN, f"{name}:{key}")
+            keychain.delete_password(KEYCHAIN, f"{name}:{key}")
         except Exception:
             pass
     _save_config(cfg)
@@ -191,7 +191,7 @@ class ServerConn:
         url, auth_kind = self.spec["url"], self.spec.get("auth")
         headers, auth = {}, None
         if auth_kind == "bearer":
-            token = keyring.get_password(KEYCHAIN, f"{self.name}:bearer_token")
+            token = keychain.get_password(KEYCHAIN, f"{self.name}:bearer_token")
             if not token:
                 raise mcp_oauth.SignInNeeded(self.name)
             headers["Authorization"] = f"Bearer {token}"

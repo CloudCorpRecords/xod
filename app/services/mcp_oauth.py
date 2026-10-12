@@ -19,7 +19,7 @@ import time
 import urllib.parse
 from typing import Any, Dict, Optional
 
-import keyring
+from app.services import keychain
 
 logger = logging.getLogger("xod.mcp")
 
@@ -39,14 +39,14 @@ class KeychainTokenStorage:
         self.server, self.redirect_uri = server, redirect_uri
 
     def _get(self, kind: str) -> Optional[dict]:
-        raw = keyring.get_password(KEYCHAIN, f"{self.server}:{kind}")
+        raw = keychain.get_password(KEYCHAIN, f"{self.server}:{kind}")
         try:
             return json.loads(raw) if raw else None
         except ValueError:
             return None
 
     def _set(self, kind: str, value: Any) -> None:
-        keyring.set_password(KEYCHAIN, f"{self.server}:{kind}", json.dumps(value))
+        keychain.set_password(KEYCHAIN, f"{self.server}:{kind}", json.dumps(value))
 
     async def get_tokens(self):
         from mcp.shared.auth import OAuthToken
@@ -77,12 +77,12 @@ class KeychainTokenStorage:
 
 
 def has_tokens(server: str) -> bool:
-    return bool(keyring.get_password(KEYCHAIN, f"{server}:oauth_tokens"))
+    return bool(keychain.get_password(KEYCHAIN, f"{server}:oauth_tokens"))
 
 
 def set_own_client(server: str, client_id: str, client_secret: str, redirect_uri: str) -> None:
     """For providers without dynamic registration (Google): the user's own OAuth client."""
-    keyring.set_password(KEYCHAIN, f"{server}:oauth_client", json.dumps({
+    keychain.set_password(KEYCHAIN, f"{server}:oauth_client", json.dumps({
         "client_id": client_id.strip(), "client_secret": client_secret.strip() or None,
         "redirect_uris": [redirect_uri], "token_endpoint_auth_method": "client_secret_post" if client_secret else "none",
         "grant_types": ["authorization_code", "refresh_token"], "response_types": ["code"], "_byo": True}))
@@ -91,7 +91,7 @@ def set_own_client(server: str, client_id: str, client_secret: str, redirect_uri
 def forget(server: str) -> None:
     for kind in ("oauth_tokens", "oauth_client"):
         try:
-            keyring.delete_password(KEYCHAIN, f"{server}:{kind}")
+            keychain.delete_password(KEYCHAIN, f"{server}:{kind}")
         except Exception:
             pass
 

@@ -52,6 +52,7 @@ EDITABLE_ROOTS = ("app/", "tests/")
 PROTECTED_FILES = {
     "app/services/self_edit.py",          # the gate can't loosen itself
     "app/services/secret_store.py",       # API keys
+    "app/services/keychain.py",           # the one Keychain item all secrets live in
     "app/services/credential_vault.py",   # saved logins
     "app/config.py",                      # where keys are loaded
     "app/paths.py",                       # where personal data lives
