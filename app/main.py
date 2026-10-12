@@ -463,6 +463,8 @@ async def _start_task_worker():
     asyncio.create_task(mcp_hub.start())   # connect outside tool servers in the background
     from app.services import agent_mail
     agent_mail.start()                      # picks up Agent Mail every 30 s once an address is set up
+    from app.services import soul
+    asyncio.create_task(soul.life_loop())   # when you're away, the companion does things for itself
 
 
 @app.get("/api/mcp")
@@ -982,6 +984,16 @@ async def chat_endpoint(request: ChatRequest):
             return
         route = llm_routing.start_turn(cloud_ep)
         yield f"data: {json.dumps({'type': 'session_info', 'session_id': session_id, 'is_new': is_new_session})}\n\n"
+        from app.services import soul
+        soul.note_busy(+1)
+        try:   # what you said is how the companion learns (thanks, corrections, your interests, your name)
+            felt = soul.learn_from_message(prompt_preview if isinstance(last_msg, str) else "")
+            if request.voice:
+                felt = soul.event("spoke") or felt
+            if felt:
+                yield f"data: {json.dumps({'type': 'soul', 'state': {k: felt[k] for k in ('stage', 'stage_name', 'bond', 'feeling', 'mood')}, 'evolved': felt.get('evolved')})}\n\n"
+        except Exception as e:
+            logger.debug(f"soul: {e}")
 
         assistant_content = ""
         assistant_reasoning = ""
@@ -1005,6 +1017,13 @@ async def chat_endpoint(request: ChatRequest):
                     "subagent_tool_result", "swarm_complete", "build_done"
                 ):
                     tool_events.append(event)
+                if event_type == "build_done" and (event.get("check") or {}).get("ok"):
+                    try:
+                        grown = soul.event("built", event.get("title") or "")
+                        if grown.get("evolved"):
+                            yield f"data: {json.dumps({'type': 'soul', 'state': {k: grown[k] for k in ('stage', 'stage_name', 'bond', 'feeling', 'mood')}, 'evolved': grown['evolved']})}\n\n"
+                    except Exception:
+                        pass
                 if event_type == "build_done" and (event.get("project") or {}).get("slug"):
                     try:
                         from app.services.project_storage import project_storage_service as project_storage
@@ -1026,6 +1045,7 @@ async def chat_endpoint(request: ChatRequest):
             err_event = {"type": "error", "content": f"Server error: {str(e)}"}
             yield f"data: {json.dumps(err_event)}\n\n"
         finally:
+            soul.note_busy(-1)
             # Persist assistant response to SQLite database
             if assistant_content or assistant_reasoning or tool_events:
                 add_message(
@@ -3338,6 +3358,22 @@ async def preview_storage(req: PreviewStorageRequest):
     return {"ok": previews.save_storage(req.root, req.data)}
 
 
+class PreviewLaunchRequest(BaseModel):
+    url: str
+
+
+@app.post("/api/preview/launch")
+async def preview_launch(req: PreviewLaunchRequest):
+    """Opens a built app in the default browser (when the page couldn't open a tab itself)."""
+    import subprocess as _sp
+    from app.services import previews
+    if not req.url.startswith(previews.PREFIX):
+        raise HTTPException(status_code=400, detail="Not a preview")
+    base = previews.SERVER_BASE or "http://127.0.0.1:8000"
+    _sp.Popen(["open", base + req.url], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+    return {"ok": True}
+
+
 class PreviewCheckRequest(BaseModel):
     url: str
 
@@ -3348,3 +3384,78 @@ async def preview_check(req: PreviewCheckRequest):
     if not req.url.startswith(previews.PREFIX):
         raise HTTPException(status_code=400, detail="Not a preview")
     return await previews.check(req.url)
+
+
+# ---------------------------------------------------------------------------------------------
+# Xod's inner life (services/soul.py): mood, bond, growth, what it learned, and its journal.
+
+@app.get("/api/soul")
+async def soul_state():
+    from app.services import soul
+    return soul.public()
+
+
+class SoulEvent(BaseModel):
+    kind: str
+    detail: str = ""
+
+
+@app.post("/api/soul/event")
+async def soul_event(req: SoulEvent):
+    """From the page: petting, talking, and reactions to its journal."""
+    from app.services import soul
+    if req.kind not in ("pet", "spoke", "liked", "dismissed"):
+        raise HTTPException(status_code=400, detail="Unknown event")
+    return soul.event(req.kind, req.detail[:40])
+
+
+@app.post("/api/soul/presence")
+async def soul_presence():
+    from app.services import soul
+    soul.presence()
+    return {"ok": True}
+
+
+@app.post("/api/soul/settings")
+async def soul_settings(request: Request):
+    from app.services import soul
+    return soul.settings(await request.json())
+
+
+class SoulForget(BaseModel):
+    what: str
+    value: str = ""
+
+
+@app.post("/api/soul/forget")
+async def soul_forget(req: SoulForget):
+    from app.services import soul
+    if req.what not in ("interest", "name", "style", "journal", "everything"):
+        raise HTTPException(status_code=400, detail="Unknown")
+    return soul.forget(req.what, req.value)
+
+
+class SoulReaction(BaseModel):
+    reaction: str
+
+
+@app.post("/api/soul/journal/{entry_id}")
+async def soul_react(entry_id: str, req: SoulReaction):
+    from app.services import soul
+    if req.reaction not in ("liked", "dismissed", "seen", "seen-all"):
+        raise HTTPException(status_code=400, detail="Unknown reaction")
+    return soul.react(entry_id, req.reaction)
+
+
+@app.post("/api/soul/muse")
+async def soul_muse(request: Request):
+    """'What are you thinking about?': it takes a moment for itself now instead of waiting until you're away."""
+    from app.services import soul, activity
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    activity.origin.set("xod (on its own)")
+    entry = await soul.muse(body.get("activity") if body.get("activity") in soul.ACTIVITIES else None)
+    return {"entry": entry, "state": soul.public()}

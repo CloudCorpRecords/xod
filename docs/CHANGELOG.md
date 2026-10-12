@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+**Xod's inner life**
+- The companion has a mood (joy, energy, curiosity, calm), a bond with you that grows when you work together, say thanks or give it a pet, and it grows up through five stages (Hatchling, Sprout, Companion, Kindred, Luminary), each with its own glow, and a moment when it happens.
+- It learns from you: your name if you share it, whether you like short or detailed answers, a bit of fun, the topics you keep coming back to, and the corrections you give it. A short note from this shapes its answers.
+- When you're idle it leaves its spot and wanders the whole window, peeking at your projects and thinking out loud. When you're away for a while (plugged in, a few times a day at most), it does things for itself: reads up on one of your interests (read-only), thinks of an idea for your projects, or daydreams. You get a postcard when you're back; "Thanks!" or "Not my thing" is the reward it learns from.
+- Tools → Xod's heart shows all of it: stage, bond, mood, what it learned (forget any of it), its journal, and switches for its own time. It's a character, not a person; it never guilt-trips, its bond never drops because you were away, it never changes your files or accounts on its own, and everything stays on your Mac.
+
+**Do things in your apps**
+- "Move my dentist appointment to Friday at 3", "check off milk", "delete the note about the old wifi": Xod finds the item first, then changes it, step by step, and follow-ups like "add bread too" keep going.
+- This Mac can now change and delete, not just add and read: update and delete Calendar events, update, check off and delete Reminders, append to or rewrite and delete Notes, mark and trash Mail.
+- Deleting always waits for your OK, even on a connector you've set to fully trusted.
+- "Launch Spotify" opens Mac apps by name.
+
+**Launch what it builds**
+- "Launch it" opens an app Xod built in its own window in the desktop app (sandboxed, no access to Xod), or in your browser. "Test it" runs the error check.
+
 **Build apps and games**
 - Ask for an app or a game ("make me a 3D game where you dodge falling cubes", "build a pomodoro timer") and Xod writes it for real: it plans the files, writes each one in full, runs it in a headless browser (pressing a few keys like a player), and fixes what breaks before telling you it's done. The answer lists only files that are really on disk.
 - A preview pane opens beside the chat, like an IDE's: the app running live, its Files with the code, and a Console with its logs and errors (with "Ask Xod to fix these"). Resize it, switch to phone size, open it in your browser, or collapse it to a tab on the edge.

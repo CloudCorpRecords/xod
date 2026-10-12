@@ -983,7 +983,7 @@
           r.flips = (r.flips || []).filter((f) => t - f < 1200);
           r.flips.push(t);
           if (r.flips.length >= 4) { r.petting = Math.min(1.4, (r.petting || 0) + 0.25); r.fidget = null; }
-          if (r.petting > 0.9 && (!r.heartAt || now() - r.heartAt > 700)) { r.heartAt = now(); heart(m); }
+          if (r.petting > 0.9 && (!r.heartAt || now() - r.heartAt > 700)) { r.heartAt = now(); heart(m); window.dispatchEvent(new CustomEvent("xod:pet")); }
           r.sx.kick(1.2); r.rot.kick(dir * 20);
         }
         r.lastDir = dir;

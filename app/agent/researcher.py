@@ -244,6 +244,15 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                     yield ev
                 return
 
+        # "Move my dentist appointment to Friday", "check off milk", "launch Spotify": a small
+        # tool-calling loop over the connected apps (find the item, then change it; changes wait for an OK).
+        from app.agent import operator as app_operator
+        op = app_operator.route(user_query, has_image or has_document, messages)
+        if op:
+            async for ev in app_operator.stream(user_query, messages, op, execute_tool, spoken=spoken):
+                yield ev
+            return
+
         # Most questions either need no tools or need a web search or two. One small routing call
         # (its prompt stays cached by the model server) decides which, and streams the answer itself
         # when no search is needed: one or two model calls instead of a full plan, which on a local
@@ -969,6 +978,13 @@ CRITICAL INSTRUCTIONS:
         else:
             synthesis_user_content = f"{user_query}\n\n{synthesis_content}"
 
+        try:
+            from app.services import soul
+            note = soul.prompt_note()
+            if note:
+                system_instruction_text += " " + note
+        except Exception:
+            pass
         if spoken:
             system_instruction_text += (" This reply will also be read aloud: begin with one or two plain, spoken sentences "
                                         "that answer directly, then put any lists, tables or details after a blank line.")
@@ -1178,7 +1194,9 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             turns.pop()
         # The date is part of the system prompt: it changes once a day, so the prompt stays cached.
         prompt = cls.ROUTER_PROMPT_SPOKEN if spoken else cls.ROUTER_PROMPT
-        return [{"role": "system", "content": f"{prompt}\n\nToday is {cls._today()}."}, *turns,
+        from app.services import soul
+        note = soul.prompt_note()
+        return [{"role": "system", "content": f"{prompt}\n\nToday is {cls._today()}." + (f"\n{note}" if note else "")}, *turns,
                 {"role": "user", "content": query}]
 
     async def _stream_fast_lane(self, query: str, messages: List[Dict[str, Any]],

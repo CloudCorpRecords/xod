@@ -160,19 +160,25 @@ function stopServer() {
 function isAppUrl(u) {
   try { return appUrl && new URL(u).origin === new URL(appUrl).origin; } catch (e) { return false; }
 }
+// Apps Xod builds are served from Xod's address too, under /preview/. They're untrusted pages:
+// no permissions, no preload, never treated as Xod itself.
+function isPreviewUrl(u) {
+  try { return isAppUrl(u) && new URL(u).pathname.startsWith("/preview/"); } catch (e) { return false; }
+}
+const isXodPage = (u) => isAppUrl(u) && !isPreviewUrl(u);
 
 function lockDown() {
   // Only the microphone (voice input), clipboard writes and notifications, and only for Xod itself.
   const allowed = new Set(["media", "clipboard-sanitized-write", "notifications", "fullscreen"]);
   session.defaultSession.setPermissionRequestHandler(async (wc, permission, cb) => {
-    if (!allowed.has(permission) || !isAppUrl(wc.getURL())) return cb(false);
+    if (!allowed.has(permission) || !isXodPage(wc.getURL())) return cb(false);
     // Voice input: macOS asks the user once, then remembers (System Settings → Privacy → Microphone).
     if (permission === "media" && process.platform === "darwin") {
       try { return cb(await systemPreferences.askForMediaAccess("microphone")); } catch (e) { return cb(false); }
     }
     cb(true);
   });
-  session.defaultSession.setPermissionCheckHandler((wc, permission) => allowed.has(permission) && !!wc && isAppUrl(wc.getURL()));
+  session.defaultSession.setPermissionCheckHandler((wc, permission) => allowed.has(permission) && !!wc && isXodPage(wc.getURL()));
 
   app.on("web-contents-created", (_e, contents) => {
     contents.setWindowOpenHandler(({ url }) => {
@@ -226,6 +232,25 @@ function showMain() {
 ipcMain.on("xod:listening", (e, on) => {
   if (!mainWindow || e.sender !== mainWindow.webContents) return;
   e.sender.setBackgroundThrottling(!on);
+});
+
+// "Launch it": an app Xod built opens in its own window, sandboxed, with no bridge to Xod.
+const appWindows = new Map();
+ipcMain.on("xod:open-app", (e, url, title) => {
+  if (!mainWindow || e.sender !== mainWindow.webContents || typeof url !== "string") return;
+  const full = new URL(url, appUrl).toString();
+  if (!isPreviewUrl(full)) return;
+  const key = new URL(full).pathname.split("/").slice(0, 4).join("/");      // one window per app
+  const existing = appWindows.get(key);
+  if (existing && !existing.isDestroyed()) { existing.loadURL(full); existing.focus(); return; }
+  const w = new BrowserWindow({
+    width: 1100, height: 760, minWidth: 360, minHeight: 300, title: String(title || "App").slice(0, 80),
+    backgroundColor: "#000000", webPreferences: { ...SECURE_PREFS },
+  });
+  w.on("page-title-updated", (ev) => ev.preventDefault());
+  w.loadURL(full);
+  appWindows.set(key, w);
+  w.on("closed", () => appWindows.delete(key));
 });
 
 // ⌃⌥Space from any app starts (or ends) a conversation. Xod answers out loud, so the window

@@ -49,6 +49,7 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 | **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. |
 | **You stay in charge** | It stops for your OK before anything is sent, paid, posted or deleted. Every action is logged, and file changes can be undone. |
 | **Builds what you ask for** | Apps and games written, run, tested and fixed on your Mac, with a live preview beside the chat. |
+| **A companion that grows** | Moods, a bond with you, five stages to grow through, and a journal of what it thought about while you were away. |
 | **Talk to it** | Say "Hey Xod" and have a spoken back-and-forth, hands-free. It answers out loud, takes follow-ups and stops when you talk over it, all on your Mac. |
 | **Teach once, repeat forever** | Turn any chat into a routine. Xod remembers the steps that worked and runs it again, on a schedule if you like. |
 | **Plays well with others** | One-click connections to your Mac's Calendar, Notes, Mail and Reminders, Notion, Linear and GitHub, plus any MCP tool. Claude Desktop, Cursor and others can hand work to Xod. |
@@ -94,7 +95,7 @@ While Xod works, its companion leaves its spot by the reply and does the work wh
 
 **Agent Mail (preview).** An optional add-on: give your Xod an address like `sam@post.example.com` and it can message other agents: ask a friend's agent for help, hand a job to your Xod at work, or connect a few agents into a team. Messages are end-to-end encrypted; the relay in the middle can't read them, doesn't know who sent them, and deletes each one once it's delivered. Xod never sends anything or runs a requested task without your OK. Run your own relay with [relay/](relay/README.md).
 
-**Connected apps.** One click connects This Mac (Calendar, Reminders, Notes and Mail, including Google and iCloud accounts you've added to macOS), Notion and Linear (sign in with your account) and GitHub. Any other MCP server works too; secrets go to your Keychain. Copy the snippet to use Xod from Claude Desktop, Cursor or Claude Code.
+**Connected apps.** Ask in plain words ("move my dentist appointment to Friday", "check off milk", "delete that note") and Xod finds the item, then changes it; deleting always waits for your OK. One click connects This Mac (Calendar, Reminders, Notes and Mail, including Google and iCloud accounts you've added to macOS), Notion and Linear (sign in with your account) and GitHub. Any other MCP server works too; secrets go to your Keychain. Copy the snippet to use Xod from Claude Desktop, Cursor or Claude Code.
 
 ![Connected apps](docs/screenshots/connected-apps.png)
 
@@ -110,9 +111,17 @@ Ask for something you can use or play, like **"make me a 3D game where you dodge
 
 - **It writes it, runs it and fixes it.** Xod plans the files and writes each one in full. Then it opens the app in a hidden browser, plays it for a few seconds and fixes any errors before telling you it's done. The answer lists only files that really exist.
 - **A preview beside the chat.** The app runs in a pane next to the chat, with its **Files** and a **Console** that shows errors, plus an "Ask Xod to fix these" button. Switch it to phone size, open it in your browser, or collapse it to a tab on the edge.
-- **Change it by asking.** Say "make it harder" or "add a high score" and Xod edits just the lines that need it, runs the app again, and keeps every change in Activity with Undo.
+- **Change it by asking.** Say "make it harder" or "add a high score" and Xod edits just the lines that need it, runs the app again, and keeps every change in Activity with Undo. Say "launch it" to open it in its own window.
 - **3D and art included.** three.js is built in and works offline. Ask for sprites or textures and Xod paints them with Media Studio.
 - **Safely fenced off.** Previews run sandboxed, with no access to Xod, your files or its API. Each app lives in a folder of your project and shows under the project on the left.
+
+### Xod's heart
+
+<p align="center"><img src="docs/screenshots/heart.png" width="760" alt="Xod's heart: its stage, bond, mood, what it learned about you, and its journal"></p>
+
+Xod's companion has a little life of its own. It has moods, a bond with you that grows as you work together, and it grows up through five stages (Hatchling, Sprout, Companion, Kindred, Luminary). When you're idle it leaves its spot and wanders around the window, thinking out loud. When you're away for a while it reads up on something you care about, thinks of an idea for one of your projects, or daydreams, and brings you a postcard when you're back. What you thank it for is how it learns what you like.
+
+It learns from you too: your name, whether you like answers short or detailed, the topics you keep coming back to, and what you correct. **Tools → Xod's heart** shows all of it, and you can make it forget anything. It's a character, not a person: it never guilt-trips, its bond never drops because you were away, it never touches your files or accounts on its own, and everything stays on your Mac.
 
 ### Talk to it
 

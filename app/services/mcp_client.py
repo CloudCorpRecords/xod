@@ -49,6 +49,18 @@ def _read_only(tool: Any) -> bool:
     return bool(_attr(getattr(tool, "annotations", None), "read_only_hint", "readOnlyHint", False))
 
 
+def _destructive(tool: Any) -> bool:
+    """Deletes and the like. These always wait for the user's OK, whatever the server's trust setting.
+    (MCP's default for a tool that isn't read-only is destructive, so unknown tools count too.)"""
+    ann = getattr(tool, "annotations", None)
+    if _read_only(tool):
+        return False
+    hint = _attr(ann, "destructive_hint", "destructiveHint", None)
+    if hint is not None:
+        return bool(hint)
+    return bool(re.search(r"(^|_)(delete|remove|destroy|drop|erase|purge|trash|archive|cancel|close)(_|$)", getattr(tool, "name", "") or "", re.I))
+
+
 def _find_exc(e: BaseException, kind: type) -> Optional[BaseException]:
     if isinstance(e, kind):
         return e
@@ -330,12 +342,14 @@ class MCPHub:
             return {"success": False, "error": f"The {full_name.split('__')[1]} tool server isn't connected (Tools → Connections → MCP)."}
         trust = (load_config().get(c.name) or {}).get("trust", "ask")   # current setting, not the one at connect time
         read_only = _read_only(t)
-        if not approved and not (trust == "always" or (trust == "read_only" and read_only)):
+        destructive = _destructive(t)
+        if not approved and (destructive or not (trust == "always" or (trust == "read_only" and read_only))):
             pid = uuid.uuid4().hex[:10]
             self.pending[pid] = {"id": pid, "tool": full_name, "server": c.name, "tool_name": t.name, "args": args,
                                  "description": (t.description or "")[:300], "created_at": time.time()}
-            return {"success": False, "needs_approval": True, "approval_id": pid, "tool": full_name,
-                    "message": f"Waiting for your OK to run {t.name} on {c.name}. It hasn't run yet.",
+            return {"success": False, "needs_approval": True, "approval_id": pid, "tool": full_name, "destructive": destructive,
+                    "message": (f"Waiting for your OK to {t.name.replace('_', ' ')} on {c.name}. Nothing has been deleted yet."
+                                if destructive else f"Waiting for your OK to run {t.name} on {c.name}. It hasn't run yet."),
                     "args": args}
         try:
             res = await c.client.call_tool(t.name, args or {})

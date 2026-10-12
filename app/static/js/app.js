@@ -4303,6 +4303,10 @@ function handleResearchEvent(event, assistantBubble) {
     }
   } else if (event.type === "build_started") {
     if (window.XodPreview) XodPreview.onBuildStarted(event);
+  } else if (event.type === "soul") {
+    if (window.XodSoul) XodSoul.onEvent(event);
+  } else if (event.type === "launch_app") {
+    if (window.XodPreview) XodPreview.onLaunch(event);
   } else if (event.type === "build_done") {
     if (window.XodPreview) XodPreview.onBuildDone(event, assistantBubble);
   } else if (event.type === "tool_result") {

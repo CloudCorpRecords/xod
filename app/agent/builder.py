@@ -42,7 +42,9 @@ NOT_BUILD_RE = re.compile(r"\b(image|picture|photo|drawing of|video|essay|poem|s
 CHANGE_RE = re.compile(r"^\s*(please |can you |could you |now |ok(ay)? |also |and )*(make|change|add|remove|delete|fix|turn|let|give|use|put|"
                        r"move|speed|slow|increase|decrease|replace|rename|swap|set|show|hide|include|improve|polish|update|tweak|"
                        r"adjust|resize|recolor|rewrite|redo|try|undo|it should|the \w+ should|i want|i'd like|i would like)\b", re.I)
-RUN_RE = re.compile(r"^\s*(run|test|play|open|preview|launch|try)( it| this| the (game|app|preview|site))?( again)?\s*[.!?]*$", re.I)
+RUN_RE = re.compile(r"^\s*(please |can you |could you |now )*(test|check|debug)( it| this| the (game|app|preview|site))?( again| for (errors|bugs))?\s*[.!?]*$", re.I)
+LAUNCH_RE = re.compile(r"^\s*(please |can you |could you |now |ok(?:ay)? |let'?s )*(launch|open|start|play|run|fire up|boot up)( up)?"
+                       r"( it| this| that| the (game|app|site|page|thing)| my (game|app))?( (up|in|as) (a |its own |the )?(window|app|browser))?( again| now)?\s*[.!?]*$", re.I)
 FIX_PREVIEW_RE = re.compile(r"\b(fix|repair)\b.*\b(error|errors|bug|bugs|console|preview|broken|crash|it)\b", re.I)
 NEW_RE = re.compile(r"\b(new|another|different|separate|second)\b|^\s*(?:please |can you |could you |now |ok(?:ay)? |also )*"
                     r"(?:make|build|create|code|write|program|generate|develop|design|whip up|put together|spin up)(?: me| us)? (?:a|an)\b", re.I)
@@ -206,9 +208,11 @@ def route(query: str, messages: List[Dict[str, Any]], workspace: Optional[str]) 
     app_dir = Path(prev["path"]) if prev and prev.get("path") and Path(prev["path"]).is_dir() else None
     if not app_dir and workspace:
         apps = previews.find_apps(workspace)
-        if apps and (CHANGE_RE.search(q) or RUN_RE.search(q) or FIX_PREVIEW_RE.search(q)) and not wants_build(q):
+        if apps and (CHANGE_RE.search(q) or RUN_RE.search(q) or LAUNCH_RE.search(q) or FIX_PREVIEW_RE.search(q)) and not wants_build(q):
             app_dir = Path(apps[0]["path"])
     if app_dir:
+        if LAUNCH_RE.search(q):
+            return {"mode": "launch", "dir": app_dir}
         if RUN_RE.search(q):
             return {"mode": "run", "dir": app_dir}
         if FIX_PREVIEW_RE.search(q) and not wants_build(q):
@@ -477,6 +481,17 @@ class Builder:
         async for ev in self._finish(app_dir, "change", check, None, changed=list(files)):
             yield ev
 
+    async def launch(self, app_dir: Path) -> AsyncGenerator[Dict[str, Any], None]:
+        """Opens the app for real: its own window in the desktop app, or a browser tab."""
+        info = self._info(app_dir)
+        title = info.get("title") or app_dir.name
+        url = previews.url_for(app_dir)
+        yield {"type": "launch_app", "title": title, "url": url, "root": previews.register(app_dir), "path": str(app_dir)}
+        tip = f" {info['how_to_use']}" if info.get("how_to_use") and not self.spoken else ""
+        yield {"type": "content", "content": f"**Launched {title}** in its own window.{tip}\n\n" + MARK +
+               json.dumps({"path": str(app_dir), "title": title}) + " -->"}
+        yield {"type": "done"}
+
     async def run(self, app_dir: Path) -> AsyncGenerator[Dict[str, Any], None]:
         info = self._info(app_dir)
         yield {"type": "build_started", "title": info.get("title"), "path": str(app_dir), "url": previews.url_for(app_dir),
@@ -628,6 +643,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], workspace: Optional
             gen = b.new(query, workspace)
         elif decision["mode"] == "change":
             gen = b.change(query, decision["dir"])
+        elif decision["mode"] == "launch":
+            gen = b.launch(decision["dir"])
         else:
             gen = b.run(decision["dir"])
         async for ev in gen:

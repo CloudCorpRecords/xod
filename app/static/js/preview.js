@@ -27,7 +27,7 @@
           <button data-act="reload" title="Reload"><i data-lucide="rotate-cw" class="size-3.5"></i></button>
           <button data-act="phone" title="Phone size"><i data-lucide="smartphone" class="size-3.5"></i></button>
           <button data-act="check" title="Run Xod's check (plays it headlessly and lists errors)"><i data-lucide="bug-play" class="size-3.5"></i></button>
-          <button data-act="external" title="Open in your browser"><i data-lucide="external-link" class="size-3.5"></i></button>
+          <button data-act="external" title="Launch it in its own window"><i data-lucide="external-link" class="size-3.5"></i></button>
           <button data-act="close" title="Collapse"><i data-lucide="panel-right-close" class="size-3.5"></i></button>
         </div>
       </div>
@@ -80,7 +80,7 @@
     if (f) return showFile(f.dataset.file);
     if (a === "reload") reload();
     else if (a === "close") close();
-    else if (a === "external" && S.app) window.open(S.app.url, "_blank");
+    else if (a === "external" && S.app) launch(S.app);
     else if (a === "phone") { S.phone = !S.phone; pane().classList.toggle("pv-phone", S.phone); }
     else if (a === "check") check();
     else if (a === "clear") { S.logs = []; S.errors = 0; renderLogs(); }
@@ -180,6 +180,20 @@
   function askToFix() {
     const errs = S.logs.filter((l) => l.level === "error").slice(-8).map((l) => `- ${l.text.slice(0, 300)}`).join("\n");
     if (typeof quickSendPrompt === "function") quickSendPrompt(`Fix the errors in the preview of ${S.app?.title || "the app"}:\n${errs}`);
+  }
+
+  // "Launch it": its own sandboxed window in the desktop app, otherwise a browser tab.
+  function launch(app) {
+    if (!app?.url) return;
+    if (window.xodDesktop?.openApp) { window.xodDesktop.openApp(app.url, app.title || "App"); return; }
+    const w = window.open(app.url, "_blank", "noopener");
+    if (!w) fetch("/api/preview/launch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: app.url }) }).catch(() => {});
+  }
+  function onLaunch(ev) {
+    S.recent = { url: ev.url, root: ev.root, title: ev.title, path: ev.path };
+    launch(ev);
+    edgeButton();
+    window.dispatchEvent(new CustomEvent("xod:build", { detail: { phase: "launch", title: ev.title } }));
   }
 
   // ------------------------------------------------------------------ files
@@ -302,6 +316,6 @@
   // New chat: forget the last app's edge button.
   function reset() { S.recent = null; if (!S.open) S.app = null; edgeButton(); }
 
-  window.XodPreview = { open, close, reload, check, onBuildStarted, onBuildDone, onToolResult, onStatus, fromHistory, refreshForScope, reset,
+  window.XodPreview = { open, close, reload, check, launch, onLaunch, onBuildStarted, onBuildDone, onToolResult, onStatus, fromHistory, refreshForScope, reset,
                         state: () => ({ open: S.open, app: S.app, tab: S.tab, errors: S.errors, logs: S.logs.slice(-50), building: S.building }) };
 })();

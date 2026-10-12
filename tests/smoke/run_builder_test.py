@@ -93,7 +93,8 @@ def unit():
             {"role": "user", "content": "x"}]
     check("a follow-up change goes to the same app", r("make the enemies faster", hist) == "change")
     check("'fix the errors in the preview' too", r("Fix the errors in the preview of Prior:\n- x", hist) == "change")
-    check("'run it' runs it", r("run it", hist) == "run")
+    check("'launch it' / 'run it' / 'play it' launch it", all(r(q, hist) == "launch" for q in ("launch it", "run it", "play it", "open it in its own window", "can you launch the game")))
+    check("'test it' runs the error check", r("test it", hist) == "run" and r("check it for errors", hist) == "run")
     check("'make the player orange' changes the app (not a new one)", r("make the player sphere orange and show the high score", hist) == "change")
     check("'make me a snake game' in the same chat starts a new one", r("make me a snake game", hist) == "new")
     check("'build another game' starts a new one", r("build another game, a racing one", hist) == "new")
@@ -203,6 +204,10 @@ async def main():
             await s.js("document.getElementById('previewEdgeBtn').click(); true")
             await asyncio.sleep(0.6)
             check("the edge tab reopens it", await s.js("XodPreview.state().open"))
+            await s.js("window.__opened = []; window.open = (u) => { window.__opened.push(u); return {}; }; true")
+            await s.js(f"XodPreview.onLaunch({json.dumps({k: g[k] for k in ('url', 'root', 'title', 'path')})}); true")
+            opened = await s.js("window.__opened")
+            check("'launch it' opens the app on its own (a window in the desktop app, a tab in a browser)", opened == [g["url"]], json.dumps(opened))
 
         # ---- optional: a real build with the loaded model
         if "--model" in sys.argv:

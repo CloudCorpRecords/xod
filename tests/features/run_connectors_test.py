@@ -79,7 +79,12 @@ async def main():
     st = await wait_state("mac", ("connected", "error"))
     tools = next(s for s in hub.status() if s["name"] == "mac")["tools"]
     reads = {t["name"] for t in tools if t["read_only"]}
-    check("C1 This Mac connects", st["state"] == "connected" and len(tools) == 10, f"{len(tools)} tools, {st.get('error')}")
+    check("C1 This Mac connects", st["state"] == "connected" and len(tools) == 18, f"{len(tools)} tools, {st.get('error')}")
+    from app.services.mcp_client import _destructive
+    c = hub.conns["mac"]
+    deletes = sorted(t.name for t in c.tools if _destructive(t))
+    check("C1b deleting tools are marked destructive (they always ask)",
+          deletes == ["calendar_delete_event", "mail_delete", "notes_delete", "reminders_delete"], str(deletes))
     check("C1 reads are read-only, writes ask", "calendar_events" in reads and "mail_draft" not in reads and "notes_create" not in reads)
 
     # C2 + C3

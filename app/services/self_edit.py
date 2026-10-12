@@ -64,6 +64,7 @@ PROTECTED_FILES = {
     "app/services/agent_mail.py",         # Agent Mail trust rules: key pinning, drafts need approval
     "app/services/previews.py",           # the sandbox that keeps apps Xod builds away from Xod itself
     "app/services/file_plans.py",         # what file plans may touch, and their undo
+    "app/services/soul.py",               # what the companion may do on its own, and its daily budget
     "app/services/speech.py",             # runs the voice: text must never reach a shell
     "app/services/mcp_oauth.py",          # sign-in tokens for connected apps
     "app/services/connectors.py",         # which outside servers Xod connects to

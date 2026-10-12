@@ -6,9 +6,10 @@ you've added to macOS (iCloud, Google, Exchange) come along for free, and nothin
 macOS asks once per app ("Xod wants to control Calendar"); you can change that later in System
 Settings → Privacy & Security → Automation.
 
-Reading is marked read-only. Creating events, reminders, notes or mail drafts is not, so Xod asks
-before doing it (unless you trust this connector fully). Mail is never sent from here: drafts open
-in Mail for you to send.
+Reading is marked read-only. Creating and changing things is not, so Xod asks before doing it (unless
+you trust this connector fully). Deleting is marked destructive: Xod always asks first, whatever the
+trust setting. Mail is never sent from here: drafts open in Mail for you to send.
+Lists return each item's id; changing or deleting something takes that id.
 
 Every value reaches AppleScript as an argument (`on run argv`), never pasted into the script.
 """
@@ -22,10 +23,12 @@ from mcp.types import ToolAnnotations
 
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+DELETE = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=False)
 
 server = MCPServer(
     name="mac", title="This Mac",
-    instructions="Calendar, Reminders, Notes and Mail on this Mac. Read freely; creating anything asks the user first.",
+    instructions="Calendar, Reminders, Notes and Mail on this Mac. Read freely; creating or changing asks the user first; "
+                 "deleting always asks. To change or delete something, list or search first to get its id.",
     version="0.2.0",
 )
 
@@ -63,6 +66,18 @@ def _when(value: str) -> datetime:
     except ValueError:
         raise ValueError(f"Use a date like 2026-10-14T15:00, not {value!r}")
 
+
+CAL_FIND = r'''
+on findEvent(eid)
+    tell application "Calendar"
+        repeat with c in calendars
+            set hits to (every event of c whose uid is eid)
+            if (count of hits) > 0 then return item 1 of hits
+        end repeat
+    end tell
+    error "That event isn't in Calendar any more."
+end findEvent
+'''
 
 # AppleScript helpers shared by the scripts below.
 LIB = r'''
@@ -114,7 +129,7 @@ on run argv
             repeat with e in (every event of c whose start date ≥ startD and start date ≤ endD)
                 set t to summary of e
                 if q is "" or t contains q then
-                    set out to out & cname & S & t & S & my iso(start date of e) & S & my iso(end date of e) & S & my txt(location of e) & R
+                    set out to out & cname & S & t & S & my iso(start date of e) & S & my iso(end date of e) & S & my txt(location of e) & S & (uid of e) & R
                 end if
             end repeat
         end repeat
@@ -122,7 +137,7 @@ on run argv
     return out
 end run
 '''
-    rows = _rows(_osa(script, *_parts(start), *_parts(end), search or ""), ["calendar", "title", "start", "end", "location"])
+    rows = _rows(_osa(script, *_parts(start), *_parts(end), search or ""), ["calendar", "title", "start", "end", "location", "id"])
     return sorted(rows, key=lambda r: r["start"])
 
 
@@ -153,6 +168,51 @@ end run
     return f"Added “{title}” to {cal}, {s:%a %b %-d %-I:%M %p}–{e:%-I:%M %p}."
 
 
+@server.tool(annotations=WRITE)
+def calendar_update_event(event_id: str, title: str = "", start: str = "", end: str = "", location: str = "", notes: str = "") -> str:
+    """Changes an event (id from calendar_events). Only the fields you pass change; moving `start`
+    without `end` keeps the event's length."""
+    s = _when(start) if start else None
+    e = _when(end) if end else None
+    script = LIB + CAL_FIND + r'''
+on run argv
+    set ev to my findEvent(item 1 of argv)
+    tell application "Calendar"
+        set oldLen to (end date of ev) - (start date of ev)
+        if (item 2 of argv) is not "" then set summary of ev to (item 2 of argv)
+        if (item 3 of argv) is "1" then
+            set newStart to my mkdate(item 5 of argv, item 6 of argv, item 7 of argv, item 8 of argv, item 9 of argv)
+            set start date of ev to newStart
+            if (item 4 of argv) is not "1" then set end date of ev to newStart + oldLen
+        end if
+        if (item 4 of argv) is "1" then set end date of ev to my mkdate(item 10 of argv, item 11 of argv, item 12 of argv, item 13 of argv, item 14 of argv)
+        if (item 15 of argv) is not "" then set location of ev to (item 15 of argv)
+        if (item 16 of argv) is not "" then set description of ev to (item 16 of argv)
+        return (summary of ev) & (ASCII character 31) & my iso(start date of ev)
+    end tell
+end run
+'''
+    out = _osa(script, event_id, title, "1" if s else "0", "1" if e else "0", *(_parts(s) if s else [0] * 5),
+               *(_parts(e) if e else [0] * 5), location, notes).strip().split(SEP)
+    return f"Updated “{out[0]}”" + (f", now starting {out[1]}." if len(out) > 1 and out[1] else ".")
+
+
+@server.tool(annotations=DELETE)
+def calendar_delete_event(event_id: str) -> str:
+    """Deletes an event (id from calendar_events). Calendar has no undo for this."""
+    script = LIB + CAL_FIND + r'''
+on run argv
+    set ev to my findEvent(item 1 of argv)
+    tell application "Calendar"
+        set t to summary of ev
+        delete ev
+        return t
+    end tell
+end run
+'''
+    return f"Deleted the event “{_osa(script, event_id).strip()}”."
+
+
 # ---------------------------------------------------------------- Reminders
 
 @server.tool(annotations=READ)
@@ -178,14 +238,14 @@ on run argv
                 set rs to (reminders of l whose completed is false)
             end if
             repeat with r in rs
-                set out to out & (name of l) & S & (name of r) & S & my iso(due date of r) & S & (completed of r as string) & S & my txt(body of r) & R
+                set out to out & (name of l) & S & (name of r) & S & my iso(due date of r) & S & (completed of r as string) & S & my txt(body of r) & S & (id of r) & R
             end repeat
         end repeat
     end tell
     return out
 end run
 '''
-    return _rows(_osa(script, list_name or "", "1" if include_completed else "0"), ["list", "title", "due", "completed", "notes"])
+    return _rows(_osa(script, list_name or "", "1" if include_completed else "0"), ["list", "title", "due", "completed", "notes", "id"])
 
 
 @server.tool(annotations=WRITE)
@@ -213,6 +273,46 @@ end run
 '''
     lst = _osa(script, title, list_name, notes, "1" if d else "0", *(_parts(d) if d else [0, 0, 0, 0, 0])).strip()
     return f"Added “{title}” to {lst}" + (f", due {d:%a %b %-d %-I:%M %p}." if d else ".")
+
+
+@server.tool(annotations=WRITE)
+def reminders_update(reminder_id: str, title: str = "", due: str = "", notes: str = "", completed: str = "") -> str:
+    """Changes a reminder (id from reminders_list): new title, due time (2026-10-14T09:00), notes, or
+    completed "true"/"false" to check it off or reopen it. Only what you pass changes."""
+    d = _when(due) if due else None
+    script = LIB + r'''
+on run argv
+    tell application "Reminders"
+        set r to reminder id (item 1 of argv)
+        if (item 2 of argv) is not "" then set name of r to (item 2 of argv)
+        if (item 3 of argv) is not "" then set body of r to (item 3 of argv)
+        if (item 4 of argv) is "true" then set completed of r to true
+        if (item 4 of argv) is "false" then set completed of r to false
+        if (item 5 of argv) is "1" then set due date of r to my mkdate(item 6 of argv, item 7 of argv, item 8 of argv, item 9 of argv, item 10 of argv)
+        return name of r
+    end tell
+end run
+'''
+    done = str(completed).strip().lower()
+    done = "true" if done in ("true", "1", "yes", "done") else "false" if done in ("false", "0", "no") else ""
+    name = _osa(script, reminder_id, title, notes, done, "1" if d else "0", *(_parts(d) if d else [0] * 5)).strip()
+    return f"Checked off “{name}”." if done == "true" and not (title or notes or d) else f"Updated “{name}”."
+
+
+@server.tool(annotations=DELETE)
+def reminders_delete(reminder_id: str) -> str:
+    """Deletes a reminder (id from reminders_list). To finish one, use reminders_update with completed="true"."""
+    script = r'''
+on run argv
+    tell application "Reminders"
+        set r to reminder id (item 1 of argv)
+        set t to name of r
+        delete r
+        return t
+    end tell
+end run
+'''
+    return f"Deleted the reminder “{_osa(script, reminder_id).strip()}”."
 
 
 # ---------------------------------------------------------------- Notes
@@ -271,6 +371,47 @@ end run
 '''
     f = _osa(script, title, body, folder).strip()
     return f"Created the note “{title}” in {f}."
+
+
+@server.tool(annotations=WRITE)
+def notes_update(note_id: str, text: str, mode: str = "append", title: str = "") -> str:
+    """Changes a note (id from notes_search): mode "append" adds `text` at the end, "replace" replaces
+    the whole note with `title` (or its current title) and `text`."""
+    lines = "".join(f"<div>{html.escape(line) or '<br>'}</div>" for line in text.splitlines())
+    script = r'''
+on run argv
+    tell application "Notes"
+        set n to note id (item 1 of argv)
+        if (item 2 of argv) is "replace" then
+            set t to (item 4 of argv)
+            if t is "" then set t to name of n
+            set body of n to "<h1>" & t & "</h1>" & (item 3 of argv)
+        else
+            set body of n to (body of n) & (item 3 of argv)
+        end if
+        return name of n
+    end tell
+end run
+'''
+    m = "replace" if str(mode).lower().startswith("rep") else "append"
+    name = _osa(script, note_id, m, lines, html.escape(title)).strip()
+    return f"{'Rewrote' if m == 'replace' else 'Added to'} the note “{name}”."
+
+
+@server.tool(annotations=DELETE)
+def notes_delete(note_id: str) -> str:
+    """Deletes a note (id from notes_search). It goes to Recently Deleted in Notes for 30 days."""
+    script = r'''
+on run argv
+    tell application "Notes"
+        set n to note id (item 1 of argv)
+        set t to name of n
+        delete n
+        return t
+    end tell
+end run
+'''
+    return f"Deleted the note “{_osa(script, note_id).strip()}” (it's in Recently Deleted for 30 days)."
 
 
 # ---------------------------------------------------------------- Mail
@@ -350,6 +491,41 @@ end run
     addresses = "\n".join(a.strip() for a in to.replace(";", ",").split(",") if a.strip())
     _osa(script, addresses, subject, text)
     return f"Opened a draft to {to} in Mail. It hasn't been sent; review it and press Send yourself."
+
+
+@server.tool(annotations=WRITE)
+def mail_mark(message_id: str, read: str = "", flagged: str = "") -> str:
+    """Marks a message (id from mail_search) read/unread (`read` "true"/"false") and/or flagged."""
+    script = r'''
+on run argv
+    tell application "Mail"
+        set m to first message of inbox whose id is ((item 1 of argv) as integer)
+        if (item 2 of argv) is "true" then set read status of m to true
+        if (item 2 of argv) is "false" then set read status of m to false
+        if (item 3 of argv) is "true" then set flagged status of m to true
+        if (item 3 of argv) is "false" then set flagged status of m to false
+        return subject of m
+    end tell
+end run
+'''
+    norm = lambda v: "true" if str(v).lower() in ("true", "1", "yes") else "false" if str(v).lower() in ("false", "0", "no") else ""
+    return f"Updated “{_osa(script, message_id, norm(read), norm(flagged)).strip()}”."
+
+
+@server.tool(annotations=DELETE)
+def mail_delete(message_id: str) -> str:
+    """Moves a message (id from mail_search) to the Trash in Mail."""
+    script = r'''
+on run argv
+    tell application "Mail"
+        set m to first message of inbox whose id is ((item 1 of argv) as integer)
+        set s to subject of m
+        delete m
+        return s
+    end tell
+end run
+'''
+    return f"Moved “{_osa(script, message_id).strip()}” to the Trash in Mail."
 
 
 if __name__ == "__main__":
