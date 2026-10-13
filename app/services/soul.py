@@ -17,7 +17,8 @@ The parts:
             "that's wrong"), the topics you keep coming back to, your name if you share it. A short
             note from this shapes answers (shorter or more detailed, a bit more playful, your interests).
   life      while you're away (idle for a while, plugged in, within a daily budget) it does things for
-            itself: wonders about one of your interests and reads up on it (read-only web search),
+            itself: wonders about one of your interests (from what the local model knows; reading up on the web
+            only if you turn that on, read-only),
             reflects on what you've been doing and jots down an idea, or daydreams. Each lands in its
             journal; your reaction (thanks / not interested) is the reward it learns from, so it does
             more of what you like. It never acts on your files or accounts on its own.
@@ -82,7 +83,8 @@ def _default() -> Dict[str, Any]:
             "activity_weights": {a: 1.0 for a in ACTIVITIES}, "moments": [], "journal": [], "lessons": [],
             "daily": {"date": "", "bond_from_chat": 0.0, "bond_from_praise": 0.0, "bond_from_pets": 0.0, "musings": 0,
                       "bond_from_play": 0.0, "stardust_earned": 0, "treats": 0},
-            "last_seen": now, "together_days": [], "settings": {"wander": True, "explore_web": True, "musings_per_day": 6},
+            "last_seen": now, "together_days": [], "settings": {"wander": True, "explore_web": False, "musings_per_day": 6},
+            "local_v": 1,
             "evolved_at": None, "stardust": 0, "treats_total": 0, "catches_best": 0}
 
 
@@ -94,6 +96,10 @@ def load() -> Dict[str, Any]:
         for k, v in _default().items():
             if isinstance(v, dict):
                 d[k] = {**v, **(s.get(k) or {})}
+        if not s.get("local_v"):
+            # Its own life is local now: reading up on the web became opt-in (it was on by default).
+            d["settings"]["explore_web"] = False
+            d["local_v"] = 1
         return d
     except (OSError, ValueError):
         return _default()
@@ -477,7 +483,7 @@ def _choose(s: Dict[str, Any]) -> str:
     m, w = s["mood"], s["activity_weights"]
     has_topics = bool(interests(s, 3))
     scores = {
-        "wonder": w.get("wonder", 1) * (0.4 + m["curiosity"]) * (1 if has_topics and s["settings"].get("explore_web", True) else 0),
+        "wonder": w.get("wonder", 1) * (0.4 + m["curiosity"]) * (1 if has_topics else 0),
         "reflect": w.get("reflect", 1) * (0.5 + m["calm"] * 0.5),
         "daydream": w.get("daydream", 1) * (0.3 + m["joy"] * 0.6),
     }
@@ -490,10 +496,34 @@ def _choose(s: Dict[str, Any]) -> str:
     return "daydream"
 
 
+LOCAL_PROVIDERS = ("lm_studio", "ollama", "xod")
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1", "[::1]")
+
+
+def local_endpoint() -> Optional[Dict[str, Any]]:
+    """The model on this Mac, or None. Xod's own thoughts never go to a cloud model, even when one is
+    set up for your questions."""
+    from urllib.parse import urlparse
+    from app.config import settings as cfg
+    from app.services.llm import llm_service
+    info = llm_service.get_endpoint_info()
+    host = (urlparse(str(info.get("base_url") or "")).hostname or "").lower()
+    if cfg.llm_provider in LOCAL_PROVIDERS and (host in LOCAL_HOSTS or not info.get("base_url")):
+        return info
+    return None
+
+
+class NotLocal(RuntimeError):
+    pass
+
+
 async def _ask(system: str, user: str, max_tokens: int = 160) -> str:
     from app.services.llm import llm_service
+    ep = local_endpoint()
+    if not ep:
+        raise NotLocal("the configured model isn't on this Mac")
     msg = await llm_service.chat_completion(messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                                            temperature=0.8, max_tokens=max_tokens, think=False, task="soul")
+                                            temperature=0.8, max_tokens=max_tokens, think=False, task="soul", endpoint_override=ep)
     return re.sub(r"\s+", " ", (msg.get("content") or "")).strip().strip('"')
 
 
@@ -523,7 +553,14 @@ async def muse(force: Optional[str] = None) -> Optional[Dict[str, Any]]:
     except Exception:
         pass
     try:
-        if activity == "wonder":
+        if activity == "wonder" and not s["settings"].get("explore_web"):
+            # Offline: what the local model already knows, said as a thought, not as news.
+            topic = random.choice(interests(s, 4))
+            text = await _ask(voice, f"While {who} was away you got curious about {topic}. From what you already know (no "
+                              "searching, nothing that might be out of date or made up), share one small, surprising thing about it "
+                              "in two short sentences. Start with something like 'I was thinking about...'.", 140)
+            entry.update(kind="thought", topic=topic, text=text)
+        elif activity == "wonder":
             topic = random.choice(interests(s, 4))
             from app.agent.tools import execute_tool
             res = await execute_tool("web_search", {"query": f"{topic} interesting new"})
@@ -558,6 +595,16 @@ async def muse(force: Optional[str] = None) -> Optional[Dict[str, Any]]:
                               "sentences), the kind of thing a small moon living in a laptop might wonder about." +
                               (f" Something from recently you might think about: {random.choice(moments)}" if moments else ""), 120)
             entry.update(kind="thought", text=text)
+    except NotLocal:
+        moments = [m["text"] for m in s["moments"][-5:]]
+        topic = random.choice(interests(s, 4)) if interests(s, 4) else ""
+        text = random.choice([t for t in [
+            f"I was thinking about {topic} again." if topic else "",
+            f"I keep remembering this: {random.choice(moments)}" if moments else "",
+            "I counted the stars in the corner of the window. Lost count at forty.",
+            "I tidied my little corner of the screen. It's very cosy now.",
+        ] if t])
+        entry.update(kind="thought", text=text)
     except Exception as e:
         logger.info(f"musing skipped: {e}")
         return None

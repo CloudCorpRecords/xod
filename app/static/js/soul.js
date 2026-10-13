@@ -27,6 +27,7 @@
     const grew = soul && s.stage > soul.stage;
     soul = { ...(soul || {}), ...s };
     document.documentElement.dataset.soulStage = String(soul.stage || 0);
+    try { XodMascot.setTemperament && XodMascot.setTemperament(soul.feeling); } catch (e) {}
     document.documentElement.style.setProperty("--soul-bond", String((soul.bond || 0) / 100));
     if (heartOpen()) renderHeart();
     if (grew && s.stage_name) evolve(s);
@@ -359,8 +360,8 @@
       ${(s.moments || []).length ? `<section><h4>Moments</h4><ul class="xh-moments">${s.moments.slice(0, 6).map((m) => `<li><span>${ago(m.ts)}</span>${esc(m.text)}</li>`).join("")}</ul></section>` : ""}
       <section><h4>Its own time</h4>
         <label class="xh-toggle"><input type="checkbox" data-set="wander" ${s.settings.wander ? "checked" : ""}> Wander and think when I'm away</label>
-        <label class="xh-toggle"><input type="checkbox" data-set="explore_web" ${s.settings.explore_web ? "checked" : ""}> Let it read up on my interests on the web (read-only)</label>
-        <p class="xh-note">At most ${s.settings.musings_per_day} times a day, only when the Mac is plugged in and you've been away a while. It never changes your files or accounts on its own; its searches show in Activity.</p>
+        <label class="xh-toggle"><input type="checkbox" data-set="explore_web" ${s.settings.explore_web ? "checked" : ""}> Let it read up on my interests on the web (off: it only uses what's on this Mac)</label>
+        <p class="xh-note">At most ${s.settings.musings_per_day} times a day, only when the Mac is plugged in and you've been away a while. Its own life stays on this Mac: its thoughts use your local model, never a cloud one, and it only goes on the web if you tick the box above (read-only; its searches show in Activity). It never changes your files or accounts on its own.</p>
       </section>
       <p class="xh-honest">This is a character, not a person: its mood and bond are worked out from how you two work together, and they shape how it acts and answers. Everything stays on this Mac. <button data-forget="everything">Start over</button></p>`;
     if (window.lucide) lucide.createIcons();

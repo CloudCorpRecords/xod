@@ -9,6 +9,15 @@
 - Keep petting and it giggles (a tickle); thank it in the chat and it blushes with heart eyes; it says good morning with a stretch; and once in a while it sneezes.
 - Xod's heart has a new Treats & play section with your stardust and best catch streak.
 
+**More life**
+- How Xod feels changes how it acts: delighted means bouncier, more humming and a bigger smile; sleepy means droopy lids and slow habits; curious means wide eyes and looking around; a bit down means quieter.
+- New habits: it juggles three little stars, reads a tiny book (eyes across the lines, a page turn), blows soap bubbles you can pop, and nods off when it's drowsy.
+- Asleep, it dreams: a thought cloud with stars, notes, or one of your interests.
+- It notices you: startles when the cursor whooshes past, wobbles when you resize the window, follows your scrolling, perks up when you send a message, says ✓ when you copy an answer, and is proud after a long one.
+
+**All local**
+- Xod's own life stays on your Mac: its thoughts only ever use the model on this Mac (never a cloud model, even if one is set up for your questions), and reading up on the web is now off unless you turn it on in Xod's heart (it was on by default before; it's switched off for existing setups too). With no local model it still writes simple thoughts of its own, without any model.
+
 **Voice mode**
 - It no longer answers background noise or made-up words. A stronger on-device model (Whisper large-v3 turbo) hears you better; transcripts Whisper itself doubts are dropped ("no, no, no…", one sentence over and over, "Thanks for watching!" into silence); sound with no speech isn't transcribed at all; and it learns how loud you are and ignores much quieter voices like a TV across the room.
 - It waits for the rest when you trail off on "and…" or "so the…", and asks you to repeat when it isn't sure what it heard.

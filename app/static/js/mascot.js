@@ -141,7 +141,17 @@
   };
   const ORDER = Object.keys(CHARACTERS);
   const GENERIC_HELLOS = ["Ask me something you've been wondering about.", "That tickles.", "No question is too small. Or too big, honestly.", "Right-click me to change how I look."];
-  const FIDGETS = [["hop", 700], ["look", 1600], ["wink", 900], ["stretch", 1500], ["hum", 2600], ["wiggle", 900], ["sneeze", 1700]];
+  const FIDGETS = [["hop", 700], ["look", 1600], ["wink", 900], ["stretch", 1500], ["hum", 2600], ["wiggle", 900], ["sneeze", 1700],
+                   ["juggle", 3200], ["read", 4200], ["bubble", 2200]];
+  // What it feels like (from services/soul.py) changes which habits it reaches for, and how often.
+  const TEMPERAMENT = {
+    delighted: { every: 0.6, likes: ["hum", "wiggle", "hop", "juggle", "bubble"], bounce: 1.25 },
+    curious: { every: 0.8, likes: ["look", "read", "juggle"], bounce: 1 },
+    sleepy: { every: 1.6, likes: ["stretch", "read"], bounce: 0.8 },
+    flustered: { every: 0.9, likes: ["look", "wiggle"], bounce: 1 },
+    "a bit down": { every: 1.5, likes: ["read", "look"], bounce: 0.85 },
+    content: { every: 1, likes: [], bounce: 1 },
+  };
   const SPECIAL_MS = { eclipse: 2400, twitch: 1400, vanish: 2200, scan: 1800, headturn: 2000, bloom: 2600 };
 
   function ghostPath(ph) {
@@ -213,6 +223,7 @@
       <g class="xp xp-mag"><circle cx="52" cy="43" r="5" fill="rgba(159,216,240,0.28)" stroke="#fffaf0" stroke-width="1.6"/><path d="M55.6 46.6 L60 51" stroke="#c98a2e" stroke-width="2.4" stroke-linecap="round"/><path d="M49.6 41 Q50.6 39.6 52.2 39.4" fill="none" stroke="#fffaf0" stroke-width="0.9" stroke-linecap="round" opacity="0.8"/></g>
       <g class="xp xp-wrench"><path d="M49 53 L57 45" stroke="#c4d0dd" stroke-width="2.6" stroke-linecap="round"/><circle cx="58" cy="44" r="3.4" fill="#c4d0dd"/><path d="M58 44 L61.5 40.5" stroke="#151a33" stroke-width="2" stroke-linecap="round"/></g>
       <g class="xp xp-quill"><path d="M50 54 Q55 42 62.5 33.5 Q61.5 43 52.5 52.5 Z" fill="#fffaf0"/><path d="M50.2 53.8 Q56 44 62 34.5" fill="none" stroke="#c9c2b4" stroke-width="0.6"/><circle class="xp-ink" cx="49.6" cy="54.6" r="0.9" fill="#0f1222"/></g>
+      <g class="xp xp-book"><path d="M44 47 L52 44.5 L60 47 L60 56 L52 53.5 L44 56 Z" fill="#fffaf0" stroke="#c9905a" stroke-width="0.7" stroke-linejoin="round"/><path d="M52 44.5 L52 53.5" stroke="#c9905a" stroke-width="0.7"/><path class="xp-page" d="M52 44.5 Q56 44 60 47 L60 56 Q56 53 52 53.5 Z" fill="#f4ecdc" opacity="0"/><path d="M46 48.5 L50 47.4 M46 50.5 L50 49.4 M54 47.4 L58 48.5 M54 49.4 L58 50.5" stroke="#c9c2b4" stroke-width="0.45" stroke-linecap="round"/></g>
       <g class="xp xp-wand"><path d="M49 54 L58 42" stroke="#e4dccd" stroke-width="1.8" stroke-linecap="round"/><path class="xp-wand-star" d="M58.5 35.5 L59.8 39 L63.3 40.2 L59.8 41.4 L58.5 44.9 L57.2 41.4 L53.7 40.2 L57.2 39 Z" fill="${c.glow}"/></g>
     </g>
     <g class="xm-cap">
@@ -220,6 +231,11 @@
       <path d="M16 19 Q30 14.5 44 17.5" fill="none" stroke="#fffaf0" stroke-width="2.6" stroke-linecap="round"/>
       <circle cx="57.5" cy="26" r="2.6" fill="#fffaf0"/>
     </g>
+  </g>
+  <g class="xm-juggle" opacity="0">
+    <path class="xm-jb" d="M0 -2.4 L0.7 -0.7 L2.4 0 L0.7 0.7 L0 2.4 L-0.7 0.7 L-2.4 0 L-0.7 -0.7 Z" fill="#ffd06b"/>
+    <path class="xm-jb" d="M0 -2.4 L0.7 -0.7 L2.4 0 L0.7 0.7 L0 2.4 L-0.7 0.7 L-2.4 0 L-0.7 -0.7 Z" fill="#ee8fae"/>
+    <path class="xm-jb" d="M0 -2.4 L0.7 -0.7 L2.4 0 L0.7 0.7 L0 2.4 L-0.7 0.7 L-2.4 0 L-0.7 -0.7 Z" fill="#6fd0bf"/>
   </g>
   <g class="xm-orbit">
     <path d="M32 3.5 L33.2 6.6 L36.3 7.8 L33.2 9 L32 12.1 L30.8 9 L27.7 7.8 L30.8 6.6 Z" fill="#ffd06b"/>
@@ -296,7 +312,7 @@
     r = {
       el, svg: q("svg"), cid, c,
       rig: q(".xm-rig"), body: q(".xm-body"), eyes: q(".xm-eyes"), open: q(".xm-open"), shut: q(".xm-shut"), joy: q(".xm-joy"), love: q(".xm-love"),
-      dizzy: q(".xm-dizzy"), mouth: q(".xm-mouth"), cheeks: el.querySelectorAll(".xm-cheek"), sweat: q(".xm-sweat"),
+      dizzy: q(".xm-dizzy"), mouth: q(".xm-mouth"), juggle: q(".xm-juggle"), jballs: el.querySelectorAll(".xm-jb"), page: q(".xp-page"), cheeks: el.querySelectorAll(".xm-cheek"), sweat: q(".xm-sweat"),
       eyeL: q(".xm-eye-l"), eyeR: q(".xm-eye-r"), phase: q(".xm-phase"), hem: q(".xc-hem"), scan: q(".xc-scan"),
       // body; a bouncier character has softer damping
       x: new Spring(0, 120, 14), y: new Spring(0, 120, 12 / b), rot: new Spring(0, 90, 11 / b),
@@ -492,6 +508,7 @@
       S.purgedAt = t;
       for (const el of [...rigs.keys()]) if (!el.isConnected) rigs.delete(el);
     }
+    if (t - (S.dreamTick || 0) > 500) { S.dreamTick = t; try { dream(t); } catch (e) {} }
     for (const el of liveMascots()) {
       const r = rigFor(el);
       if (r.settled) continue;
@@ -526,10 +543,12 @@
     if (t < r.nextFidget) return;
     const special = r.c.special;
     const useSpecial = special && Math.random() < (r.preview ? 0.6 : 0.35);
-    let [name, dur] = useSpecial ? [special, SPECIAL_MS[special]] : pick(FIDGETS);
+    const temper = TEMPERAMENT[S.temper] || TEMPERAMENT.content;
+    const liked = temper.likes.length && Math.random() < 0.55 ? FIDGETS.filter((f) => temper.likes.includes(f[0])) : FIDGETS;
+    let [name, dur] = useSpecial ? [special, SPECIAL_MS[special]] : pick(liked);
     if (name === "sneeze" && Math.random() > 0.3) [name, dur] = pick(FIDGETS.filter((f) => f[0] !== "sneeze"));   // a sneeze is rare
     r.fidget = { name, start: t, until: t + dur, dur };
-    r.nextFidget = t + dur + (r.preview ? 2500 + Math.random() * 3500 : 7000 + Math.random() * 11000);
+    r.nextFidget = t + dur + (r.preview ? 2500 + Math.random() * 3500 : (7000 + Math.random() * 11000) * temper.every);
   }
 
   function animate(r, t, dt, drowsy) {
@@ -586,6 +605,9 @@
       lx = w.x * 1.8; ly = w.y * 1.5;
     }
     if (fid === "look" || fid === "headturn") { lx = fp < 0.42 ? -2.9 : fp < 0.55 ? 0 : 2.9; ly = 0.2; }
+    if (fid === "read") { lx = 2 + Math.sin(fp * Math.PI * 7) * 1.2; ly = 1.9; }          // eyes down, across the lines
+    if (fid === "juggle") { const a = ts * 4.2; lx = Math.cos(a) * 1.6; ly = -1.6 + Math.sin(a) * 0.8; }
+    if (mood === "idle" && S.temper === "a bit down" && !pt && !fid) ly = Math.max(ly, 1.2);
     if (fid === "scan") { lx = Math.sin(fp * Math.PI * 4) * 2.8; ly = 0; }
     if (dizzy) { lx = Math.cos(ts * 9) * 1.4; ly = Math.sin(ts * 9) * 1.4; }
     r.lx.t = lx; r.ly.t = ly;
@@ -626,6 +648,15 @@
         if (!r.preview) { glyph(r.el, r.cid === "robot" ? "*bzzt*" : "achoo!", "is-achoo"); poof(r.el); }
       } else rot = 3 * (1 - fp);
     }
+    if (fid === "juggle") { y = -6; sy += Math.abs(Math.sin(ts * 9)) * 0.03; rot = Math.sin(ts * 4.5) * 3; }
+    if (fid === "read") { rot = 5; y = 2; if (fp > 0.72 && !f.kicked) { f.kicked = true; r.y.kick(-25); } }   // a page turns: a little perk
+    if (fid === "bubble") { sx = fp < 0.5 ? 1 + fp * 0.1 : 1; sy = fp < 0.5 ? 1 - fp * 0.05 : 1; }
+    // Drowsy: the head nods… and jerks back up.
+    if (drowsy && !r.preview && mood === "idle" && !fid) {
+      const nod = (t % 5200) / 5200;
+      if (nod > 0.55 && nod < 0.9) { rot = -10 * Math.sin(Math.PI * (nod - 0.55) / 0.35); y = 4; }
+      if (nod > 0.9 && !r.nodded) { r.nodded = true; r.y.kick(-30); r.blinkAt = t; } else if (nod < 0.5) r.nodded = false;
+    }
     if (munch && !r.preview) {                                          // chomp, chomp, cheeks full
       const c = Math.sin(ts * 15);
       sx = 1.06 + 0.03 * c; sy = 0.97 - 0.03 * c; y = -4 * Math.max(0, c);
@@ -644,6 +675,11 @@
     if (mood === "working") lid = 0.72;
     if (mood === "error") lid = 0.8;
     if (drowsy && !r.preview) lid = clamp(1 - (Date.now() - S.lastActivity - 75000) / 45000, 0.35, 1);
+    if (mood === "idle" && !r.preview && !happy) {
+      if (S.temper === "sleepy") lid = Math.min(lid, 0.78);
+      if (S.temper === "curious") lid = Math.max(lid, 1.06);
+    }
+    if (fid === "read") { lid = 0.86; }
     if (startle || mood === "listening" || ooh) lid = 1.15;
     if (fid === "headturn" || fid === "scan") lid = 1.12;
     r.lid.t = lid;
@@ -705,6 +741,10 @@
     if (munch && !r.preview) { mw = 1.6; mc = 1.2; mo = 0.9 * Math.max(0, Math.sin(ts * 15)); }
     if (giggle && !r.preview) { mw = 3; mc = 2.6; mo = 1.4 + Math.abs(Math.sin(ts * 15)) * 1.2; }
     if (love && !munch && !giggle) { mw = 2.6; mc = 2.8; mo = 0.5; }
+    if (fid === "bubble") { mw = 0.9; mc = 0.2; mo = fp < 0.55 ? 0.6 : 0.2; }            // lips pursed, blowing
+    if (fid === "read") { mw = 1.6; mc = 0.8; mo = 0; }
+    if (mood === "idle" && S.temper === "a bit down" && !fid && !happy && !talking) { mw = 2.1; mc = 0.9; }
+    if (mood === "idle" && S.temper === "delighted" && !fid && !talking) { mw = 2.9; mc = 3; }
     r.mw.t = mw; r.mc.t = mc; r.mo.t = Math.max(0, mo);
 
     const cheekBase = r.c.cheekOpacity ?? 0.5;
@@ -717,6 +757,7 @@
       if (mood === "searching") prop = "mag";
       else if (mood === "working") prop = "wrench";
       else if (talking) prop = "quill";
+      if (fid === "read") prop = "book";
       if (r.propUntil > t) prop = r.prop;
     }
     if (r.el.dataset.prop !== prop) r.el.dataset.prop = prop;
@@ -726,6 +767,16 @@
 
     // ---- particles
     if (fid === "hum" && t > r.notesAt) { r.notesAt = t + 480; glyph(r.el, pick(["♪", "♫", "♪"]), "is-note"); }
+    if (r.juggle) {
+      const on = fid === "juggle";
+      if ((r.juggle.getAttribute("opacity") === "1") !== on) r.juggle.setAttribute("opacity", on ? "1" : "0");
+      if (on) r.jballs.forEach((b, i) => {
+        const a = ts * 4.2 + (i * Math.PI * 2) / 3;
+        b.setAttribute("transform", `translate(${(32 + Math.cos(a) * 15).toFixed(2)} ${(12 + Math.sin(a) * 6 - Math.abs(Math.cos(a)) * 6).toFixed(2)}) rotate(${(a * 60).toFixed(1)}) scale(1.7)`);
+      });
+    }
+    if (r.page) r.page.setAttribute("opacity", fid === "read" && fp > 0.72 && fp < 0.86 ? "1" : "0");
+    if (fid === "bubble" && fp > 0.45 && !f.blown && !r.preview) { f.blown = true; blowBubble(r.el); }
     if (giggle && !r.preview && t > r.notesAt) { r.notesAt = t + 380; glyph(r.el, pick(["he", "hehe", "hi hi"]), "is-giggle"); }
     if (love && !r.preview && t > (r.loveAt || 0)) { r.loveAt = t + 520; glyph(r.el, "♥"); }
 
@@ -897,6 +948,68 @@
       s.style.setProperty("--c", SPARK_COLORS[i % SPARK_COLORS.length]);
       document.body.appendChild(s);
       setTimeout(() => s.remove(), 950);
+    }
+  }
+
+  // A soap bubble it blows: it drifts up and wobbles; pop it and Xod is delighted.
+  function blowBubble(el) {
+    if (reduceMotion) return;
+    const b = el.getBoundingClientRect();
+    if (!b.width || b.bottom < 0 || b.top > innerHeight) return;
+    const size = clamp(b.width * 0.42, 14, 34);
+    const bub = document.createElement("button");
+    bub.className = "xm-bubble";
+    bub.setAttribute("aria-label", "Pop the bubble");
+    bub.style.width = bub.style.height = `${size}px`;
+    let x = b.left + b.width * 0.5 - size / 2, y = b.top + b.height * 0.62 - size / 2;
+    const vx = (Math.random() - 0.5) * 22, t0 = now(), life = 5200 + Math.random() * 2000;
+    document.body.appendChild(bub);
+    let popped = false;
+    const pop = (byYou) => {
+      if (popped) return;
+      popped = true;
+      bub.classList.add("is-popped");
+      setTimeout(() => bub.remove(), 260);
+      if (byYou) { S.happyUntil = now() + 1200; glyph(el, pick(["pop!", "hehe", "✦"]), "is-note"); for (const r of rigs.values()) r.y.kick(-50); }
+    };
+    bub.addEventListener("pointerdown", (e) => { e.stopPropagation(); pop(true); });
+    const step = () => {
+      if (popped) return;
+      const k = (now() - t0) / 1000;
+      const bx = x + vx * k + Math.sin(k * 2.2) * 10, by = y - k * 34 - (k * k) * 3;
+      bub.style.transform = `translate(${bx}px, ${by}px) scale(${Math.min(1, 0.3 + k * 1.6)}, ${Math.min(1, 0.3 + k * 1.6) * (1 + Math.sin(k * 7) * 0.04)})`;
+      if (now() - t0 > life || by < 30) return pop(false);
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  // A thought cloud while it sleeps, with what it's dreaming about.
+  const DREAMS = ["☾", "✦", "♪", "☁", "✧", "♥"];
+  let dreamEl = null, dreamAt = 0;
+  function dream(t) {
+    const hero = document.querySelector(".xod-mascot--hero");
+    const sleeping = S.mood === "sleepy" && hero && hero.getBoundingClientRect().width && !reduceMotion && !document.hidden;
+    if (!sleeping) { if (dreamEl) { dreamEl.remove(); dreamEl = null; } return; }
+    const b = hero.getBoundingClientRect();
+    if (!dreamEl) {
+      dreamEl = document.createElement("div");
+      dreamEl.className = "xm-dream";
+      dreamEl.innerHTML = `<i></i><i></i><span></span>`;
+      document.body.appendChild(dreamEl);
+      dreamAt = 0;
+    }
+    dreamEl.style.left = `${b.right - b.width * 0.12}px`;
+    dreamEl.style.top = `${b.top - b.height * 0.18}px`;
+    if (t - dreamAt > 4200) {
+      dreamAt = t;
+      const topics = (window.XodSoul && XodSoul.state && XodSoul.state().soul && XodSoul.state().soul.interests) || [];
+      const what = topics.length && Math.random() < 0.4 ? pick(topics) : pick(DREAMS);
+      const sp = dreamEl.querySelector("span");
+      sp.classList.remove("is-in"); void sp.offsetWidth;
+      sp.textContent = what;
+      sp.classList.toggle("is-word", what.length > 2);
+      sp.classList.add("is-in");
     }
   }
 
@@ -1115,6 +1228,11 @@
 
     if (wasBusy && !busy) {
       beHappy();
+      const last = [...document.querySelectorAll("#chatMessages .prose-custom")].pop();
+      if (last && (last.textContent || "").length > 900) {
+        const m = document.querySelector(".xod-mascot--small");
+        if (m) setTimeout(() => glyph(m, pick(["✦ done!", "phew!", "ta-da"]), "is-note"), 500);
+      }
       const small = document.querySelector(".xod-mascot--small");
       sparkleBurst(small);
       // Now and then a finished job earns a little flip.
@@ -1150,6 +1268,55 @@
         beHappy(1200);
         setTimeout(() => say("Welcome back.", 2400), 400);
       }
+    });
+
+    // A cursor whooshing past the big one: whoa.
+    let lastMove = null;
+    document.addEventListener("pointermove", (e) => {
+      const t = now();
+      if (lastMove) {
+        const speed = Math.hypot(e.clientX - lastMove.x, e.clientY - lastMove.y) / Math.max(1, t - lastMove.t);
+        const hero = document.querySelector(".xod-mascot--hero");
+        if (speed > 3.2 && hero && t - (S.whoaAt || 0) > 6000) {
+          const b = hero.getBoundingClientRect();
+          if (b.width && Math.hypot(e.clientX - (b.left + b.width / 2), e.clientY - (b.top + b.height / 2)) < b.width * 1.2) {
+            S.whoaAt = t; S.startleUntil = t + 600; S.lookAtPoint = { x: e.clientX + (e.clientX - lastMove.x) * 8, y: e.clientY }; S.lookAtUntil = t + 900;
+            const r = rigs.get(hero);
+            if (r) { r.sy.kick(4); r.rot.kick(Math.sign(e.clientX - lastMove.x) * 120); }
+            if (Math.random() < 0.4) glyph(hero, pick(["whoa", "!", "zoom"]), "is-bang");
+          }
+        }
+      }
+      lastMove = { x: e.clientX, y: e.clientY, t };
+    }, { passive: true });
+    // The window changes size: everyone wobbles.
+    let resizeAt = 0;
+    window.addEventListener("resize", () => {
+      if (now() - resizeAt < 400) return;
+      resizeAt = now();
+      for (const r of rigs.values()) { r.rot.kick((Math.random() - 0.5) * 160); r.sx.kick(3); }
+    });
+    // Scrolling through answers: its eyes follow.
+    const msgs = document.getElementById("chatMessages");
+    let lastScroll = msgs ? msgs.scrollTop : 0;
+    if (msgs) msgs.addEventListener("scroll", () => {
+      const d = msgs.scrollTop - lastScroll;
+      lastScroll = msgs.scrollTop;
+      if (Math.abs(d) < 4) return;
+      const b = msgs.getBoundingClientRect();
+      S.lookAtPoint = { x: b.left + b.width / 2, y: d > 0 ? b.bottom : b.top }; S.lookAtUntil = now() + 500;
+    }, { passive: true });
+    // You send something: it perks up and looks at what you wrote.
+    const form = document.getElementById("chatForm");
+    if (form) form.addEventListener("submit", () => {
+      for (const r of rigs.values()) { r.y.kick(-45); r.sy.kick(3); }
+      const b = form.getBoundingClientRect();
+      S.lookAtPoint = { x: b.left + b.width / 2, y: b.top }; S.lookAtUntil = now() + 1100; S.oohUntil = now() + 700;
+    }, true);
+    // You copied an answer: glad it was useful.
+    document.addEventListener("copy", () => {
+      const m = document.querySelector(".xod-mascot--small") || document.querySelector(".xod-mascot--hero");
+      if (m && now() - (S.copyAt || 0) > 5000) { S.copyAt = now(); S.happyUntil = now() + 900; glyph(m, "✓", "is-note"); }
     });
 
     // Shooting stars are worth a look.
@@ -1204,6 +1371,10 @@
     say, sparkleBurst, beHappy, flip, lunarPhase, phaseName, mood: () => S.mood,
     characters: () => ORDER.map((id) => ({ id, name: CHARACTERS[id].name, blurb: CHARACTERS[id].blurb })),
     character: () => character, setCharacter, puppet, glyph, poof,
+    // soul.js: how it feels lately (delighted, curious, sleepy, flustered, a bit down, content)
+    setTemperament: (f) => { S.temper = f || "content"; },
+    temperament: () => S.temper || "content",
+    blowBubble: () => { const h = document.querySelector(".xod-mascot--hero") || document.querySelector(".xod-mascot--small"); if (h) blowBubble(h); },
     // joy.js: a treat, a tickle, a happy dance, heart eyes
     munch: (ms = 1400) => { S.munchUntil = now() + ms; noteActivity(); },
     giggle: (ms = 1700) => { S.giggleUntil = now() + ms; noteActivity(); },
