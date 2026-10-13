@@ -48,6 +48,7 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 |---|---|
 | **Private by default** | Chats, files, voice and images stay on your Mac. Use Xod's built-in engine, LM Studio or Ollama. No account, no telemetry. |
 | **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. |
+| **It reads the web itself** | It searches in its own browser, reads the top pages side by side and answers from them with sources. No search API key. |
 | **You stay in charge** | It stops for your OK before anything is sent, paid, posted or deleted. Every action is logged, and file changes can be undone. |
 | **Builds what you ask for** | Apps and games written, run, tested and fixed on your Mac, with a live preview beside the chat. |
 | **A companion that grows** | Moods, a bond with you, five stages to grow through, and a journal of what it thought about while you were away. |

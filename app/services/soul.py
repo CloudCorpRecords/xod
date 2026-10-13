@@ -83,8 +83,8 @@ def _default() -> Dict[str, Any]:
             "activity_weights": {a: 1.0 for a in ACTIVITIES}, "moments": [], "journal": [], "lessons": [],
             "daily": {"date": "", "bond_from_chat": 0.0, "bond_from_praise": 0.0, "bond_from_pets": 0.0, "musings": 0,
                       "bond_from_play": 0.0, "stardust_earned": 0, "treats": 0},
-            "last_seen": now, "together_days": [], "settings": {"wander": True, "explore_web": False, "musings_per_day": 6},
-            "local_v": 1,
+            "last_seen": now, "together_days": [], "settings": {"wander": True, "explore_web": True, "musings_per_day": 6},
+            "local_v": 1, "web_v": 1,
             "evolved_at": None, "stardust": 0, "treats_total": 0, "catches_best": 0}
 
 
@@ -96,10 +96,10 @@ def load() -> Dict[str, Any]:
         for k, v in _default().items():
             if isinstance(v, dict):
                 d[k] = {**v, **(s.get(k) or {})}
-        if not s.get("local_v"):
-            # Its own life is local now: reading up on the web became opt-in (it was on by default).
-            d["settings"]["explore_web"] = False
-            d["local_v"] = 1
+        if not s.get("web_v"):
+            # Reading up on the web is on by default again, now in Xod's own browser (no search API, no cloud model).
+            d["settings"]["explore_web"] = True
+            d["local_v"] = d["web_v"] = 1
         return d
     except (OSError, ValueError):
         return _default()
@@ -561,22 +561,37 @@ async def muse(force: Optional[str] = None) -> Optional[Dict[str, Any]]:
                               "in two short sentences. Start with something like 'I was thinking about...'.", 140)
             entry.update(kind="thought", topic=topic, text=text)
         elif activity == "wonder":
+            # Reading up the way a person would: a search in its own browser, then a page or two, in background
+            # tabs (a browser task you're running is never interrupted). Its thoughts about it use the local model.
             topic = random.choice(interests(s, 4))
-            from app.agent.tools import execute_tool
-            res = await execute_tool("web_search", {"query": f"{topic} interesting new"})
-            items = (res or {}).get("results") or (res or {}).get("data") or []
-            snippets = []
-            sources = []
-            for it in items[:5]:
-                if isinstance(it, dict):
-                    snippets.append(f"- {it.get('title', '')}: {str(it.get('content') or it.get('snippet') or it.get('body') or '')[:300]}")
-                    if it.get("url") or it.get("href"):
-                        sources.append({"title": str(it.get("title", ""))[:100], "url": it.get("url") or it.get("href")})
+            from app.services import web_reader
+            from app.services.browser_sandbox import browser_sandbox_service
+            if browser_sandbox_service.mission_busy:
+                return None
+            q = random.choice([f"{topic} surprising facts", f"{topic} new discovery", f"{topic} news this month",
+                               f"{topic} little-known history", f"how does {topic} work"])
+            try:
+                from app.services import activity as _act
+                ctx = await asyncio.to_thread(_act.before, "web_search", {"query": q})
+            except Exception:
+                _act, ctx = None, None
+            res = await web_reader.search_and_read(q, read_top=2, budget=900)
+            if _act and ctx:
+                try:
+                    await asyncio.to_thread(_act.after, ctx, res)      # shows in Activity as its own search
+                except Exception:
+                    pass
+            items = [it for it in res.get("results") or [] if it.get("content")] or (res.get("results") or [])[:4]
+            snippets, sources = [], []
+            for it in items[:3]:
+                snippets.append(f"- {it.get('title', '')}: {str(it.get('content') or it.get('snippet') or '')[:900]}")
+                sources.append({"title": str(it.get("title", ""))[:100], "url": it.get("url")})
             if not snippets:
                 return None
-            text = await _ask(voice, f"While {who} was away you got curious about {topic} and read these:\n" + "\n".join(snippets) +
-                              f"\n\nIn two short sentences, tell {who} the most interesting thing you found. Only what's in the "
-                              "snippets. Start with something like 'I went looking into...' or 'I got curious about...'.")
+            text = await _ask(voice, f"While {who} was away you got curious about {topic} and read these pages:\n" + "\n".join(snippets) +
+                              f"\n\nIn two short sentences, tell {who} the single most interesting specific thing you learned (a name, a "
+                              "number, a discovery, how something works), not that you found a list or a page. Only what's in the "
+                              "pages. Start with something like 'I went looking into...' or 'I got curious about...'.")
             entry.update(kind="found", topic=topic, text=text, sources=sources[:3])
         elif activity == "reflect":
             work = _recent_work()

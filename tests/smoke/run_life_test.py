@@ -44,13 +44,17 @@ def free_port():
 async def unit():
     from app.config import settings
     from app.services import soul
-    # A setup from before: web reading was on by default. Now it's off.
+    # A setup from before, where web reading had been switched off: it's back on, now through Xod's own browser.
     old = soul._default()
-    old.pop("local_v")
-    old["settings"]["explore_web"] = True
+    old.pop("web_v")
+    old["settings"]["explore_web"] = False
     soul.PATH.write_text(json.dumps(old))
-    check("setups from before: web reading is switched off", soul.load()["settings"]["explore_web"] is False)
-    check("new ones start with it off", soul._default()["settings"]["explore_web"] is False)
+    check("setups from before: reading up on the web is on again (in its own browser)", soul.load()["settings"]["explore_web"] is True)
+    check("new ones start with it on", soul._default()["settings"]["explore_web"] is True)
+    s = soul.load()
+    s["settings"]["explore_web"] = False
+    soul.save(s)
+    check("…and turning it off sticks", soul.load()["settings"]["explore_web"] is False)
     saved = (settings.llm_provider, settings.llm_base_url)
     try:
         settings.llm_provider, settings.llm_base_url = "openai", "https://api.openai.com/v1"

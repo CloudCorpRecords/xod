@@ -367,7 +367,7 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
             })
 
         if not plan_steps:
-            primary_search = "tavily_search" if settings.tavily_api_key else "web_search"
+            primary_search = "web_search"
             plan_steps.append({
                 "id": 1,
                 "title": f"Execute Deep Intelligence Investigation on '{user_query[:40]}'",
@@ -1291,56 +1291,92 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
 
     async def _fast_search_and_answer(self, query: str, queries: List[str], messages: List[Dict[str, Any]],
                                       evidence_board: EvidenceBoard) -> AsyncGenerator[Dict[str, Any], None]:
-        tool = "tavily_search" if settings.tavily_api_key else "web_search"
-        extra: Dict[str, Any] = {}
+        from app.services import web_reader
+        tool = "web_search"
         if re.search(r"\b(latest|newest|news|recent(ly)?|this (week|month)|who won|current(ly)?|right now|upcoming|last night|yesterday)\b", query, re.I):
             stamp = time.strftime("%B %Y")
             queries = [q if re.search(r"\b20\d\d\b", q) else f"{q} {stamp}" for q in queries]
-            if tool == "tavily_search":
-                extra = {"topic": "news", "days": 14}
-        yield {"type": "status", "content": "Searching the web…"}
+        deep = bool(self._DEPTH_RE.search(query))
+        yield {"type": "status", "content": "Searching the web in Xod's browser…"}
         ids = [f"fast_{i}" for i in range(len(queries))]
         for cid, q in zip(ids, queries):
-            yield {"type": "tool_call", "name": tool, "args": {"query": q, **extra}, "id": cid}
+            yield {"type": "tool_call", "name": tool, "args": {"query": q}, "id": cid}
 
-        async def run(q: str) -> Dict[str, Any]:
+        # 1. Search, like a person would: a search engine's results page in Xod's own browser (no API key).
+        async def find(q: str) -> Dict[str, Any]:
             try:
-                r = await execute_tool(tool, {"query": q, **extra})
+                return await web_reader.search(q, 8)
             except Exception as e:
-                r = {"success": False, "error": str(e)}
-            if tool != "web_search" and not (isinstance(r, dict) and r.get("results")):
-                try:
-                    r = await execute_tool("web_search", {"query": q})
-                except Exception as e:
-                    r = {"success": False, "error": str(e)}
-            return r
+                return {"results": [], "error": str(e)}
+        found = await asyncio.gather(*(find(q) for q in queries))
 
-        results = await asyncio.gather(*(run(q) for q in queries))
+        # 2. Open the best few results in background tabs and read them, so the answer comes from the pages
+        # themselves rather than two-line snippets.
+        merged, seen = [], set()
+        for rank in range(8):
+            for f in found:
+                rs = f.get("results") or []
+                if rank < len(rs) and rs[rank]["url"] not in seen:
+                    seen.add(rs[rank]["url"])
+                    merged.append(rs[rank])
+        picks, hosts = [], set()
+        for h in merged:
+            host = h.get("host") or ""
+            if web_reader._readable(h["url"]) and host not in hosts:
+                picks.append(h)
+                hosts.add(host)
+            if len(picks) >= (4 if deep else 3):
+                break
+        if picks:
+            names = ", ".join(re.sub(r"^www\.", "", h.get("host") or "") for h in picks)
+            yield {"type": "status", "content": f"Reading {names}…"}
+            pages = await web_reader.read([h.get("open") or h["url"] for h in picks], query, 1800 if deep else 1000)
+            for h, pg in zip(picks, pages):
+                if pg.get("ok"):
+                    h["content"] = pg["content"]
+                    if str(pg.get("url", "")).startswith("http"):
+                        h["url"] = pg["url"]
+                    if pg.get("published"):
+                        h["published"] = pg["published"][:10]
+        for h in merged:
+            h.pop("open", None)
+        if not merged:
+            # The browser couldn't search (Chrome missing, every engine blocked): a configured API or plain HTTP.
+            for q in queries:
+                try:
+                    r = await execute_tool("tavily_search" if settings.tavily_api_key else "you_search", {"query": q})
+                except Exception as e:
+                    r = {"error": str(e)}
+                merged += [x for x in (r or {}).get("results") or [] if isinstance(x, dict)]
+        engine = next((f.get("engine") for f in found if f.get("engine")), "")
+        results = [{"results": [h for h in merged if h in (f.get("results") or [])] or (merged if i == 0 else []),
+                    "provider": "browser", "engine": engine,
+                    "pages_read": sum(1 for h in picks if h.get("content"))} for i, f in enumerate(found)]
         for cid, q, r in zip(ids, queries, results):
             evidence_board.update_from_tool(tool, {"query": q}, r)
             yield {"type": "tool_result", "name": tool, "summary": self._format_summary(r), "data": r, "id": cid}
 
-        hits, seen, briefs, meta = [], set(), [], []
-        for r in results:
-            if not isinstance(r, dict):
+        # Pages that were read first, with their passages; the other results as snippets.
+        hits, briefs, meta = [], [], []
+        ordered = [h for h in merged if h.get("content")] + [h for h in merged if not h.get("content")]
+        for h in ordered:
+            url = str(h.get("url") or "")
+            if not url.startswith("http") or h.get("title") == "Search Error":
                 continue
-            if r.get("answer"):
-                briefs.append(str(r["answer"])[:400])
-            for h in r.get("results") or []:
-                url = str((h or {}).get("url") or "")
-                if not url.startswith("http") or url in seen or (h.get("title") == "Search Error"):
-                    continue
-                seen.add(url)
-                text = str(h.get("snippet") or h.get("content") or "")
-                text = re.sub(r"!\[[^\]]*\]\([^)]*\)|\S+\.(?:png|jpe?g|gif|webp|svg)\b|^#+\s*", " ", text, flags=re.M)
-                text = re.sub(r"\s+", " ", text).strip()
-                hits.append(f"[{len(hits) + 1}] {str(h.get('title') or '')[:100]} ({url})\n{text[:360]}")
-                meta.append((str(h.get("title") or url).strip()[:90], url))
-                if len(hits) >= 6:
-                    break
+            body = str(h.get("content") or h.get("snippet") or "")
+            body = re.sub(r"!\[[^\]]*\]\([^)]*\)|\S+\.(?:png|jpe?g|gif|webp|svg)\b|^#+\s*", " ", body, flags=re.M)
+            if h.get("content"):
+                body = re.sub(r"[ \t]+", " ", body).strip()[: (1800 if deep else 1000)]
+                head = f"[{len(hits) + 1}] {str(h.get('title') or '')[:100]} ({url}){' · ' + h['published'] if h.get('published') else ''} — page read:"
+            else:
+                body = re.sub(r"\s+", " ", body).strip()[:300]
+                head = f"[{len(hits) + 1}] {str(h.get('title') or '')[:100]} ({url}) — search snippet:"
+            hits.append(f"{head}\n{body}")
+            meta.append((str(h.get("title") or url).strip()[:90], url))
+            if len(hits) >= (7 if deep else 6):    # the model reads every word: more results is slower answers
+                break
 
         # ---- answer
-        deep = bool(self._DEPTH_RE.search(query))
         spoken = getattr(self, "spoken", False)
         if spoken:
             system = (
@@ -2229,6 +2265,10 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             return f"Opened in macOS Finder: {Path(tgt).name} ({tgt})"
         elif "technologies" in result:
             return f"Audited {result.get('domain', 'target')}: {result.get('total_technologies_detected', 0)} tech badges detected"
+        elif "results" in result and result.get("provider") == "browser":
+            eng = {"google": "Google", "bing": "Bing", "duckduckgo": "DuckDuckGo"}.get(result.get("engine") or "", "the web")
+            read = result.get("pages_read") or sum(1 for r in result.get("results", []) if isinstance(r, dict) and r.get("content"))
+            return f"Searched {eng} in Xod's browser: {len(result.get('results', []))} results" + (f", read {read} page{'s' * (read != 1)}" if read else "")
         elif "results" in result:
             prov = "Tavily" if result.get("provider") == "tavily" else ("You.com" if result.get("provider") == "you.com" else "web")
             ans_note = f" (Answer: '{result.get('answer')[:45]}...')" if result.get("answer") else ""

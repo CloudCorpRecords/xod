@@ -235,46 +235,52 @@ MISSION_STEP_TOKENS = 3000
 # Routine steps answer without a thinking phase (~5-10s instead of ~30s); thinking turns
 # back on after a failure or when the agent is going in circles.
 MISSION_FAST_STEP_TOKENS = 1200
-# Attach a numbered screenshot so the model can see layout, pop-ups and icon buttons.
-MISSION_USE_VISION = True
+# A numbered screenshot shows layout, pop-ups and icon buttons, but costs the local model several seconds to
+# read. "auto": only when it helps (the model asks to look, the last action failed or changed nothing, a careful
+# step, or a page with almost nothing to click). "always" / "never" are for testing.
+MISSION_VISION = os.environ.get("XOD_MISSION_VISION", "auto")
+MISSION_USE_VISION = MISSION_VISION != "never"
+# Extra actions the model may chain after the first one on the same page ("then").
+MISSION_MAX_CHAINED = 3
 MISSION_PAGE_CHUNK = 3500
 SITE_NOTES_PATH = str(XOD_DATA_DIR / "site_notes.json")
 PROFILE_PATH = str(XOD_DATA_DIR / "profile.json")
 
-MISSION_SYSTEM_PROMPT = """You drive a real web browser, one action at a time, to get the user's GOAL done.
-Each turn you get: the page's numbered interactive elements, its text, a screenshot with the same numbers drawn in red boxes,
-your PLAN, your NOTES, and the log of what you already did.
+MISSION_SYSTEM_PROMPT = """You drive a real web browser to get the user's GOAL done.
+Each turn you get the page's numbered interactive elements, its text, your PLAN and NOTES, and the log of what you already did
+(sometimes also a screenshot with the same numbers drawn in red boxes).
 
-Reply with ONLY a JSON object:
-{
-  "reasoning": "<one short sentence: what you see and why this action>",
-  "plan": ["<short remaining steps>", "..."],
-  "remember": "<optional: a fact worth keeping for the final answer, e.g. 'Shop A: Trail Runner 2 costs $89'>",
-  "think": <optional: true to ask for more thinking time on this step instead of acting>,
-  "action": "click" | "type" | "select" | "choose" | "check" | "uncheck" | "hover" | "upload_resume" | "log_in" | "create_password" |
-            "scroll" | "read_more" | "press_key" | "navigate" | "back" | "switch_tab" | "close_tab" | "wait" | "ask_user" | "finish",
-  "index": <element number, for click/type/select/choose/check/uncheck/hover/upload_resume>,
-  "text": "<text to type, option to pick, or key to press>",
-  "press_enter": <true only for search boxes>,
-  "url": "<full URL, for navigate>",
-  "tab": <tab number from OPEN TABS, for switch_tab/close_tab>,
-  "direction": "down" | "up",
-  "username_index": <for log_in>, "password_index": <for log_in>, "username": <for create_password>,
-  "question": "<for ask_user: exactly what you need>",
-  "answer": "<for finish: the result for the user, built from NOTES and the page>"
-}
+Reply with ONLY a JSON object, with only the keys you need. Examples:
+{"reasoning": "Search box is 3", "action": "type", "index": 3, "text": "trail runner 2", "press_enter": true}
+{"reasoning": "Fill the contact form, then continue", "action": "type", "index": 4, "text": "Ana Ruiz",
+ "then": [{"action": "type", "index": 5, "text": "ana@example.com"}, {"action": "select", "index": 7, "text": "1-3"}, {"action": "click", "index": 9}]}
+{"reasoning": "Both prices noted", "action": "finish", "answer": "Shop B is cheaper: $79.50 vs $89.99 at Shop A."}
+
+Keys:
+- "action": click | type | select | choose | check | uncheck | hover | upload_resume | log_in | create_password | scroll | read_more |
+  extract | press_key | navigate | back | switch_tab | close_tab | wait | ask_user | finish
+- "index": element number (click/type/select/choose/check/uncheck/hover/upload_resume). "text": text to type, option to pick, key to press,
+  or for extract what to pull out of the page. "press_enter": true only for search boxes. "url": for navigate. "tab": for switch_tab/close_tab.
+  "direction": "down"/"up" for scroll. "username_index"/"password_index" for log_in; "username" for create_password.
+  "question" for ask_user. "answer" for finish: the result for the user, built from NOTES and the page.
+- "reasoning": one short sentence (under 15 words).
+- "plan": 3-6 short remaining steps. Only on your first step or when the plan changes; otherwise leave it out.
+- "remember": a fact worth keeping for the final answer, e.g. "Shop A: Trail Runner 2 costs $89.99".
+- "then": up to 3 more actions for THIS page, done in order right after the first one (filling several fields, then Next).
+  They stop by themselves if the page changes. Don't chain anything after a click that leaves the page.
+- "look": true if you need a screenshot next turn (icon-only buttons, layout, a pop-up you can't make sense of from the text).
+- "think": true (with no action) if this step is tricky or high-stakes and you want time to think it through first.
 
 How to work:
-- You usually answer quickly. If a step is tricky or high-stakes (confusing page, several similar options, an answer that must be exactly right,
-  something you're unsure about), reply {"think": true, "reasoning": "<why>"} with no action. You'll get the same step again with time to think it through.
-- Start by writing a short "plan" (3-6 steps). Update it whenever things change; drop steps that are done.
-- Research / comparison / "find out" goals: visit every page or site needed, and use "remember" each time you find a fact you'll need. Don't finish until NOTES cover the whole goal. Then "finish" with a clear answer that cites the numbers and where they came from.
-- Use the screenshot to understand layout, pop-ups, and icon-only buttons. Close cookie banners or pop-ups that block the page.
+- Research / comparison / "find out" goals: visit every page or site needed and "remember" each fact you'll need. On a long page, "extract"
+  with what you're looking for pulls it out of the whole page at once (faster than read_more). Finish only when NOTES cover the whole goal,
+  with a clear answer that cites the numbers and where they came from.
+- Close cookie banners or pop-ups that block the page.
 - Dropdowns: a real <select> uses "select". A custom dropdown (a button or div that opens a list) uses "choose" with the dropdown's index and the option text.
 - Menus that open on mouse-over: "hover" first, then click the item.
-- Long pages: "read_more" shows the next part of the page text; "scroll" moves the view so more elements appear.
+- Long pages: "read_more" shows the next part of the page text; "scroll" moves the view so more elements appear ([below] = below the visible area).
 - If a link opened a new tab, it shows in OPEN TABS; "switch_tab" to the one you need.
-- Forms: fill EVERY field the USER PROFILE or the user's messages cover (including optional ones) before Continue/Next/Submit. Empty fields show no [val=...].
+- Forms: fill EVERY field the USER PROFILE or the user's messages cover (including optional ones) before Continue/Next/Submit. Empty fields show no val=.
 - Every value you type or select must come from USER PROFILE, the GOAL, or the user's messages. Never invent or assume names, emails, numbers, history, or answers to questions (yes/no included). If a field asks something none of those cover, "ask_user" with the exact question; don't guess, even for optional fields.
 - Resume/CV upload fields: "upload_resume".
 - Passwords: you never see or type them. On a login form with SAVED LOGIN = yes, use "log_in" then click sign in. No saved login: sign up if the site allows it (type the profile email, then "create_password"), otherwise "ask_user" and suggest the user logs in once with Take Over.
@@ -488,6 +494,68 @@ def _guess_start_url(goal: str) -> str:
 
 
 
+class _Chained(Exception):
+    """A chained action is ready, so this step skips the model."""
+
+
+# Actions the model may chain after its first one on the same page.
+_CHAINABLE = {"type", "select", "choose", "check", "uncheck", "click", "upload_resume", "scroll", "press_key"}
+
+
+def _element_sig(el: Optional[Dict[str, Any]]) -> Optional[Tuple[str, str, str]]:
+    if not el:
+        return None
+    return (el.get("tag") or "", el.get("type") or "", (el.get("label") or el.get("text") or "")[:40])
+
+
+def _match_element(elements: List[Dict[str, Any]], sig: Optional[Tuple], index: Any) -> Optional[Dict[str, Any]]:
+    """The element a chained action meant: the same index if it's still the same element, else the one element
+    that looks the same (numbers can shift when the page adds something). None if it's gone or ambiguous."""
+    if sig is None:
+        return None
+    sig = tuple(sig)
+    by_index = next((e for e in elements if str(e.get("index")) == str(index)), None)
+    if by_index is not None and _element_sig(by_index) == sig:
+        return by_index
+    same = [e for e in elements if _element_sig(e) == sig]
+    return same[0] if len(same) == 1 else None
+
+
+def _compact_element_map(elements: List[Dict[str, Any]]) -> str:
+    """The numbered elements, one short line each: what it is, what it says, its label if that says more, and
+    its state. (No coordinates: the model picks by number.)"""
+    lines = []
+    for el in elements:
+        typ = (el.get("type") or "").lower()
+        is_toggle = typ in ("checkbox", "radio")
+        tag = f"{el.get('tag')}:{typ}" if typ and (typ not in ("submit", "button") or el.get("tag") == "input") else el.get("tag")
+        text = el.get("text") or ""
+        label = el.get("label") or ""
+        bits = [f"[{el.get('index')}] {tag} \"{text}\""]
+        if label and label.lower() not in text.lower() and len(label) < 80:
+            bits.append(f"({label})")
+        if el.get("value") and not is_toggle:
+            bits.append(f"val=\"{el['value']}\"")
+        if is_toggle:
+            bits.append("[x]" if el.get("is_checked") else "[ ]")
+        if el.get("is_disabled"):
+            bits.append("disabled")
+        if not el.get("is_in_viewport"):
+            bits.append("[below]")
+        lines.append(" ".join(bits))
+    return "\n".join(lines) or "(nothing clickable on this page)"
+
+
+_LINK_TARGET_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)|\]\((?:[^()\s]|\([^)]*\))*\)")
+
+
+def _strip_link_targets(md: str) -> str:
+    """Page text without link addresses and images: links are clickable from the element list, and long URLs
+    were most of the tokens on link-heavy pages."""
+    md = _LINK_TARGET_RE.sub(lambda m: "" if m.group(0).startswith("!") else "]", md)
+    return re.sub(r"\[([^\[\]]*)\]", r"\1", md)
+
+
 class BrowserSandboxService:
     # Set when a mission pauses right before an irreversible submit; cleared once handled.
     pending_submit: Optional[Dict[str, Any]] = None
@@ -510,6 +578,8 @@ class BrowserSandboxService:
         self.active_workspace_path: Optional[str] = None
         self.active_tab_id: Optional[str] = None
         self.headless: bool = True
+        # Background tabs the web reader (services/web_reader.py) has open; never treated as the page being driven.
+        self.reader_tabs: set = set()
         self._msg_id = 0
         self._lock = asyncio.Lock()
 
@@ -655,6 +725,7 @@ class BrowserSandboxService:
                 if t.get("id") == self.active_tab_id and t.get("webSocketDebuggerUrl"):
                     return t["webSocketDebuggerUrl"]
 
+        tabs = [t for t in tabs if t.get("id") not in self.reader_tabs]
         for t in tabs:
             if t.get("type") == "page" and t.get("webSocketDebuggerUrl"):
                 self.active_tab_id = t.get("id")
@@ -1362,8 +1433,21 @@ class BrowserSandboxService:
                 # Navigate
                 await self._send_cdp(ws, "Page.navigate", {"url": url})
 
-                # Allow DOM and SPAs to settle
-                await asyncio.sleep(2.0)
+                # Let the page load and settle: done once it has loaded and its text stops changing (SPAs render
+                # late), up to 3 s. Was a fixed 2 s wait on every page.
+                await asyncio.sleep(0.3)
+                last_n, steady = -1, 0
+                for _ in range(22):
+                    try:
+                        st = (await self._send_cdp(ws, "Runtime.evaluate", {"expression": "({s: document.readyState, n: (document.body && document.body.innerText || '').length})", "returnByValue": True}, timeout=3)).get("result", {}).get("value") or {}
+                    except Exception:
+                        st = {}
+                    n = st.get("n", 0)
+                    steady = steady + 1 if n == last_n else 0
+                    last_n = n
+                    if st.get("s") == "complete" and steady >= 2 and n > 0:
+                        break
+                    await asyncio.sleep(0.12)
 
                 # Inject stealth & network snooping hooks into current DOM
                 try:
@@ -1703,8 +1787,18 @@ class BrowserSandboxService:
                     let text = clean(el.innerText || el.textContent || '');
                     if (text.length > 80) text = text.slice(0, 77) + '...';
 
+                    // The visible <label> (or aria-labelledby) is what a person reads as the field's question.
+                    let labelled = '';
+                    try {{
+                        if (el.labels && el.labels.length) labelled = el.labels[0].innerText;
+                        else if (el.getAttribute('aria-labelledby')) labelled = el.getAttribute('aria-labelledby').split(/\\s+/)
+                            .map(id => (document.getElementById(id) || {{}}).innerText || '').join(' ');
+                    }} catch (e) {{}}
+                    labelled = clean(labelled);
+                    if (labelled.length > 80) labelled = labelled.slice(0, 77) + '...';
                     let label = clean(
                         el.getAttribute('aria-label') ||
+                        labelled ||
                         el.getAttribute('title') ||
                         el.getAttribute('placeholder') ||
                         el.name ||
@@ -3156,7 +3250,7 @@ class BrowserSandboxService:
                         "type": t.get("type"),
                         "selected": t.get("id") == self.active_tab_id or (not self.active_tab_id and t.get("webSocketDebuggerUrl") is not None)
                     }
-                    for t in tabs if t.get("type") in ("page", "iframe")
+                    for t in tabs if t.get("type") in ("page", "iframe") and t.get("id") not in self.reader_tabs
                 ]
                 return {"success": True, "action": "list", "tabs": formatted, "active_tab_id": self.active_tab_id, "count": len(formatted)}
 
@@ -3634,8 +3728,9 @@ class BrowserSandboxService:
         allow_submit: bool = False,
     ) -> Dict[str, Any]:
         """
-        Closed-loop browser agent: look at the page (text + numbered screenshot), ask the
-        LLM for one action, do it, remember what happened, repeat until the goal is done.
+        Closed-loop browser agent: look at the page (numbered elements + text, a numbered screenshot when it
+        helps), ask the LLM for the next action (plus any it chains on the same page), do it, remember what
+        happened, repeat until the goal is done.
         Keeps a plan and notes across steps so it can handle research as well as forms.
 
         Outcomes (mission_record["status"]):
@@ -3666,17 +3761,25 @@ class BrowserSandboxService:
         # Resuming a paused task keeps what it already found.
         prev = self.latest_mission or {}
         resume_here = (start_url or "").strip().lower() in ("current", "__current__")
+        history: List[str] = []
         if resume_here and prev.get("goal", "").split("\n")[0] == goal.split("\n")[0]:
             mission_record["notes"] = list(prev.get("notes", []))
             mission_record["plan"] = list(prev.get("plan", []))
+            # What it already did on this page (typed the message, filled the form), so it doesn't redo it.
+            history.extend(f"(before the pause) {h}" for h in (prev.get("log") or [])[-10:])
+        mission_record["log"] = history
         self.latest_mission = mission_record
         profile = load_user_profile()
-        history: List[str] = []
         sites_seen: List[str] = []
         use_vision = MISSION_USE_VISION
 
+        last_mark = [time.time()]
+
         def record(action: str, ok: bool, reasoning: str, target: Any = None, status: Optional[str] = None) -> None:
+            now = time.time()
+            secs, last_mark[0] = round(now - last_mark[0], 1), now
             step = {
+                "secs": secs,
                 "step_num": len(mission_record["steps"]) + 1,
                 "action": action,
                 "target": target,
@@ -3721,6 +3824,9 @@ class BrowserSandboxService:
         mission_record["escalations"] = 0
         page_offset = 0
         last_page_key = None
+        queued: List[Dict[str, Any]] = []      # chained actions still to do on this page
+        queued_url = ""
+        look_next = False
         while len(mission_record["steps"]) < max_steps:
             # --- Bot checks: hand off to the human, never try to defeat them ---------
             try:
@@ -3745,9 +3851,10 @@ class BrowserSandboxService:
             if site and site not in sites_seen:
                 sites_seen.append(site)
             obs_res = await self.observe(max_results=70)
-            element_text_map = obs_res.get("text_map", "")
+            elements = obs_res.get("elements") or []
+            element_text_map = _compact_element_map(elements)
             md_res = await self.extract_clean_markdown(max_length=40000)
-            page_md = md_res.get("markdown", "") or ""
+            page_md = _strip_link_targets(md_res.get("markdown", "") or "")
             page_key = (self.current_url, len(page_md))
             if page_key != last_page_key:
                 page_offset, last_page_key = 0, page_key
@@ -3758,6 +3865,29 @@ class BrowserSandboxService:
 
             # Think only when it helps: after a failure, or when the last steps went nowhere.
             last_failed = bool(mission_record["steps"]) and mission_record["steps"][-1]["status"] == "failed"
+            last_no_change = bool(history) and history[-1].strip() == "result: no visible change"
+
+            # --- Chained actions ("then"): the next one runs without asking the model again, as long as the
+            # page is still the one they were planned for and the element is still the same one.
+            plan: Dict[str, Any] = {}
+            step_example = ""
+            if queued:
+                nxt = queued.pop(0)
+                el = _match_element(elements, nxt.get("_sig"), nxt.get("index"))
+                gated_next = nxt.get("action") in ("click", "choose") and el is not None and \
+                    _looks_like_final_submit(el.get("text", ""), el) and not allow_submit
+                if el is None and nxt.get("action") not in ("scroll", "press_key", "wait") or last_failed \
+                        or self.current_url != queued_url or gated_next:
+                    history.append("NOTE: the rest of the chained actions were dropped because the page changed; look again.")
+                    queued.clear()
+                else:
+                    plan = {k: v for k, v in nxt.items() if k != "_sig"}
+                    if el is not None:
+                        plan["index"] = el.get("index")
+                    what = ((el.get("label") or el.get("text") or "") if el else "")[:40]
+                    plan["reasoning"] = plan.get("reasoning") or f"(continuing) {nxt.get('action')} {what}".strip()
+                    mission_record["chained_steps"] = mission_record.get("chained_steps", 0) + 1
+
             # Fast by default. Thinking turns on when the model asks for it (escalate_next),
             # after a failure, when going in circles, or right after the user approved something.
             think = (escalate_next or llm_failures > 0 or last_failed or just_approved
@@ -3765,28 +3895,36 @@ class BrowserSandboxService:
             escalate_reason = escalate_next_reason
             just_approved, escalate_next, escalate_next_reason = False, False, ""
 
+            # Always keep a fresh picture for the live view; send it to the model only when it helps.
+            shot = await self.take_screenshot(format="jpeg", quality=55, overlay_som=True) if use_vision else {}
+            send_shot = bool(shot.get("screenshot_uri")) and (
+                MISSION_VISION == "always" or look_next or last_failed or last_no_change or think
+                or (len(elements) < 3 and len(page_md) > 0))
+            look_next = False
+
+            # Things that stay the same from step to step come first, so the model server can reuse its work on
+            # them (prompt caching); the page, which changes every step, comes last.
             user_prompt = (
-                f"GOAL: {goal}\n"
+                f"GOAL: {goal}\n\n"
+                f"USER PROFILE (the only personal details you may type into forms):\n{_format_profile(profile)}\n\n"
+                f"WHAT YOU HAVE DONE SO FAR:\n{chr(10).join(history[-16:]) or '(nothing yet)'}\n\n"
+                f"PLAN: {json.dumps(mission_record['plan']) if mission_record['plan'] else '(none yet: write one)'}\n"
+                f"NOTES: {json.dumps(mission_record['notes']) if mission_record['notes'] else '(none)'}\n\n"
+                + (f"TIPS FROM PAST VISITS TO {site} (may be outdated; trust the current page over these):\n- " + "\n- ".join(tips) + "\n\n" if tips else "")
+                + f"SAVED LOGIN for {site}: {_describe_saved_login(self.current_url)}\n\n"
                 f"STEP: {len(mission_record['steps']) + 1} of {max_steps}\n"
                 f"CURRENT URL: {self.current_url}\nPAGE TITLE: {self.current_title}\n"
                 f"{tabs_block}\n"
-                f"PLAN: {json.dumps(mission_record['plan']) if mission_record['plan'] else '(none yet: write one)'}\n"
-                f"NOTES: {json.dumps(mission_record['notes']) if mission_record['notes'] else '(none)'}\n\n"
-                f"WHAT YOU HAVE DONE SO FAR:\n{chr(10).join(history[-12:]) or '(nothing yet)'}\n\n"
-                + (f"TIPS FROM PAST VISITS TO {site} (may be outdated; trust the current page over these):\n- " + "\n- ".join(tips) + "\n\n" if tips else "")
-                + f"USER PROFILE (the only personal details you may type into forms):\n{_format_profile(profile)}\n\n"
-                f"SAVED LOGIN for {site}: {_describe_saved_login(self.current_url)}\n\n"
-                f"INTERACTIVE ELEMENTS (by index):\n{element_text_map[:7000]}\n\n"
+                f"INTERACTIVE ELEMENTS (by index):\n{element_text_map[:6000]}\n\n"
                 f"PAGE TEXT{f' (part {page_offset // MISSION_PAGE_CHUNK + 1}; read_more for the rest)' if more_text or page_offset else ''}:\n{page_chunk}\n"
             )
             user_content: Any = user_prompt
-            if use_vision:
-                shot = await self.take_screenshot(format="jpeg", quality=55, overlay_som=True)
-                if shot.get("screenshot_uri"):
-                    user_content = [
-                        {"type": "text", "text": user_prompt},
-                        {"type": "image_url", "image_url": {"url": shot["screenshot_uri"]}},
-                    ]
+            if send_shot:
+                user_content = [
+                    {"type": "text", "text": user_prompt},
+                    {"type": "image_url", "image_url": {"url": shot["screenshot_uri"]}},
+                ]
+                mission_record["screenshots_sent"] = mission_record.get("screenshots_sent", 0) + 1
             messages = [
                 {"role": "system", "content": MISSION_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
@@ -3796,9 +3934,9 @@ class BrowserSandboxService:
             if think and escalate_reason:
                 messages.append({"role": "user", "content": f"Think this step through carefully before choosing ({escalate_reason}). Then reply with the JSON action; don't ask to think again."})
 
-            plan: Dict[str, Any] = {}
-            step_example = ""
             try:
+                if plan:
+                    raise _Chained()
                 llm_reply = await llm_service.chat_completion(
                     messages=messages,
                     temperature=0.1,
@@ -3812,9 +3950,11 @@ class BrowserSandboxService:
                 mission_record["specialist_steps"] = mission_record.get("specialist_steps", 0) + (llm_reply.get("_provider") == "specialist")
                 if think:
                     mission_record["thinking_steps"] += 1
+            except _Chained:
+                pass
             except Exception as e:
                 logger.warning(f"Browser mission LLM error: {e}")
-                if use_vision and ("image" in str(e).lower() or "vision" in str(e).lower()):
+                if send_shot and re.search(r"image|vision|mtmd|multimodal|clip", str(e), re.I):
                     use_vision = False  # model can't take images; carry on with text only
                     logger.warning("Model rejected screenshots; continuing without vision.")
                     continue
@@ -3836,13 +3976,24 @@ class BrowserSandboxService:
                 llm_failures += 1
                 logger.warning(f"Browser mission: unusable model reply ({llm_failures}/3)")
                 if llm_failures >= 3:
+                    pressed = [f"**\"{lbl}\"**" for (lbl, _p) in done_gated]
                     return await finish(
                         "failed",
                         f"The model stopped giving me usable instructions, so I halted on {_page_name(self.current_title, self.current_url)}. "
-                        "Nothing was submitted. Ask me to continue to retry from here."
+                        + (f"Before that I pressed {', '.join(pressed)} as you approved, and the page confirmed it. " if pressed
+                           else "Nothing was submitted. ")
+                        + "Ask me to continue to retry from here."
                     )
                 continue
             llm_failures = 0
+            if plan.get("look") is True:
+                look_next = True
+            then = plan.get("then")
+            if isinstance(then, list) and then and not queued:
+                for t in then[:MISSION_MAX_CHAINED]:
+                    if isinstance(t, dict) and str(t.get("action", "")).lower() in _CHAINABLE:
+                        queued.append({**t, "action": str(t["action"]).lower(), "_sig": _element_sig(self._element_by_index(t.get("index")))})
+                queued_url = self.current_url
 
             # Working memory: the model's plan and anything worth remembering.
             if isinstance(plan.get("plan"), list) and plan["plan"]:
@@ -3991,6 +4142,11 @@ class BrowserSandboxService:
                         step_res = {"success": True}
                     else:
                         step_res = {"success": False, "error": "no more page text; scroll or navigate instead"}
+                elif action == "extract":
+                    step_res = await self._mission_extract(goal, str(plan.get("text") or ""), page_md)
+                    if step_res.get("found"):
+                        found = f"From {_page_name(self.current_title, self.current_url)}: {step_res['found']}"
+                        mission_record["notes"] = (mission_record["notes"] + [found[:600]])[-30:]
                 elif action == "press_key":
                     step_res = await self.press_key(plan.get("text") or "Enter")
                 elif action == "navigate":
@@ -4021,8 +4177,16 @@ class BrowserSandboxService:
             record(action, ok, detail, target)
 
             # Tell the model what its action actually did, so it doesn't repeat things that worked.
-            if action not in ("read_more", "wait"):
+            if action == "extract":
+                history.append(f"   result: {('noted: ' + step_res['found'][:200]) if step_res.get('found') else 'nothing relevant on this page'}")
+            elif action not in ("read_more", "wait"):
                 effect = _describe_effect(url_before, self.current_url, text_before, await self._page_text_snapshot())
+                if ok and action in ("type", "select", "choose", "check", "uncheck") and self.current_url == url_before:
+                    # Typing doesn't change the page text, so say what the field holds now: otherwise the model
+                    # sees "no visible change" and types the same thing again.
+                    held = await self._field_state(index)
+                    if held:
+                        effect = held if effect == "no visible change" else f"{held}; {effect}"
                 if effect == "no visible change" and action in ("click", "press_key"):
                     blocked = await self._invalid_form_fields()
                     if blocked:
@@ -4064,8 +4228,55 @@ class BrowserSandboxService:
         return await finish(
             "incomplete",
             f"I used all {max_steps} steps without finishing. I stopped on **{_page_name(self.current_title, self.current_url)}**. "
-            "Nothing was submitted. Ask me to continue and I'll pick up from here."
+            + (f"I did press {', '.join(chr(34) + l + chr(34) for (l, _p) in done_gated)} as you approved. " if done_gated else "Nothing was submitted. ")
+            + "Ask me to continue and I'll pick up from here."
         )
+
+    async def _field_state(self, index: Any) -> str:
+        """'"Desired salary" now = "90000"' (or checked / not checked) for the element at this index. Never a
+        password's contents."""
+        if index is None:
+            return ""
+        try:
+            res = await self.evaluate_js(f"""(() => {{
+                const el = document.querySelector('[data-xod-idx="{int(index)}"]');
+                if (!el) return null;
+                const lab = (el.labels && el.labels[0] && el.labels[0].innerText) || el.getAttribute('aria-label') || el.placeholder || el.name || '';
+                if (el.type === 'checkbox' || el.type === 'radio') return {{lab, checked: el.checked}};
+                let v = el.tagName === 'SELECT' ? (el.selectedOptions[0] ? el.selectedOptions[0].text : '') : (el.value ?? el.innerText ?? '');
+                if (el.type === 'password') v = v ? '[password entered]' : '';
+                return {{lab, v: String(v).slice(0, 60)}};
+            }})()""")
+        except Exception:
+            return ""
+        st = res.get("result") if isinstance(res, dict) else None
+        if not isinstance(st, dict):
+            return ""
+        lab = re.sub(r"\s+", " ", str(st.get("lab") or "the field")).strip()[:50]
+        if "checked" in st:
+            return f'"{lab}" is now {"checked" if st["checked"] else "not checked"}'
+        return f'"{lab}" now = "{st.get("v", "")}"'
+
+    async def _mission_extract(self, goal: str, what: str, page_md: str) -> Dict[str, Any]:
+        """Reads the whole page for one thing (a price, a date, a list) in a separate small model call, instead of
+        paging through it with read_more. Only facts that are on the page."""
+        from app.services.llm import llm_service
+        if not page_md.strip():
+            return {"success": False, "error": "the page has no text"}
+        try:
+            reply = await llm_service.chat_completion(
+                messages=[{"role": "system", "content": "You pull facts out of a web page. Answer only from the page. Keep numbers, "
+                                                        "names and units exactly as written. If the page doesn't have it, reply NONE."},
+                          {"role": "user", "content": f"PAGE ({self.current_title}):\n{page_md[:14000]}\n\nTASK: {goal}\n"
+                                                      f"FIND: {what or 'everything on this page that matters for the task'}\n\n"
+                                                      "Reply in at most 3 short lines."}],
+                temperature=0.0, max_tokens=220, think=False, task="browser_extract")
+        except Exception as e:
+            return {"success": False, "error": str(e)[:160]}
+        found = (reply.get("content") or "").strip()
+        if not found or found.upper().startswith("NONE"):
+            return {"success": True, "found": ""}
+        return {"success": True, "found": re.sub(r"\s*\n\s*", "; ", found)[:500]}
 
     async def _field_question(self, index: Any) -> str:
         """The human-readable question/label for a form field (label, aria-label, placeholder...)."""
@@ -4297,19 +4508,24 @@ class BrowserSandboxService:
         return None
 
     async def _wait_for_page_ready(self, timeout: float = 12.0) -> None:
-        """Waits until the document has loaded and shows some content (SPAs render late)."""
+        """Waits until the document has loaded and shows some content (SPAs render late). A loaded page whose
+        text has stopped changing counts as ready even if it's short (a login form)."""
         deadline = time.time() + timeout
+        last_n, steady = -1, 0
         while time.time() < deadline:
             try:
                 res = await self.evaluate_js(
                     "({s: document.readyState, n: (document.body && document.body.innerText || '').trim().length})"
                 )
                 val = res.get("result") or {}
-                if val.get("s") == "complete" and val.get("n", 0) > 80:
+                n = val.get("n", 0)
+                steady = steady + 1 if n == last_n else 0
+                last_n = n
+                if val.get("s") == "complete" and (n > 80 and steady >= 1 or n > 0 and steady >= 4):
                     return
             except Exception:
                 pass
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(0.25)
 
     async def _wait_for_human_check(self, timeout: float) -> bool:
         """Polls until the bot check is gone (the user clears it via Take Over)."""

@@ -15,8 +15,23 @@
 - Asleep, it dreams: a thought cloud with stars, notes, or one of your interests.
 - It notices you: startles when the cursor whooshes past, wobbles when you resize the window, follows your scrolling, perks up when you send a message, says ✓ when you copy an answer, and is proud after a long one.
 
+**Reads the web in its own browser**
+- Web questions are answered from the pages themselves, not two-line snippets: Xod searches Google in its own browser (DuckDuckGo if Google shows a bot check), opens the best few results side by side in background tabs, keeps the passages that answer you, and cites them. Pages that build themselves with JavaScript work, and cookie banners, menus and footers are left out. No search API key needed. A question like "who won the World Cup final?" takes about 5–8 seconds of searching and reading.
+- Each answer shows the sites it read under the search, as links.
+- Reading a single page ("summarize this link") also goes through the browser first, so JavaScript sites come through.
+- Xod's companion reads up on your interests the same way, in its own browser, and that's on by default again. Its thoughts about what it read still only use the model on your Mac.
+
+**Faster, smarter browser tasks**
+- Browser tasks take about half the time: comparing a price across two shops went from 2 min 24 s to 1 min 16 s, and adding a size to a cart from 3 min 44 s to 1 min 22 s, on the 12B local model.
+- It does several things per step: fill every field it knows and press Continue in one go, instead of asking the model again for each field. If the page shifts under it, the remaining actions find their element again or stop.
+- Shorter replies from the model (only what the step needs), a page description it can reuse from one step to the next, and screenshots only when they help (the model asks for one, something failed, or the page has almost nothing to click).
+- Form fields are described by their real labels, and links no longer flood the page text with URLs.
+- A new "extract" step reads a whole long page for one thing (a price, a date, a list) at once.
+- Pages are ready as soon as they've loaded and stopped changing, instead of a fixed wait on every page.
+- After you approve a submit, it remembers what it already filled in instead of typing it again.
+
 **All local**
-- Xod's own life stays on your Mac: its thoughts only ever use the model on this Mac (never a cloud model, even if one is set up for your questions), and reading up on the web is now off unless you turn it on in Xod's heart (it was on by default before; it's switched off for existing setups too). With no local model it still writes simple thoughts of its own, without any model.
+- Xod's own life stays on your Mac: its thoughts only ever use the model on this Mac (never a cloud model, even if one is set up for your questions). With no local model it still writes simple thoughts of its own, without any model.
 
 **Voice mode**
 - It no longer answers background noise or made-up words. A stronger on-device model (Whisper large-v3 turbo) hears you better; transcripts Whisper itself doubts are dropped ("no, no, no…", one sentence over and over, "Thanks for watching!" into silence); sound with no speech isn't transcribed at all; and it learns how loud you are and ignores much quieter voices like a TV across the room.

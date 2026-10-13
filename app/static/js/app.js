@@ -3823,6 +3823,23 @@ function createAssistantMessageContainer() {
           <span class="text-emerald-300 font-mono text-[11px]">✓ ${escapeHtml(summary || "Completed")}</span>
         `;
 
+        // Pages Xod read in its own browser for this answer: a row of the sites, each a link.
+        if (data && data.provider === "browser" && Array.isArray(data.results) && !document.getElementById(`reads-${id}`)) {
+          const read = data.results.filter((r) => r && r.content && /^https?:/.test(r.url || "")).slice(0, 4);
+          if (read.length) {
+            const strip = document.createElement("div");
+            strip.id = `reads-${id}`;
+            strip.className = "xr-reads";
+            strip.innerHTML = `<span class="xr-label"><i data-lucide="book-open" class="size-3"></i> Read</span>` + read.map((r, i) => {
+              let host = "";
+              try { host = new URL(r.url).hostname.replace(/^www\./, ""); } catch (e) {}
+              return `<a class="xr-read" style="--i:${i}" href="${escapeHtml(r.url)}" target="_blank" rel="noopener" title="${escapeHtml(r.title || host)}">
+                <span class="xr-dot">${escapeHtml((host[0] || "?").toUpperCase())}</span><span class="xr-host">${escapeHtml(host)}</span></a>`;
+            }).join("");
+            pill.insertAdjacentElement("afterend", strip);
+          }
+        }
+
         // 1. Multi-Tab & Live Visual Browser Stream Card with Click-to-Take-Over
         if (data && data.screenshot_uri && !wrapper.querySelector(`#ss-preview-${id}`)) {
           const previewCard = document.createElement("div");

@@ -1250,7 +1250,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "web_search",
-            "description": "Search the live web for articles, founder background, competitor discussions, reviews, and news.",
+            "description": "Search the live web in Xod's own browser and read the top pages: articles, docs, reviews, news, prices. Results carry the relevant passages from each page read.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2753,13 +2753,18 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                 else:
                     return await you_client.search(query=query, count=count)
 
-            # For generic web_search: prioritize Tavily if configured, then You.com, then DDG
+            # Generic web_search: Xod's own browser (a search engine's results page, then the top pages read in
+            # background tabs), no API key needed. A configured search API is only the fallback.
+            from app.services import web_reader
+            try:
+                res = await web_reader.search_and_read(query, read_top=int(arguments.get("read", 3)), max_results=max(count, 6))
+            except Exception as e:
+                res = {"results": [], "error": str(e)}
+            if res.get("results"):
+                return res
             if tavily_client.is_configured():
                 return await tavily_client.search(query=query, count=count)
-            elif you_client.is_configured():
-                return await you_client.search(query=query, count=count)
-            else:
-                return await you_client.search(query=query, count=count)
+            return await you_client.search(query=query, count=count)
 
         elif name == "you_news_search":
             query = arguments.get("query") or arguments.get("q") or ""
@@ -2768,6 +2773,15 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
 
         elif name == "web_scrape":
             url = arguments.get("url") or arguments.get("target") or ""
+            # In the browser first, so pages that render with JavaScript come through; plain HTTP if that fails.
+            from app.services import web_reader
+            try:
+                page = await web_reader.read_page(url if url.startswith("http") else f"https://{url}", "", budget=8000)
+            except Exception:
+                page = {}
+            if page.get("ok"):
+                return {"url": page["url"], "title": page.get("title", ""), "content": page["content"], "length": len(page["content"]),
+                        "provider": "browser"}
             return await scrape_webpage(url)
 
         elif name == "calculate_saas_metrics":
