@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+**Update with one click**
+- The bottom of the sidebar always shows your version: "Xod 0.3.1 · up to date" (with a button to check now), or "Xod 0.4.0 is out" with an **Update** button. Xod checks GitHub when it starts, every hour, and when you come back to it after a while.
+- A new version downloads in the background (with a progress bar), is checked against the release's checksum and signature, and **Update** restarts into it. Don't want it yet? It installs when you quit. The home screen shows the same Update button.
+- Xod → Check for Updates… does the same from the menu.
+
 ## 0.3.0
 
 **Updates itself**

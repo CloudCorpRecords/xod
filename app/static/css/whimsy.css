@@ -947,3 +947,19 @@ body.xod-previewing .action-footer > button { white-space: nowrap; }
 .jp-foot button { padding: 0.45rem 0.9rem; border-radius: 9px; font-size: 13px; color: #a1a1aa; }
 .jp-foot .jp-save { background: #f2b24a; color: #1a1305; font-weight: 600; }
 @media (max-width: 640px) { .jp-grid { grid-template-columns: 1fr; } .jc-row .jc-btn:not(.jc-apply) { display: none; } }
+
+/* ---- Xod's version and updates: the pill at the bottom of the sidebar (js/updates.js) ---- */
+.xv { display: flex; align-items: center; gap: 8px; margin: 6px 8px 8px; padding: 7px 10px; border-radius: 10px;
+      font-size: 11.5px; color: #a1a1aa; background: rgba(255,255,255,0.025); border: 1px solid rgba(255,255,255,0.05);
+      flex-wrap: wrap; min-height: 32px; }
+.xv:empty { display: none; }
+.xv .xv-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xv.is-new { color: #fde68a; background: rgba(242,178,74,0.10); border-color: rgba(242,178,74,0.35); }
+.xv.is-err { color: #fca5a5; background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.25); }
+.xv-btn { padding: 3px 10px; border-radius: 7px; background: #f2b24a; color: #111; font-weight: 600; font-size: 11.5px; }
+.xv-btn:hover { background: #f8c66c; }
+.xv.is-err .xv-btn { background: rgba(255,255,255,0.08); color: #f4f4f5; }
+.xv-icon { padding: 4px; border-radius: 6px; color: #71717a; }
+.xv-icon:hover { color: #fff; background: rgba(255,255,255,0.06); }
+.xv-bar { flex-basis: 100%; height: 3px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+.xv-bar > span { display: block; height: 100%; background: #f2b24a; transition: width .3s ease; }

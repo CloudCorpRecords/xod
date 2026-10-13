@@ -121,6 +121,52 @@ async function main() {
   check("then the new version is in place", after === "0.3.0", after);
   check("…and the old copy is cleaned up", !fs.existsSync(installed + ".previous") && !fs.existsSync(staged));
 
+  // The Update button's whole flow, with GitHub faked: check → newer version found → downloads in the
+  // background with progress → ready → Update restarts into it.
+  const u3path = path.resolve(__dirname, "../../electron/updater.js");
+  delete require.cache[u3path];
+  const flowDmg = makeDmg("Xod-0.3.0-arm64.dmg", "0.3.0");
+  fs.writeFileSync(path.join(site, "SHA256SUMS.txt"), `${sha(flowDmg)}  Xod-0.3.0-arm64.dmg\n`);
+  const flowApps = path.join(TMP, "Applications2");
+  fs.mkdirSync(flowApps);
+  const flowInstalled = fakeApp(flowApps, "0.2.0");
+  exePath = path.join(flowInstalled, "Contents", "MacOS", "Xod");
+  let latestJson = { tag_name: "v0.2.0", html_url: "https://example.invalid/r", assets: [] };
+  const realFetch = global.fetch;
+  global.fetch = (url, opts) => String(url).includes("api.github.com")
+    ? Promise.resolve(new Response(JSON.stringify(latestJson), { status: 200, headers: { "Content-Type": "application/json" } }))
+    : realFetch(url, opts);
+  let quit = 0;
+  fakeElectron.app.quit = () => { quit++; };
+  const u3 = require(u3path);
+  const seen = [];
+  u3._test.onState((st) => seen.push(st.state + (st.state === "downloading" ? ":" + Math.round(st.progress * 100) : "")));
+  let st = await u3._test.check({ manual: true });
+  check("up to date when GitHub's latest is this version", st.state === "uptodate", JSON.stringify(st));
+  latestJson = { tag_name: "v0.3.0", name: "Xod 0.3.0", html_url: "https://example.invalid/r", assets: [
+    { name: "Xod-0.3.0-arm64.dmg", browser_download_url: `${base}/Xod-0.3.0-arm64.dmg` },
+    { name: "SHA256SUMS.txt", browser_download_url: `${base}/SHA256SUMS.txt` }] };
+  st = await u3._test.check({ manual: true });
+  check("a newer release shows as available and starts downloading", ["available", "downloading"].includes(st.state) && st.latest === "0.3.0", JSON.stringify(st));
+  for (let i = 0; i < 120 && u3._test.status().state !== "ready"; i++) await new Promise((r) => setTimeout(r, 250));
+  check("…with progress, until it's ready", u3._test.status().state === "ready" && seen.some((x) => x.startsWith("downloading:")), seen.join(" "));
+  const holder2 = spawn("sleep", ["2"]);
+  const realPid2 = process.pid;
+  Object.defineProperty(process, "pid", { value: holder2.pid, configurable: true });
+  await u3._test.install();
+  Object.defineProperty(process, "pid", { value: realPid2, configurable: true });
+  check("Update says it's restarting", u3._test.status().state === "installing");
+  await new Promise((r) => setTimeout(r, 600));
+  check("…and quits Xod so the new one can go in", quit === 1);
+  let flowAfter = "";
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    try { flowAfter = spawnSync(path.join(flowInstalled, "Contents", "MacOS", "Xod")).stdout.toString().trim(); } catch (e) {}
+    if (flowAfter === "0.3.0") break;
+  }
+  check("…and the installed app is the new version", flowAfter === "0.3.0", flowAfter);
+  global.fetch = realFetch;
+
   server.close();
   const failed = results.filter(([, ok]) => !ok).map(([n]) => n);
   console.log(`\nSUMMARY ${failed.length ? "FAIL" : "PASS"} ${JSON.stringify(failed)}`);

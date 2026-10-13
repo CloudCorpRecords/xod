@@ -315,7 +315,13 @@ app.whenReady().then(async () => {
     showMain();
     registerTalkShortcut();
     const updates = updater.start(() => mainWindow, () => appUrl);
-    setMenu(() => updates.check(true));
+    setMenu(() => updates.menuCheck());
+    // The page's version pill (app/static/js/updates.js): status, "Check now", "Update". Only Xod's own page.
+    const fromXod = (ev) => isXodPage(ev.senderFrame ? ev.senderFrame.url : ev.sender.getURL());
+    ipcMain.handle("xod:update-status", (ev) => (fromXod(ev) ? updates.status() : null));
+    ipcMain.handle("xod:update-check", (ev) => (fromXod(ev) ? updates.check() : null));
+    ipcMain.handle("xod:update-install", (ev) => (fromXod(ev) ? updates.install() : null));
+    updates.onState((st) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("xod:update-state", st); });
   } catch (err) {
     dialog.showErrorBox("Xod couldn't start", String(err.message || err));
     app.quit();

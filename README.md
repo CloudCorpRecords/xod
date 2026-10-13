@@ -57,9 +57,9 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 
 ## Install
 
-1. [Download `Xod-0.3.0-arm64.dmg`](https://github.com/CloudCorpRecords/xod/releases/latest) (about 410 MB) and open it.
+1. [Download `Xod-0.3.1-arm64.dmg`](https://github.com/CloudCorpRecords/xod/releases/latest) (about 410 MB) and open it.
 2. Drag **Xod** onto **Applications**.
-3. Open Xod. Everything it needs is already inside, so it's ready in seconds; a short setup helps you pick a model. From then on Xod updates itself: it asks before restarting.
+3. Open Xod. Everything it needs is already inside, so it's ready in seconds; a short setup helps you pick a model. From then on Xod keeps itself up to date: the bottom of the sidebar shows your version, it checks GitHub every hour, and a new version is one **Update** click away.
 
 | Your Mac | Suggested model | Download |
 |---|---|---|

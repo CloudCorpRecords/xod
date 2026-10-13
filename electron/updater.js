@@ -1,36 +1,49 @@
-// Updates itself: when a newer release is out on GitHub, Xod downloads its installer in the
-// background, checks it (SHA-256 from the release's SHA256SUMS.txt, the app's version, bundle id and
-// signature), then asks "Restart now / Later". Later installs it when you quit. Your data is outside
-// the app (~/Library/Application Support/Xod), so an update never touches it.
+// Updates itself. Xod asks GitHub for the latest release when it starts, every hour, and when you come
+// back to the window; the page shows where things stand (the version pill at the bottom of the sidebar)
+// with an Update button. A newer version downloads in the background and is checked: SHA-256 from the
+// release's SHA256SUMS.txt, the app's version, bundle id and signature. "Update" then restarts into it;
+// if you don't press it, it installs when you quit. Your data is outside the app
+// (~/Library/Application Support/Xod), so an update never touches it.
 //
-// Electron's built-in updater needs an Apple Developer ID signature; Xod's .dmg is ad-hoc signed,
-// so this swaps the app bundle itself: a small script waits for Xod to quit, moves the new Xod.app
-// into place (keeping the old one until the new one is in), and opens it again.
+// Electron's built-in updater needs an Apple Developer ID signature; Xod's .dmg is ad-hoc signed, so this
+// swaps the app bundle itself: a small script waits for Xod to quit, moves the new Xod.app into place
+// (keeping the old one until the new one is in), and opens it again.
 //
-// Off when "Tell me about new versions" is off in Settings, with XOD_NO_UPDATE_CHECK=1, or from source.
+// Automatic checks are off when "Tell me about new versions" is off, with XOD_NO_UPDATE_CHECK=1, or from
+// source; pressing "Check now" always checks.
 const { app, dialog, shell } = require("electron");
 const { spawn, spawnSync } = require("child_process");
 const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { Readable } = require("stream");
+const { Readable, Transform } = require("stream");
 const { pipeline } = require("stream/promises");
 
 const REPO = "CloudCorpRecords/xod";
 const BUNDLE_ID = "dev.xod.desktop";
-const FIRST_CHECK_MS = 45 * 1000;
-const CHECK_EVERY_MS = 6 * 3600 * 1000;
+const FIRST_CHECK_MS = 8 * 1000;
+const CHECK_EVERY_MS = 3600 * 1000;
+const ON_FOCUS_AFTER_MS = 15 * 60 * 1000;
 const WORK = path.join(os.homedir(), "Library", "Caches", "Xod", "updates");
 
-let ready = null;        // {version, appPath} once a checked update is staged
-let busy = false;
-let asked = new Set();   // versions we already asked about this run
+// What the page sees. state: idle | checking | uptodate | available | downloading | ready | installing | manual | error
+let S = { state: "idle", current: app.getVersion(), latest: null, name: null, page: null, progress: 0, error: null, checkedAt: 0, packaged: app.isPackaged };
+let ready = null;          // {version, appPath} once a checked update is staged
+let rel = null;            // the latest release, when it's newer
+let staging = null;        // the download in flight (a promise)
+let installAfterStage = false;
 let installing = false;
+const listeners = [];
 
 const ver = (v) => (String(v || "").match(/\d+/g) || [0]).slice(0, 3).map(Number);
 const newer = (a, b) => { const x = ver(a), y = ver(b); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
 const log = (...a) => console.log("[updater]", ...a);
+
+function set(patch) {
+  S = { ...S, ...patch };
+  for (const fn of listeners) { try { fn(S); } catch (e) {} }
+}
 
 function currentBundle() {
   // .../Xod.app/Contents/MacOS/Xod → .../Xod.app
@@ -57,21 +70,24 @@ async function latest() {
   const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
     headers: { Accept: "application/vnd.github+json", "User-Agent": "Xod-updater" }, signal: AbortSignal.timeout(15000),
   });
-  if (!r.ok) throw new Error(`GitHub said ${r.status}`);
+  if (!r.ok) throw new Error(r.status === 403 ? "GitHub is limiting requests right now; try again in a bit" : `GitHub said ${r.status}`);
   const d = await r.json();
   const version = String(d.tag_name || "").replace(/^v/, "");
   const arch = process.arch === "arm64" ? "arm64" : "x64";
   const dmg = (d.assets || []).find((a) => a.name.endsWith(`-${arch}.dmg`));
   const sums = (d.assets || []).find((a) => a.name === "SHA256SUMS.txt");
-  return { version, name: d.name, notes: d.body || "", page: d.html_url, dmg, sums };
+  return { version, name: d.name, page: d.html_url, dmg, sums };
 }
 
-async function download(url, dest, tries = 3) {
+async function download(url, dest, onBytes, tries = 3) {
   for (let i = 1; ; i++) {
     try {
       const r = await fetch(url, { headers: { "User-Agent": "Xod-updater" }, redirect: "follow", signal: AbortSignal.timeout(30 * 60 * 1000) });
       if (!r.ok || !r.body) throw new Error(`download failed (${r.status})`);
-      await pipeline(Readable.fromWeb(r.body), fs.createWriteStream(dest));
+      const total = Number(r.headers.get("content-length")) || 0;
+      let got = 0;
+      const count = new Transform({ transform(chunk, _e, cb) { got += chunk.length; if (onBytes) onBytes(got, total); cb(null, chunk); } });
+      await pipeline(Readable.fromWeb(r.body), count, fs.createWriteStream(dest));
       return;
     } catch (e) {
       if (i >= tries) throw e;
@@ -98,22 +114,19 @@ function plist(appPath, key) {
 }
 
 // Download, verify and unpack; returns the staged Xod.app.
-async function stage(rel) {
+async function stage(release, onProgress) {
   fs.rmSync(WORK, { recursive: true, force: true });
   fs.mkdirSync(WORK, { recursive: true });
-  const dmgPath = path.join(WORK, rel.dmg.name);
-  log("downloading", rel.dmg.name);
-  await download(rel.dmg.browser_download_url, dmgPath);
-  if (rel.sums) {
-    const sumsPath = path.join(WORK, "SHA256SUMS.txt");
-    await download(rel.sums.browser_download_url, sumsPath);
-    const line = fs.readFileSync(sumsPath, "utf8").split("\n").find((l) => l.trim().endsWith(rel.dmg.name));
-    const want = line && line.trim().split(/\s+/)[0].toLowerCase();
-    const got = await sha256(dmgPath);
-    if (!want || want !== got) throw new Error("the download's checksum doesn't match the release");
-  } else {
-    throw new Error("the release has no SHA256SUMS.txt to check the download against");
-  }
+  if (!release.sums) throw new Error("the release has no SHA256SUMS.txt to check the download against");
+  const dmgPath = path.join(WORK, release.dmg.name);
+  log("downloading", release.dmg.name);
+  await download(release.dmg.browser_download_url, dmgPath, (got, total) => onProgress && total && onProgress(got / total));
+  const sumsPath = path.join(WORK, "SHA256SUMS.txt");
+  await download(release.sums.browser_download_url, sumsPath);
+  const line = fs.readFileSync(sumsPath, "utf8").split("\n").find((l) => l.trim().endsWith(release.dmg.name));
+  const want = line && line.trim().split(/\s+/)[0].toLowerCase();
+  const got = await sha256(dmgPath);
+  if (!want || want !== got) throw new Error("the download's checksum doesn't match the release");
   const mnt = fs.mkdtempSync(path.join(os.tmpdir(), "xod-update-"));
   const staged = path.join(WORK, "Xod.app");
   run("/usr/bin/hdiutil", ["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mnt, dmgPath]);
@@ -125,7 +138,7 @@ async function stage(rel) {
   fs.rmSync(dmgPath, { force: true });
   if (plist(staged, "CFBundleIdentifier") !== BUNDLE_ID) throw new Error("the downloaded app isn't Xod");
   const v = plist(staged, "CFBundleShortVersionString");
-  if (v !== rel.version) throw new Error(`the downloaded app is version ${v}, not ${rel.version}`);
+  if (v !== release.version) throw new Error(`the downloaded app is version ${v}, not ${release.version}`);
   run("/usr/bin/codesign", ["--verify", "--deep", "--strict", staged]);
   spawnSync("/usr/bin/xattr", ["-dr", "com.apple.quarantine", staged]);
   return staged;
@@ -133,7 +146,7 @@ async function stage(rel) {
 
 // A detached script swaps the bundles after this process exits, then (optionally) opens Xod again.
 function swap(relaunch) {
-  if (!ready || installing) return;
+  if (!ready || installing) return false;
   installing = true;
   const target = currentBundle();
   const script = path.join(WORK, "install.sh");
@@ -150,67 +163,118 @@ else
 fi
 [ "$RELAUNCH" = "1" ] && open "$OLD"
 `, { mode: 0o700 });
-  const child = spawn("/bin/bash", [script, String(process.pid), ready.appPath, target, relaunch ? "1" : "0"], {
-    detached: true, stdio: "ignore",
-  });
+  const child = spawn("/bin/bash", [script, String(process.pid), ready.appPath, target, relaunch ? "1" : "0"], { detached: true, stdio: "ignore" });
   child.unref();
   log("installing", ready.version, "into", target, relaunch ? "(then reopening)" : "(on quit)");
+  return true;
 }
 
-async function ask(win) {
-  if (!ready || asked.has(ready.version)) return;
-  asked.add(ready.version);
-  const opts = {
-    type: "info", buttons: ["Restart now", "Later"], defaultId: 0, cancelId: 1,
-    message: `Xod ${ready.version} is ready to install`,
-    detail: `You have ${app.getVersion()}. Restart to update now, or it installs when you quit Xod. Your chats, projects and settings stay as they are.`,
-  };
-  const { response } = win && !win.isDestroyed() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
-  if (response === 0) {
-    swap(true);
-    app.quit();
-  }
+function restartInto() {
+  set({ state: "installing", progress: 1 });
+  if (swap(true)) setTimeout(() => app.quit(), 300);
 }
 
-async function check(getWin, appUrl, { manual = false } = {}) {
-  if (busy || installing) return;
-  busy = true;
-  try {
-    if (ready) return await ask(getWin());
-    if (!manual && !(await enabled(appUrl))) return;
-    const rel = await latest();
-    if (!newer(rel.version, app.getVersion())) {
-      if (manual) await dialog.showMessageBox({ type: "info", message: "Xod is up to date", detail: `You have the newest version, ${app.getVersion()}.` });
-      return;
-    }
-    const bundle = currentBundle();
-    if (!rel.dmg || !canReplace(bundle)) {
-      // Can't swap it in place (e.g. not in a folder Xod can write to): open the download page instead.
-      if (manual || !asked.has(rel.version)) {
-        asked.add(rel.version);
-        const { response } = await dialog.showMessageBox({ type: "info", buttons: ["Download", "Later"], defaultId: 0, cancelId: 1,
-          message: `Xod ${rel.version} is out`, detail: "Xod can't update itself where it's installed. Download the new version and drag it to Applications." });
-        if (response === 0) shell.openExternal(rel.page);
+// Starts (or joins) the background download of the newer release.
+function startStaging() {
+  if (staging || ready || !rel) return staging;
+  set({ state: "downloading", progress: 0, error: null });
+  staging = stage(rel, (p) => set({ state: "downloading", progress: p }))
+    .then((appPath) => {
+      ready = { version: rel.version, appPath };
+      set({ state: "ready", progress: 1 });
+      if (installAfterStage) restartInto();
+    })
+    .catch((e) => {
+      log("download failed:", e.message || e);
+      installAfterStage = false;
+      set({ state: "error", error: `Couldn't download ${rel.version}: ${e.message || e}` });
+    })
+    .finally(() => { staging = null; });
+  return staging;
+}
+
+let checking = null;
+async function check({ manual = false, appUrl = "" } = {}) {
+  if (!app.isPackaged) { set({ state: "idle", error: null }); return S; }
+  if (installing) return S;
+  if (checking) return checking;
+  if (ready) { set({ state: "ready" }); return S; }
+  if (staging) return S;
+  checking = (async () => {
+    try {
+      if (!manual && !(await enabled(appUrl))) return S;
+      set({ state: "checking", error: null });
+      const r = await latest();
+      const checkedAt = Date.now();
+      if (!newer(r.version, app.getVersion())) {
+        rel = null;
+        set({ state: "uptodate", latest: r.version, name: r.name, page: r.page, checkedAt });
+        return S;
       }
-      return;
+      rel = r;
+      if (!r.dmg || !canReplace(currentBundle())) {
+        set({ state: "manual", latest: r.version, name: r.name, page: r.page, checkedAt,
+              error: "Xod can't replace itself where it's installed. Download it and drag it to Applications." });
+        return S;
+      }
+      set({ state: "available", latest: r.version, name: r.name, page: r.page, checkedAt });
+      startStaging();     // download in the background, so "Update" is one click
+      return S;
+    } catch (e) {
+      log("check failed:", e.message || e);
+      set({ state: "error", error: `Couldn't check for updates: ${e.message || e}`, checkedAt: Date.now() });
+      return S;
+    } finally {
+      checking = null;
     }
-    const appPath = await stage(rel);
-    ready = { version: rel.version, appPath };
-    await ask(getWin());
-  } catch (e) {
-    log("update check failed:", e.message || e);
-    if (manual) dialog.showMessageBox({ type: "warning", message: "Couldn't update Xod", detail: String(e.message || e) });
-  } finally {
-    busy = false;
-  }
+  })();
+  return checking;
+}
+
+// "Update": restart into the new version now (downloading first if it isn't ready yet).
+async function install() {
+  if (installing) return S;
+  if (ready) { restartInto(); return S; }
+  if (S.state === "manual" && S.page) { shell.openExternal(S.page); return S; }
+  if (!rel) await check({ manual: true });
+  if (ready) { restartInto(); return S; }
+  if (!rel || S.state === "manual") return S;
+  installAfterStage = true;
+  startStaging();
+  return S;
 }
 
 function start(getWin, getAppUrl) {
-  if (!app.isPackaged) return { check: () => {} };
-  setTimeout(() => check(getWin, getAppUrl()), FIRST_CHECK_MS);
-  setInterval(() => check(getWin, getAppUrl()), CHECK_EVERY_MS).unref();
-  app.on("before-quit", () => { if (ready && !installing) swap(false); });   // "Later": install on the way out
-  return { check: (manual = true) => check(getWin, getAppUrl(), { manual }) };
+  if (!app.isPackaged) return { status: () => S, check: async () => S, install: async () => S, onState: () => {}, menuCheck: () => {} };
+  setTimeout(() => check({ appUrl: getAppUrl() }), FIRST_CHECK_MS);
+  setInterval(() => check({ appUrl: getAppUrl() }), CHECK_EVERY_MS).unref();
+  app.on("browser-window-focus", () => { if (Date.now() - (S.checkedAt || 0) > ON_FOCUS_AFTER_MS) check({ appUrl: getAppUrl() }); });
+  app.on("before-quit", () => { if (ready && !installing) swap(false); });   // not pressed: install on the way out
+
+  // Xod → Check for Updates…: check now and say what happened.
+  async function menuCheck() {
+    const st = await check({ manual: true, appUrl: getAppUrl() });
+    const win = getWin();
+    const show = (o) => (win && !win.isDestroyed() ? dialog.showMessageBox(win, o) : dialog.showMessageBox(o));
+    if (st.state === "uptodate") return show({ type: "info", message: "Xod is up to date", detail: `You have the newest version, ${S.current}.` });
+    if (st.state === "error") return show({ type: "warning", message: "Couldn't check for updates", detail: st.error || "" });
+    if (st.state === "manual") {
+      const { response } = await show({ type: "info", buttons: ["Download", "Later"], defaultId: 0, cancelId: 1, message: `Xod ${st.latest} is out`, detail: st.error });
+      if (response === 0) shell.openExternal(st.page);
+      return;
+    }
+    const { response } = await show({ type: "info", buttons: ["Update", "Later"], defaultId: 0, cancelId: 1, message: `Xod ${st.latest} is out`,
+      detail: `You have ${S.current}. Update downloads it, checks it and restarts Xod. Your chats, projects and settings stay as they are.` });
+    if (response === 0) install();
+  }
+
+  return {
+    status: () => S,
+    check: () => check({ manual: true, appUrl: getAppUrl() }),
+    install,
+    onState: (fn) => listeners.push(fn),
+    menuCheck,
+  };
 }
 
-module.exports = { start, _test: { newer, canReplace, stage, swap, setReady: (r) => { ready = r; } } };
+module.exports = { start, _test: { newer, canReplace, stage, swap, check, install, status: () => S, onState: (fn) => listeners.push(fn), setReady: (r) => { ready = r; } } };
