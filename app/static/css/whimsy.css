@@ -1060,3 +1060,30 @@ body.xod-previewing .action-footer > button { white-space: nowrap; }
 .xr-host { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes xrIn { to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .xr-read { animation: none; opacity: 1; transform: none; } }
+
+/* What Xod knows about you (js/about_you.js) */
+#aboutYouSection .xa-list { display: grid; gap: 10px; max-height: 260px; overflow-y: auto; padding-right: 4px; }
+#aboutYouSection .xa-topic { font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: rgb(161 161 170); margin-bottom: 4px; }
+#aboutYouSection .xa-fact { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; font-size: 12.5px;
+  color: rgb(228 228 231); background: rgb(255 255 255 / .03); border: 1px solid rgb(255 255 255 / .05); margin-bottom: 4px; }
+#aboutYouSection .xa-text { flex: 1; min-width: 0; }
+#aboutYouSection .xa-src { font-size: 10.5px; color: rgb(113 113 122); white-space: nowrap; }
+#aboutYouSection .xa-btn { color: rgb(113 113 122); padding: 2px; border-radius: 6px; opacity: 0; transition: opacity .15s, color .15s; }
+#aboutYouSection .xa-fact:hover .xa-btn, #aboutYouSection .xa-btn:focus { opacity: 1; }
+#aboutYouSection .xa-btn:hover { color: rgb(252 211 77); }
+#aboutYouSection .xa-pill { padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; background: rgb(255 255 255 / .06);
+  color: rgb(228 228 231); border: 1px solid rgb(255 255 255 / .08); }
+#aboutYouSection .xa-pill:hover { background: rgb(255 255 255 / .1); }
+#aboutYouSection .xa-go { background: rgb(245 158 11); color: #111; border-color: transparent; display: inline-flex; gap: 6px; align-items: center; }
+#aboutYouSection .xa-go:hover { background: rgb(251 191 36); }
+#aboutYouSection .xa-cta { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; font-size: 12px;
+  font-weight: 600; color: rgb(252 211 77); background: rgb(245 158 11 / .1); border: 1px solid rgb(245 158 11 / .3); }
+#aboutYouSection .xa-cta:hover { background: rgb(245 158 11 / .18); }
+#aboutYouSection .xa-panel { margin-top: 8px; padding: 12px; border-radius: 10px; background: rgb(0 0 0 / .2); border: 1px solid rgb(255 255 255 / .06);
+  display: grid; gap: 8px; }
+#aboutYouSection .xa-src-row { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: rgb(228 228 231); line-height: 1.4; }
+#aboutYouSection .xa-src-row input { margin-top: 3px; accent-color: rgb(245 158 11); }
+.xa-note { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; padding: 4px 10px; border-radius: 999px; font-size: 11.5px;
+  color: rgb(196 181 253); background: rgb(139 92 246 / .1); border: 1px solid rgb(139 92 246 / .25); animation: xrIn .35s ease-out; }
+.xa-note button { color: rgb(161 161 170); text-decoration: underline; margin-left: 4px; }
+.xa-note button:hover { color: white; }

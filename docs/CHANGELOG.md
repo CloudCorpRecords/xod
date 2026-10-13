@@ -21,6 +21,13 @@
 - Reading a single page ("summarize this link") also goes through the browser first, so JavaScript sites come through.
 - Xod's companion reads up on your interests the same way, in its own browser, and that's on by default again. Its thoughts about what it read still only use the model on your Mac.
 
+**Knows you**
+- Xod keeps a short sheet of what it knows about you (Settings → What Xod knows about you): your name, work, where you live, the people and pets in your life, what you're building, how you like answers. It's on this Mac, every fact says where it came from, and you can edit or forget any of it (or everything).
+- It learns as you talk: tell it "I'm a chemistry teacher in Portland" and a small note under the answer says "Remembered: …" with Undo. "Remember that …" and "forget …" work too. It never keeps passwords, keys or card numbers, and you can switch learning off.
+- "Get to know me from this Mac": pick what it may look at (your Mac account name, your Contacts card, Xod's job profile, git, time zone and language, your apps, your code projects) and review every fact before it's kept.
+- What it knows is in every answer, so "what's my name?" just works, and the companion calls you by your name.
+- The three made-up "memories" new installs started with (one claimed a design taste you never stated) are no longer created or recalled.
+
 **Feels faster**
 - Web answers start in about 10 seconds instead of 25 (and finish in about 15 instead of 35) on a 12B model on a 16 GB Mac. The search starts the moment you ask, while Xod is still deciding whether it needs the web; pages are read in parallel and slow ones aren't waited for; and the model reads the question and each page as it arrives, so when the last page is in it can start writing almost right away.
 - Xod gets ready while you type: it starts its browser and re-reads its own instructions if a long answer pushed them out of the model's memory, and does the same right after each answer. A plain question ("tell me a fun fact about otters") starts answering in about 2 seconds.

@@ -561,6 +561,85 @@ async def update_settings(req: UpdateSettings):
     return {"success": True, "enabled": updates.enabled()}
 
 
+# ---- What Xod knows about you (services/user_memory.py) ------------------------------------------------
+class AboutFact(BaseModel):
+    text: str
+    topic: Optional[str] = "other"
+
+
+class AboutGather(BaseModel):
+    sources: List[str]
+
+
+class AboutKeep(BaseModel):
+    proposals: List[Dict[str, Any]]
+
+
+@app.get("/api/about-you")
+async def about_you():
+    from app.services import user_memory
+    d = user_memory.load()
+    return {"facts": d["facts"], "settings": d["settings"], "sources": user_memory.SOURCES, "topics": user_memory.TOPICS,
+            "gathered_at": d.get("gathered_at", {})}
+
+
+@app.get("/api/about-you/turn/{turn_id}")
+async def about_you_turn(turn_id: str):
+    """What Xod picked up from one chat message (it may still be working on it: done=false)."""
+    from app.services import user_memory
+    return user_memory.turn_result(turn_id)
+
+
+@app.post("/api/about-you/fact")
+async def about_you_add(req: AboutFact):
+    from app.services import user_memory
+    f = user_memory.add(req.text, req.topic or "other", source="you added", pinned=True)
+    if not f:
+        raise HTTPException(400, "That's empty, or looks like a password or number Xod doesn't keep.")
+    return f
+
+
+@app.put("/api/about-you/fact/{fact_id}")
+async def about_you_edit(fact_id: str, req: AboutFact):
+    from app.services import user_memory
+    f = user_memory.edit(fact_id, req.text)
+    if not f:
+        raise HTTPException(400, "Couldn't change that fact.")
+    return f
+
+
+@app.delete("/api/about-you/fact/{fact_id}")
+async def about_you_forget(fact_id: str):
+    from app.services import user_memory
+    return {"forgot": user_memory.forget(fact_id)}
+
+
+@app.delete("/api/about-you")
+async def about_you_forget_all():
+    from app.services import user_memory
+    return {"forgot": user_memory.forget_all()}
+
+
+@app.post("/api/about-you/settings")
+async def about_you_settings(changes: Dict[str, Any]):
+    from app.services import user_memory
+    return user_memory.settings(changes)
+
+
+@app.post("/api/about-you/gather")
+async def about_you_gather(req: AboutGather):
+    """Reads the sources the person ticked and proposes facts. Nothing is kept until /keep."""
+    from app.services import user_memory
+    allowed = {s["id"] for s in user_memory.SOURCES}
+    return await user_memory.gather([s for s in req.sources if s in allowed])
+
+
+@app.post("/api/about-you/keep")
+async def about_you_keep(req: AboutKeep):
+    from app.services import user_memory
+    return {"kept": user_memory.keep(req.proposals)}
+
+
 @app.post("/api/llm/warm")
 async def llm_warm(voice: bool = False):
     """Called when the user starts typing or talking: loads the local model ahead of the question (services/warmup.py)."""
@@ -996,6 +1075,20 @@ async def chat_endpoint(request: ChatRequest):
         except Exception as e:
             logger.debug(f"soul: {e}")
 
+        # What you say about yourself is how Xod gets to know you (services/user_memory.py). On a cloud model the
+        # small fact-finding call runs alongside the answer; on a local one it waits until the answer is done,
+        # so it doesn't slow it down.
+        from app.services import user_memory
+        said = last_msg if isinstance(last_msg, str) else ""
+        learn_wanted, learn_turn, local_model = False, None, True
+        try:
+            learn_wanted = user_memory.worth_a_look(said) or bool(user_memory.FORGET_ALL_RE.match(said))
+            local_model = llm_service.get_endpoint_info().get("provider") in ("lm_studio", "ollama", "xod") and not route.endpoint
+            if learn_wanted and not local_model:
+                learn_turn = user_memory.start_learning(said)
+        except Exception as e:
+            logger.debug(f"memory: {e}")
+
         assistant_content = ""
         assistant_reasoning = ""
         tool_events = []
@@ -1042,6 +1135,25 @@ async def chat_endpoint(request: ChatRequest):
                         yield f"data: {json.dumps({'type': 'soul', 'state': {k: done[k] for k in ('stage', 'stage_name', 'bond', 'feeling', 'mood', 'stardust')}, 'earned': done.get('earned', 0), 'evolved': done.get('evolved')})}\n\n"
                 except Exception:
                     pass
+
+            if learn_wanted:
+                # Never holds up the chat: a cloud model has usually finished by now (it ran alongside the answer);
+                # a local one starts now. Either way the page asks for the result and shows it when it's in.
+                try:
+                    if learn_turn is None:
+                        learn_turn = user_memory.start_learning(said)
+                    else:
+                        task = user_memory._turns.get(learn_turn, {}).get("task")
+                        if task is not None:
+                            await asyncio.wait([task], timeout=2)
+                    got = user_memory.turn_result(learn_turn)
+                    if got.get("done"):
+                        if got.get("learned") or got.get("forgot"):
+                            yield f"data: {json.dumps({'type': 'memory', **got})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'type': 'memory_pending', 'turn': learn_turn})}\n\n"
+                except Exception as e:
+                    logger.debug(f"memory: {e}")
 
             # Smart routing: say which model answered and what it cost, or offer a stronger one.
             if route.endpoint:

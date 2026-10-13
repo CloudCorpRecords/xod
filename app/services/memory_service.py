@@ -331,7 +331,8 @@ class MemoryService:
                     "updated_at": row["updated_at"]
                 })
 
-        # Sort descending by hybrid score
+        # Sort descending by hybrid score (the old made-up seed memories are never recalled)
+        scored_results = [r for r in scored_results if r.get("title") not in self.SEED_TITLES]
         scored_results.sort(key=lambda x: x["hybrid_score"], reverse=True)
         top_results = scored_results[:limit]
 
@@ -536,8 +537,13 @@ class MemoryService:
             "memories": memories_created
         }
 
+    SEED_TITLES = ("User Preference: Frontend & Code Aesthetic", "Xod Architecture: Modular Services & FastAPI Backend",
+                   "Agent Learning: Terminal Streaming & Process Management")
+
     def seed_initial_memories_if_empty(self):
-        """Seeds essential persistent memories on first startup."""
+        """No longer seeds anything: the three it used to write were made up (one claimed a UI taste the user never
+        stated) and were recalled as if they were the user's. What's known about the user lives in user_memory."""
+        return
         stats = self.get_stats()
         if stats.get("total_memories", 0) > 0:
             return

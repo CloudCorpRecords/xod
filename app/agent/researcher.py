@@ -169,6 +169,13 @@ class AgenticResearcher:
 
         system_prompt = self.system_prompt
         try:
+            from app.services import user_memory
+            about = user_memory.core_note()
+            if about:
+                system_prompt += "\n\n" + about + user_memory.relevant_note(user_query or "")
+        except Exception:
+            pass
+        try:
             from app.services.system_control import system_control_service
             profile = system_control_service.get_computer_profile()
             telem = system_control_service.get_system_telemetry()
@@ -1277,8 +1284,13 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         note = soul.prompt_note()
         if GAME_TALK_RE.search(query):
             note = (note + "\n" if note else "") + GAME_NOTE
+        try:
+            from app.services import user_memory
+            extra = user_memory.relevant_note(query)
+        except Exception:
+            extra = ""
         return [{"role": "system", "content": f"{prompt}\n\nToday is {cls._today()}." + (f"\n{note}" if note else "")}, *turns,
-                {"role": "user", "content": query}]
+                {"role": "user", "content": query + extra}]
 
     async def _stream_fast_lane(self, query: str, messages: List[Dict[str, Any]],
                                 evidence_board: EvidenceBoard) -> AsyncGenerator[Dict[str, Any], None]:
@@ -1407,6 +1419,13 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                 "- Cite the results you used by their numbers, like [1] or [2][3].\n"
                 "- Don't mention 'search results', today's date or these instructions, and don't add a sources list.\n"
                 f"Today is {self._today()}.")
+        try:
+            from app.services import user_memory
+            about = user_memory.core_note()
+            if about:
+                system += "\n" + about
+        except Exception:
+            pass
         head = f"{query}\n\nSearch results:\n"
 
         def prompt(blocks: List[str]) -> List[Dict[str, Any]]:
@@ -2178,6 +2197,15 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
                 c = m.get("content")
                 if r in ("user", "assistant") and isinstance(c, str) and c.strip():
                     delib_history.append({"role": r, "content": c[:400]})
+
+        try:  # what Xod knows about the person (services/user_memory.py): answer from it instead of looking things up
+            from app.services import user_memory
+            about = user_memory.core_note()
+            if about:
+                deliberator_system_prompt += ("\n\n" + about + user_memory.relevant_note(query or "") +
+                                              "\nQuestions these facts answer (\"what's my name?\") are direct answers.")
+        except Exception:
+            pass
 
         try:  # lessons from earlier repairs on this Mac (see doctor.planner_notes)
             from app.services.doctor import doctor

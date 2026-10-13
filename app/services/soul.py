@@ -352,7 +352,13 @@ def prompt_note() -> str:
     except Exception:
         return ""
     bits = []
-    if s.get("name"):
+    try:
+        from app.services import user_memory
+        about = user_memory.core_note()
+        has_name = any(f.get("key") == "name" for f in user_memory.facts())
+    except Exception:
+        about, has_name = "", False
+    if s.get("name") and not has_name:
         bits.append(f"The user's name is {s['name']}.")
     st = s["style"]
     if st.get("brief", 0) >= 1.5 and st["brief"] > st.get("detailed", 0):
@@ -366,7 +372,7 @@ def prompt_note() -> str:
         bits.append(f"Things they keep coming back to: {', '.join(tops)}.")
     if s["bond"] >= 25:
         bits.append(f"You two know each other ({bond_word(s['bond'])}); be warm and natural, never clingy.")
-    return " ".join(bits)
+    return " ".join(bits) + (("\n" if bits else "") + about if about else "")
 
 
 def public(s: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

@@ -4332,6 +4332,11 @@ function handleResearchEvent(event, assistantBubble) {
     assistantBubble.updateToolResult(event.name, event.summary, event.data, event.id);
     if (window.XodPreview) XodPreview.onToolResult(event);
     if (event.data && event.data.needs_approval && window.renderMcpApproval) window.renderMcpApproval(event.data);
+  } else if (event.type === "memory_pending") {
+    if (window.XodAboutYou) XodAboutYou.follow(event.turn, assistantBubble.wrapper && assistantBubble.wrapper.querySelector(".flex-1"));
+  } else if (event.type === "memory") {
+    // Xod picked up (or forgot) something about the person: a small note under the answer, with Undo.
+    if (window.XodAboutYou) XodAboutYou.note(event, assistantBubble.wrapper && assistantBubble.wrapper.querySelector(".flex-1"));
   } else if (event.type === "escalation_offer" || event.type === "route_info") {
     if (window.renderRouteEvent) window.renderRouteEvent(event);
   } else if (event.type === "content") {
