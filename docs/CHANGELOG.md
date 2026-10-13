@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 **A life of its own, told now and then**
 - Xod's companion only reads up on what it isn't sure of, so every read can add something. It looks up questions from your chats it got corrected on, failed its own check on, or hedged on ("I'm not sure…"), taking only the general part and never anything about you. For the topics it follows, it also tests itself: it writes questions, answers each twice, and checks whether the answers agree. Anything about recent events counts as unsure, because it happened after the model was trained, however confident the model sounds. Things it already knows well are recorded and skipped.
