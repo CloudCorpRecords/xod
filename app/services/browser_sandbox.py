@@ -3893,6 +3893,7 @@ class BrowserSandboxService:
             think = (escalate_next or llm_failures > 0 or last_failed or just_approved
                      or any(h.startswith("NOTE: the last two") for h in history[-3:]))
             escalate_reason = escalate_next_reason
+            just_approved_before = just_approved
             just_approved, escalate_next, escalate_next_reason = False, False, ""
 
             # Always keep a fresh picture for the live view; send it to the model only when it helps.
@@ -3901,6 +3902,7 @@ class BrowserSandboxService:
                 MISSION_VISION == "always" or look_next or last_failed or last_no_change or think
                 or (len(elements) < 3 and len(page_md) > 0))
             look_next = False
+            mission_record["_looked_last"] = send_shot
 
             # Things that stay the same from step to step come first, so the model server can reuse its work on
             # them (prompt caching); the page, which changes every step, comes last.
@@ -3931,9 +3933,18 @@ class BrowserSandboxService:
             ]
             if llm_failures:
                 messages.append({"role": "user", "content": "Your last reply had no usable JSON. Reply with ONLY the JSON object for the next action."})
-            if think and escalate_reason:
-                messages.append({"role": "user", "content": f"Think this step through carefully before choosing ({escalate_reason}). Then reply with the JSON action; don't ask to think again."})
+            if think and not escalate_reason:
+                escalate_reason = ("the user just approved a click; check what the page shows now" if just_approved_before
+                                   else "the last step didn't work" if last_failed else "the last steps went nowhere")
+            if think:
+                messages.append({"role": "user", "content": f"Think this step through carefully before choosing ({escalate_reason}). "
+                                 "Keep the thinking focused: a few short lines checking the page against the goal, the profile and the log "
+                                 "(what's filled in, what's left, what this click will do). Then reply with the JSON action; don't ask to think again."})
 
+            mission_record["now"] = (
+                "" if plan else
+                f"Thinking it through{': ' + escalate_reason if escalate_reason else ''}…" if think else
+                f"Looking at {_page_name(self.current_title, self.current_url)}" + (" (with a screenshot)…" if send_shot else "…"))
             try:
                 if plan:
                     raise _Chained()
@@ -3957,7 +3968,9 @@ class BrowserSandboxService:
                 if send_shot and re.search(r"image|vision|mtmd|multimodal|clip", str(e), re.I):
                     use_vision = False  # model can't take images; carry on with text only
                     logger.warning("Model rejected screenshots; continuing without vision.")
+                    mission_record["now"] = ""
                     continue
+            mission_record["now"] = ""
             # The model flagged this step as needing real thought: rerun it in thinking mode.
             if not think and plan.get("think") is True:
                 dataset_recorder.label(step_example, 0, "asked to think")
@@ -3968,7 +3981,7 @@ class BrowserSandboxService:
             if not think and plan.get("action") in ("click", "choose"):
                 _el = self._element_by_index(plan.get("index"))
                 if _looks_like_final_submit((_el or {}).get("text", ""), _el) and not allow_submit:
-                    escalate_next, escalate_next_reason = True, "this click sends, pays, posts or deletes something; make sure everything is right first"
+                    escalate_next, escalate_next_reason = True, "double-checking everything before a click that sends, pays, posts or deletes something"
                     mission_record["escalations"] += 1
                     continue
             if not plan.get("action"):
@@ -3986,7 +3999,9 @@ class BrowserSandboxService:
                     )
                 continue
             llm_failures = 0
-            if plan.get("look") is True:
+            # A screenshot when the model asks, but not two steps running: Gemma asks on nearly every step, and each
+            # one costs seconds. After a failed or no-op step it gets one anyway (see send_shot).
+            if plan.get("look") is True and not mission_record.get("_looked_last"):
                 look_next = True
             then = plan.get("then")
             if isinstance(then, list) and then and not queued:

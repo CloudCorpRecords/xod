@@ -501,6 +501,11 @@ class LLMService:
             route = llm_routing.current()
             if route and route.endpoint:   # this turn runs on the stronger (cloud) model
                 endpoint_override = route.endpoint
+        try:
+            from app.services import warmup
+            warmup.note_prompt(messages, task)
+        except Exception:
+            pass
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
         if task and think is False and not endpoint_override:
             from app.services.specialists import active_endpoint_for
@@ -596,6 +601,37 @@ class LLMService:
                 "Make sure your connection or local LLM is running!"
             )
 
+    async def prefill(self, messages: List[Dict[str, Any]]) -> bool:
+        """Has the local model read these messages ahead of time, without answering (one token, thrown away).
+        The model server keeps what it read, so a later request that starts with the same messages only has
+        to read what's new: reading the prompt is most of the wait on a Mac (~120 tokens/s for a 12B model).
+        Local servers only; never recorded as training data. Returns False if it didn't happen."""
+        from app.services import llm_routing
+        route = llm_routing.current()
+        if route and route.endpoint:
+            return False                       # this turn runs on a cloud model: nothing to warm
+        info = self.get_endpoint_info()
+        if info["provider"] not in ("lm_studio", "xod", "ollama"):
+            return False
+        try:
+            from app.services.memory_broker import memory_broker
+            if memory_broker.teacher_paused:
+                return False                   # unloaded for an image/video job: don't load it just to warm it
+        except Exception:
+            pass
+        payload: Dict[str, Any] = {"model": info["model"], "messages": messages, "temperature": 0.0, "max_tokens": 1}
+        if info["provider"] in ("lm_studio", "ollama"):
+            payload["reasoning_effort"] = "none"
+        else:
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=3.0, read=90.0, write=10.0, pool=3.0)) as client:
+                res = await client.post(f"{info['base_url']}/chat/completions", json=payload,
+                                        headers={"Authorization": f"Bearer {info['api_key']}", "Content-Type": "application/json"})
+            return res.status_code == 200
+        except Exception:
+            return False
+
     async def stream_chat_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -616,6 +652,11 @@ class LLMService:
             route = llm_routing.current()
             if route and route.endpoint:   # this turn runs on the stronger (cloud) model
                 endpoint_override = route.endpoint
+        try:
+            from app.services import warmup
+            warmup.note_prompt(messages, task)
+        except Exception:
+            pass
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
         if info["provider"] in ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic") and info["api_key"] == "missing":
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}

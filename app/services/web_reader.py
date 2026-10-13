@@ -34,10 +34,24 @@ SKIP_HOST_RE = re.compile(r"(^|\.)(facebook|instagram|tiktok|pinterest|linkedin|
                           r"accounts\.google\.|(^|\.)(apps\.apple|play\.google)\.com$|^youtu\.be$", re.I)
 SKIP_URL_RE = re.compile(r"\.(pdf|zip|dmg|exe|mp4|mp3|png|jpe?g|gif)(\?|$)", re.I)
 
+# Reader tabs only need text. Skipping images, fonts, video and ad/tracking scripts makes pages load faster and,
+# on a Mac short on memory, keeps Chrome from slowing the local model down while it works.
+BLOCKED_URLS = [
+    "*.png*", "*.jpg*", "*.jpeg*", "*.gif*", "*.webp*", "*.avif*", "*.svg*", "*.ico*", "*.bmp*",
+    "*.woff*", "*.ttf*", "*.otf*", "*.eot*", "*.mp4*", "*.webm*", "*.m3u8*", "*.mp3*", "*.m4a*", "*.ogg*",
+    "*doubleclick.net*", "*googlesyndication.com*", "*googletagmanager.com*", "*google-analytics.com*",
+    "*googleadservices.com*", "*adservice.google.*", "*amazon-adsystem.com*", "*facebook.net*", "*connect.facebook.*",
+    "*scorecardresearch.com*", "*taboola.com*", "*outbrain.com*", "*criteo.*", "*adnxs.com*", "*pubmatic.com*",
+    "*rubiconproject.com*", "*hotjar.com*", "*segment.io*", "*segment.com/analytics*", "*optimizely.com*",
+    "*chartbeat.*", "*quantserve.com*", "*moatads.com*", "*branch.io*", "*intercom.io*", "*cdn.onesignal.com*",
+]
+
 # Each engine: its results URL and a script that lists results (title, url, snippet) or reports a bot check.
 ENGINES: Dict[str, Dict[str, str]] = {
     "google": {
         "url": "https://www.google.com/search?hl=en&num=10&q={q}",
+        # Results are on the page: no need to wait for the rest (the AI overview keeps loading for seconds).
+        "ready": "document.querySelectorAll('#rso a h3').length >= 5 || /\\/sorry\\//.test(location.pathname)",
         # Result links are redirect tokens (/goto?url=...): "open" keeps that link, and search() asks Google where each
         # one leads. Until then the site from the breadcrumb under the title stands in.
         "js": r"""(() => {
@@ -66,6 +80,7 @@ ENGINES: Dict[str, Dict[str, str]] = {
     },
     "bing": {
         "url": "https://www.bing.com/search?setlang=en&cc=US&q={q}",
+        "ready": "document.querySelectorAll('#b_results > li.b_algo').length >= 4",
         "js": r"""(() => {
           if (document.querySelector('#b_captcha, iframe[src*="challenge"]') || /\/challenge\//.test(location.pathname)) return {blocked: true};
           const real = (href) => {
@@ -85,6 +100,7 @@ ENGINES: Dict[str, Dict[str, str]] = {
     },
     "duckduckgo": {
         "url": "https://html.duckduckgo.com/html/?q={q}",
+        "ready": "document.querySelectorAll('.result').length >= 4 || !!document.querySelector('.anomaly-modal')",
         "js": r"""(() => {
           if (document.querySelector('.anomaly-modal, #challenge-form')) return {blocked: true};
           const out = [];
@@ -194,6 +210,11 @@ class _Tab:
             await self.cmd("Page.addScriptToEvaluateOnNewDocument", {"source": BOOTSTRAP_SCRIPT})
         except Exception:
             pass
+        try:
+            await self.cmd("Network.enable")
+            await self.cmd("Network.setBlockedURLs", {"urls": BLOCKED_URLS})
+        except Exception:
+            pass
         return self
 
     async def __aexit__(self, *exc):
@@ -232,14 +253,21 @@ class _Tab:
         res = await self.cmd("Runtime.evaluate", {"expression": expr, "returnByValue": True}, timeout)
         return (res.get("result") or {}).get("value")
 
-    async def open(self, url: str, timeout: float = READ_TIMEOUT, min_text: int = 200) -> None:
+    async def open(self, url: str, timeout: float = READ_TIMEOUT, min_text: int = 200, ready: str = "") -> None:
         """Goes to the page and waits until it has loaded and shows text (sites that render with JavaScript
-        included), or until the time is up: whatever is there by then is read."""
+        included), or until the time is up: whatever is there by then is read. `ready`: a check that says the
+        part we need is already there, so there's no need to wait for the rest."""
         await self.cmd("Page.navigate", {"url": url}, timeout=timeout)
         end = time.monotonic() + timeout
         last, steady = -1, 0
         while time.monotonic() < end:
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.15 if ready else 0.25)
+            if ready:
+                try:
+                    if await self.js(f"(() => {{ try {{ return !!({ready}); }} catch (e) {{ return false; }} }})()", 3):
+                        return
+                except Exception:
+                    pass
             try:
                 st = await self.js("({s: document.readyState, n: (document.body && document.body.innerText || '').length})", 3)
             except Exception:
@@ -267,7 +295,7 @@ async def search(query: str, max_results: int = 8) -> Dict[str, Any]:
         eng = ENGINES[name]
         try:
             async with _Tab() as tab:
-                await tab.open(eng["url"].format(q=q), timeout=8, min_text=300)
+                await tab.open(eng["url"].format(q=q), timeout=8, min_text=300, ready=eng.get("ready", ""))
                 got = await tab.js(eng["js"]) or {}
         except Exception as e:
             logger.info(f"web_reader: {name} search failed: {e}")
@@ -413,9 +441,72 @@ async def read(urls: List[str], query: str = "", budget: int = 1500) -> List[Dic
     return await asyncio.gather(*(one(u) for u in urls))
 
 
+async def read_stream(urls: List[str], query: str = "", budget: int = 1500, settle: float = 1.2, timeout: float = 7.0,
+                      futures: Optional[List[asyncio.Future]] = None):
+    """Reads the pages in parallel and yields (index, page) as each one finishes, so the answer can start on the
+    first pages while others load. Doesn't wait on stragglers: once two pages are in, the rest get `settle`
+    seconds more; nothing waits past `timeout`. Unfinished reads are stopped (their tabs closed).
+    `futures`: reads already started (one per url), e.g. by a search that ran ahead."""
+    if futures is not None and len(futures) == len(urls):
+        tasks = {f: i for i, f in enumerate(futures)}
+    else:
+        tasks = {asyncio.ensure_future(read_page(u, query, budget, timeout=min(READ_TIMEOUT, timeout))): i for i, u in enumerate(urls)}
+    start, got, cutoff = time.monotonic(), 0, None
+    try:
+        pending = set(tasks)
+        while pending:
+            limit = start + timeout
+            if cutoff is not None:
+                limit = min(limit, cutoff)
+            left = limit - time.monotonic()
+            if left <= 0:
+                break
+            done, pending = await asyncio.wait(pending, timeout=left, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                try:
+                    page = t.result()
+                except Exception as e:
+                    page = {"ok": False, "error": str(e)[:120]}
+                if page.get("ok"):
+                    got += 1
+                    if got >= 2 and cutoff is None:
+                        cutoff = time.monotonic() + settle
+                yield tasks[t], page
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+
+
+async def warm() -> bool:
+    """Starts Xod's browser ahead of time (when you start typing), so the first search doesn't wait ~1-2 s for it."""
+    from app.services.browser_sandbox import browser_sandbox_service as sb
+    global _launch_lock
+    if _launch_lock is None:
+        _launch_lock = asyncio.Lock()
+    try:
+        async with _launch_lock:
+            return bool(await sb.ensure_browser_running())
+    except Exception:
+        return False
+
+
 def _readable(url: str) -> bool:
     host = urllib.parse.urlparse(url).hostname or ""
     return bool(host) and not SKIP_HOST_RE.search(host) and not SKIP_URL_RE.search(url)
+
+
+def pick_pages(hits: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
+    """The results worth opening: in rank order, readable, one page per site (for variety)."""
+    picks, hosts = [], set()
+    for h in hits:
+        host = h.get("host") or urllib.parse.urlparse(h.get("url", "")).hostname
+        if _readable(h.get("url", "")) and host not in hosts:
+            picks.append(h)
+            hosts.add(host)
+        if len(picks) >= n:
+            break
+    return picks
 
 
 async def search_and_read(query: str, read_top: int = 3, max_results: int = 8, budget: int = 1500) -> Dict[str, Any]:
@@ -426,14 +517,7 @@ async def search_and_read(query: str, read_top: int = 3, max_results: int = 8, b
     hits = found.get("results") or []
     if not hits:
         return {"results": [], "provider": "browser", "error": found.get("error", "no results")}
-    picks, hosts = [], set()
-    for h in hits:
-        host = h.get("host") or urllib.parse.urlparse(h["url"]).hostname
-        if _readable(h["url"]) and host not in hosts:        # one page per site, for variety
-            picks.append(h)
-            hosts.add(host)
-        if len(picks) >= read_top:
-            break
+    picks = pick_pages(hits, read_top)
     pages = await read([h.get("open") or h["url"] for h in picks], query, budget) if read_top else []
     for h, p in zip(picks, pages):
         if p.get("ok"):

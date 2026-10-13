@@ -21,6 +21,12 @@
 - Reading a single page ("summarize this link") also goes through the browser first, so JavaScript sites come through.
 - Xod's companion reads up on your interests the same way, in its own browser, and that's on by default again. Its thoughts about what it read still only use the model on your Mac.
 
+**Feels faster**
+- Web answers start in about 10 seconds instead of 25 (and finish in about 15 instead of 35) on a 12B model on a 16 GB Mac. The search starts the moment you ask, while Xod is still deciding whether it needs the web; pages are read in parallel and slow ones aren't waited for; and the model reads the question and each page as it arrives, so when the last page is in it can start writing almost right away.
+- Xod gets ready while you type: it starts its browser and re-reads its own instructions if a long answer pushed them out of the model's memory, and does the same right after each answer. A plain question ("tell me a fun fact about otters") starts answering in about 2 seconds.
+- Reader tabs skip images, fonts, video and ad trackers: pages load faster and use less memory.
+- Browser tasks say what they're doing during long steps ("Double-checking everything before a click that sends…"), ask for a screenshot less often, and keep their careful checks short.
+
 **Faster, smarter browser tasks**
 - Browser tasks take about half the time: comparing a price across two shops went from 2 min 24 s to 1 min 16 s, and adding a size to a cart from 3 min 44 s to 1 min 22 s, on the 12B local model.
 - It does several things per step: fill every field it knows and press Continue in one go, instead of asking the model again for each field. If the page shifts under it, the remaining actions find their element again or stop.

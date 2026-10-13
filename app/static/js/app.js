@@ -185,7 +185,7 @@ function autoResizeTextarea() {
   // Start loading the local model as soon as a question is on its way (services/warmup.py).
   let warmedAt = 0;
   const warm = () => {
-    if (Date.now() - warmedAt < 45000 || isStreaming) return;
+    if (Date.now() - warmedAt < 8000 || isStreaming) return;   // the server decides whether it needs it
     warmedAt = Date.now();
     fetch("/api/llm/warm", { method: "POST" }).catch(() => {});
   };

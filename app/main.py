@@ -1056,6 +1056,13 @@ async def chat_endpoint(request: ChatRequest):
             yield f"data: {json.dumps(err_event)}\n\n"
         finally:
             soul.note_busy(-1)
+            # Get ready for the next question while this answer is read: re-read the router's prompt if a long
+            # prompt pushed it out of the model server's cache, and keep the browser up (services/warmup.py).
+            try:
+                from app.services import warmup
+                warmup.warm(spoken=bool(request.voice), after_answer=True)
+            except Exception:
+                pass
             # Persist assistant response to SQLite database
             if assistant_content or assistant_reasoning or tool_events:
                 add_message(

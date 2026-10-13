@@ -24,6 +24,68 @@ GAME_TALK_RE = re.compile(r"\b(video ?games?|games?|gaming|game ?dev|game engine
 GAME_NOTE = ("When the talk is about making a video game, lean toward three.js (Xod builds and runs three.js games "
              "itself, offline) unless the user prefers something else; other engines are fine when asked for.")
 
+class _Warmer:
+    """Keeps the local model reading ahead: push() the prompt as it grows (question, then each page as it's read)
+    and the model server reads it in the background (llm_service.prefill), one request at a time, always the
+    newest. settle() stops it and waits for the read in progress, so the real request lands on what's cached."""
+
+    def __init__(self):
+        self.latest: Optional[List[Dict[str, Any]]] = None
+        self.task: Optional[asyncio.Task] = None
+        self.closed = False
+
+    def push(self, msgs: List[Dict[str, Any]]) -> None:
+        if self.closed:
+            return
+        self.latest = msgs
+        if self.task is None or self.task.done():
+            self.task = asyncio.ensure_future(self._run())
+
+    async def _run(self) -> None:
+        while self.latest is not None and not self.closed:
+            msgs, self.latest = self.latest, None
+            if not await llm_service.prefill(msgs):
+                self.closed = True             # a cloud model, or the server said no: nothing to gain
+
+    async def settle(self, cap: float = 25.0) -> None:
+        self.closed, self.latest = True, None
+        if self.task and not self.task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(self.task), cap)
+            except Exception:
+                pass
+
+
+class _Prefetch:
+    """A web search (and the reading of its best pages) started the moment a question arrives, while the router
+    is still deciding whether it needs the web at all. Cancelled if it doesn't."""
+
+    def __init__(self, query: str, n_read: int, budget: int):
+        from app.services import web_reader
+        self.query = query
+        self.reads: List[asyncio.Future] = []
+
+        async def go():
+            found = await web_reader.search(query, 8)
+            picks = web_reader.pick_pages(found.get("results") or [], n_read)
+            self.reads = [asyncio.ensure_future(web_reader.read_page(h.get("open") or h["url"], query, budget,
+                                                                     timeout=web_reader.READ_TIMEOUT)) for h in picks]
+            return found, picks, self.reads
+        self.task = asyncio.ensure_future(go())
+
+    async def result(self):
+        try:
+            found, picks, reads = await self.task
+        except Exception:
+            return None
+        return (found, picks, reads) if found.get("results") else None
+
+    def cancel(self) -> None:
+        self.task.cancel()
+        for r in self.reads:
+            r.cancel()
+
+
 class AgenticResearcher:
     """
     Next-Generation Autonomous Research Director.
@@ -1228,6 +1290,9 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             async for ev in self._fast_search_and_answer(query, [query], messages, evidence_board):
                 yield ev
             return
+        # A head start: a question that stands on its own gets searched (and its best pages opened) right away, while
+        # the router decides whether it needs the web at all. Thrown away if it doesn't.
+        prefetch = self._maybe_prefetch(query, has_history)
         stream = llm_service.stream_chat_completion(
             messages=self.router_messages(query, messages[:-1], spoken=getattr(self, "spoken", False)),
             temperature=0.2, max_tokens=300 if getattr(self, "spoken", False) else 900,
@@ -1254,6 +1319,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                         break
                     else:
                         mode, answer = "answer", head.lstrip()
+                        if prefetch is not None:
+                            prefetch.cancel()      # answering from what it knows: no web needed
                         yield {"type": "content", "content": answer}
                     continue
                 if mode == "search":
@@ -1265,6 +1332,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                     yield ch
         finally:
             await stream.aclose()
+            if prefetch is not None and mode != "search" and not (mode is None and re.sub(r"^[\s*`#>_]+", "", head).upper().startswith("SEARCH")):
+                prefetch.cancel()
 
         if mode is None:      # a very short reply
             norm = re.sub(r"^[\s*`#>_]+", "", head).strip()
@@ -1286,97 +1355,40 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         body = line.split(":", 1)[1] if ":" in line.split("\n")[0] else line[6:]
         queries = [q.strip(" \"'`*") for q in body.strip().split("\n")[0].split("|")]
         queries = [q for q in queries if len(q) > 2][:2] or [query]
-        async for ev in self._fast_search_and_answer(query, queries, messages, evidence_board):
+        async for ev in self._fast_search_and_answer(query, queries, messages, evidence_board, prefetch=prefetch):
             yield ev
 
+    _NO_PREFETCH_RE = re.compile(
+        r"^\s*(hi|hey|hello|yo|thanks|thank you|ok(ay)?|cool|nice|great|good (morning|night|evening))\b|"
+        r"\b(write|draft|compose|translate|rewrite|summari[sz]e|poem|story|joke|riddle|code|function|script|regex|"
+        r"build|make me|create|draw|generate|fix|debug|refactor|remind me|open|launch|my (files?|folder|code|project|"
+        r"calendar|notes|email|mail|downloads|desktop))\b", re.I)
+
+    def _maybe_prefetch(self, query: str, has_history: bool) -> Optional[_Prefetch]:
+        """Start searching now if this is a self-contained question that probably needs the web."""
+        if has_history and self._REFERS_BACK_RE.search(query):
+            return None                    # "what about the other one?" needs the conversation to search well
+        if len(query.split()) < 3 or len(query) > 300 or self._NO_PREFETCH_RE.search(query):
+            return None
+        try:
+            deep = bool(self._DEPTH_RE.search(query))
+            return _Prefetch(query, 4 if deep else 3, 1800 if deep else 800)
+        except Exception:
+            return None
+
     async def _fast_search_and_answer(self, query: str, queries: List[str], messages: List[Dict[str, Any]],
-                                      evidence_board: EvidenceBoard) -> AsyncGenerator[Dict[str, Any], None]:
+                                      evidence_board: EvidenceBoard, prefetch: Optional["_Prefetch"] = None
+                                      ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Search in Xod's browser, read the best pages, answer from them with citations. Made to feel quick:
+        the search may already be under way (prefetch, started while the router was deciding); pages are read in
+        parallel and stragglers aren't waited for; and the model reads the question and each page as it arrives
+        (prefill), so when the last page is in it only has that one left to read before it starts writing."""
         from app.services import web_reader
         tool = "web_search"
         if re.search(r"\b(latest|newest|news|recent(ly)?|this (week|month)|who won|current(ly)?|right now|upcoming|last night|yesterday)\b", query, re.I):
             stamp = time.strftime("%B %Y")
             queries = [q if re.search(r"\b20\d\d\b", q) else f"{q} {stamp}" for q in queries]
         deep = bool(self._DEPTH_RE.search(query))
-        yield {"type": "status", "content": "Searching the web in Xod's browser…"}
-        ids = [f"fast_{i}" for i in range(len(queries))]
-        for cid, q in zip(ids, queries):
-            yield {"type": "tool_call", "name": tool, "args": {"query": q}, "id": cid}
-
-        # 1. Search, like a person would: a search engine's results page in Xod's own browser (no API key).
-        async def find(q: str) -> Dict[str, Any]:
-            try:
-                return await web_reader.search(q, 8)
-            except Exception as e:
-                return {"results": [], "error": str(e)}
-        found = await asyncio.gather(*(find(q) for q in queries))
-
-        # 2. Open the best few results in background tabs and read them, so the answer comes from the pages
-        # themselves rather than two-line snippets.
-        merged, seen = [], set()
-        for rank in range(8):
-            for f in found:
-                rs = f.get("results") or []
-                if rank < len(rs) and rs[rank]["url"] not in seen:
-                    seen.add(rs[rank]["url"])
-                    merged.append(rs[rank])
-        picks, hosts = [], set()
-        for h in merged:
-            host = h.get("host") or ""
-            if web_reader._readable(h["url"]) and host not in hosts:
-                picks.append(h)
-                hosts.add(host)
-            if len(picks) >= (4 if deep else 3):
-                break
-        if picks:
-            names = ", ".join(re.sub(r"^www\.", "", h.get("host") or "") for h in picks)
-            yield {"type": "status", "content": f"Reading {names}…"}
-            pages = await web_reader.read([h.get("open") or h["url"] for h in picks], query, 1800 if deep else 1000)
-            for h, pg in zip(picks, pages):
-                if pg.get("ok"):
-                    h["content"] = pg["content"]
-                    if str(pg.get("url", "")).startswith("http"):
-                        h["url"] = pg["url"]
-                    if pg.get("published"):
-                        h["published"] = pg["published"][:10]
-        for h in merged:
-            h.pop("open", None)
-        if not merged:
-            # The browser couldn't search (Chrome missing, every engine blocked): a configured API or plain HTTP.
-            for q in queries:
-                try:
-                    r = await execute_tool("tavily_search" if settings.tavily_api_key else "you_search", {"query": q})
-                except Exception as e:
-                    r = {"error": str(e)}
-                merged += [x for x in (r or {}).get("results") or [] if isinstance(x, dict)]
-        engine = next((f.get("engine") for f in found if f.get("engine")), "")
-        results = [{"results": [h for h in merged if h in (f.get("results") or [])] or (merged if i == 0 else []),
-                    "provider": "browser", "engine": engine,
-                    "pages_read": sum(1 for h in picks if h.get("content"))} for i, f in enumerate(found)]
-        for cid, q, r in zip(ids, queries, results):
-            evidence_board.update_from_tool(tool, {"query": q}, r)
-            yield {"type": "tool_result", "name": tool, "summary": self._format_summary(r), "data": r, "id": cid}
-
-        # Pages that were read first, with their passages; the other results as snippets.
-        hits, briefs, meta = [], [], []
-        ordered = [h for h in merged if h.get("content")] + [h for h in merged if not h.get("content")]
-        for h in ordered:
-            url = str(h.get("url") or "")
-            if not url.startswith("http") or h.get("title") == "Search Error":
-                continue
-            body = str(h.get("content") or h.get("snippet") or "")
-            body = re.sub(r"!\[[^\]]*\]\([^)]*\)|\S+\.(?:png|jpe?g|gif|webp|svg)\b|^#+\s*", " ", body, flags=re.M)
-            if h.get("content"):
-                body = re.sub(r"[ \t]+", " ", body).strip()[: (1800 if deep else 1000)]
-                head = f"[{len(hits) + 1}] {str(h.get('title') or '')[:100]} ({url}){' · ' + h['published'] if h.get('published') else ''} — page read:"
-            else:
-                body = re.sub(r"\s+", " ", body).strip()[:300]
-                head = f"[{len(hits) + 1}] {str(h.get('title') or '')[:100]} ({url}) — search snippet:"
-            hits.append(f"{head}\n{body}")
-            meta.append((str(h.get("title") or url).strip()[:90], url))
-            if len(hits) >= (7 if deep else 6):    # the model reads every word: more results is slower answers
-                break
-
-        # ---- answer
         spoken = getattr(self, "spoken", False)
         if spoken:
             system = (
@@ -1390,19 +1402,123 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                 "You are Xod, a helpful research assistant. Answer the user's question using the search results they give you.\n"
                 "- Start with the direct answer in one or two sentences.\n"
                 + ("- Then cover the details thoroughly, with short headings if it helps.\n" if deep else
-                   "- Then add a few short bullet points only if they help. Keep the whole answer under 150 words.\n")
+                   "- Then add a few short bullet points only if they help. Keep the whole answer under 120 words.\n")
                 + "- Use only facts from the results. If they don't answer part of the question, say so in one line.\n"
                 "- Cite the results you used by their numbers, like [1] or [2][3].\n"
                 "- Don't mention 'search results', today's date or these instructions, and don't add a sources list.\n"
                 f"Today is {self._today()}.")
-        max_out = 300 if spoken else (1800 if deep else 700)
-        user = (f"{query}\n\n"
-                + (f"Search engine summary: {' '.join(briefs)}\n\n" if briefs else "")
-                + "Search results:\n" + ("\n\n".join(hits) if hits else "(nothing came back)"))
-        msgs = self._format_conversation_history_for_synthesis(
-            messages=messages, current_user_content=user, system_instruction=system,
-            max_history_turns=4, max_turn_chars=1200)
+        head = f"{query}\n\nSearch results:\n"
+
+        def prompt(blocks: List[str]) -> List[Dict[str, Any]]:
+            return self._format_conversation_history_for_synthesis(
+                messages=messages, current_user_content=head + ("\n\n".join(blocks) if blocks else "(nothing came back)"),
+                system_instruction=system, max_history_turns=4, max_turn_chars=1200)
+
+        warmer = _Warmer()
+        warmer.push(prompt([]))           # the instructions, the conversation and the question, while it searches
+        page_budget = 1800 if deep else 800          # every 100 characters is ~0.2 s before the first word
+        n_read = 4 if deep else 3
+
+        # 1. Search, like a person would: a search engine's results page in Xod's own browser (no API key).
+        ids = [f"fast_{i}" for i in range(len(queries))]
+        found: List[Dict[str, Any]] = []
+        futures = None
+        if prefetch is not None:
+            yield {"type": "status", "content": "Searching the web in Xod's browser…"}
+            yield {"type": "tool_call", "name": tool, "args": {"query": prefetch.query}, "id": ids[0]}
+            ids, queries = ids[:1], [prefetch.query]
+            got = await prefetch.result()
+            if got:
+                found, futures = [got[0]], got[2]
+                picks = got[1]
+        if not found:
+            if prefetch is None:
+                yield {"type": "status", "content": "Searching the web in Xod's browser…"}
+                for cid, q in zip(ids, queries):
+                    yield {"type": "tool_call", "name": tool, "args": {"query": q}, "id": cid}
+
+            async def find(q: str) -> Dict[str, Any]:
+                try:
+                    return await web_reader.search(q, 8)
+                except Exception as e:
+                    return {"results": [], "error": str(e)}
+            found = list(await asyncio.gather(*(find(q) for q in queries)))
+            picks = None
+
+        merged, seen = [], set()
+        for rank in range(8):
+            for f in found:
+                rs = f.get("results") or []
+                if rank < len(rs) and rs[rank]["url"] not in seen:
+                    seen.add(rs[rank]["url"])
+                    merged.append(rs[rank])
+        if picks is None:
+            picks = web_reader.pick_pages(merged, n_read)
+
+        # 2. Read the best few in background tabs, in parallel; each page goes to the model as soon as it's in.
+        blocks: List[str] = []
+        meta: List[Tuple[str, str]] = []
+
+        def page_block(h: Dict[str, Any]) -> str:
+            body = re.sub(r"!\[[^\]]*\]\([^)]*\)|\S+\.(?:png|jpe?g|gif|webp|svg)\b|^#+\s*", " ", str(h.get("content") or ""), flags=re.M)
+            body = re.sub(r"[ \t]+", " ", body).strip()[:page_budget]
+            return (f"[{len(blocks) + 1}] {str(h.get('title') or '')[:100]} ({h['url']})"
+                    f"{' · ' + h['published'] if h.get('published') else ''} — page read:\n{body}")
+
+        if picks:
+            names = ", ".join(re.sub(r"^www\.", "", h.get("host") or "") for h in picks)
+            yield {"type": "status", "content": f"Reading {names}…"}
+            urls = [h.get("open") or h["url"] for h in picks]
+            done_n = 0
+            async for i, pg in web_reader.read_stream(urls, query, page_budget, futures=futures):
+                if not pg.get("ok"):
+                    continue
+                h = picks[i]
+                h["content"] = pg["content"]
+                if str(pg.get("url", "")).startswith("http"):
+                    h["url"] = pg["url"]
+                if pg.get("published"):
+                    h["published"] = pg["published"][:10]
+                blocks.append(page_block(h))
+                meta.append((str(h.get("title") or h["url"]).strip()[:90], h["url"]))
+                warmer.push(prompt(blocks))
+                done_n += 1
+                left = len(picks) - done_n
+                yield {"type": "status", "content": f"Read {re.sub(r'^www[.]', '', h.get('host') or '')}" + (f" · {left} more…" if left else "")}
+        for h in merged:
+            h.pop("open", None)
+        if not merged:
+            # The browser couldn't search (Chrome missing, every engine blocked): a configured API or plain HTTP.
+            for q in queries:
+                try:
+                    r = await execute_tool("tavily_search" if settings.tavily_api_key else "you_search", {"query": q})
+                except Exception as e:
+                    r = {"error": str(e)}
+                merged += [x for x in (r or {}).get("results") or [] if isinstance(x, dict)]
+        engine = next((f.get("engine") for f in found if f.get("engine")), "")
+        results = [{"results": [h for h in merged if h in (f.get("results") or [])] or (merged if i == 0 else []),
+                    "provider": "browser", "engine": engine,
+                    "pages_read": sum(1 for h in picks if h.get("content"))} for i, f in enumerate(found or [{}])]
+        for cid, q, r in zip(ids, queries, results):
+            evidence_board.update_from_tool(tool, {"query": q}, r)
+            yield {"type": "tool_result", "name": tool, "summary": self._format_summary(r), "data": r, "id": cid}
+
+        # 3. The other results as short snippets, after the pages (so everything read so far stays a prefix).
+        for h in merged:
+            if len(blocks) >= (7 if deep else 5):     # the model reads every word: more results is a slower answer
+                break
+            url = str(h.get("url") or "")
+            if h.get("content") or not url.startswith("http") or h.get("title") == "Search Error":
+                continue
+            text = re.sub(r"\s+", " ", str(h.get("snippet") or h.get("content") or "")).strip()[:240]
+            blocks.append(f"[{len(blocks) + 1}] {str(h.get('title') or '')[:100]} ({url}) — search snippet:\n{text}")
+            meta.append((str(h.get("title") or url).strip()[:90], url))
+
+        # ---- answer
+        max_out = 300 if spoken else (1800 if deep else 600)
+        msgs = prompt(blocks)
         yield {"type": "status", "content": "Writing the answer…"}
+        await warmer.settle()
         written = ""
         async for ch in llm_service.stream_chat_completion(messages=msgs, temperature=0.3,
                                                            max_tokens=max_out, think=False):
@@ -1726,12 +1842,18 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         ))
         mission_id = None
         seen = 0
+        shown_now = ""
         while not task.done():
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.5)
             rec = sandbox.latest_mission or {}
             if mission_id is None and rec.get("goal") == goal:
                 mission_id = rec.get("mission_id")
             if mission_id and rec.get("mission_id") == mission_id:
+                # What it's doing right now (a long careful step otherwise looks like nothing is happening).
+                now = rec.get("now") or ""
+                if now and now != shown_now:
+                    yield {"type": "status", "content": now[:200]}
+                shown_now = now
                 steps = rec.get("steps", [])
                 for st in steps[seen:]:
                     icon = {"success": "✓", "failed": "✗", "waiting": "⏸"}.get(st.get("status"), "•")
