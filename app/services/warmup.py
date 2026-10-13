@@ -48,6 +48,9 @@ async def _warm(spoken: bool = False, delay: float = 0.0) -> None:
     _dirty = False
     try:
         await llm_service.prefill(AgenticResearcher.router_messages("hi", [], spoken=spoken))
+        # The follow-up rewrite's instructions too (services/turn_quality.py): short, so both stay cached.
+        from app.services import turn_quality
+        await llm_service.prefill([{"role": "system", "content": turn_quality.UNDERSTAND_PROMPT}, {"role": "user", "content": "Conversation:"}])
     except Exception as e:
         logger.debug(f"warm-up skipped: {e}")
 

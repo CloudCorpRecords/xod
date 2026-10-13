@@ -18,6 +18,13 @@ WORK_RE = re.compile(
     r"while i was (away|gone|out|asleep)|since (i left|last time|yesterday)|what did you (do|get done|find|finish)|"
     r"catch me up|recap|what'?s new)\b", re.I)
 
+# Asking about what it does on its own: its reading, its notebook, its mood today.
+OWN_RE = re.compile(
+    r"\b(what (have|did) you (been )?(read|reading|learn|learned|learning|look(ed)? into|research|researching|think|thinking)|"
+    r"(been|you) (reading|learning|curious|researching|thinking) about|your (notebook|journal|reading|research)|"
+    r"what('?s| is) on your mind|what do you feel like|how('?s| is| was) your day|what are you curious about|"
+    r"anything interesting|learn anything)\b", re.I)
+
 
 def _ago(ts: Optional[float]) -> str:
     if not ts:

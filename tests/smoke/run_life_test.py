@@ -58,7 +58,9 @@ async def unit():
     saved = (settings.llm_provider, settings.llm_base_url)
     try:
         settings.llm_provider, settings.llm_base_url = "openai", "https://api.openai.com/v1"
-        check("a cloud model is never used for its own thoughts", soul.local_endpoint() is None)
+        ep = soul.local_endpoint()      # None, or LM Studio on this Mac if it's running with a model loaded
+        check("a cloud model is never used for its own thoughts",
+              ep is None or (ep["provider"] == "lm_studio" and ep["base_url"].startswith("http://127.0.0.1")), str(ep))
         s = soul.load()
         s["moments"] = [{"ts": time.time(), "kind": "built", "text": "We built Neon Dodge together."}]
         soul.save(s)

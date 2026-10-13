@@ -22,6 +22,9 @@ The parts:
             reflects on what you've been doing and jots down an idea, or daydreams. Each lands in its
             journal; your reaction (thanks / not interested) is the reward it learns from, so it does
             more of what you like. It never acts on your files or accounts on its own.
+            Most of what it reads goes quietly into its own notebook (services/curiosity.py); only now and
+            then, when something is new and yours, does it bring you a postcard. What it does each day comes
+            from a daily plan picked by its drives and what paid off before.
 """
 import asyncio
 import json
@@ -83,8 +86,8 @@ def _default() -> Dict[str, Any]:
             "activity_weights": {a: 1.0 for a in ACTIVITIES}, "moments": [], "journal": [], "lessons": [],
             "daily": {"date": "", "bond_from_chat": 0.0, "bond_from_praise": 0.0, "bond_from_pets": 0.0, "musings": 0,
                       "bond_from_play": 0.0, "stardust_earned": 0, "treats": 0},
-            "last_seen": now, "together_days": [], "settings": {"wander": True, "explore_web": True, "musings_per_day": 6},
-            "local_v": 1, "web_v": 1,
+            "last_seen": now, "together_days": [], "settings": {"wander": True, "explore_web": True, "musings_per_day": 6, "shares_per_day": 2},
+            "local_v": 1, "web_v": 1, "share_v": 1,
             "evolved_at": None, "stardust": 0, "treats_total": 0, "catches_best": 0}
 
 
@@ -100,6 +103,13 @@ def load() -> Dict[str, Any]:
             # Reading up on the web is on by default again, now in Xod's own browser (no search API, no cloud model).
             d["settings"]["explore_web"] = True
             d["local_v"] = d["web_v"] = 1
+        if not s.get("share_v"):
+            # It used to bring every read back as a postcard. Now most stay in its notebook; the backlog of unread
+            # ones is marked read (they're still in the journal), all but the newest.
+            unseen = [j for j in d["journal"] if not j.get("seen")]
+            for j in unseen[:-1]:
+                j["seen"] = True
+            d["share_v"] = 1
         return d
     except (OSError, ValueError):
         return _default()
@@ -302,6 +312,11 @@ def learn_from_message(text: str) -> Optional[Dict[str, Any]]:
         s["topics"] = {k: round(v, 3) for k, v in topics.most_common(60) if v > 0.3}
         s["last_seen"] = time.time()
         save(s)
+    try:
+        from app.services import curiosity
+        curiosity.user_mentioned(t)          # you brought up something it has been reading about
+    except Exception:
+        pass
     result = None
     if away > 3 * 3600:
         result = event("returned")
@@ -382,7 +397,7 @@ def public(s: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     progress = 1.0
     if nxt:
         progress = min(1.0, min(s["xp"] / max(1, nxt["xp"]), s["bond"] / max(1, nxt["bond"]) if nxt["bond"] else 1.0))
-    unseen = [j for j in s["journal"] if not j.get("seen")]
+    unseen = [j for j in s["journal"] if not j.get("seen") and not j.get("quiet")]
     return {"stage": s["stage"], "stage_name": stage["name"], "stage_blurb": stage["blurb"],
             "next": {"name": nxt["name"], "xp": nxt["xp"], "bond": nxt["bond"]} if nxt else None, "progress": round(progress, 3),
             "xp": round(s["xp"], 1), "bond": round(s["bond"], 1), "bond_word": bond_word(s["bond"]),
@@ -391,7 +406,17 @@ def public(s: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "lessons": s["lessons"][-6:][::-1], "journal": s["journal"][-30:][::-1], "unseen": len(unseen),
             "together_days": len(s.get("together_days") or []), "born": s["born"], "settings": s["settings"],
             "activity_weights": s["activity_weights"], "evolved_at": s.get("evolved_at"),
-            "stardust": s.get("stardust", 0), "treats_total": s.get("treats_total", 0), "catches_best": s.get("catches_best", 0)}
+            "stardust": s.get("stardust", 0), "treats_total": s.get("treats_total", 0), "catches_best": s.get("catches_best", 0),
+            "inner": _inner()}
+
+
+def _inner() -> Dict[str, Any]:
+    try:
+        from app.services import curiosity
+        return curiosity.public()
+    except Exception as e:
+        logger.debug(f"notebook: {e}")
+        return {}
 
 
 def feeling(s: Dict[str, Any]) -> str:
@@ -417,6 +442,8 @@ def settings(changes: Dict[str, Any]) -> Dict[str, Any]:
                 s["settings"][k] = bool(changes[k])
         if "musings_per_day" in changes:
             s["settings"]["musings_per_day"] = max(0, min(24, int(changes["musings_per_day"])))
+        if "shares_per_day" in changes:
+            s["settings"]["shares_per_day"] = max(0, min(6, int(changes["shares_per_day"])))
         save(s)
         return public(s)
 
@@ -452,6 +479,12 @@ def react(entry_id: str, reaction: str) -> Dict[str, Any]:
             elif reaction == "seen-all":
                 j["seen"] = True
         save(s)
+    if reaction in ("liked", "dismissed"):
+        try:
+            from app.services import curiosity
+            curiosity.reaction(entry_id, reaction)
+        except Exception as e:
+            logger.debug(f"curiosity reward: {e}")
     if reaction in ("liked", "dismissed") and act:
         return event(reaction, act)
     return public()
@@ -487,11 +520,16 @@ def _on_power() -> bool:
 
 def _choose(s: Dict[str, Any]) -> str:
     m, w = s["mood"], s["activity_weights"]
-    has_topics = bool(interests(s, 3))
+    try:
+        from app.services import curiosity
+        acts = curiosity.today()["acts"]
+        has_topics = bool(interests(s, 3)) or bool(curiosity.pick_topic())
+    except Exception:
+        acts, has_topics = {}, bool(interests(s, 3))
     scores = {
-        "wonder": w.get("wonder", 1) * (0.4 + m["curiosity"]) * (1 if has_topics else 0),
-        "reflect": w.get("reflect", 1) * (0.5 + m["calm"] * 0.5),
-        "daydream": w.get("daydream", 1) * (0.3 + m["joy"] * 0.6),
+        "wonder": w.get("wonder", 1) * acts.get("wonder", 1) * (0.4 + m["curiosity"]) * (1 if has_topics else 0),
+        "reflect": w.get("reflect", 1) * acts.get("reflect", 1) * (0.5 + m["calm"] * 0.5),
+        "daydream": w.get("daydream", 1) * acts.get("daydream", 1) * (0.3 + m["joy"] * 0.6),
     }
     total = sum(scores.values()) or 1
     r = random.random() * total
@@ -516,7 +554,33 @@ def local_endpoint() -> Optional[Dict[str, Any]]:
     host = (urlparse(str(info.get("base_url") or "")).hostname or "").lower()
     if cfg.llm_provider in LOCAL_PROVIDERS and (host in LOCAL_HOSTS or not info.get("base_url")):
         return info
+    # Answers go to a cloud model, but LM Studio may still be running here with a model loaded: its own
+    # thoughts (and the self-checks in turn_quality) use that one.
+    model = _lm_studio_loaded()
+    if model:
+        return {"provider": "lm_studio", "base_url": "http://127.0.0.1:1234/v1", "model": model, "api_key": "lm-studio"}
     return None
+
+
+_lms_cache: Dict[str, Any] = {"at": 0.0, "model": None}
+
+
+def _lm_studio_loaded() -> Optional[str]:
+    """The chat model LM Studio has loaded right now (checked at most once a minute), or None."""
+    if time.time() - _lms_cache["at"] < 60:
+        return _lms_cache["model"]
+    model = None
+    try:
+        import httpx
+        r = httpx.get("http://127.0.0.1:1234/api/v0/models", timeout=1.5)
+        if r.status_code == 200:
+            loaded = [m for m in r.json().get("data", []) if m.get("state") == "loaded" and m.get("type") in ("llm", "vlm")]
+            if loaded:
+                model = loaded[0]["id"]
+    except Exception:
+        pass
+    _lms_cache.update(at=time.time(), model=model)
+    return model
 
 
 class NotLocal(RuntimeError):
@@ -544,8 +608,10 @@ def _recent_work(limit: int = 8) -> List[str]:
         return []
 
 
-async def muse(force: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """One thing it does for itself. Adds a journal entry and returns it."""
+async def muse(force: Optional[str] = None, asked: bool = False) -> Optional[Dict[str, Any]]:
+    """One thing it does for itself. Adds a journal entry and returns it. Most entries stay quiet (in its journal
+    and notebook); one is brought to you as a postcard only when curiosity.consider_sharing says it's worth it.
+    asked: you asked what it's thinking about, so whatever it comes up with is told."""
     s = load()
     activity = force or _choose(s)
     who = s.get("name") or "the person you work with"
@@ -553,52 +619,26 @@ async def muse(force: Optional[str] = None) -> Optional[Dict[str, Any]]:
              "Warm, curious, a little whimsical, never clingy, never guilt-trips, never claims to be human or to have feelings "
              "it doesn't. Plain words. No emojis, no hashtags.")
     entry: Dict[str, Any] = {"id": f"j{int(time.time() * 1000)}", "ts": time.time(), "activity": activity, "seen": False}
+    note = None
     try:
         from app.services import activity as _activity
         _activity.origin.set("xod (on its own)")      # its searches show in Activity as its own
     except Exception:
         pass
+    from app.services import curiosity
     try:
-        if activity == "wonder" and not s["settings"].get("explore_web"):
-            # Offline: what the local model already knows, said as a thought, not as news.
-            topic = random.choice(interests(s, 4))
-            text = await _ask(voice, f"While {who} was away you got curious about {topic}. From what you already know (no "
-                              "searching, nothing that might be out of date or made up), share one small, surprising thing about it "
-                              "in two short sentences. Start with something like 'I was thinking about...'.", 140)
-            entry.update(kind="thought", topic=topic, text=text)
-        elif activity == "wonder":
+        if activity == "wonder":
             # Reading up the way a person would: a search in its own browser, then a page or two, in background
-            # tabs (a browser task you're running is never interrupted). Its thoughts about it use the local model.
-            topic = random.choice(interests(s, 4))
-            from app.services import web_reader
-            from app.services.browser_sandbox import browser_sandbox_service
-            if browser_sandbox_service.mission_busy:
+            # tabs (a browser task you're running is never interrupted); or, with web reading off, from what the
+            # local model already knows. It follows its own threads: a follow-up question from last time, or a
+            # topic it picked up while reading. Its thoughts about it use the local model.
+            if not local_endpoint():
+                raise NotLocal("no model on this Mac")
+            note = await curiosity.read_up(_ask, voice, who, web=bool(s["settings"].get("explore_web")))
+            if not note:
                 return None
-            q = random.choice([f"{topic} surprising facts", f"{topic} new discovery", f"{topic} news this month",
-                               f"{topic} little-known history", f"how does {topic} work"])
-            try:
-                from app.services import activity as _act
-                ctx = await asyncio.to_thread(_act.before, "web_search", {"query": q})
-            except Exception:
-                _act, ctx = None, None
-            res = await web_reader.search_and_read(q, read_top=2, budget=900)
-            if _act and ctx:
-                try:
-                    await asyncio.to_thread(_act.after, ctx, res)      # shows in Activity as its own search
-                except Exception:
-                    pass
-            items = [it for it in res.get("results") or [] if it.get("content")] or (res.get("results") or [])[:4]
-            snippets, sources = [], []
-            for it in items[:3]:
-                snippets.append(f"- {it.get('title', '')}: {str(it.get('content') or it.get('snippet') or '')[:900]}")
-                sources.append({"title": str(it.get("title", ""))[:100], "url": it.get("url")})
-            if not snippets:
-                return None
-            text = await _ask(voice, f"While {who} was away you got curious about {topic} and read these pages:\n" + "\n".join(snippets) +
-                              f"\n\nIn two short sentences, tell {who} the single most interesting specific thing you learned (a name, a "
-                              "number, a discovery, how something works), not that you found a list or a page. Only what's in the "
-                              "pages. Start with something like 'I went looking into...' or 'I got curious about...'.")
-            entry.update(kind="found", topic=topic, text=text, sources=sources[:3])
+            entry.update(kind="found" if note["sources"] else "thought", topic=note["topic"], text=note["text"],
+                         sources=note["sources"], facts=note["facts"], note_id=note["id"])
         elif activity == "reflect":
             work = _recent_work()
             if not work:
@@ -631,12 +671,25 @@ async def muse(force: Optional[str] = None) -> Optional[Dict[str, Any]]:
         return None
     if not entry.get("text"):
         return None
+    if activity != "wonder":
+        try:
+            curiosity.credit_thought(0.5 if activity == "reflect" else 0.3)
+        except Exception:
+            pass
+    try:
+        shared, score = curiosity.consider_sharing(entry, note, asked=asked)
+    except Exception as e:
+        logger.debug(f"share check: {e}")
+        shared, score = asked, 0.0
+    entry["quiet"] = not shared
+    entry["seen"] = not shared            # kept to itself: in the journal and notebook, no postcard
+    entry["share_score"] = score
     with _lock:
         s = load()
         s["journal"] = (s["journal"] + [entry])[-100:]
         _daily(s)["musings"] = _daily(s).get("musings", 0) + 1
         _settle(s)
-        _bump(s, curiosity=-0.1 if activity == "wonder" else 0.0, energy=-0.04, joy=0.03)
+        _bump(s, curiosity=-0.1 if activity == "wonder" else 0.0, energy=-0.04, joy=0.03 + (0.05 if note and note["novelty"] > 0.6 else 0))
         s["xp"] += 1
         save(s)
     return entry
@@ -650,11 +703,16 @@ async def life_loop(idle_minutes: float = 12, every_seconds: float = 300) -> Non
             s = load()
             day = _daily(s)
             idle = time.time() - _last_activity
+            try:
+                from app.services import curiosity
+                planned = curiosity.today()["musings"]       # a slow day does less; a deep dive more
+            except Exception:
+                planned = 6
             if (s["settings"].get("wander", True) and _busy == 0 and idle > idle_minutes * 60
-                    and day.get("musings", 0) < s["settings"].get("musings_per_day", 6) and _on_power()):
+                    and day.get("musings", 0) < min(planned, s["settings"].get("musings_per_day", 6)) and _on_power()):
                 entry = await asyncio.wait_for(muse(), timeout=240)
                 if entry:
-                    logger.info(f"Xod mused ({entry['activity']}): {entry['text'][:80]}")
+                    logger.info(f"Xod mused ({entry['activity']}, {'shared' if not entry.get('quiet') else 'kept'}): {entry['text'][:80]}")
         except Exception as e:
             logger.info(f"life loop: {e}")
         await asyncio.sleep(every_seconds + random.uniform(-60, 120))

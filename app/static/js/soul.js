@@ -318,6 +318,7 @@
     const hearts = Array.from({ length: 5 }, (_, i) => `<i data-lucide="heart" class="size-4 ${s.bond >= (i + 1) * 20 - 10 ? "on" : ""}"></i>`).join("");
     const ago = (ts) => { const d = (Date.now() / 1000 - ts) / 60; return d < 60 ? `${Math.max(1, Math.round(d))}m ago` : d < 1440 ? `${Math.round(d / 60)}h ago` : `${Math.round(d / 1440)}d ago`; };
     const st = s.style || {};
+    const inner = s.inner || {};
     const styleChips = [st.brief >= 1.5 ? "Likes it short" : "", st.detailed >= 1.5 ? "Likes detail" : "", st.playful >= 1.5 ? "Enjoys a bit of fun" : ""].filter(Boolean);
     heart.firstElementChild.innerHTML = `
       <button class="xh-close" data-h="close" aria-label="Close"><i data-lucide="x" class="size-4"></i></button>
@@ -338,6 +339,10 @@
         </div>
         <p class="xh-note">Every answer and build you finish together leaves a little stardust; give it back and watch. ${s.treats_total ? `${s.treats_total} treat${s.treats_total === 1 ? "" : "s"} so far.` : ""} ${s.catches_best ? `Best catch streak: ${s.catches_best}.` : ""}</p></section>
       <section><h4>Mood</h4>${bar("Joy", s.mood.joy, "#f2b24a")}${bar("Energy", s.mood.energy, "#93d17f")}${bar("Curiosity", s.mood.curiosity, "#7cc4f2")}${bar("Calm", s.mood.calm, "#a196ec")}</section>
+      ${inner.today ? `<section data-sec="today"><h4>Today <em>what it wants to do</em></h4>
+        <p class="xh-today">Today it feels like <b>${esc(inner.today.label)}</b>.</p>
+        ${bar("Learn", inner.drives.curiosity, "#7cc4f2")}${bar("Get better", inner.drives.mastery, "#93d17f")}${bar("Tell you", inner.drives.connection, "#f2b24a")}${bar("Rest", inner.drives.rest, "#a196ec")}
+        <p class="xh-note">It picks a plan each morning from these and from what went well before (what you liked, what turned out to be new to it). ${inner.today.done ? `${inner.today.done} thing${inner.today.done === 1 ? "" : "s"} so far today` : "Nothing yet today"}, ${inner.today.shared ? `told you ${inner.today.shared}` : "told you none yet"}.</p></section>` : ""}
       <section><h4>What I've learned about you</h4>
         <div class="xh-chips">
           ${s.name ? `<span>Your name: ${esc(s.name)} <button data-forget="name" title="Forget">×</button></span>` : ""}
@@ -347,8 +352,15 @@
         </div>
         ${(s.lessons || []).length ? `<p class="xh-sub">Lately it was corrected on:</p><ul class="xh-lessons">${s.lessons.slice(0, 3).map((l) => `<li>${esc(l.text)}</li>`).join("")}</ul>` : ""}
       </section>
+      ${(inner.notes || []).length ? `<section data-sec="notebook"><h4>Notebook <em>${inner.note_count} note${inner.note_count === 1 ? "" : "s"}</em></h4>
+        <p class="xh-note">What it read up on by itself. Most of it it keeps here; only now and then does it bring you something.</p>
+        ${(inner.topics || []).length ? `<div class="xh-chips xh-topics">${inner.topics.slice(0, 8).map((t) => `<span class="${t.origin === "itself" ? "is-own" : ""}" title="${t.origin === "itself" ? "A topic it picked up while reading" : "One of your interests"}${t.thread ? ` · wondering: ${esc(t.thread)}` : ""}">${esc(t.name)}</span>`).join("")}</div>` : ""}
+        ${inner.notes.slice(0, 6).map((n) => `<div class="xh-note-entry ${n.shared ? "is-shared" : ""}"><p class="xh-entry-head">${esc(n.topic)} · ${ago(n.ts)}${n.shared ? " · told you" : ""}</p>
+          <p>${esc(n.text)}</p>${(n.facts || []).length ? `<ul>${n.facts.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}
+          ${(n.sources || []).slice(0, 2).map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title || x.url)}</a>`).join("")}</div>`).join("")}
+      </section>` : ""}
       <section data-sec="journal"><h4>Journal <button class="xh-btn" data-h="muse"><i data-lucide="sparkles" class="size-3"></i>What are you thinking about?</button></h4>
-        ${(s.journal || []).length ? s.journal.slice(0, 12).map((j) => {
+        ${(s.journal || []).filter((j) => !(j.quiet && (j.kind === "found" || j.note_id))).length ? s.journal.filter((j) => !(j.quiet && (j.kind === "found" || j.note_id))).slice(0, 10).map((j) => {
           const [icon, label] = KIND[j.kind] || KIND.thought;
           return `<div class="xh-entry ${j.seen ? "" : "is-new"}"><p class="xh-entry-head"><i data-lucide="${icon}" class="size-3"></i>${label}${j.topic ? ` · ${esc(j.topic)}` : ""} · ${ago(j.ts)}</p>
             <p>${esc(j.text)}</p>${(j.sources || []).slice(0, 2).map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title || x.url)}</a>`).join("")}
@@ -361,6 +373,7 @@
       <section><h4>Its own time</h4>
         <label class="xh-toggle"><input type="checkbox" data-set="wander" ${s.settings.wander ? "checked" : ""}> Wander and think when I'm away</label>
         <label class="xh-toggle"><input type="checkbox" data-set="explore_web" ${s.settings.explore_web ? "checked" : ""}> Let it read up on my interests in its own browser (off: it only uses what it already knows)</label>
+        <label class="xh-toggle">Bring me something it found at most <select class="xh-select" data-set-num="shares_per_day">${[0, 1, 2, 3, 5].map((n) => `<option value="${n}" ${Number(s.settings.shares_per_day ?? 2) === n ? "selected" : ""}>${n}</option>`).join("")}</select> times a day</label>
         <p class="xh-note">At most ${s.settings.musings_per_day} times a day, only when the Mac is plugged in and you've been away a while. Its thoughts use your local model, never a cloud one. When it reads up on something, it searches and reads pages in Xod's own browser on this Mac, like you would: no search service or API key, read-only, and its searches show in Activity. It never changes your files or accounts on its own.</p>
       </section>
       <p class="xh-honest">This is a character, not a person: its mood and bond are worked out from how you two work together, and they shape how it acts and answers. Everything stays on this Mac. <button data-forget="everything">Start over</button></p>`;
@@ -385,6 +398,8 @@
     }
     const j = e.target.closest("[data-joy]");
     if (j && window.XodJoy) { closeHeart(); setTimeout(() => (j.dataset.joy === "treat" ? XodJoy.treat() : XodJoy.play()), 250); return; }
+    const num = e.target.closest("[data-set-num]");
+    if (num) return;     // handled on change
     const set = e.target.closest("[data-set]");
     if (set) return apply(await api("/api/soul/settings", { [set.dataset.set]: set.checked }));
     const m = e.target.closest("[data-h=muse]");
@@ -397,6 +412,10 @@
     }
   }
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && heartOpen()) closeHeart(); });
+  document.addEventListener("change", async (e) => {
+    const num = e.target.closest && e.target.closest(".xod-heart [data-set-num]");
+    if (num) apply(await api("/api/soul/settings", { [num.dataset.setNum]: Number(num.value) }));
+  });
 
   // ------------------------------------------------------------------ from the chat stream
   function onEvent(ev) {

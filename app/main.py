@@ -1104,6 +1104,14 @@ async def chat_endpoint(request: ChatRequest):
         assistant_content = ""
         assistant_reasoning = ""
         tool_events = []
+        # This turn's model calls get labelled by how it goes (services/turn_quality.py): your next message
+        # (a correction, thanks, the same question again) and Xod's own check of the answer.
+        from app.services import turn_quality
+        turn = None
+        try:
+            turn = turn_quality.begin(session_id, said)
+        except Exception as e:
+            logger.debug(f"turn: {e}")
 
         try:
             async for event in researcher.run_research_stream(
@@ -1180,6 +1188,10 @@ async def chat_endpoint(request: ChatRequest):
             yield f"data: {json.dumps(err_event)}\n\n"
         finally:
             soul.note_busy(-1)
+            try:
+                turn_quality.finish(turn, assistant_content, [e.get("name") for e in tool_events if e.get("type") == "tool_call" and e.get("name")])
+            except Exception as e:
+                logger.debug(f"turn: {e}")
             try:   # this turn becomes part of Xod's memory of your chats (services/recall.py)
                 from app.services import recall
                 recall.schedule_index(4)
@@ -3068,11 +3080,12 @@ async def lab_job_evaluate_endpoint(job_id: str):
 @app.get("/api/lab/specialists")
 async def lab_specialists_endpoint():
     """Mini models Xod can learn from its own work: data collected, readiness, test results, live status."""
-    from app.services import specialists, dataset_recorder
+    from app.services import specialists, dataset_recorder, turn_quality
     from app.services.finetuning import STUDENT_CHOICES
     return {
         "specialists": specialists.overview(),
         "tasks": dataset_recorder.task_stats(),
+        "turns": turn_quality.stats(),      # how chat turns went: corrections, thanks, self-checks (labels the examples)
         "student_choices": STUDENT_CHOICES,
         "promote_rules": {"min_valid_json": specialists.PROMOTE_MIN_VALID_JSON,
                           "min_action_match": specialists.PROMOTE_MIN_ACTION_MATCH},
@@ -3625,7 +3638,7 @@ async def soul_muse(request: Request):
     except Exception:
         pass
     activity.origin.set("xod (on its own)")
-    entry = await soul.muse(body.get("activity") if body.get("activity") in soul.ACTIVITIES else None)
+    entry = await soul.muse(body.get("activity") if body.get("activity") in soul.ACTIVITIES else None, asked=True)
     return {"entry": entry, "state": soul.public()}
 
 

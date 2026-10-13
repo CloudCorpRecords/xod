@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+**A life of its own, told now and then**
+- Xod's companion keeps its own research notebook. While you're away it reads up on your interests (and topics it picked up itself while reading), writes down what it learned with the facts and sources, and notes a follow-up question it wants to look into next time, so it pulls on threads over days instead of starting over.
+- It no longer tells you everything. Most of what it finds stays in its notebook; it brings you something only when it's new, about something you care about, it hasn't told you anything for a few hours, and nothing it told you is still unread. Two a day at most by default (Heart → Its own time, 0 to 5). An old pile of unread postcards is cleared down to the newest one. "What are you thinking about?" still always gets an answer.
+- It decides what it feels like doing each day: going deep on one topic, poking around, thinking about your projects, or taking it slow, from its drives (wants to learn, get better, tell you, rest) and from what went well before. Rewards are what you liked, what you brought up in chat yourself, and whether a read was actually new to it (compared with its notebook by meaning), so topics that pay off come up more often. Heart shows today's plan, the drives and the notebook.
+- Ask "what have you been reading about?" and it answers from its notebook.
+- Its own thoughts now use LM Studio when it's running here, even if your questions go to a cloud model (before, with a cloud model it only had canned thoughts). Never a cloud model.
+
+**Understands follow-ups, learns from how answers went**
+- A follow-up like "how much is the second one?" or "how tall is it?" is first rewritten as a full question ("How much does the Bose QuietComfort Ultra cost?"), shown in small text above the answer, and routing, memory, search and the planner all work from that. About 1–2 seconds on a local model.
+- When you correct it ("no, that's wrong…"), it keeps the lesson and brings it up next time a similar question comes in, so it doesn't make the same mistake twice.
+- Cleaner training data: every model call in a chat turn is tied to that turn and labelled by how it went. A correction or the same question asked again marks it bad; thanks marks it good; after each answer, when the Mac is idle, the local model checks whether the answer addressed the question, and "passed, and you moved on" marks it good. Nothing is guessed. The router's decisions to search or use tools are now recorded too (before, only its direct answers were). The Model Lab shows the counts.
+
 **Make Xod happy**
 - Treats: every answer and build you finish together leaves a little ✦ stardust (up to 12 a day). Hover Xod and give one back: it flies over, Xod catches it, munches with puffed cheeks, gets heart eyes and does a little dance.
 - Catch: a glowing star you drag and fling around the window, with real bounces. Xod chases it, catches it (streaks count, and it dances at 3 in a row), brings it back and asks for another throw.

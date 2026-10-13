@@ -4332,6 +4332,15 @@ function handleResearchEvent(event, assistantBubble) {
     assistantBubble.updateToolResult(event.name, event.summary, event.data, event.id);
     if (window.XodPreview) XodPreview.onToolResult(event);
     if (event.data && event.data.needs_approval && window.renderMcpApproval) window.renderMcpApproval(event.data);
+  } else if (event.type === "understood") {
+    // A follow-up was read as a standalone request first: show how, so a wrong reading is easy to spot.
+    const host = assistantBubble.wrapper && assistantBubble.wrapper.querySelector(".flex-1");
+    if (host && !host.querySelector(".xu-understood")) {
+      const p = document.createElement("p");
+      p.className = "xu-understood";
+      p.textContent = `Understood as: ${event.content}`;
+      host.insertBefore(p, host.firstChild);
+    }
   } else if (event.type === "memory_pending") {
     if (window.XodAboutYou) XodAboutYou.follow(event.turn, assistantBubble.wrapper && assistantBubble.wrapper.querySelector(".flex-1"));
   } else if (event.type === "memory") {

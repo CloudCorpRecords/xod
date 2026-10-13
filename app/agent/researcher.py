@@ -339,9 +339,24 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
 
         # Memory, before deciding anything: questions about the past search Xod's memory of earlier chats and work
         # (shown as a step, like a tool), and questions about its own work get the live picture of its tasks.
+        # What they mean: a follow-up that leans on the conversation ("and the other one?", "how much is it") is
+        # rewritten as a standalone request first (services/turn_quality.py), so routing, memory, search and the
+        # planner all work from it. Past corrections on similar questions come along as lessons.
+        from app.services import turn_quality
+        self._understood = ""
+        if not has_image and not has_document and turn_quality.needs_understanding(user_query, messages[:-1]):
+            yield {"type": "status", "content": "Working out what you mean…"}
+            self._understood = await turn_quality.understand(user_query, messages[:-1])
+            if self._understood:
+                yield {"type": "understood", "content": self._understood}
+        try:
+            self._lessons = await asyncio.to_thread(turn_quality.lessons_note, self._understood or user_query)
+        except Exception:
+            self._lessons = ""
+
         self._memory_context = ""
         if not has_image:
-            async for ev in self._recall_for(user_query, messages):
+            async for ev in self._recall_for(self._understood or user_query, messages):
                 yield ev
 
         # Most questions either need no tools or need a web search or two. One small routing call
@@ -366,7 +381,7 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         prior_messages = messages[:-1] if len(messages) > 1 else []
         deliberation = None
         async for ev in self.deliberate_and_plan(
-            query=user_query,
+            query=user_query + (f"\n\n(What they mean, in full: {self._understood})" if getattr(self, "_understood", "") else ""),
             conversation_history=prior_messages,
             active_workspace_path=active_workspace_path,
             has_image=has_image,
@@ -1078,6 +1093,8 @@ CRITICAL INSTRUCTIONS:
             pass
         if getattr(self, "_memory_context", ""):
             system_instruction_text += "\n\n" + self._memory_context
+        if getattr(self, "_lessons", ""):
+            system_instruction_text += "\n\n" + self._lessons
         if GAME_TALK_RE.search(user_query):
             system_instruction_text += " " + GAME_NOTE
         if spoken:
@@ -1281,6 +1298,14 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                 blocks.append(await asyncio.to_thread(work_state.note))
             except Exception as e:
                 logger.debug(f"work state: {e}")
+        if work_state.OWN_RE.search(query or "") or work_state.WORK_RE.search(query or ""):
+            try:
+                from app.services import curiosity
+                own = await asyncio.to_thread(curiosity.recent_note)
+                if own:
+                    blocks.append(own)
+            except Exception as e:
+                logger.debug(f"notebook: {e}")
         try:
             from app.services import user_memory
             use_past = user_memory.load()["settings"].get("recall", True)
@@ -1352,17 +1377,24 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         when the planner should take this one."""
         head, mode, line, answer = "", None, "", ""
         has_history = any(m.get("role") == "assistant" for m in messages[:-1])
-        if self._FRESH_RE.search(query) and not (has_history and self._REFERS_BACK_RE.search(query)) \
+        # A follow-up rewritten as a standalone request stands on its own: it can be searched directly.
+        full = getattr(self, "_understood", "") or query
+        stands_alone = bool(getattr(self, "_understood", "")) or not (has_history and self._REFERS_BACK_RE.search(query))
+        if self._FRESH_RE.search(full) and stands_alone \
                 and not getattr(self, "_memory_context", ""):    # "what did we talk about yesterday" is memory, not news
-            async for ev in self._fast_search_and_answer(query, [query], messages, evidence_board):
+            async for ev in self._fast_search_and_answer(full, [full], messages, evidence_board):
                 yield ev
             return
         # A head start: a question that stands on its own gets searched (and its best pages opened) right away, while
         # the router decides whether it needs the web at all. Thrown away if it doesn't.
-        prefetch = self._maybe_prefetch(query, has_history)
+        prefetch = self._maybe_prefetch(full, has_history and not stands_alone)
         router_msgs = self.router_messages(query, messages[:-1], spoken=getattr(self, "spoken", False))
+        if getattr(self, "_understood", ""):
+            router_msgs[-1]["content"] += f"\n\n(What they mean, in full: {self._understood})"
         if getattr(self, "_memory_context", ""):
             router_msgs[-1]["content"] += "\n\n" + self._memory_context
+        if getattr(self, "_lessons", ""):
+            router_msgs[-1]["content"] += "\n\n" + self._lessons
         stream = llm_service.stream_chat_completion(
             messages=router_msgs,
             temperature=0.2, max_tokens=300 if getattr(self, "spoken", False) else 900,
@@ -1415,6 +1447,15 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             else:
                 yield {"type": "content", "content": norm}
                 mode = "answer"
+        if mode in ("tools", "search"):
+            # The stream was stopped as soon as the decision was clear, so the server never recorded it: record the
+            # decision here (training data for the router, labelled later by how the turn went).
+            try:
+                from app.services import dataset_recorder
+                dataset_recorder.capture(task="router", messages=router_msgs, response="TOOLS" if mode == "tools" else line.strip().split("\n")[0],
+                                         model=llm_service.get_endpoint_info().get("model"), provider=llm_service.get_endpoint_info().get("provider"))
+            except Exception:
+                pass
         if mode == "tools":
             yield {"type": "_fast_declined"}
             return
@@ -1424,8 +1465,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
 
         body = line.split(":", 1)[1] if ":" in line.split("\n")[0] else line[6:]
         queries = [q.strip(" \"'`*") for q in body.strip().split("\n")[0].split("|")]
-        queries = [q for q in queries if len(q) > 2][:2] or [query]
-        async for ev in self._fast_search_and_answer(query, queries, messages, evidence_board, prefetch=prefetch):
+        queries = [q for q in queries if len(q) > 2][:2] or [full]
+        async for ev in self._fast_search_and_answer(full, queries, messages, evidence_board, prefetch=prefetch):
             yield ev
 
     _NO_PREFETCH_RE = re.compile(
@@ -2261,6 +2302,8 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
         if getattr(self, "_memory_context", ""):
             deliberator_system_prompt += ("\n\n" + self._memory_context +
                                           "\nIf this answers the question, it's a direct answer: don't search again.")
+        if getattr(self, "_lessons", ""):
+            deliberator_system_prompt += "\n\n" + self._lessons
 
         try:  # what Xod knows about the person (services/user_memory.py): answer from it instead of looking things up
             from app.services import user_memory

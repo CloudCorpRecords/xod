@@ -123,6 +123,11 @@ def capture(
         )
         c.commit()
         c.close()
+        try:   # tie it to the chat turn it came from, so how the turn went can label it (services/turn_quality.py)
+            from app.services import turn_quality
+            turn_quality.attach(example_id, task)
+        except Exception:
+            pass
         return example_id
     except Exception as e:
         logger.debug(f"capture skipped: {e}")

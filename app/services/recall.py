@@ -197,7 +197,8 @@ def _collect_companion(c: sqlite3.Connection) -> List[Dict[str, Any]]:
         src = "; ".join(s.get("url", "") for s in (j.get("sources") or [])[:3])
         out.append({"id": f"companion:{j.get('id')}", "kind": "companion", "ref": j.get("id"), "ts": j["ts"],
                     "title": f"Xod {'read up on' if j.get('kind') == 'found' else 'thought about'} {j.get('topic') or 'something'}",
-                    "session_id": "", "text": j["text"] + (f" Sources: {src}" if src else "")})
+                    "session_id": "", "text": j["text"] + (f" Facts: {'; '.join(j['facts'])}." if j.get("facts") else "") +
+                    (f" Sources: {src}" if src else "")})
     _set_meta(c, "companion_ts", wm)
     return out
 
