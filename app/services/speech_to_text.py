@@ -3,14 +3,20 @@ Speech to text on this Mac (Whisper on the GPU via MLX). Audio never leaves the 
 unlike the browser's built-in speech recognition, which sends it to Google and doesn't
 exist at all inside the desktop app.
 
-The model (~150 MB for base.en) downloads from Hugging Face on first use and is cached in
-~/.cache/huggingface. XOD_WHISPER_MODEL picks another one, e.g. mlx-community/whisper-small.en-mlx.
+The model (Whisper large-v3 turbo, 4-bit, ~460 MB) downloads from Hugging Face on first use and is
+cached in ~/.cache/huggingface. XOD_WHISPER_MODEL picks another one, e.g. mlx-community/whisper-small.en-mlx.
+
+Whisper makes things up when it's given noise or silence: "no, no, no, no…", "Thanks for watching!",
+one sentence repeated twenty times. Each segment carries Whisper's own doubts (how likely it was
+silence, how sure it was of the words, how repetitive the text is); clean() drops what it doubts, so
+background sound becomes nothing instead of a question Xod answers.
 """
 import asyncio
 import io
 import logging
 import os
 import subprocess
+import re
 import time
 import wave
 from typing import Any, Dict
@@ -19,7 +25,8 @@ import numpy as np
 
 logger = logging.getLogger("xod.speech")
 
-MODEL = os.environ.get("XOD_WHISPER_MODEL", "mlx-community/whisper-base.en-mlx")
+MODEL = os.environ.get("XOD_WHISPER_MODEL", "mlx-community/whisper-large-v3-turbo-q4")
+LANGUAGE = os.environ.get("XOD_WHISPER_LANGUAGE", "en")   # "auto" lets it detect the language
 MAX_BYTES = 25 * 1024 * 1024      # ~25 MB of compressed audio
 MAX_SECONDS = 120
 _lock = asyncio.Lock()
@@ -67,18 +74,94 @@ def _transcribe_sync(audio: bytes) -> Dict[str, Any]:
         return {"success": True, "text": "", "seconds": 0}
     # temperature 0 only: Whisper's retries at higher temperatures are where it invents sentences
     # out of a short, noisy clip.
+    if not _has_voice(samples):
+        return {"success": True, "text": "", "seconds": round(samples.size / 16000, 1), "dropped": "no voice"}
+    kw = {} if LANGUAGE == "auto" or MODEL.endswith(".en-mlx") else {"language": LANGUAGE}
     out = mlx_whisper.transcribe(samples, path_or_hf_repo=MODEL, condition_on_previous_text=False,
-                                 no_speech_threshold=0.6, temperature=0.0, verbose=None)
-    text = " ".join((out.get("text") or "").split())
-    return {"success": True, "text": text, "seconds": round(samples.size / 16000, 1),
-            "took_ms": int((time.time() - t) * 1000), "model": MODEL}
+                                 no_speech_threshold=0.6, temperature=0.0, verbose=None, **kw)
+    text, why, conf = clean(out)
+    return {"success": True, "text": text, "seconds": round(samples.size / 16000, 1), "confidence": conf,
+            **({"dropped": why} if why else {}), "took_ms": int((time.time() - t) * 1000), "model": MODEL}
 
 
-async def transcribe(audio: bytes) -> Dict[str, Any]:
+# What Whisper writes when there's nothing to hear (it learned them from video subtitles).
+STOCK_LINES = {
+    "you", "thank you", "thanks", "thank you very much", "thanks for watching", "thank you for watching",
+    "thanks for watching!", "please subscribe", "subscribe", "like and subscribe", "bye", "bye bye", "okay",
+    "so", "uh", "um", "hmm", "oh", "the end", "i'm going to make a video about this video",
+    "subtitles by the amara.org community", "transcription by castingwords", "i'll see you next time",
+}
+
+
+def _has_voice(x) -> bool:
+    """Is there speech-like sound at all? Speech comes in bursts well above the room's level;
+    a fan, hum or silence doesn't. (Whisper invents words for those.)"""
+    frame = 480   # 30 ms
+    n = x.size // frame
+    if n < 8:
+        return False
+    rms = np.sqrt((x[: n * frame].reshape(n, frame) ** 2).mean(axis=1))
+    floor = np.percentile(rms, 20)
+    loud = rms > max(floor * 3.0, 0.006)
+    if int(loud.sum()) >= 8:             # at least ~0.25 s clearly above the background
+        return True
+    # A clip that's speech from start to end has no quiet part to compare with, but speech still rises
+    # and falls syllable by syllable; a fan or hiss stays flat.
+    hi, mid = np.percentile(rms, 95), np.percentile(rms, 30)
+    return bool(hi > 0.01 and hi > 2.2 * max(mid, 1e-6))
+
+
+def _repetitive(text: str) -> bool:
+    """'no, no, no, no…' or one phrase over and over."""
+    import zlib
+    words = re.findall(r"[a-z0-9']+", text.lower())
+    if len(words) >= 8:
+        if len(set(words)) / len(words) < 0.3:
+            return True
+        b = " ".join(words).encode()
+        if len(b) / max(1, len(zlib.compress(b))) > 2.4:
+            return True
+    sents = [x for x in (re.sub(r"[^a-z0-9' ]", "", y.lower()).strip() for y in re.split(r"[.!?]+", text)) if x]
+    if len(sents) >= 2 and len(set(sents)) == 1 and len(sents[0].split()) >= 3:
+        return True                      # one sentence said again: "I'm going to make a video… I'm going to make a video…"
+    for n in range(1, 7):                # the same 1–6 words, 4+ times in a row
+        if re.search(r"\b((?:[a-z0-9']+\W+){%d})(?:\1){3,}" % n, text.lower() + " "):
+            return True
+    return False
+
+
+def clean(out: Dict[str, Any]):
+    """Whisper's result -> (text you said, why it was dropped or "", confidence 0–1)."""
+    segs = out.get("segments") or []
+    kept, probs = [], []
+    for s in segs:
+        t = (s.get("text") or "").strip()
+        if not t:
+            continue
+        nsp, lp, cr = s.get("no_speech_prob", 0.0), s.get("avg_logprob", 0.0), s.get("compression_ratio", 1.0)
+        if (nsp > 0.6 and lp < -0.5) or lp < -1.1 or cr > 2.4:
+            continue                      # Whisper itself doubts it
+        kept.append(t)
+        probs.append(float(np.exp(lp)))
+    text = " ".join(" ".join(kept).split()) if segs else " ".join((out.get("text") or "").split())
+    if not text:
+        return "", ("doubtful" if segs else ""), 0.0
+    if _repetitive(text):
+        return "", "repetitive", 0.0
+    bare = re.sub(r"[^a-z0-9' ]", "", text.lower()).strip()
+    conf = round(min(probs), 2) if probs else 0.5
+    if bare in STOCK_LINES and conf < 0.75:
+        return "", "stock phrase", conf
+    return text, "", conf
+
+
+async def transcribe(audio: bytes, partial: bool = False) -> Dict[str, Any]:
     if not audio:
         return {"success": False, "error": "No audio received."}
     if len(audio) > MAX_BYTES:
         return {"success": False, "error": "Recording is too long."}
+    if partial and _lock.locked():
+        return {"success": True, "text": "", "busy": True}
     async with _lock:   # one at a time: the model is shared
         try:
             return await asyncio.to_thread(_transcribe_sync, audio)

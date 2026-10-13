@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 Voice input end to end, with no human and no real microphone: Chrome gets a fake microphone that
-plays a sentence spoken by macOS `say`. Xod's recorder must hear it, stop on the pause, send a
-WAV to /api/voice/transcribe, and the on-device Whisper must write back the right words.
+plays a sentence spoken by macOS `say`. The mic button starts a conversation (js/conversation.js):
+it must hear the sentence, stop on the pause, send a WAV to /api/voice/transcribe, and the on-device
+Whisper must write back the right words, which go out as the question. Then the same with a mic that
+hears only background noise (a fan, room hiss): nothing may be sent.
 
   .venv/bin/python tests/smoke/run_voice_test.py
 """
@@ -34,6 +36,17 @@ def free_port():
         return s.getsockname()[1]
 
 
+def make_noise_wav(path: Path, seconds: int = 30):
+    """Only background: fan-like noise with a slow swell, at a level a laptop mic picks up in a room."""
+    rng = np.random.default_rng(3)
+    n = 48000 * seconds
+    swell = 1 + 0.3 * np.sin(np.linspace(0, 6 * np.pi, n))
+    x = rng.standard_normal(n) * 0.02 * swell
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(48000)
+        w.writeframes((np.clip(x, -1, 1) * 32767).astype(np.int16).tobytes())
+
+
 def make_wav(path: Path):
     """The sentence as 16-bit mono WAV, with silence after it so the recorder notices the pause."""
     aiff = path.with_suffix(".aiff")
@@ -48,18 +61,19 @@ def make_wav(path: Path):
         w.writeframes(np.concatenate([np.zeros(48000 // 2, np.int16), speech, silence]).tobytes())
 
 
-async def run(base, wav):
+async def run(base, wav, limit=120):
     # Chrome's sandboxed audio service can't open the file, so it runs in-process for this test.
     args = ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", f"--use-file-for-fake-audio-capture={wav}",
             "--disable-features=AudioServiceOutOfProcess,AudioServiceSandbox"]
     async with Studio(width=1280, height=800, scale=1, port=free_port(), cursor=False, chrome_args=args) as s:
         await s.goto(base + "/", wait=3)
-        # Catch the transcript instead of sending it as a chat message.
-        await s.js("window.__heard = null; handleJarvisVoiceCommand = (t) => { window.__heard = t; }")
-        await s.js("startJarvisVoice()")
+        await s.js("document.querySelectorAll('.fixed.inset-0').forEach(e => { if (/Pick Xod|Welcome/.test(e.textContent)) e.remove(); }); true")
+        # Catch the question instead of sending it as a chat message.
+        await s.js("window.__heard = null; quickSendPrompt = (t) => { window.__heard = t; }; true")
+        await s.js("startJarvisVoice(); true")
         t0 = time.time()
         mood_seen = False
-        while time.time() - t0 < 120:
+        while time.time() - t0 < limit:
             heard = await s.js("window.__heard")
             if not mood_seen:
                 mood_seen = await s.js("window.XodMascot && XodMascot.mood() === 'listening'")
@@ -94,6 +108,13 @@ def main():
         print(f"{'PASS' if mood else 'FAIL'}  the moon listened while recording")
         print(f"{'PASS' if ok else 'FAIL'}  transcribed on this Mac in {secs:.0f}s: {heard!r} ({hits}/{len(want)} words)")
         ok = ok and mood
+        # Only background noise: nothing is sent.
+        noise = tmp / "noise.wav"
+        make_noise_wav(noise)
+        heard2, _, secs2 = asyncio.run(run(base, noise, limit=25))
+        quiet = heard2 is None
+        print(f"{'PASS' if quiet else 'FAIL'}  background noise alone sends nothing ({secs2:.0f}s){'' if quiet else ': ' + repr(heard2)}")
+        ok = ok and quiet
     finally:
         server.terminate()
         shutil.rmtree(tmp, ignore_errors=True)

@@ -48,7 +48,7 @@
   const M = { stream: null, ctx: null, proc: null, rate: 48000, opening: null };
   const V = {                 // voice activity
     floor: 0.004, speaking: false, above: 0, quietMs: 0,
-    preroll: [], seg: [], segStart: 0, frameMs: 43,
+    preroll: [], seg: [], segRms: [], segStart: 0, frameMs: 43,
     partialAt: 0, partialBusy: false, segId: 0,
   };
 
@@ -57,7 +57,7 @@
     if (M.opening) return M.opening;
     M.opening = (async () => {
       try {
-        M.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+        M.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } });   // no auto-gain: it lifts a far-off TV to your level
       } catch (e) {
         toast("Xod can't hear you: microphone access is blocked. Allow it in System Settings → Privacy & Security → Microphone.");
         return false;
@@ -116,6 +116,7 @@
       if (V.above >= (xodTalking ? 5 : 3)) {
         V.speaking = true;
         V.seg = V.preroll.slice();
+        V.segRms = [];
         V.preroll = [];
         V.segStart = now();
         V.quietMs = 0;
@@ -126,15 +127,16 @@
       return;
     }
     V.seg.push(buf);
+    V.segRms.push(rms);
     V.quietMs = rms < off ? V.quietMs + V.frameMs : 0;
     const dur = now() - V.segStart;
-    const endAfter = C.state === "wake" ? 550 : (xodTalking || C.state === "thinking") ? 500 : 800;
+    const endAfter = C.state === "wake" ? 550 : (xodTalking || C.state === "thinking") ? 500 : 950;
     const maxMs = C.state === "wake" ? 7000 : 25000;
     if (V.quietMs >= endAfter || dur > maxMs) {
-      const seg = V.seg;
-      V.speaking = false; V.seg = []; V.above = 0;
-      log("speech-end", C.state, Math.round(dur - V.quietMs));
-      speechEnded(seg, dur - V.quietMs);
+      const seg = V.seg, level = loudness(V.segRms);
+      V.speaking = false; V.seg = []; V.segRms = []; V.above = 0;
+      log("speech-end", C.state, Math.round(dur - V.quietMs), +level.toFixed(4));
+      speechEnded(seg, dur - V.quietMs, level);
     } else if (C.active && C.state === "listening" && dur > 1100 && now() - V.partialAt > 1100 && !V.partialBusy) {
       livePartial(V.seg.slice(), V.segId);
     }
@@ -165,13 +167,40 @@
     return res.json();
   }
 
+  // How loud you are when you talk to Xod, learned from what it actually took as your words. Speech
+  // much quieter than that is someone else: a TV, a call next door, people across the room.
+  function loudness(levels) {
+    if (!levels.length) return 0;
+    const top = levels.slice().sort((a, b) => b - a).slice(0, Math.max(3, Math.ceil(levels.length * 0.3)));
+    return top.reduce((a, b) => a + b, 0) / top.length;
+  }
+  let voiceLevel = 0;
+  try { voiceLevel = Number(localStorage.getItem("xod.voiceLevel")) || 0; } catch (_) {}
+  let ignoredInARow = 0;
+  function learnVoice(level) {
+    if (!level) return;
+    ignoredInARow = 0;
+    if (voiceLevel) level = clamp(level, voiceLevel * 0.5, voiceLevel * 2);   // one shout or whisper doesn't reset it
+    voiceLevel = voiceLevel ? voiceLevel * 0.75 + level * 0.25 : level;
+    try { localStorage.setItem("xod.voiceLevel", voiceLevel.toFixed(5)); } catch (_) {}
+  }
+  function tooQuiet(level) {
+    if (!(voiceLevel > 0 && level > 0 && level < voiceLevel * 0.3)) return false;
+    // Ignored three times running while it's waiting for you: maybe you're further from the mic now.
+    if (C.state === "listening" && ++ignoredInARow >= 3) { voiceLevel *= 0.7; ignoredInARow = 0; }
+    return true;
+  }
+  // Ends mid-thought ("…and", "…so the", "…because"): wait a moment for the rest instead of answering half.
+  const DANGLING_RE = /\b(and|or|but|so|the|a|an|to|of|with|um|uh|like|because|that|if|my|for|then|is|are|about)\s*[.,…-]*$/i;
+
   // ---------------------------------------------------------------- hearing something
   function speechStarted() {
     C.lastHeardAt = now();
     if (!C.active) return;                                   // wake mode: nothing to show yet
     if (C.state === "listening") {
       C.followUntil = 0;
-      caption("you", "…", true);
+      if (C.pendingTimer) { clearTimeout(C.pendingTimer); C.pendingTimer = null; }   // the rest of the sentence
+      caption("you", C.pendingText ? C.pendingText + "…" : "…", true);
       setState("listening", "Listening…");
     } else if (window.XodSpeech && XodSpeech.audioPlaying()) {
       XodSpeech.duck(true);                                  // you might be talking over it: get out of the way
@@ -182,28 +211,51 @@
     V.partialAt = now();
     V.partialBusy = true;
     try {
-      const r = await post("/api/voice/transcribe", wav(chunks));
+      const r = await post("/api/voice/transcribe?partial=1", wav(chunks));
       if (r.text && V.speaking && id === V.segId && C.state === "listening") caption("you", r.text + "…", true);
     } catch (_) {}
     V.partialBusy = false;
   }
 
-  async function speechEnded(chunks, ms) {
+  async function speechEnded(chunks, ms, level = 0) {
     if (ms < 280) { if (window.XodSpeech) XodSpeech.duck(false); return; }   // a cough, a click
+    if (tooQuiet(level)) {                                    // someone else, further away
+      log("ignored: quieter than your voice", +level.toFixed(4), +voiceLevel.toFixed(4));
+      if (window.XodSpeech) XodSpeech.duck(false);
+      if (C.state === "listening") finishPending() || setState("listening", "Listening…");
+      return;
+    }
     if (C.state === "wake") return wakeCheck(chunks, ms);
     if (!C.active) return;
     const during = C.state;                                   // listening | thinking | speaking
     const xodWasTalking = !!(window.XodSpeech && XodSpeech.audioPlaying());
     if (during === "listening") setState("transcribing", "Got it…");
-    let text = "";
+    let text = "", conf = 1;
     try {
       const r = await post("/api/voice/transcribe", wav(chunks));
       text = (r.text || "").trim();
+      if (typeof r.confidence === "number") conf = r.confidence;
+      if (r.dropped) log("dropped", r.dropped);
     } catch (_) {}
     text = text.replace(/^\[.*?\]$|^\(.*?\)$/, "").trim();       // Whisper's "[BLANK_AUDIO]", "(music)"
-    log("heard", during, text, xodWasTalking);
+    log("heard", during, text, xodWasTalking, conf);
     if (during === "listening") {
-      if (!words(text)) { backToListening(true); return; }
+      if (!words(text)) { if (!finishPending()) backToListening(true); return; }
+      learnVoice(level);
+      if (C.pendingText) { text = C.pendingText + " " + text; C.pendingText = ""; }
+      if (conf < 0.35 && words(text) <= 6) {                  // it isn't sure what it heard: ask, don't guess
+        caption("you", text + " (?)");
+        say("Sorry, I didn't catch that. Could you say it again?");
+        backToListening(false);
+        return;
+      }
+      if (DANGLING_RE.test(text) && !/\?\s*$/.test(text)) {
+        C.pendingText = text.replace(/[.…]+\s*$/, "");
+        caption("you", C.pendingText + "…", true);
+        setState("listening", "Go on…");
+        C.pendingTimer = setTimeout(() => { C.pendingTimer = null; finishPending(); }, 1600);
+        return;
+      }
       return handle(text);
     }
     // Something was said while Xod was busy or talking.
@@ -221,6 +273,15 @@
   }
 
   const words = (t) => (t.match(/[A-Za-z0-9']+/g) || []).length;
+
+  // A sentence it was holding for the rest ("…and"): nothing more came, so take it as it is.
+  function finishPending() {
+    const t = C.pendingText;
+    if (!t || !C.active || V.speaking) return false;
+    C.pendingText = "";
+    handle(t);
+    return true;
+  }
 
   // Is this just Xod's own voice coming back through the mic?
   function isEcho(text) {

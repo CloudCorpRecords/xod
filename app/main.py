@@ -2755,7 +2755,9 @@ async def setup_complete_endpoint():
 async def voice_transcribe_endpoint(request: Request):
     """Speech to text on this Mac (local Whisper). Body: the raw recording (webm/ogg/mp4/wav)."""
     from app.services import speech_to_text
-    return await speech_to_text.transcribe(await request.body())
+    # ?partial=1: a live caption while you're still talking; skipped if Whisper is busy, so the
+    # real transcription of what you said never waits behind a caption.
+    return await speech_to_text.transcribe(await request.body(), partial=request.query_params.get("partial") == "1")
 
 
 @app.post("/api/voice/prepare")
