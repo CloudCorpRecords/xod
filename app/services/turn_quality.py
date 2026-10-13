@@ -119,6 +119,12 @@ def finish(turn: Optional[Dict[str, Any]], answer: str, tools: List[str]) -> Non
             asyncio.get_running_loop().create_task(_self_check_later(turn["id"]))
         except RuntimeError:
             pass
+        try:   # it said it wasn't sure: something for the companion to read up on later (services/curiosity.py)
+            from app.services import curiosity
+            if curiosity.HEDGE_RE.search(answer):
+                curiosity.add_gap(turn.get("understood") or turn["question"], "hedge", guess=answer, priority=0.75)
+        except Exception as e:
+            logger.debug(f"gap: {e}")
 
 
 def _label(examples: List[str], value: int, reason: str) -> int:
@@ -172,6 +178,12 @@ def _judge_previous(session_id: str, text: str) -> None:
             label = 1
         elif prev["self_check"] == "pass":
             label = 1
+        if signal == "correction":
+            try:   # got it wrong: the general part of the question is worth reading up on
+                from app.services import curiosity
+                curiosity.add_gap(prev["understood"] or prev["question"], "correction", guess=prev["answer"] or "", priority=0.9, context=text)
+            except Exception as e:
+                logger.debug(f"gap: {e}")
         if label:
             reason = {"correction": "you corrected it", "asked_again": "you asked again", "praise": "you thanked it",
                       "moved_on": "self-check passed, no complaint"}[signal]
@@ -298,6 +310,11 @@ async def self_check(turn_id: str) -> Optional[str]:
         examples = json.loads(t["examples"] or "[]")
         if verdict == "fail":
             _label(examples, -1, f"self-check: {why}"[:200])
+            try:
+                from app.services import curiosity
+                curiosity.add_gap(q, "self_check", guess=answer, priority=0.8, context=f"its own check said: {why}")
+            except Exception as e:
+                logger.debug(f"gap: {e}")
             c.execute("UPDATE turns SET label = -1 WHERE id = ?", (turn_id,))
             c.commit()
     finally:

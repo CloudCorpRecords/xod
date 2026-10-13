@@ -352,11 +352,12 @@
         </div>
         ${(s.lessons || []).length ? `<p class="xh-sub">Lately it was corrected on:</p><ul class="xh-lessons">${s.lessons.slice(0, 3).map((l) => `<li>${esc(l.text)}</li>`).join("")}</ul>` : ""}
       </section>
-      ${(inner.notes || []).length ? `<section data-sec="notebook"><h4>Notebook <em>${inner.note_count} note${inner.note_count === 1 ? "" : "s"}</em></h4>
-        <p class="xh-note">What it read up on by itself. Most of it it keeps here; only now and then does it bring you something.</p>
+      ${(inner.notes || []).length || (inner.wondering || []).length ? `<section data-sec="notebook"><h4>Notebook <em>${inner.note_count} note${inner.note_count === 1 ? "" : "s"}</em></h4>
+        <p class="xh-note">It only reads up on what it isn't sure of: questions from your chats it couldn't answer well, and things it tests itself on and gets unsure about. What it finds comes back in your chats when it fits. ${(inner.gaps || {}).known ? `It checked ${inner.gaps.known} thing${inner.gaps.known === 1 ? "" : "s"} it already knew well and skipped them.` : ""}</p>
+        ${(inner.wondering || []).length ? `<p class="xh-sub">Still unsure about:</p><ul class="xh-lessons">${inner.wondering.map((g) => `<li>${esc(g.question)}${g.source !== "probe" ? " <em>(from a chat)</em>" : ""}</li>`).join("")}</ul>` : ""}
         ${(inner.topics || []).length ? `<div class="xh-chips xh-topics">${inner.topics.slice(0, 8).map((t) => `<span class="${t.origin === "itself" ? "is-own" : ""}" title="${t.origin === "itself" ? "A topic it picked up while reading" : "One of your interests"}${t.thread ? ` · wondering: ${esc(t.thread)}` : ""}">${esc(t.name)}</span>`).join("")}</div>` : ""}
-        ${inner.notes.slice(0, 6).map((n) => `<div class="xh-note-entry ${n.shared ? "is-shared" : ""}"><p class="xh-entry-head">${esc(n.topic)} · ${ago(n.ts)}${n.shared ? " · told you" : ""}</p>
-          <p>${esc(n.text)}</p>${(n.facts || []).length ? `<ul>${n.facts.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}
+        ${(inner.notes || []).slice(0, 6).map((n) => `<div class="xh-note-entry ${n.shared ? "is-shared" : ""}"><p class="xh-entry-head">${esc(n.topic)} · ${ago(n.ts)}${n.from_chat ? " · from a chat" : ""}${n.changed ? " · its guess was wrong" : ""}${n.shared ? " · told you" : ""}</p>
+          ${n.answer ? `<p class="xh-q">Wasn't sure: ${esc(n.question)}</p><p>${esc(n.answer)}</p>` : `<p>${esc(n.text)}</p>`}${(n.facts || []).length ? `<ul>${n.facts.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : ""}
           ${(n.sources || []).slice(0, 2).map((x) => `<a href="${esc(x.url)}" target="_blank" rel="noopener noreferrer">${esc(x.title || x.url)}</a>`).join("")}</div>`).join("")}
       </section>` : ""}
       <section data-sec="journal"><h4>Journal <button class="xh-btn" data-h="muse"><i data-lucide="sparkles" class="size-3"></i>What are you thinking about?</button></h4>
@@ -373,6 +374,7 @@
       <section><h4>Its own time</h4>
         <label class="xh-toggle"><input type="checkbox" data-set="wander" ${s.settings.wander ? "checked" : ""}> Wander and think when I'm away</label>
         <label class="xh-toggle"><input type="checkbox" data-set="explore_web" ${s.settings.explore_web ? "checked" : ""}> Let it read up on my interests in its own browser (off: it only uses what it already knows)</label>
+        <label class="xh-toggle"><input type="checkbox" data-set="chat_gaps" ${s.settings.chat_gaps !== false ? "checked" : ""}> Let it look up things it got wrong or wasn't sure of in our chats (only the general question, never anything about me)</label>
         <label class="xh-toggle">Bring me something it found at most <select class="xh-select" data-set-num="shares_per_day">${[0, 1, 2, 3, 5].map((n) => `<option value="${n}" ${Number(s.settings.shares_per_day ?? 2) === n ? "selected" : ""}>${n}</option>`).join("")}</select> times a day</label>
         <p class="xh-note">At most ${s.settings.musings_per_day} times a day, only when the Mac is plugged in and you've been away a while. Its thoughts use your local model, never a cloud one. When it reads up on something, it searches and reads pages in Xod's own browser on this Mac, like you would: no search service or API key, read-only, and its searches show in Activity. It never changes your files or accounts on its own.</p>
       </section>

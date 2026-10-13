@@ -1290,7 +1290,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"may|june|july|august|september|october|november|december)|our (last|previous) (chat|conversation))\b", re.I)
 
     async def _recall_for(self, query: str, messages: List[Dict[str, Any]]) -> AsyncGenerator[Dict[str, Any], None]:
-        """Sets self._memory_context for this turn (past episodes and/or Xod's own work) and shows the lookup."""
+        """Sets self._memory_context for this turn (past episodes, Xod's own work, its notebook) and shows the lookup."""
+        from app.services.recall import when_label as recall_when
         from app.services import work_state
         blocks = []
         if work_state.WORK_RE.search(query or ""):
@@ -1329,6 +1330,19 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             yield {"type": "tool_result", "name": "memory_search", "id": "mem_recall", "summary": summary,
                    "data": {"memories": [{"when": r["when"], "title": r["title"], "kind": r["kind_label"], "session_id": r["session_id"]}
                                          for r in res]}}
+        # Its own notebook: something it read up on by itself because it wasn't sure (services/curiosity.py).
+        try:
+            from app.services import curiosity
+            known = await asyncio.wait_for(curiosity.knowledge(query, k=2), 4)
+        except Exception as e:
+            logger.debug(f"notebook: {e}")
+            known = []
+        if known:
+            yield {"type": "tool_call", "name": "notebook_search", "args": {"query": query}, "id": "notebook"}
+            yield {"type": "tool_result", "name": "notebook_search", "id": "notebook",
+                   "summary": f"Read up on this {recall_when(known[0]['ts'])}: {known[0]['question'][:80]}",
+                   "data": {"notes": [{"question": n["question"], "answer": n["answer"], "sources": n["sources"]} for n in known]}}
+            blocks.append(curiosity.knowledge_note(known))
         self._memory_context = "\n\n".join(b for b in blocks if b)
 
     def _fast_lane_ok(self, query: str, has_image: bool, has_document: bool, workspace: Optional[str]) -> bool:

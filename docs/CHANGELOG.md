@@ -3,10 +3,13 @@
 ## Unreleased
 
 **A life of its own, told now and then**
-- Xod's companion keeps its own research notebook. While you're away it reads up on your interests (and topics it picked up itself while reading), writes down what it learned with the facts and sources, and notes a follow-up question it wants to look into next time, so it pulls on threads over days instead of starting over.
+- Xod's companion only reads up on what it isn't sure of, so every read can add something. It looks up questions from your chats it got corrected on, failed its own check on, or hedged on ("I'm not sure…"), taking only the general part and never anything about you. For the topics it follows, it also tests itself: it writes questions, answers each twice, and checks whether the answers agree. Anything about recent events counts as unsure, because it happened after the model was trained, however confident the model sounds. Things it already knows well are recorded and skipped.
+- What it finds goes into its own notebook: the question, the answer from the pages, whether its earlier guess was wrong, the facts and the sources, and a follow-up question it's now unsure about.
+- Chats use the notebook. Ask something it has read up on and you see a Notebook step, and it answers from what it found, saying when it read it.
 - It no longer tells you everything. Most of what it finds stays in its notebook; it brings you something only when it's new, about something you care about, it hasn't told you anything for a few hours, and nothing it told you is still unread. Two a day at most by default (Heart → Its own time, 0 to 5). An old pile of unread postcards is cleared down to the newest one. "What are you thinking about?" still always gets an answer.
 - It decides what it feels like doing each day: going deep on one topic, poking around, thinking about your projects, or taking it slow, from its drives (wants to learn, get better, tell you, rest) and from what went well before. Rewards are what you liked, what you brought up in chat yourself, and whether a read was actually new to it (compared with its notebook by meaning), so topics that pay off come up more often. Heart shows today's plan, the drives and the notebook.
 - Ask "what have you been reading about?" and it answers from its notebook.
+- Heart → Notebook shows what it's still unsure about and what it found. A switch under Its own time stops it looking into questions from your chats.
 - Its own thoughts now use LM Studio when it's running here, even if your questions go to a cloud model (before, with a cloud model it only had canned thoughts). Never a cloud model.
 
 **Understands follow-ups, learns from how answers went**

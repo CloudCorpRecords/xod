@@ -1106,3 +1106,6 @@ body.xod-previewing .action-footer > button { white-space: nowrap; }
 .xh-note-entry .xh-next { font-size: 11.5px; opacity: .75; font-style: italic; }
 .xh-topics span.is-own { border-style: dashed; }
 .xh-select { background: transparent; color: inherit; border: 1px solid rgba(255,255,255,.2); border-radius: 6px; padding: 1px 4px; }
+.xh-note-entry .xh-q { opacity: .7; font-size: 11.5px; }
+.xh-note-entry a { display: block; font-size: 11.5px; color: #7cc4f2; text-decoration: underline; text-underline-offset: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xh-note-entry .xh-lessons, [data-sec=notebook] .xh-lessons li { font-size: 12px; }

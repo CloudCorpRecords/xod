@@ -1,15 +1,18 @@
 """
-Xod's own research notebook, daily plan, rewards and sharing (services/curiosity.py, soul.py), and understanding
-questions plus labelling its training data by how turns went (services/turn_quality.py).
+Xod's own research (services/curiosity.py, soul.py): it only reads up on what it isn't sure of (questions from chats
+it got wrong or hedged on, and things it probes itself on and turns out unsure about), keeps the answers in its
+notebook, uses them in later chats, and only now and then tells you. Plus understanding follow-ups and labelling
+training data by how turns went (services/turn_quality.py).
 
-In a throwaway data folder and dataset. The companion's reading is faked (no browser) so the sharing limits can
-be checked over a pretend day; the question rewrite and the self-check use LM Studio's Gemma (never a cloud model):
+In a throwaway data folder and dataset. Web pages are faked (no browser); the uncertainty probe, reading the pages,
+the question rewrite, the self-check and the chat use LM Studio's Gemma (never a cloud model):
   .venv/bin/python tests/smoke/run_inner_life_test.py
 """
 import asyncio
 import json
 import os
 import random
+import re
 import sys
 import tempfile
 import time
@@ -31,112 +34,191 @@ def check(name, ok, detail=""):
     print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  — {detail}" if detail and not ok else ""), flush=True)
 
 
-FAKE = {
-    "volcanoes": [("I went looking into volcanoes: Iceland's Fagradalsfjall erupted from a dike that rose 15 km in days.",
-                   "the dike was about 15 km long | eruptions began in March 2021", "why do some fissures reopen years later?", "plate tectonics"),
-                  ("I got curious about volcanoes again: lava from Kilauea can reach 1,170 °C, hot enough to glow orange-yellow.",
-                   "Kilauea lava is about 1,170 °C | colour shows temperature", "how do volcanologists measure lava temperature?", "none")],
-    "sourdough": [("I went looking into sourdough: the tang comes from lactic and acetic acid made by bacteria in the starter.",
-                   "lactobacilli make lactic acid | colder proofing makes it more sour", "why does rye ferment faster than wheat?", "rye bread")],
+# Made-up pages, so the answer can only have come from reading them.
+PAGES = {
+    "grimsvotn": [{"title": "Grímsvötn eruption 2026 - Icelandic Met Office", "url": "https://example.org/grimsvotn-2026",
+                   "content": "The 2026 eruption of Grímsvötn began on 3 March 2026 at 04:10, after a week of earthquakes under "
+                              "Vatnajökull. The ash plume reached 9 km. It was the first eruption there since 2011."}],
+    "default": [{"title": "Volcano facts", "url": "https://example.org/volcano",
+                 "content": "Kilauea lava reaches about 1,170 °C. Lava colour shows temperature: yellow is hottest."}],
 }
 
 
-async def fake_ask(system, user, max_tokens=160):
-    if "LEARNED" in user:
-        for topic, opts in FAKE.items():
-            if topic in user:
-                l, f, n, sp = random.choice(opts)
-                return f"LEARNED: {l}\nFACTS: {f}\nNEXT: {n}\nSPARK: {sp}"
-        return "LEARNED: I was thinking about plate tectonics: plates move about as fast as fingernails grow.\nFACTS: a few cm a year | driven by mantle convection\nNEXT: what stops a plate?\nSPARK: none"
-    if "PROMPT:" in user:
-        return "You could turn last week's bread notes into a baking schedule.\nPROMPT: Make me a sourdough baking schedule"
-    return "I wonder if the cursor gets tired of blinking."
+async def fake_search_and_read(q, read_top=2, budget=900, **kw):
+    key = "grimsvotn" if "msv" in q.lower() or "grims" in q.lower() else "default"
+    return {"results": PAGES[key]}
+
+
+def fake_ask_factory(sure: bool):
+    """Stands in for the local model during a pretend day (fast): sure=True answers the same way every time, confidently."""
+    calls = {"n": 0}
+
+    async def ask(system, user, max_tokens=160):
+        calls["n"] += 1
+        if "factual questions about" in user:
+            topic = re.search(r"about (.+?) that", user).group(1)
+            return "\n".join(f"What is fact number {i} about {topic} {random.randint(0, 9999)}?" for i in range(3))
+        if "sure: <0-100>" in user:
+            n = len(re.findall(r"^\d+\. ", user.split("Questions:")[1], re.M))
+            if sure:
+                return "\n".join(f"{i + 1}. It is exactly forty two kilometres | sure: 95" for i in range(n))
+            return "\n".join(f"{i + 1}. {random.choice(['A red bird', 'In 1952 in Peru', 'About nine tonnes', 'Nobody, it was a myth'])} "
+                             f"| sure: {random.randint(10, 40)}" for i in range(n))
+        if "ANSWER:" in user:
+            return ("ANSWER: Kilauea lava reaches about 1,170 °C.\nCHANGED: no\nLEARNED: I wasn't sure how hot lava gets, so I "
+                    "looked it up: Kilauea's reaches about 1,170 °C.\nFACTS: 1,170 °C | yellow is hottest\nNEXT: how is lava "
+                    "temperature measured?\nSPARK: none")
+        if "PROMPT:" in user:
+            return "You could turn last week's notes into a schedule.\nPROMPT: Make me a schedule"
+        return "I wonder if the cursor gets tired of blinking."
+    return ask
 
 
 async def main():
     from app.config import settings
     settings.llm_provider, settings.llm_base_url, settings.llm_model = "lm_studio", "http://127.0.0.1:1234/v1", "google/gemma-4-12b-qat"
-    from app.services import soul, curiosity, turn_quality, dataset_recorder
+    from app.services import soul, curiosity, turn_quality, dataset_recorder, web_reader
+    web_reader.search_and_read = fake_search_and_read
+    turn_quality._judging = 99     # no background self-checks piling onto Gemma during the test (they're called directly below)
 
-    # A person who keeps talking about volcanoes and sourdough
     for t in ["tell me about volcanoes in Iceland", "volcanoes and lava flows", "my sourdough starter smells odd",
               "sourdough hydration tips", "volcanoes near Naples", "sourdough rye loaf"]:
         soul.learn_from_message(t)
     check("its interests come from what you talk about", {"volcanoes", "sourdough"} <= set(soul.interests()), str(soul.interests()))
-
-    # ---------------------------------------------------------------- today
     day = curiosity.today()
-    check("it picks a plan for the day", day["plan"] in curiosity.PLANS and day["label"], str(day))
-    check("…and keeps it all day", curiosity.today()["plan"] == day["plan"])
+    check("it picks a plan for the day, and keeps it", day["plan"] in curiosity.PLANS and curiosity.today()["plan"] == day["plan"], str(day))
 
-    # ---------------------------------------------------------------- reading up, notebook, novelty
-    FAKE["volcanoes"] = [FAKE["volcanoes"][0]]
-    vol = {"name": "volcanoes", "origin": "you", "thread": ""}
-    n1 = await curiosity.read_up(fake_ask, "voice", "Sam", web=False, topic=vol)
-    check("a read becomes a notebook note with facts and a follow-up question",
-          n1 and len(n1["facts"]) == 2 and n1["next"].endswith("?"), json.dumps(n1)[:300])
+    # ---------------------------------------------------------------- what it's unsure of
+    r = curiosity.researchable
+    check("only general questions get looked up: not about you, not requests",
+          r("how tall is Mount Fuji?") and not r("what's my dentist's name?") and not r("write me a poem about rain")
+          and not r("when is our anniversary"))
+
+    async def gemma(system, user, max_tokens=160):
+        return await soul._ask(system, user, max_tokens)
+    t0 = time.time()
+    u = await curiosity.uncertainty(gemma, ["What is the capital of France?", "How many legs does a spider have?",
+                                            "Who won the 2026 Tour de France?", "What was the exact attendance at the 2026 Grímsvötn science open day?"])
+    print(f"      (uncertainty in {time.time() - t0:.0f}s: " + ", ".join(f"{x['question'][:28]}… {x['uncertainty']}" for x in u) + ")")
+    check("it's sure of what it knows (France, spiders) and unsure of what it can't know (2026 events)",
+          max(u[0]["uncertainty"], u[1]["uncertainty"]) < curiosity.UNSURE <= min(u[2]["uncertainty"], u[3]["uncertainty"]), json.dumps(u)[:400])
+
+    t0 = time.time()
+    scored = await curiosity.probe(gemma, "Sam", {"name": "volcanoes", "thread": ""})
+    print(f"      (probe in {time.time() - t0:.0f}s: " + "; ".join(f"{s['question'][:50]} {s['uncertainty']}" for s in scored) + ")")
     c = curiosity._conn()
-    t = dict(c.execute("SELECT * FROM topics WHERE name = 'volcanoes'").fetchone())
-    own = [r["name"] for r in c.execute("SELECT name FROM topics WHERE origin = 'itself'").fetchall()]
+    statuses = {r["status"] for r in c.execute("SELECT status FROM gaps WHERE source = 'probe'").fetchall()}
     c.close()
-    check("the follow-up becomes a thread it will pull on next time", t["thread"] == n1["next"], t["thread"])
-    check("a related topic it noticed joins its own list", "plate tectonics" in own or "rye bread" in own, str(own))
-    same = {"name": "volcanoes", "origin": "you", "thread": ""}
-    n2 = await curiosity.read_up(fake_ask, "voice", "Sam", web=False, topic=same)
-    print(f"      (novelty: first {n1['novelty']}, repeat {n2['novelty']})")
-    check("reading the same thing again is worth less (novelty from embeddings)", n2["novelty"] < 0.35 < n1["novelty"] and n2["reward"] < n1["reward"],
-          f"{n1['novelty']} {n2['novelty']}")
+    check("probing a topic writes questions and scores how unsure it is of each (all recorded)",
+          len(scored) >= 2 and all(0 <= s["uncertainty"] <= 1 for s in scored) and statuses <= {"open", "known"}, json.dumps(scored)[:300])
 
-    # ---------------------------------------------------------------- a pretend day of musing: sporadic sharing
+    # ---------------------------------------------------------------- from your chats
+    turn = turn_quality.begin("c1", "when did the 2026 Grímsvötn eruption begin?")
+    turn_quality.finish(turn, "Grímsvötn hasn't erupted since 2011, as far as I know.", [])
+    turn_quality.begin("c1", "no, that's wrong, it erupted this year")
+    turn = turn_quality.begin("c2", "how many moons does Neptune have?")
+    turn_quality.finish(turn, "I'm not sure of the latest count, but Neptune has at least 14 known moons.", [])
+    turn = turn_quality.begin("c3", "what's my sister's favourite colour?")
+    turn_quality.begin("c3", "no, that's wrong")
+    gaps = {g["question"]: g for g in curiosity.open_gaps(50)}
+    check("a question it got corrected on becomes something to look up", any("Grímsvötn" in q and g["source"] == "correction" for q, g in gaps.items()), str(list(gaps)))
+    check("…and one it hedged on", any("Neptune" in q and g["source"] == "hedge" for q, g in gaps.items()))
+    check("…but nothing about you", not any("sister" in q for q in gaps))
+
+    # ---------------------------------------------------------------- reading up on it (Gemma reads the pages)
+    t0 = time.time()
+    note = await curiosity.read_up(gemma, "You are Xod's inner voice. Plain words.", "Sam", web=True)
+    print(f"      (read up in {time.time() - t0:.0f}s: {json.dumps({k: note[k] for k in ('topic', 'question', 'answer', 'changed', 'reward')}) if note else None})")
+    check("chat questions it got wrong are looked up first", note and "Grímsvötn" in note["question"] and note["from_chat"], str(note)[:200])
+    check("…the answer comes from the pages, and it knows its guess was wrong",
+          note and "3 March" in note["answer"] and note["changed"], str(note)[:300])
+    c = curiosity._conn()
+    g = c.execute("SELECT status, note_id FROM gaps WHERE note_id = ?", (note["id"] if note else "",)).fetchone()
+    c.close()
+    check("…and the question is marked answered", g and g["status"] == "answered")
+
+    # ---------------------------------------------------------------- using it later
+    k = await curiosity.knowledge("when did the Grimsvotn eruption start this year?")
+    k2 = await curiosity.knowledge("best deep dish pizza in Chicago")
+    print(f"      (notebook match: {[x['sim'] for x in k]}, unrelated: {[x['sim'] for x in k2]})")
+    check("a later question finds what it read up on; an unrelated one doesn't", k and "3 March" in k[0]["answer"] and not k2)
+
+    from app.agent.researcher import AgenticResearcher
+    out, tools = "", []
+    async for ev in AgenticResearcher().run_research_stream([{"role": "user", "content": "when did the Grímsvötn eruption start this year?"}]):
+        if ev.get("type") == "content":
+            out += ev["content"]
+        if ev.get("type") == "tool_call":
+            tools.append(ev["name"])
+    print(f"      (chat: {tools} {out[:160]!r})")
+    check("in a chat it answers from its notebook (shown as a Notebook step)", "notebook_search" in tools and "March" in out, out[:300])
+
+    # ---------------------------------------------------------------- nothing it's unsure of: no busywork
+    c = curiosity._conn()
+    c.execute("UPDATE gaps SET status = 'answered' WHERE status = 'open'")
+    c.commit()
+    c.close()
+    before = len(curiosity.notes(100))
+    n = await curiosity.read_up(fake_ask_factory(sure=True), "voice", "Sam", web=True, topic={"name": "sourdough", "thread": "", "origin": "you"})
+    c = curiosity._conn()
+    known = c.execute("SELECT COUNT(*) FROM gaps WHERE topic = 'sourdough' AND status = 'known'").fetchone()[0]
+    c.close()
+    check("when it's sure of everything it asks itself about a topic, it doesn't read up (and remembers it knew)",
+          n is None and len(curiosity.notes(100)) == before and known >= 2, f"{n} {known}")
+    check("with web reading off there's nothing new to learn from, so no pretend research",
+          await curiosity.read_up(fake_ask_factory(sure=False), "voice", "Sam", web=False) is None)
+
+    # ---------------------------------------------------------------- a pretend day: sporadic sharing
     real_ask = soul._ask
-    soul._ask = fake_ask
-    soul.local_endpoint = lambda: {"provider": "lm_studio"}     # its thoughts would use the local model
-    s = soul.load()
-    s["settings"]["explore_web"] = False
-    soul.save(s)
+    soul._ask = fake_ask_factory(sure=False)
+    soul.local_endpoint = lambda: {"provider": "lm_studio"}
+    c = curiosity._conn()            # a "poke around" day, so the count doesn't depend on which plan it happened to pick
+    curiosity._put(c, "today", {"date": curiosity._today(), "plan": "wander", "topic": "", "label": "poking around", "reads_or_thoughts": 0,
+                                "reward": 0.0, "shared": 0})
+    c.commit()
+    c.close()
     clock = [time.time()]
     real_time = time.time
     curiosity.time.time = lambda: clock[0]                     # hours pass between musings
     shared_flags = []
     for i in range(10):
         e = await soul.muse()
+        print(f"      musing {i}: {(e or {}).get('activity')} {(e or {}).get('kind')} {'shared' if e and not e.get('quiet') else ''}" if e else f"      musing {i}: nothing")
         if e:
             shared_flags.append(not e.get("quiet"))
             if not e.get("quiet"):
-                soul.react(e["id"], "seen")                     # you read it, so the next one isn't blocked by an unread one
+                soul.react(e["id"], "seen")
         clock[0] += 1.5 * 3600
     curiosity.time.time = real_time
     n_shared = sum(shared_flags)
-    print(f"      (10 musings over 15 hours: {n_shared} brought to you)")
-    check("ten musings in a day: only a couple are brought to you", len(shared_flags) >= 8 and 0 < n_shared <= 2, str(shared_flags))
-    check("the rest stay quiet (read, in the journal and notebook)", soul.public()["unseen"] <= 1 and len(curiosity.notes(50)) >= 3)
-
+    print(f"      (10 musings over 15 hours: {len(shared_flags)} did something, {n_shared} brought to you)")
+    check("a day of musing: only a couple are brought to you", len(shared_flags) >= 5 and 0 < n_shared <= 2, str(shared_flags))
+    quiet = [j for j in soul.load()["journal"][-len(shared_flags):] if j.get("quiet")]
+    check("the rest stay quiet (in the journal and notebook)", soul.public()["unseen"] <= 1 and len(quiet) == len(shared_flags) - n_shared)
     c = curiosity._conn()
     curiosity._nudge(c, last_share=time.time())
     c.commit()
     c.close()
-    pending_entry = {"id": "jtest", "kind": "found"}
-    ok, _ = curiosity.consider_sharing(pending_entry, None)
+    ok, _ = curiosity.consider_sharing({"id": "jtest", "kind": "found"}, None)
     check("hours apart: right after sharing, nothing more is shared", not ok)
     ok, _ = curiosity.consider_sharing({"id": "jask", "kind": "thought"}, None, asked=True)
     check("'What are you thinking about?' always gets an answer", ok)
 
     # ---------------------------------------------------------------- rewards
     c = curiosity._conn()
-    c.execute("UPDATE notes SET journal_id = 'jlike' WHERE id = ?", (n1["id"],))
+    c.execute("UPDATE notes SET journal_id = 'jlike' WHERE id = ?", (note["id"],))
     c.commit()
-    before = dict(c.execute("SELECT a, b FROM topics WHERE name = 'volcanoes'").fetchone())
+    tname = note["topic"]
+    before = dict(c.execute("SELECT a, b FROM topics WHERE name = ?", (tname,)).fetchone())
     c.close()
     curiosity.reaction("jlike", "liked")
     c = curiosity._conn()
-    after = dict(c.execute("SELECT a, b FROM topics WHERE name = 'volcanoes'").fetchone())
-    c.close()
-    check("'Thanks!' on something it shared rewards that topic", after["a"] >= before["a"] + 1.4, f"{before} {after}")
-    c = curiosity._conn()
+    after = dict(c.execute("SELECT a, b FROM topics WHERE name = ?", (tname,)).fetchone())
     c.execute("UPDATE topics SET last = 0, a = 9, b = 1 WHERE name = 'volcanoes'")
     c.execute("UPDATE topics SET last = 0, a = 1, b = 9, mentioned = '' WHERE name = 'sourdough'")
     c.commit()
     c.close()
+    check("'Thanks!' on something it shared rewards that topic", after["a"] >= before["a"] + 1.4, f"{before} {after}")
     picks = [curiosity._sample_topic(curiosity._conn(), ["volcanoes", "sourdough"])["name"] for _ in range(300)]
     check("topics that paid off get picked more (Thompson sampling)", picks.count("volcanoes") > 2.5 * picks.count("sourdough"),
           f"{picks.count('volcanoes')} vs {picks.count('sourdough')}")
@@ -148,17 +230,15 @@ async def main():
     a1 = c.execute("SELECT a FROM topics WHERE name = 'sourdough'").fetchone()[0]
     c.close()
     check("you bringing up a topic it reads about is a small reward", a1 > a0, f"{a0} {a1}")
-
     from app.services import work_state
     check("'what have you been reading about?' reaches its notebook",
-          bool(work_state.OWN_RE.search("what have you been reading about lately?")) and "volcanoes" in curiosity.recent_note())
+          bool(work_state.OWN_RE.search("what have you been reading about lately?")) and "Grímsvötn" in curiosity.recent_note(10))
     soul._ask = real_ask
 
     # ---------------------------------------------------------------- old backlog of postcards
     s = soul.load()
     for i in range(5):
         s["journal"].append({"id": f"old{i}", "ts": time.time(), "activity": "wonder", "kind": "found", "text": f"old {i}", "seen": False})
-    s.pop("share_v", None)
     soul.save(s)
     raw = json.loads(soul.PATH.read_text())
     raw.pop("share_v", None)
@@ -221,7 +301,7 @@ async def main():
     lab = dataset_recorder._conn().execute("SELECT label FROM llm_examples WHERE id = ?", (exb,)).fetchone()
     check("…and a failed check labels the turn's examples bad", lab["label"] == -1)
     st = turn_quality.stats()
-    check("the Model Lab gets the counts", st.get("turns", 0) >= 5 and st.get("corrected") == 1 and st.get("lessons") == 1, str(st))
+    check("the Model Lab gets the counts", st.get("turns", 0) >= 5 and st.get("corrected", 0) >= 1 and st.get("lessons", 0) >= 1, str(st))
 
     # ---------------------------------------------------------------- in a real chat turn
     from app.agent.researcher import AgenticResearcher

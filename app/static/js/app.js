@@ -4844,6 +4844,7 @@ function formatToolName(name) {
     "web_search": "Web search",
     "memory_search": "Memory",
     "xod_tasks": "My tasks",
+    "notebook_search": "Notebook",
     "web_scrape": "Read a page",
     "calculate_saas_metrics": "Did the math",
     "browser_navigate": "Opened a page",

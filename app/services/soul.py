@@ -86,7 +86,7 @@ def _default() -> Dict[str, Any]:
             "activity_weights": {a: 1.0 for a in ACTIVITIES}, "moments": [], "journal": [], "lessons": [],
             "daily": {"date": "", "bond_from_chat": 0.0, "bond_from_praise": 0.0, "bond_from_pets": 0.0, "musings": 0,
                       "bond_from_play": 0.0, "stardust_earned": 0, "treats": 0},
-            "last_seen": now, "together_days": [], "settings": {"wander": True, "explore_web": True, "musings_per_day": 6, "shares_per_day": 2},
+            "last_seen": now, "together_days": [], "settings": {"wander": True, "explore_web": True, "musings_per_day": 6, "shares_per_day": 2, "chat_gaps": True},
             "local_v": 1, "web_v": 1, "share_v": 1,
             "evolved_at": None, "stardust": 0, "treats_total": 0, "catches_best": 0}
 
@@ -437,7 +437,7 @@ def feeling(s: Dict[str, Any]) -> str:
 def settings(changes: Dict[str, Any]) -> Dict[str, Any]:
     with _lock:
         s = load()
-        for k in ("wander", "explore_web"):
+        for k in ("wander", "explore_web", "chat_gaps"):
             if k in changes:
                 s["settings"][k] = bool(changes[k])
         if "musings_per_day" in changes:
@@ -594,7 +594,9 @@ async def _ask(system: str, user: str, max_tokens: int = 160) -> str:
         raise NotLocal("the configured model isn't on this Mac")
     msg = await llm_service.chat_completion(messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                                             temperature=0.8, max_tokens=max_tokens, think=False, task="soul", endpoint_override=ep)
-    return re.sub(r"\s+", " ", (msg.get("content") or "")).strip().strip('"')
+    # Line breaks are kept: the notebook's prompts ask for one field per line (curiosity.py).
+    lines = [re.sub(r"[ \t]+", " ", l).strip() for l in (msg.get("content") or "").splitlines()]
+    return "\n".join(l for l in lines if l).strip().strip('"')
 
 
 def _recent_work(limit: int = 8) -> List[str]:
@@ -628,17 +630,17 @@ async def muse(force: Optional[str] = None, asked: bool = False) -> Optional[Dic
     from app.services import curiosity
     try:
         if activity == "wonder":
-            # Reading up the way a person would: a search in its own browser, then a page or two, in background
-            # tabs (a browser task you're running is never interrupted); or, with web reading off, from what the
-            # local model already knows. It follows its own threads: a follow-up question from last time, or a
-            # topic it picked up while reading. Its thoughts about it use the local model.
+            # Reading up on something it isn't sure of (services/curiosity.py: a question from your chats it couldn't
+            # answer well, or the thing it's least sure of about one of its topics), the way a person would: a search
+            # in its own browser, then a page or two, in background tabs (a browser task you're running is never
+            # interrupted). Nothing it's unsure of, or web reading off: nothing to learn, so no entry.
             if not local_endpoint():
                 raise NotLocal("no model on this Mac")
             note = await curiosity.read_up(_ask, voice, who, web=bool(s["settings"].get("explore_web")))
             if not note:
                 return None
-            entry.update(kind="found" if note["sources"] else "thought", topic=note["topic"], text=note["text"],
-                         sources=note["sources"], facts=note["facts"], note_id=note["id"])
+            entry.update(kind="found", topic=note["topic"], text=note["text"], question=note["question"], answer=note["answer"],
+                         changed=note["changed"], sources=note["sources"], facts=note["facts"], note_id=note["id"])
         elif activity == "reflect":
             work = _recent_work()
             if not work:
@@ -649,13 +651,13 @@ async def muse(force: Optional[str] = None, asked: bool = False) -> Optional[Dic
             prompt = ""
             if "PROMPT:" in text:
                 text, prompt = [x.strip() for x in text.split("PROMPT:", 1)]
-            entry.update(kind="idea", text=text, prompt=prompt[:300])
+            entry.update(kind="idea", text=" ".join(text.split()), prompt=" ".join(prompt.split())[:300])
         else:
             moments = [m["text"] for m in s["moments"][-5:]]
             text = await _ask(voice, "You have a quiet moment to yourself. Share one short, whimsical thought you had (one or two "
                               "sentences), the kind of thing a small moon living in a laptop might wonder about." +
                               (f" Something from recently you might think about: {random.choice(moments)}" if moments else ""), 120)
-            entry.update(kind="thought", text=text)
+            entry.update(kind="thought", text=" ".join(text.split()))
     except NotLocal:
         moments = [m["text"] for m in s["moments"][-5:]]
         topic = random.choice(interests(s, 4)) if interests(s, 4) else ""
