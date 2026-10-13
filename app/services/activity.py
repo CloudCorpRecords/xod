@@ -44,7 +44,7 @@ origin = contextvars.ContextVar("xod_activity_origin", default="chat")
 QUIET = {"computer_read_file", "computer_list_directory", "computer_directory_tree", "computer_find_files",
          "computer_check_job", "computer_list_jobs", "computer_hardware_overview", "computer_inspect_system",
          "computer_inspect_port", "fs_list_workspace_files", "fs_read_workspace_file", "fs_search_workspace",
-         "xod_doctor", "computer_wait_for"}
+         "xod_doctor", "computer_wait_for", "memory_search", "memory_list", "xod_tasks"}
 NOT_UNDOABLE = {"computer_run_command": "Ran a command", "computer_run_applescript": "Ran an AppleScript",
                 "computer_kill_process": "Stopped a process", "computer_start_job": "Started a background job",
                 "computer_stop_job": "Stopped a background job", "computer_clipboard": "Used the clipboard",

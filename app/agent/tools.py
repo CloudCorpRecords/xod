@@ -2493,7 +2493,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "memory_search",
-            "description": "Searches persistent vector & full-text memory for past user preferences, project architectures, learned habits, and knowledge snippets using hybrid semantic retrieval.",
+            "description": "Searches Xod's memory: past chats and finished background tasks (with dates; understands 'yesterday', 'last week', 'in September'), what it knows about the user, and saved notes. Hybrid keyword + meaning search.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2501,16 +2501,34 @@ TOOL_DEFINITIONS = [
                         "type": "string",
                         "description": "Semantic search query to match against persistent long-term memories."
                     },
+                    "when": {
+                        "type": "string",
+                        "description": "Optional time window in words: 'yesterday', 'last week', 'in September', '3 days ago'."
+                    },
                     "category": {
                         "type": "string",
-                        "description": "Optional category filter: 'user_preference', 'project_architecture', 'agent_learning', 'knowledge', or 'general'."
+                        "description": "Optional category filter for saved notes: 'user_preference', 'project_architecture', 'agent_learning', 'knowledge', or 'general'."
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of memories to return (default: 5)."
+                        "description": "Maximum number of past episodes to return (default: 6)."
                     }
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "xod_tasks",
+            "description": "Xod's own background work: list its tasks (running, waiting for the user, finished), routines and jobs, or get the full details, progress log and result of one task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "get"], "description": "list (default) or get one task."},
+                    "task": {"type": "string", "description": "For get: words from the task's title, or its id."}
+                }
             }
         }
     },
@@ -3463,12 +3481,24 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
             )
 
         elif name == "memory_search":
-            results = await memory_service.search_memories_async(
-                query=arguments.get("query", ""),
-                category=arguments.get("category"),
-                limit=int(arguments.get("limit", 5))
-            )
-            return {"query": arguments.get("query"), "count": len(results), "memories": results}
+            # Everything Xod remembers: past chats and finished tasks (dated, services/recall.py), what it knows
+            # about the person (services/user_memory.py), and notes saved with memory_store.
+            from app.services import recall, user_memory
+            q = arguments.get("query", "")
+            found = await recall.search(q, k=int(arguments.get("limit", 6)), when=arguments.get("when"))
+            notes = await memory_service.search_memories_async(query=q, category=arguments.get("category"), limit=3)
+            facts = [f["text"] for f in user_memory.relevant(q, 6)]
+            return {"query": q, "window": found.get("window"), "episodes": found.get("results", []),
+                    "facts_about_user": facts, "saved_notes": notes,
+                    "count": len(found.get("results", [])) + len(facts) + len(notes)}
+
+        elif name == "xod_tasks":
+            from app.services import work_state
+            if (arguments.get("action") or "list") == "get" and arguments.get("task"):
+                t = await asyncio.to_thread(work_state.find_task, arguments["task"])
+                return work_state.task_details(t) if t else {"error": f"No task matching '{arguments['task']}'."}
+            snap = await asyncio.to_thread(work_state.snapshot)
+            return {"summary": await asyncio.to_thread(work_state.note), **{k: v for k, v in snap.items() if v}}
 
         elif name == "memory_store":
             mem = await memory_service.store_memory_async(

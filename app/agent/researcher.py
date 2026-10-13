@@ -337,6 +337,13 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                 yield ev
             return
 
+        # Memory, before deciding anything: questions about the past search Xod's memory of earlier chats and work
+        # (shown as a step, like a tool), and questions about its own work get the live picture of its tasks.
+        self._memory_context = ""
+        if not has_image:
+            async for ev in self._recall_for(user_query, messages):
+                yield ev
+
         # Most questions either need no tools or need a web search or two. One small routing call
         # (its prompt stays cached by the model server) decides which, and streams the answer itself
         # when no search is needed: one or two model calls instead of a full plan, which on a local
@@ -1069,6 +1076,8 @@ CRITICAL INSTRUCTIONS:
                 system_instruction_text += " " + note
         except Exception:
             pass
+        if getattr(self, "_memory_context", ""):
+            system_instruction_text += "\n\n" + self._memory_context
         if GAME_TALK_RE.search(user_query):
             system_instruction_text += " " + GAME_NOTE
         if spoken:
@@ -1232,7 +1241,9 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         "Reply with one line only:\nSEARCH: <search query> | <optional second search query>\n\n"
         "2. TOOLS when it needs the user's files, apps or accounts, operating a website, or making images or video. "
         "Reply with the one word:\nTOOLS\n\n"
-        "3. Otherwise answer it yourself right away: directly and briefly (a few sentences), in Markdown.\n\n"
+        "3. Otherwise answer it yourself right away: directly and briefly (a few sentences), in Markdown. This "
+        "includes questions about your past chats and your own work when the message comes with notes from your "
+        "memory or your task list: answer from those notes (say when things happened), don't search the web.\n\n"
         "Examples:\n"
         "User: Compare the pricing of Figma and Sketch\nSEARCH: Figma pricing plans | Sketch pricing plans\n"
         "User: who won the Lakers game last night\nSEARCH: Lakers game result last night\n"
@@ -1251,6 +1262,49 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
     _REFERS_BACK_RE = re.compile(r"\b(it|that|this|those|these|them|they|he|she|the (first|second|last|other) one)\b", re.I)
 
     ROUTER_PROMPT_SPOKEN = None   # set below: the same prompt, answering out loud
+
+    _PAST_RE = re.compile(
+        r"\b(remember (when|that|the|what|how)|last time|the other day|earlier|previously|yesterday|last (week|month|night|"
+        r"monday|tuesday|wednesday|thursday|friday|saturday|sunday)|\d+ (days?|weeks?|months?) ago|a (week|month) ago|"
+        r"(we|you|i) (talked|chatted|discussed|spoke|said|told|asked|decided|found|built|made|did|wrote|looked|researched|"
+        r"worked|planned|picked|chose|compared)|you (found|said|told|made|built|recommended|suggested|wrote|sent|gave)|"
+        r"that (article|link|report|list|game|app|site|video|recipe|idea|thing|place|plan|email|doc|company|product|job) "
+        r"(you|we|i)|what was (that|the)|did (we|you|i) ever|have (we|you|i) (ever|already)|in (january|february|march|april|"
+        r"may|june|july|august|september|october|november|december)|our (last|previous) (chat|conversation))\b", re.I)
+
+    async def _recall_for(self, query: str, messages: List[Dict[str, Any]]) -> AsyncGenerator[Dict[str, Any], None]:
+        """Sets self._memory_context for this turn (past episodes and/or Xod's own work) and shows the lookup."""
+        from app.services import work_state
+        blocks = []
+        if work_state.WORK_RE.search(query or ""):
+            try:
+                blocks.append(await asyncio.to_thread(work_state.note))
+            except Exception as e:
+                logger.debug(f"work state: {e}")
+        try:
+            from app.services import user_memory
+            use_past = user_memory.load()["settings"].get("recall", True)
+        except Exception:
+            use_past = True
+        if use_past and self._PAST_RE.search(query or ""):
+            from app.services import recall
+            yield {"type": "status", "content": "Looking through your past chats…"}
+            yield {"type": "tool_call", "name": "memory_search", "args": {"query": query}, "id": "mem_recall"}
+            try:
+                found = await recall.search(query, k=5)
+            except Exception as e:
+                logger.debug(f"recall: {e}")
+                found = {"results": []}
+            res = found.get("results") or []
+            note = recall.note_for(found)
+            if note:
+                blocks.append(note)
+            where = f" from {found['window']}" if found.get("window") and found.get("in_window") else ""
+            summary = f"Found {len(res)} in your past chats and tasks{where}" if res else "Nothing in your past chats about that"
+            yield {"type": "tool_result", "name": "memory_search", "id": "mem_recall", "summary": summary,
+                   "data": {"memories": [{"when": r["when"], "title": r["title"], "kind": r["kind_label"], "session_id": r["session_id"]}
+                                         for r in res]}}
+        self._memory_context = "\n\n".join(b for b in blocks if b)
 
     def _fast_lane_ok(self, query: str, has_image: bool, has_document: bool, workspace: Optional[str]) -> bool:
         if has_image or has_document or workspace or self.persona != "ultimate_researcher":
@@ -1298,15 +1352,19 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         when the planner should take this one."""
         head, mode, line, answer = "", None, "", ""
         has_history = any(m.get("role") == "assistant" for m in messages[:-1])
-        if self._FRESH_RE.search(query) and not (has_history and self._REFERS_BACK_RE.search(query)):
+        if self._FRESH_RE.search(query) and not (has_history and self._REFERS_BACK_RE.search(query)) \
+                and not getattr(self, "_memory_context", ""):    # "what did we talk about yesterday" is memory, not news
             async for ev in self._fast_search_and_answer(query, [query], messages, evidence_board):
                 yield ev
             return
         # A head start: a question that stands on its own gets searched (and its best pages opened) right away, while
         # the router decides whether it needs the web at all. Thrown away if it doesn't.
         prefetch = self._maybe_prefetch(query, has_history)
+        router_msgs = self.router_messages(query, messages[:-1], spoken=getattr(self, "spoken", False))
+        if getattr(self, "_memory_context", ""):
+            router_msgs[-1]["content"] += "\n\n" + self._memory_context
         stream = llm_service.stream_chat_completion(
-            messages=self.router_messages(query, messages[:-1], spoken=getattr(self, "spoken", False)),
+            messages=router_msgs,
             temperature=0.2, max_tokens=300 if getattr(self, "spoken", False) else 900,
             think=False, task="router")
         try:
@@ -2107,6 +2165,8 @@ TOOL ECOSYSTEM:
    - computer_check_job: New output and status of a background job. Args: {{"job_id": "..."}}
    - xod_self_edit: Change Xod's OWN code (you CAN do this; it's gated by model strength, tested in a copy, and revertible). Use when a Xod tool itself is buggy or the user asks you to change yourself. Args: {{"goal": "what to change and why, with the exact error"}}
    - xod_doctor: Check and fix Xod's own health (chat model, browser, memory, hung jobs). Args: {{"fix": true}}
+   - memory_search: Search your memory of past chats, finished tasks and what you know about the user. Understands time ("last week", "in September"). Args: {{"query": "...", "when": "optional, e.g. yesterday"}}
+   - xod_tasks: Your own background tasks and routines: list them, or the full details and result of one. Args: {{"action": "list|get", "task": "title words or id"}}
 
 2. Controlled Workspace ({workspace_info}):
    - fs_list_workspace_files: Explore workspace directory tree.
@@ -2197,6 +2257,10 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
                 c = m.get("content")
                 if r in ("user", "assistant") and isinstance(c, str) and c.strip():
                     delib_history.append({"role": r, "content": c[:400]})
+
+        if getattr(self, "_memory_context", ""):
+            deliberator_system_prompt += ("\n\n" + self._memory_context +
+                                          "\nIf this answers the question, it's a direct answer: don't search again.")
 
         try:  # what Xod knows about the person (services/user_memory.py): answer from it instead of looking things up
             from app.services import user_memory

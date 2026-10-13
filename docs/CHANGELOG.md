@@ -26,6 +26,10 @@
 - It learns as you talk: tell it "I'm a chemistry teacher in Portland" and a small note under the answer says "Remembered: …" with Undo. "Remember that …" and "forget …" work too. It never keeps passwords, keys or card numbers, and you can switch learning off.
 - "Get to know me from this Mac": pick what it may look at (your Mac account name, your Contacts card, Xod's job profile, git, time zone and language, your apps, your code projects) and review every fact before it's kept.
 - What it knows is in every answer, so "what's my name?" just works, and the companion calls you by your name.
+- It remembers what you've done together: every chat, every finished background task and routine run, and what the companion read up on, with dates. Ask "what was that ramen place you found last week?" or "what did we decide about the logo?" and it looks through its memory first (you see a Memory step), searching by words and by meaning, and understands "yesterday", "last week", "in September". The search runs on your Mac with a small local model, whatever model answers your questions.
+- It knows its own work: "what are you working on?", "anything waiting on me?", "how did the Acme application go?" are answered from its task list (running, waiting for your OK, finished with their results, routines and when they run next, background jobs). The planner can also look up any task's full log and result.
+- Facts that change keep their history: "moved to Denver" replaces "Lives in Austin", and "where did I live before?" still knows.
+- Settings → What Xod knows about you can search your memory (click a result to open that chat) and has a switch to stop it using past chats.
 - The three made-up "memories" new installs started with (one claimed a design taste you never stated) are no longer created or recalled.
 
 **Feels faster**

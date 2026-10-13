@@ -59,7 +59,8 @@ FORGET_ALL_RE = re.compile(r"^\s*(?:please\s+)?forget (?:everything|all) (?:you 
 
 
 def _default() -> Dict[str, Any]:
-    return {"facts": [], "settings": {"learn": True}, "gathered_at": {}}
+    # "past": facts that stopped being true (moved, changed jobs), kept with when they ended, like a timeline.
+    return {"facts": [], "past": [], "settings": {"learn": True, "recall": True}, "gathered_at": {}}
 
 
 def load() -> Dict[str, Any]:
@@ -120,6 +121,11 @@ def add(text: str, topic: str = "other", key: Optional[str] = None, source: str 
         if hit:
             changed = hit["text"] != text
             fresh = changed
+            if changed and key and hit.get("key") == key and not _same(hit["text"], text):
+                # Not a correction of wording but a change in their life: keep the old one on the timeline.
+                d.setdefault("past", []).append({"text": hit["text"], "key": key, "topic": hit["topic"],
+                                                 "from": hit.get("added"), "until": now, "source": hit.get("source")})
+                d["past"] = d["past"][-100:]
             hit.update(text=text, topic=topic if key or changed else hit["topic"], updated=now, source=source if changed else hit["source"])
             if key:
                 hit["key"] = key
@@ -213,8 +219,9 @@ def facts() -> List[Dict[str, Any]]:
 def settings(changes: Dict[str, Any]) -> Dict[str, Any]:
     with _lock:
         d = load()
-        if "learn" in changes:
-            d["settings"]["learn"] = bool(changes["learn"])
+        for k in ("learn", "recall"):
+            if k in changes:
+                d["settings"][k] = bool(changes[k])
         save(d)
         return d["settings"]
 
@@ -261,9 +268,19 @@ def relevant(query: str, k: int = 4) -> List[Dict[str, Any]]:
     return [f for _, f in scored[:k]]
 
 
+PAST_Q_RE = re.compile(r"\b(before|used to|previous(ly)?|former|old|earlier|first|originally|back when|anymore|still)\b", re.I)
+
+
 def relevant_note(query: str) -> str:
     rel = relevant(query)
-    return ("\n\n(Also known about the user: " + "; ".join(f["text"] for f in rel) + ".)") if rel else ""
+    out = ("\n\n(Also known about the user: " + "; ".join(f["text"] for f in rel) + ".)") if rel else ""
+    past = load().get("past") or []
+    if past and PAST_Q_RE.search(query or ""):
+        q = _norm(query)
+        hits = [p for p in past if (p.get("key") and p["key"] in q) or q & _norm(p["text"])] or past[-4:]
+        out += "\n(No longer true, from their timeline: " + "; ".join(
+            f"{p['text']} (until {time.strftime('%b %Y', time.localtime(p['until']))})" for p in hits[-5:]) + ".)"
+    return out
 
 
 # ----------------------------------------------------------------------------------------------- learning

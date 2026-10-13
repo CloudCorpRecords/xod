@@ -433,6 +433,11 @@ class TaskQueue:
                      waiting_kind=None, now="Done" if status == "done" else "Stopped", **fields)
         t = self.get(task_id)
         notify(t["title"], "Done." if status == "done" else "Couldn't finish. Open Tasks to see why.")
+        try:   # it becomes part of Xod's memory of what it has done (services/recall.py)
+            from app.services import recall
+            recall.schedule_index(2.0)
+        except Exception:
+            pass
 
     def _save_screenshot(self, task_id: str, uri: Optional[str]) -> None:
         if not uri or "," not in uri:

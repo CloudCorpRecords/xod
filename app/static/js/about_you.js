@@ -58,7 +58,27 @@
           ${data.facts.length ? `<button class="text-[11px] text-zinc-500 hover:text-rose-300" data-a="forget-all">Forget everything</button>` : ""}
         </div>
         <div id="xaGather"></div>
+        <div class="xa-recall">
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-[11px] text-zinc-400" id="xaRecallStats">Memory of past chats and tasks</span>
+            <label class="text-[11px] text-zinc-400 flex items-center gap-1.5">
+              <input type="checkbox" data-a="recall" ${data.settings.recall !== false ? "checked" : ""}> Use past chats when I ask about them
+            </label>
+          </div>
+          <div class="flex gap-2 mt-2">
+            <input id="xaRecallQ" class="flex-1 bg-surface-900 border border-surface-650 rounded-lg px-2.5 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-brand-500" placeholder="Search your memory: ramen place, last week, the Acme application…">
+            <button class="xa-pill" data-a="recall-search">Search</button>
+          </div>
+          <ul id="xaRecallOut" class="mt-2 space-y-1"></ul>
+        </div>
       </div>`;
+    api("/api/memory/search").then((r) => {
+      const st = r.stats || {};
+      const parts = [st.chat && `${st.chat.count} chat${st.chat.count === 1 ? "" : "s"}`, st.task && `${st.task.count} task${st.task.count === 1 ? "" : "s"}`,
+                     st.companion && `${st.companion.count} things it read up on`].filter(Boolean);
+      const el = document.getElementById("xaRecallStats");
+      if (el && parts.length) el.textContent = `Remembers ${parts.join(", ")}`;
+    }).catch(() => {});
     if (proposals) renderGather();
     if (window.lucide) lucide.createIcons();
   }
@@ -124,6 +144,18 @@
         await api("/api/about-you", { method: "DELETE" });
         return load();
       }
+      if (a === "recall-search") {
+        const q = document.getElementById("xaRecallQ").value.trim();
+        const out = document.getElementById("xaRecallOut");
+        if (!q) return;
+        out.innerHTML = '<li class="text-[11px] text-zinc-500">Searching…</li>';
+        const r = await api(`/api/memory/search?q=${encodeURIComponent(q)}`);
+        out.innerHTML = (r.results || []).length ? r.results.map((x) => `<li class="xa-hit" ${x.session_id ? `data-session="${esc(x.session_id)}"` : ""}>
+            <span class="xa-when">${esc(x.when)} · ${esc(x.kind_label)}</span> <b>${esc(x.title)}</b><br>
+            <span class="text-zinc-400">${esc(x.text.slice(0, 220))}</span></li>`).join("")
+          : `<li class="text-[11px] text-zinc-500">Nothing${r.window ? ` from ${esc(r.window)}` : ""} about that.</li>`;
+        return;
+      }
       if (a === "gather") { proposals = null; return renderSources(); }
       if (a === "gather-cancel") { proposals = null; document.getElementById("xaGather").innerHTML = ""; return; }
       if (a === "gather-go") {
@@ -151,6 +183,11 @@
   document.addEventListener("click", (e) => {
     const b = e.target.closest("#aboutYouSection [data-a]");
     if (b && b.tagName !== "INPUT") act(b.dataset.a, b);
+    const hit = e.target.closest("#aboutYouSection .xa-hit[data-session]");
+    if (hit && typeof window.selectSession === "function") {
+      if (typeof window.closeSettingsModal === "function") closeSettingsModal();
+      window.selectSession(hit.dataset.session);
+    }
     const u = e.target.closest("[data-mem-undo]");
     if (u) {
       const ids = u.dataset.memUndo.split(",");
@@ -160,9 +197,11 @@
   });
   document.addEventListener("change", (e) => {
     if (e.target.matches("#aboutYouSection [data-a=learn]")) api("/api/about-you/settings", { method: "POST", body: JSON.stringify({ learn: e.target.checked }) });
+    if (e.target.matches("#aboutYouSection [data-a=recall]")) api("/api/about-you/settings", { method: "POST", body: JSON.stringify({ recall: e.target.checked }) });
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && e.target.id === "xaNew") { e.preventDefault(); act("add", e.target); }
+    if (e.key === "Enter" && e.target.id === "xaRecallQ") { e.preventDefault(); act("recall-search", e.target); }
   });
 
   // Settings opened: refresh the sheet.

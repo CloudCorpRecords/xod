@@ -466,6 +466,8 @@ async def _start_task_worker():
     agent_mail.start()                      # picks up Agent Mail every 30 s once an address is set up
     from app.services import soul
     asyncio.create_task(soul.life_loop())   # when you're away, the companion does things for itself
+    from app.services import recall
+    recall.schedule_index(20)               # catch Xod's memory up on chats and tasks since it last ran
 
 
 @app.get("/api/mcp")
@@ -581,6 +583,16 @@ async def about_you():
     d = user_memory.load()
     return {"facts": d["facts"], "settings": d["settings"], "sources": user_memory.SOURCES, "topics": user_memory.TOPICS,
             "gathered_at": d.get("gathered_at", {})}
+
+
+@app.get("/api/memory/search")
+async def memory_search_api(q: str = "", when: str = ""):
+    """Search Xod's memory of past chats and tasks (Settings → What Xod knows about you)."""
+    from app.services import recall
+    if not q.strip():
+        return {"results": [], "stats": recall.stats()}
+    found = await recall.search(q, k=8, when=when or None)
+    return {**found, "stats": recall.stats()}
 
 
 @app.get("/api/about-you/turn/{turn_id}")
@@ -1168,6 +1180,11 @@ async def chat_endpoint(request: ChatRequest):
             yield f"data: {json.dumps(err_event)}\n\n"
         finally:
             soul.note_busy(-1)
+            try:   # this turn becomes part of Xod's memory of your chats (services/recall.py)
+                from app.services import recall
+                recall.schedule_index(4)
+            except Exception:
+                pass
             # Get ready for the next question while this answer is read: re-read the router's prompt if a long
             # prompt pushed it out of the model server's cache, and keep the browser up (services/warmup.py).
             try:
