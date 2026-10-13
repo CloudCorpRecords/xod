@@ -12,7 +12,8 @@
 <p align="center">
   <a href="https://github.com/CloudCorpRecords/xod/releases/latest"><b>Download for Mac</b></a> ·
   <a href="docs/media/xod-launch.mp4">Watch the 2-minute film</a> ·
-  <a href="#build-from-source">Build from source</a>
+  <a href="#build-from-source">Build from source</a> ·
+  <a href="#get-involved">Get involved</a>
 </p>
 
 <p align="center">
@@ -176,7 +177,14 @@ xod/
 └── tests/        end-to-end suites (they use a throwaway data folder, never yours)
 ```
 
-Start with [CONTRIBUTING.md](.github/CONTRIBUTING.md). Ideas and bugs are welcome in [Issues](https://github.com/CloudCorpRecords/xod/issues); see the [roadmap](docs/ROADMAP.md) for what's next.
+## Get involved
+
+Xod is open to contributors of every level, including first-timers.
+
+- ⭐ **Star the repo** to follow along, or **Watch → Releases** to hear about each new version.
+- 🐣 **First PR?** Pick a [good first issue](https://github.com/CloudCorpRecords/xod/labels/good%20first%20issue) and start with [CONTRIBUTING.md](.github/CONTRIBUTING.md). See the [roadmap](docs/ROADMAP.md) for bigger things on the way.
+- 💬 **Questions, ideas, or a routine you made?** Share it in [Discussions](https://github.com/CloudCorpRecords/xod/discussions).
+- 🐛 **Something broke?** [Open an issue](https://github.com/CloudCorpRecords/xod/issues/new/choose). Please follow the [Code of Conduct](.github/CODE_OF_CONDUCT.md).
 
 ## License
 
