@@ -1194,7 +1194,7 @@ async def update_config(req: ConfigUpdateRequest):
         update_env_variable("OPENROUTER_API_KEY", req.openrouter_api_key.strip())
 
     if req.fireworks_api_key is not None:
-        update_env_variable("FIREWORKS_API_KEY", req.fireworks_api_key.strip())
+        update_env_variable("FIREWORKS_API_KEY", _clean_api_key(req.fireworks_api_key))
 
     if req.huggingface_token is not None:
         hf_val = req.huggingface_token.strip()
@@ -1281,6 +1281,19 @@ async def get_swarm_status_endpoint():
         "specialists": SPECIALIST_ARCHETYPES
     }
 
+def _clean_api_key(key: str) -> str:
+    """A pasted key, minus what copying tends to add: spaces and line breaks anywhere, invisible characters,
+    quotes (straight or curly), and a leading "Bearer " or "NAME=" from a config line."""
+    k = re.sub(r"[\s\u200b-\u200f\u2028\u2029\u2060\ufeff\u00a0]", "", key or "")
+    k = k.strip("'\"\u2018\u2019\u201c\u201d`")
+    if k.lower().startswith("bearer"):
+        k = k[6:]
+    m = re.match(r"^[A-Z_]+=(.+)$", k)
+    if m:
+        k = m.group(1).strip("'\"")
+    return k
+
+
 @app.post("/api/fireworks/test")
 async def test_fireworks_connection(payload: Optional[Dict[str, str]] = None):
     """Tests the Fireworks AI API key and model connectivity."""
@@ -1288,12 +1301,17 @@ async def test_fireworks_connection(payload: Optional[Dict[str, str]] = None):
     if not key or not key.strip():
         return {"valid": False, "message": "No Fireworks API key provided."}
 
-    clean_key = key.strip().strip("'\"")
-    if clean_key.lower().startswith("bearer "):
-        clean_key = clean_key[7:].strip()
-
+    clean_key = _clean_api_key(key)
     if not clean_key:
         return {"valid": False, "message": "No Fireworks API key provided."}
+    tested_saved = not (payload and (payload.get("fireworks_api_key") or "").strip())
+    # What was tested, without showing the key: its first characters and its length.
+    shape = f"the {'saved' if tested_saved else 'pasted'} key starts with \"{clean_key[:3]}\" and is {len(clean_key)} characters long"
+    if not clean_key.startswith("fw_"):
+        return {"valid": False, "message": (
+            f"That doesn't look like a Fireworks API key: {shape}, but Fireworks keys start with \"fw_\" and are about 25-50 "
+            "characters. You may have copied the key's name or ID instead of the key itself. On fireworks.ai open "
+            "Settings → API Keys, create a key and copy the secret it shows (it's only shown once).")}
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1318,9 +1336,10 @@ async def test_fireworks_connection(payload: Optional[Dict[str, str]] = None):
                     err_detail = err_json.get("error", {}).get("message") or err_json.get("message", "")
                 except Exception:
                     pass
-                msg = f"Authentication failed (HTTP {res.status_code}). Check your Fireworks API key."
-                if err_detail:
-                    msg += f" ({err_detail})"
+                msg = f"Fireworks turned this key down (HTTP {res.status_code}"
+                msg += f": {err_detail.rstrip('.')}). " if err_detail else "). "
+                msg += (f"For reference, {shape}. If that matches your key, it may have been deleted or not finished "
+                        "creating on fireworks.ai; create a new one under Settings → API Keys and paste the whole secret.")
                 return {"valid": False, "message": msg}
             else:
                 err_detail = ""

@@ -761,11 +761,6 @@ function handleProviderChange() {
     if (!modelInput.value || modelInput.value.includes("gemma-4") || modelInput.value.includes("llama3.1") || modelInput.value.includes("bonsai")) {
       modelInput.value = "accounts/fireworks/models/glm-5p3-flash";
     }
-    const inputCloud = document.getElementById("inputCloudKey");
-    const fwInput = document.getElementById("inputFireworksKey");
-    if (inputCloud && !inputCloud.value && fwInput && fwInput.value) {
-      inputCloud.value = fwInput.value;
-    }
   } else {
     grpBaseUrl.classList.add("hidden");
     grpCloud.classList.remove("hidden");
@@ -1912,12 +1907,14 @@ async function saveSettings() {
     if (provider === "openrouter") payload.openrouter_api_key = cloudKey;
     if (provider === "fireworks") payload.fireworks_api_key = cloudKey;
   }
-  if (geminiKey) payload.gemini_api_key = geminiKey;
-  if (openaiKey) payload.openai_api_key = openaiKey;
-  if (anthropicKey) payload.anthropic_api_key = anthropicKey;
-  if (groqKey) payload.groq_api_key = groqKey;
-  if (openrouterKey) payload.openrouter_api_key = openrouterKey;
-  if (fireworksKey) payload.fireworks_api_key = fireworksKey;
+  // The main key field (for the chosen provider) wins over the same provider's field in the Swarm section:
+  // it used to be overwritten by whatever was left there.
+  if (geminiKey && !payload.gemini_api_key) payload.gemini_api_key = geminiKey;
+  if (openaiKey && !payload.openai_api_key) payload.openai_api_key = openaiKey;
+  if (anthropicKey && !payload.anthropic_api_key) payload.anthropic_api_key = anthropicKey;
+  if (groqKey && !payload.groq_api_key) payload.groq_api_key = groqKey;
+  if (openrouterKey && !payload.openrouter_api_key) payload.openrouter_api_key = openrouterKey;
+  if (fireworksKey && !payload.fireworks_api_key) payload.fireworks_api_key = fireworksKey;
   if (hfKey) payload.huggingface_token = hfKey;
   if (provider === "fireworks" && !payload.fireworks_api_key) {
     if (cloudKey) payload.fireworks_api_key = cloudKey;
@@ -12710,3 +12707,51 @@ async function triggerAutoIndexWorkspace() {
 
 
 
+
+
+// API key fields: a show/hide eye (so you can check what was pasted), no browser autofill, and the two Fireworks
+// key fields (main provider field and the Swarm one) kept in step so they can't disagree.
+(() => {
+  const ids = ["inputCloudKey", "inputFireworksKey", "inputGeminiKey", "inputOpenAIKey", "inputAnthropicKey",
+               "inputGroqKey", "inputOpenRouterKey", "inputTavilyKey", "inputYouKey", "inputTrustmrrKey", "inputYoutubeKey", "inputHfKey"];
+  const setup = () => {
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (!el || el.dataset.keyField) continue;
+      el.dataset.keyField = "1";
+      el.setAttribute("autocomplete", "off");
+      el.setAttribute("spellcheck", "false");
+      el.setAttribute("data-1p-ignore", "");
+      el.setAttribute("data-lpignore", "true");
+      const wrap = document.createElement("span");
+      wrap.className = "relative flex-1 flex";
+      el.parentNode.insertBefore(wrap, el);
+      wrap.appendChild(el);
+      el.classList.add("pr-8", "w-full");
+      const eye = document.createElement("button");
+      eye.type = "button";
+      eye.className = "absolute right-2 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-zinc-200";
+      eye.title = "Show / hide";
+      eye.innerHTML = '<i data-lucide="eye" class="size-3.5"></i>';
+      eye.addEventListener("click", () => {
+        const show = el.type === "password";
+        el.type = show ? "text" : "password";
+        eye.innerHTML = `<i data-lucide="${show ? "eye-off" : "eye"}" class="size-3.5"></i>`;
+        if (window.lucide) lucide.createIcons();
+      });
+      wrap.appendChild(eye);
+    }
+    const cloud = document.getElementById("inputCloudKey"), fw = document.getElementById("inputFireworksKey");
+    if (cloud && fw && !cloud.dataset.fwSync) {
+      cloud.dataset.fwSync = "1";
+      cloud.addEventListener("input", () => {
+        if (document.getElementById("selectLlmProvider")?.value === "fireworks") fw.value = cloud.value;
+      });
+      fw.addEventListener("input", () => {
+        if (document.getElementById("selectLlmProvider")?.value === "fireworks") cloud.value = fw.value;
+      });
+    }
+    if (window.lucide) lucide.createIcons();
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", setup); else setup();
+})();
