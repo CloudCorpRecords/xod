@@ -141,7 +141,7 @@
   };
   const ORDER = Object.keys(CHARACTERS);
   const GENERIC_HELLOS = ["Ask me something you've been wondering about.", "That tickles.", "No question is too small. Or too big, honestly.", "Right-click me to change how I look."];
-  const FIDGETS = [["hop", 700], ["look", 1600], ["wink", 900], ["stretch", 1500], ["hum", 2600], ["wiggle", 900]];
+  const FIDGETS = [["hop", 700], ["look", 1600], ["wink", 900], ["stretch", 1500], ["hum", 2600], ["wiggle", 900], ["sneeze", 1700]];
   const SPECIAL_MS = { eclipse: 2400, twitch: 1400, vanish: 2200, scan: 1800, headturn: 2000, bloom: 2600 };
 
   function ghostPath(ph) {
@@ -195,6 +195,9 @@
           </g>
           <g class="xm-joy" fill="none" stroke="${ink}" stroke-width="1.9" stroke-linecap="round">
             <path d="M22 34.5 Q25 30.5 28 34.5"/><path d="M36 34.5 Q39 30.5 42 34.5"/>
+          </g>
+          <g class="xm-love" fill="#ee6f97" stroke="#c94f78" stroke-width="0.5" stroke-linejoin="round">
+            <path d="M25 37 C20.6 33.8 21.2 29.4 25 31.6 C28.8 29.4 29.4 33.8 25 37Z"/><path d="M39 37 C34.6 33.8 35.2 29.4 39 31.6 C42.8 29.4 43.4 33.8 39 37Z"/>
           </g>
           <g class="xm-dizzy" fill="none" stroke="${ink}" stroke-width="1.3" stroke-linecap="round">
             <path class="xm-swirl" d="M25 33 m-0.6 0 a0.6 0.6 0 1 1 1.2 0 a1.4 1.4 0 1 1 -2.8 0 a2.2 2.2 0 1 1 4.4 0"/>
@@ -270,6 +273,8 @@
     mood: "idle",            // idle | thinking | searching | working | waiting | listening | error | sleepy
     moodSince: now(),
     happyUntil: 0, errorUntil: 0, dizzyUntil: 0, yawnUntil: 0, curiousUntil: 0, startleUntil: 0, oohUntil: 0,
+    // joy.js: eating a treat, giggling when tickled, a happy dance, heart eyes
+    munchUntil: 0, giggleUntil: 0, danceAt: 0, danceUntil: 0, loveUntil: 0,
     talk: 0,                 // energy from streaming text, decays
     pointer: null, pointerAt: 0,
     typingAt: 0,
@@ -290,7 +295,7 @@
     const b = c.bounce || 1;
     r = {
       el, svg: q("svg"), cid, c,
-      rig: q(".xm-rig"), body: q(".xm-body"), eyes: q(".xm-eyes"), open: q(".xm-open"), shut: q(".xm-shut"), joy: q(".xm-joy"),
+      rig: q(".xm-rig"), body: q(".xm-body"), eyes: q(".xm-eyes"), open: q(".xm-open"), shut: q(".xm-shut"), joy: q(".xm-joy"), love: q(".xm-love"),
       dizzy: q(".xm-dizzy"), mouth: q(".xm-mouth"), cheeks: el.querySelectorAll(".xm-cheek"), sweat: q(".xm-sweat"),
       eyeL: q(".xm-eye-l"), eyeR: q(".xm-eye-r"), phase: q(".xm-phase"), hem: q(".xc-hem"), scan: q(".xc-scan"),
       // body; a bouncier character has softer damping
@@ -359,7 +364,7 @@
     if (r.eyes) r.eyes.setAttribute("transform", "");
     if (r.mouth) r.mouth.setAttribute("d", mouthPath(2.6, 2.6, 0));
     r.el.dataset.mood = "idle";
-    for (const g of [r.shut, r.joy, r.dizzy]) if (g) g.style.opacity = 0;
+    for (const g of [r.shut, r.joy, r.dizzy, r.love]) if (g) g.style.opacity = 0;
     if (r.open) r.open.style.opacity = 1;
   }
 
@@ -521,13 +526,16 @@
     if (t < r.nextFidget) return;
     const special = r.c.special;
     const useSpecial = special && Math.random() < (r.preview ? 0.6 : 0.35);
-    const [name, dur] = useSpecial ? [special, SPECIAL_MS[special]] : pick(FIDGETS);
+    let [name, dur] = useSpecial ? [special, SPECIAL_MS[special]] : pick(FIDGETS);
+    if (name === "sneeze" && Math.random() > 0.3) [name, dur] = pick(FIDGETS.filter((f) => f[0] !== "sneeze"));   // a sneeze is rare
     r.fidget = { name, start: t, until: t + dur, dur };
     r.nextFidget = t + dur + (r.preview ? 2500 + Math.random() * 3500 : 7000 + Math.random() * 11000);
   }
 
   function animate(r, t, dt, drowsy) {
-    const happy = t < S.happyUntil, dizzy = t < S.dizzyUntil, error = t < S.errorUntil;
+    const munch = t < S.munchUntil, giggle = t < S.giggleUntil, dance = t < S.danceUntil, love = t < S.loveUntil && !r.preview;
+    const glee = (munch || giggle || dance) && !r.preview;
+    const happy = t < S.happyUntil || glee, dizzy = t < S.dizzyUntil, error = t < S.errorUntil;
     const yawn = t < S.yawnUntil, startle = t < S.startleUntil, ooh = t < S.oohUntil;
     // Previews in the picker keep their own calm mood, apart from being picked.
     const baseMood = r.preview ? "idle" : S.mood;
@@ -611,6 +619,23 @@
     if (fid === "wiggle") rot = Math.sin(fp * Math.PI * 6) * 9 * (1 - fp);
     if (fid === "headturn") { sx = fp > 0.42 && fp < 0.55 ? 0.82 : 1; rot = fp < 0.42 ? -4 : fp > 0.55 ? 4 : 0; }
     if (fid === "bloom" && !f.kicked && fp > 0.1) { f.kicked = true; r.y.kick(-70); }
+    if (fid === "sneeze") {
+      if (fp < 0.62) { rot = -9 * (fp / 0.62); sy = 1 + 0.07 * (fp / 0.62); sx = 1 - 0.03 * (fp / 0.62); }   // aah… aah…
+      else if (!f.kicked) {
+        f.kicked = true; r.rot.kick(240); r.y.kick(70); r.sy.kick(-5); r.sx.kick(5);
+        if (!r.preview) { glyph(r.el, r.cid === "robot" ? "*bzzt*" : "achoo!", "is-achoo"); poof(r.el); }
+      } else rot = 3 * (1 - fp);
+    }
+    if (munch && !r.preview) {                                          // chomp, chomp, cheeks full
+      const c = Math.sin(ts * 15);
+      sx = 1.06 + 0.03 * c; sy = 0.97 - 0.03 * c; y = -4 * Math.max(0, c);
+    }
+    if (giggle && !r.preview) { rot = Math.sin(ts * 30) * 7; x = Math.sin(ts * 23) * 1.2; sy = 1 + Math.abs(Math.sin(ts * 15)) * 0.05; }
+    if (dance && !r.preview) {                                          // hop left, hop right, spin a little
+      const beat = Math.floor((t - S.danceAt) / 420);
+      if (beat !== r.danceBeat) { r.danceBeat = beat; r.y.kick(-85); r.sy.kick(4); r.sx.kick(-3); if (beat % 2 === 0 && r.hero !== false) glyph(r.el, pick(["♪", "♫", "✦", "♥"]), "is-note"); }
+      rot = (beat % 2 ? 12 : -12); x = (beat % 2 ? 2 : -2);
+    }
     r.rot.t = rot + (r.lean || 0); r.y.t = y; r.x.t = x;
     r.sy.t = sy; r.sx.t = sx;
 
@@ -648,8 +673,10 @@
     // which eyes
     const eyesShut = (mood === "sleepy" && !r.preview) || yawn || (fid === "stretch" && fp < 0.6) || (fid === "hum" && fp > 0.2);
     const eyesJoy = happy || r.petting > 0.6 || (fid === "bloom" && fp > 0.25 && fp < 0.85);
-    const set = dizzy ? "dizzy" : eyesJoy ? "joy" : eyesShut ? "shut" : "open";
-    for (const [name, g] of [["open", r.open], ["shut", r.shut], ["joy", r.joy], ["dizzy", r.dizzy]]) {
+    const eyesLove = (love || r.petting > 1.2) && !dizzy && !munch;
+    const sneezing = fid === "sneeze" && fp > 0.35 && fp < 0.8;
+    const set = dizzy ? "dizzy" : eyesLove ? "love" : sneezing ? "shut" : eyesJoy ? "joy" : eyesShut ? "shut" : "open";
+    for (const [name, g] of [["open", r.open], ["shut", r.shut], ["joy", r.joy], ["dizzy", r.dizzy], ["love", r.love]]) {
       if (g) { const o = name === set ? "1" : "0"; if (g.style.opacity !== o) g.style.opacity = o; }
     }
 
@@ -674,10 +701,14 @@
     if (t - (S.voiceAt || 0) < 180 && !r.preview) { mw = 2.1; mc = 1.1; mo = clamp(S.voiceLevel * 11, 0.15, 2.8); }
     if (yawn) { mw = 1.9; mc = 0.3; mo = 3.2 * Math.sin(Math.PI * clamp(1 - (S.yawnUntil - t) / 1500, 0, 1)); }
     if (happy || r.petting > 0.6) { mw = 3.3; mc = 3.1; mo = 1.6; }
+    if (fid === "sneeze") { if (fp < 0.62) { mw = 1.5; mc = 0.2; mo = 2.4 * (fp / 0.62); } else if (fp < 0.75) { mw = 2.2; mc = 0.6; mo = 2.8; } }
+    if (munch && !r.preview) { mw = 1.6; mc = 1.2; mo = 0.9 * Math.max(0, Math.sin(ts * 15)); }
+    if (giggle && !r.preview) { mw = 3; mc = 2.6; mo = 1.4 + Math.abs(Math.sin(ts * 15)) * 1.2; }
+    if (love && !munch && !giggle) { mw = 2.6; mc = 2.8; mo = 0.5; }
     r.mw.t = mw; r.mc.t = mc; r.mo.t = Math.max(0, mo);
 
     const cheekBase = r.c.cheekOpacity ?? 0.5;
-    r.cheek.t = happy || r.petting > 0.3 || shy || fid === "wink" ? 0.95 : mood === "error" ? 0.15 : cheekBase;
+    r.cheek.t = munch || love || giggle ? 1.15 : happy || r.petting > 0.3 || shy || fid === "wink" ? 0.95 : mood === "error" ? 0.15 : cheekBase;
     r.petting = Math.max(0, (r.petting || 0) - dt * 0.5);
 
     // ---- something to hold: a magnifier while searching, a wrench while working, a quill while talking
@@ -695,6 +726,8 @@
 
     // ---- particles
     if (fid === "hum" && t > r.notesAt) { r.notesAt = t + 480; glyph(r.el, pick(["♪", "♫", "♪"]), "is-note"); }
+    if (giggle && !r.preview && t > r.notesAt) { r.notesAt = t + 380; glyph(r.el, pick(["he", "hehe", "hi hi"]), "is-giggle"); }
+    if (love && !r.preview && t > (r.loveAt || 0)) { r.loveAt = t + 520; glyph(r.el, "♥"); }
 
     // ---- integrate
     for (const s of [r.x, r.y, r.rot, r.sx, r.sy, r.lx, r.ly, r.lid, r.pupil, r.wink, r.mw, r.mc, r.mo, r.cheek, r.dx, r.dy, r.fade]) s.step(dt);
@@ -712,7 +745,12 @@
       if (g) g.setAttribute("transform", `translate(${ex} 33) scale(${(0.9 + 0.1 * r.pupil.x).toFixed(3)} ${clamp(open * r.pupil.x * w, 0.05, 1.5).toFixed(3)}) translate(${-ex} -33)`);
     }
     r.mouth.setAttribute("d", mouthPath(r.mw.x, r.mc.x, r.mo.x));
-    r.cheeks.forEach((c) => c.setAttribute("opacity", clamp(r.cheek.x, 0, 1).toFixed(2)));
+    r.cheeks.forEach((c) => {
+      c.setAttribute("opacity", clamp(r.cheek.x, 0, 1).toFixed(2));
+      const puff = munch && !r.preview ? 1.35 : clamp(r.cheek.x, 0.5, 1.15) > 1 ? 1.15 : 1;   // puffed while chewing, big blush when loved
+      const v = puff.toFixed(2);
+      if (c.dataset.puff !== v) { c.dataset.puff = v; c.setAttribute("transform", puff === 1 ? "" : `translate(${c.getAttribute("cx")} 40.5) scale(${v}) translate(${-c.getAttribute("cx")} -40.5)`); }
+    });
     if (r.sweat) r.sweat.setAttribute("opacity", mood === "error" ? "0.9" : "0");
     for (const p of Object.values(r.parts)) {
       const v = p.s.x;
@@ -984,6 +1022,8 @@
           r.flips.push(t);
           if (r.flips.length >= 4) { r.petting = Math.min(1.4, (r.petting || 0) + 0.25); r.fidget = null; }
           if (r.petting > 0.9 && (!r.heartAt || now() - r.heartAt > 700)) { r.heartAt = now(); heart(m); window.dispatchEvent(new CustomEvent("xod:pet")); }
+          // Keep going and it's a tickle.
+          if (r.petting > 1.3 && now() > S.giggleUntil + 2500) { S.giggleUntil = now() + 1700; window.dispatchEvent(new CustomEvent("xod:tickle")); }
           r.sx.kick(1.2); r.rot.kick(dir * 20);
         }
         r.lastDir = dir;
@@ -1163,7 +1203,12 @@
   window.XodMascot = {
     say, sparkleBurst, beHappy, flip, lunarPhase, phaseName, mood: () => S.mood,
     characters: () => ORDER.map((id) => ({ id, name: CHARACTERS[id].name, blurb: CHARACTERS[id].blurb })),
-    character: () => character, setCharacter, puppet, glyph,
+    character: () => character, setCharacter, puppet, glyph, poof,
+    // joy.js: a treat, a tickle, a happy dance, heart eyes
+    munch: (ms = 1400) => { S.munchUntil = now() + ms; noteActivity(); },
+    giggle: (ms = 1700) => { S.giggleUntil = now() + ms; noteActivity(); },
+    dance: (ms = 2600) => { S.danceAt = now(); S.danceUntil = now() + ms; noteActivity(); },
+    love: (ms = 2200) => { S.loveUntil = now() + ms; noteActivity(); },
     info: () => ({ id: character, ...CHARACTERS[character] }),
     lookAt: (x, y, ms = 1200) => { S.lookAtPoint = { x, y }; S.lookAtUntil = now() + ms; },
     voice: (level) => { S.voiceLevel = level; S.voiceAt = now(); S.lastActivity = Date.now(); },

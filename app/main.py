@@ -992,7 +992,7 @@ async def chat_endpoint(request: ChatRequest):
             if request.voice:
                 felt = soul.event("spoke") or felt
             if felt:
-                yield f"data: {json.dumps({'type': 'soul', 'state': {k: felt[k] for k in ('stage', 'stage_name', 'bond', 'feeling', 'mood')}, 'evolved': felt.get('evolved')})}\n\n"
+                yield f"data: {json.dumps({'type': 'soul', 'kind': felt.get('kind'), 'state': {k: felt[k] for k in ('stage', 'stage_name', 'bond', 'feeling', 'mood', 'stardust')}, 'evolved': felt.get('evolved')})}\n\n"
         except Exception as e:
             logger.debug(f"soul: {e}")
 
@@ -1033,6 +1033,15 @@ async def chat_endpoint(request: ChatRequest):
                         logger.warning(f"couldn't file the chat under the new project: {e}")
 
                 yield f"data: {json.dumps(event)}\n\n"
+
+            # A finished answer leaves a little stardust (js/joy.js: give it back to Xod as a treat).
+            if assistant_content.strip():
+                try:
+                    done = soul.event("success")
+                    if done.get("earned") or done.get("evolved"):
+                        yield f"data: {json.dumps({'type': 'soul', 'state': {k: done[k] for k in ('stage', 'stage_name', 'bond', 'feeling', 'mood', 'stardust')}, 'earned': done.get('earned', 0), 'evolved': done.get('evolved')})}\n\n"
+                except Exception:
+                    pass
 
             # Smart routing: say which model answered and what it cost, or offer a stronger one.
             if route.endpoint:
@@ -3407,7 +3416,8 @@ class SoulEvent(BaseModel):
 async def soul_event(req: SoulEvent):
     """From the page: petting, talking, and reactions to its journal."""
     from app.services import soul
-    if req.kind not in ("pet", "spoke", "liked", "dismissed"):
+    # Treats spend stardust it earned on the server; play and wishes are capped per day there too.
+    if req.kind not in ("pet", "spoke", "liked", "dismissed", "treat", "play", "wish"):
         raise HTTPException(status_code=400, detail="Unknown event")
     return soul.event(req.kind, req.detail[:40])
 

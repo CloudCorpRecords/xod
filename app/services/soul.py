@@ -80,9 +80,10 @@ def _default() -> Dict[str, Any]:
     return {"born": now, "xp": 0.0, "bond": 3.0, "stage": 0, "mood": dict(BASELINE), "mood_at": now,
             "name": "", "topics": {}, "style": {"brief": 0.0, "detailed": 0.0, "playful": 0.0},
             "activity_weights": {a: 1.0 for a in ACTIVITIES}, "moments": [], "journal": [], "lessons": [],
-            "daily": {"date": "", "bond_from_chat": 0.0, "bond_from_praise": 0.0, "bond_from_pets": 0.0, "musings": 0},
+            "daily": {"date": "", "bond_from_chat": 0.0, "bond_from_praise": 0.0, "bond_from_pets": 0.0, "musings": 0,
+                      "bond_from_play": 0.0, "stardust_earned": 0, "treats": 0},
             "last_seen": now, "together_days": [], "settings": {"wander": True, "explore_web": True, "musings_per_day": 6},
-            "evolved_at": None}
+            "evolved_at": None, "stardust": 0, "treats_total": 0, "catches_best": 0}
 
 
 def load() -> Dict[str, Any]:
@@ -110,7 +111,8 @@ def _today() -> str:
 
 def _daily(s: Dict[str, Any]) -> Dict[str, Any]:
     if s["daily"].get("date") != _today():
-        s["daily"] = {"date": _today(), "bond_from_chat": 0.0, "bond_from_praise": 0.0, "bond_from_pets": 0.0, "musings": 0}
+        s["daily"] = {"date": _today(), "bond_from_chat": 0.0, "bond_from_praise": 0.0, "bond_from_pets": 0.0, "musings": 0,
+                      "bond_from_play": 0.0, "stardust_earned": 0, "treats": 0}
         days = s.setdefault("together_days", [])
         if _today() not in days:
             days.append(_today())
@@ -145,6 +147,18 @@ def _bond(s: Dict[str, Any], amount: float, bucket: Optional[str] = None, cap: f
     return amount
 
 
+STARDUST_PER_DAY = 12      # earned from finished work; a treat costs one
+STARDUST_MAX = 30
+
+
+def _earn(s: Dict[str, Any], n: int) -> int:
+    day = _daily(s)
+    n = max(0, min(n, STARDUST_PER_DAY - day.get("stardust_earned", 0), STARDUST_MAX - s.get("stardust", 0)))
+    day["stardust_earned"] = day.get("stardust_earned", 0) + n
+    s["stardust"] = s.get("stardust", 0) + n
+    return n
+
+
 def _moment(s: Dict[str, Any], text: str, kind: str = "moment") -> None:
     s["moments"] = (s["moments"] + [{"ts": time.time(), "kind": kind, "text": text[:200]}])[-60:]
 
@@ -167,6 +181,7 @@ def event(kind: str, detail: str = "") -> Dict[str, Any]:
         s = load()
         _settle(s)
         _daily(s)
+        earned = 0
         if kind == "pet":
             _bump(s, joy=0.12, calm=0.05)
             _bond(s, 0.4, "bond_from_pets", 3)
@@ -185,9 +200,11 @@ def event(kind: str, detail: str = "") -> Dict[str, Any]:
         elif kind == "success":
             _bump(s, joy=0.06, energy=-0.03)
             s["xp"] += 2
+            earned = _earn(s, 1)
         elif kind == "built":
             _bump(s, joy=0.15, energy=-0.05, curiosity=0.05)
             s["xp"] += 6
+            earned = _earn(s, 2)
             if detail:
                 _moment(s, f"We built {detail[:80]} together.", "built")
         elif kind == "failure":
@@ -203,6 +220,33 @@ def event(kind: str, detail: str = "") -> Dict[str, Any]:
         elif kind == "returned":
             _bump(s, joy=0.2, energy=0.1)
             _bond(s, 0.4)
+        elif kind == "treat":
+            # Stardust you give back: it can only spend what it earned with you.
+            if s.get("stardust", 0) <= 0:
+                save(s)
+                return {**public(s), "no_stardust": True}
+            s["stardust"] -= 1
+            s["treats_total"] = s.get("treats_total", 0) + 1
+            day = _daily(s)
+            day["treats"] = day.get("treats", 0) + 1
+            _bump(s, joy=0.2 if day["treats"] <= 3 else 0.05, energy=0.12)
+            _bond(s, 0.7, "bond_from_praise", 8)
+            s["xp"] += 1
+            if day["treats"] == 1:
+                _moment(s, "You gave me stardust. Crunchy!", "treat")
+        elif kind == "play":
+            catches = int(detail) if str(detail).isdigit() else 0
+            _bump(s, joy=0.18, energy=-0.06, curiosity=0.04)
+            _bond(s, 0.6, "bond_from_play", 2)
+            s["xp"] += 1 + min(catches, 5) * 0.5
+            if catches > s.get("catches_best", 0):
+                s["catches_best"] = catches
+                if catches >= 3:
+                    _moment(s, f"We played catch: {catches} in a row, a new best!", "play")
+        elif kind == "wish":
+            # It asked for something (a pet, a game, a good thing about your day) and you said yes.
+            _bump(s, joy=0.15, calm=0.05)
+            _bond(s, 0.5, "bond_from_praise", 8)
         elif kind in ("liked", "dismissed"):
             act = detail if detail in ACTIVITIES else None
             if act:
@@ -215,8 +259,11 @@ def event(kind: str, detail: str = "") -> Dict[str, Any]:
         evolved = _check_growth(s)
         save(s)
         out = public(s)
+        out["kind"] = kind
         if evolved:
             out["evolved"] = evolved
+        if earned:
+            out["earned"] = earned
         return out
 
 
@@ -331,7 +378,8 @@ def public(s: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
             "style": s["style"], "interests": interests(s, 8), "moments": s["moments"][-12:][::-1],
             "lessons": s["lessons"][-6:][::-1], "journal": s["journal"][-30:][::-1], "unseen": len(unseen),
             "together_days": len(s.get("together_days") or []), "born": s["born"], "settings": s["settings"],
-            "activity_weights": s["activity_weights"], "evolved_at": s.get("evolved_at")}
+            "activity_weights": s["activity_weights"], "evolved_at": s.get("evolved_at"),
+            "stardust": s.get("stardust", 0), "treats_total": s.get("treats_total", 0), "catches_best": s.get("catches_best", 0)}
 
 
 def feeling(s: Dict[str, Any]) -> str:

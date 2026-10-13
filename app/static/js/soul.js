@@ -36,7 +36,7 @@
   function active() {
     const idleFor = Date.now() - lastActive;
     lastActive = Date.now();
-    if (W.out && !W.postcard) goHome();
+    if (W.out && !W.postcard && !W.with) goHome();
     if (Date.now() - lastPresence > 60000) { lastPresence = Date.now(); fetch("/api/soul/presence", { method: "POST" }).catch(() => {}); }
     if (idleFor > 8 * 60000) setTimeout(maybePostcard, 1200);      // back after a while: anything to tell?
   }
@@ -55,12 +55,13 @@
   });
 
   // ------------------------------------------------------------------ the wanderer
-  const W = { out: false, x: 0, y: 0, trip: null, stops: 0, timer: 0, home: null, postcard: null, napping: false };
+  // with: something it's doing with you right now (js/joy.js: a game of catch, a wish), so it stays out
+  const W = { out: false, x: 0, y: 0, trip: null, stops: 0, timer: 0, home: null, postcard: null, napping: false, with: null };
   const el = document.createElement("div");
   el.className = "xod-wanderer";
   el.innerHTML = `<span class="xod-mascot xod-mascot--familiar xod-mascot--wander" data-mood="idle" data-live="1"></span><div class="xw-bubble" role="status"></div>`;
   const body = el.firstElementChild, bubble = el.lastElementChild;
-  el.addEventListener("click", (e) => { if (!e.target.closest(".xw-bubble")) openHeart(); });
+  el.addEventListener("click", (e) => { if (!e.target.closest(".xw-bubble") && !W.with) openHeart(); });
   const puppet = () => { try { return XodMascot.puppet(body); } catch (e) { return null; } };
 
   function homeEl() {
@@ -99,9 +100,10 @@
     if (!W.out) return;
     hideBubble();
     W.postcard = null;
+    W.with = null;
     const h = W.home && W.home.isConnected ? W.home : homeEl();
     const done = () => {
-      el.classList.remove("is-out", "is-napping");
+      el.classList.remove("is-out", "is-napping", "is-joy");
       W.out = false; W.trip = null; W.napping = false;
       document.querySelectorAll(".is-wandering").forEach((x) => x.classList.remove("is-wandering"));
       clearTimeout(W.timer);
@@ -172,7 +174,7 @@
   }
 
   function wanderStep() {
-    if (!W.out || W.postcard) return;
+    if (!W.out || W.postcard || W.with) return;
     if (busy()) { goHome(); return; }
     W.stops++;
     const sleepy = soul && soul.feeling === "sleepy";
@@ -217,7 +219,7 @@
 
   // Idle long enough: off it goes.
   setInterval(() => {
-    if (reduceMotion || !soul || !soul.settings?.wander || W.out || busy()) return;
+    if (reduceMotion || !soul || !soul.settings?.wander || W.out || W.with || busy()) return;
     const idle = Date.now() - lastActive;
     if (idle > 45000 && Math.random() < 0.5) { leaveHome(); W.timer = setTimeout(wanderStep, 900); }
   }, 8000);
@@ -328,6 +330,12 @@
         <p>Growing into a <b>${esc(s.next.name)}</b> · ${Math.round(s.xp)}/${s.next.xp} experience, bond ${Math.round(s.bond)}/${s.next.bond}</p></div>` : `<p class="xh-meta">Fully grown.</p>`}
       <section><h4>Bond <span class="xh-hearts">${hearts}</span> <em>${esc(s.bond_word)}</em></h4>
         <p class="xh-note">Grows when you work together, say thanks, or give it a pet. It never drops because you were away.</p></section>
+      <section><h4>Treats & play</h4>
+        <div class="xh-joy">
+          <button data-joy="treat"><span class="xh-dust">✦</span>Give a treat <b>${s.stardust || 0}</b></button>
+          <button data-joy="play"><i data-lucide="circle-dot" class="size-3.5"></i>Play catch</button>
+        </div>
+        <p class="xh-note">Every answer and build you finish together leaves a little stardust; give it back and watch. ${s.treats_total ? `${s.treats_total} treat${s.treats_total === 1 ? "" : "s"} so far.` : ""} ${s.catches_best ? `Best catch streak: ${s.catches_best}.` : ""}</p></section>
       <section><h4>Mood</h4>${bar("Joy", s.mood.joy, "#f2b24a")}${bar("Energy", s.mood.energy, "#93d17f")}${bar("Curiosity", s.mood.curiosity, "#7cc4f2")}${bar("Calm", s.mood.calm, "#a196ec")}</section>
       <section><h4>What I've learned about you</h4>
         <div class="xh-chips">
@@ -374,6 +382,8 @@
       if (j?.prompt && typeof quickSendPrompt === "function") quickSendPrompt(j.prompt);
       return;
     }
+    const j = e.target.closest("[data-joy]");
+    if (j && window.XodJoy) { closeHeart(); setTimeout(() => (j.dataset.joy === "treat" ? XodJoy.treat() : XodJoy.play()), 250); return; }
     const set = e.target.closest("[data-set]");
     if (set) return apply(await api("/api/soul/settings", { [set.dataset.set]: set.checked }));
     const m = e.target.closest("[data-h=muse]");
@@ -390,9 +400,17 @@
   // ------------------------------------------------------------------ from the chat stream
   function onEvent(ev) {
     if (ev.state) apply({ ...ev.state, ...(ev.evolved ? { stage_name: ev.evolved.name, stage_blurb: ev.evolved.blurb } : {}) });
+    try { window.dispatchEvent(new CustomEvent("xod:soul", { detail: ev })); } catch (e) {}   // js/joy.js reacts
   }
 
-  window.XodSoul = { refresh, openHeart, closeHeart, onEvent, wander: () => { leaveHome(); W.timer = setTimeout(wanderStep, 600); }, home: () => goHome(),
+  // For js/joy.js: the wanderer's body, so games and treats can move it around.
+  const wanderer = {
+    el, body, bubble, out: () => W.out, busy, leave: () => { if (!W.out) leaveHome(); clearTimeout(W.timer); },
+    home: (quick) => goHome(quick), fly: (goal, done, speed) => flyTo(goal, done, speed), say: (t, ms, html) => say(t, ms, html), hush: hideBubble,
+    moveTo: (x, y) => { W.trip = null; W.x = x; W.y = y; place(); }, pos: () => ({ x: W.x, y: W.y }),
+    with: (what) => { if (what !== undefined) W.with = what; return W.with; }, puppet, homeEl, centerOf,
+  };
+  window.XodSoul = { refresh, openHeart, closeHeart, onEvent, wanderer, apply, wander: () => { leaveHome(); W.timer = setTimeout(wanderStep, 600); }, home: () => goHome(),
                      postcard: maybePostcard, state: () => ({ soul, out: W.out, x: W.x, y: W.y, bubble: bubble.classList.contains("is-on") ? bubble.textContent.trim() : "", postcard: !!W.postcard }) };
   refresh().then(() => setTimeout(maybePostcard, 4000));
   setInterval(refresh, 90000);

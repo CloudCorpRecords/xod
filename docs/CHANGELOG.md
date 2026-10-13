@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+**Make Xod happy**
+- Treats: every answer and build you finish together leaves a little ✦ stardust (up to 12 a day). Hover Xod and give one back: it flies over, Xod catches it, munches with puffed cheeks, gets heart eyes and does a little dance.
+- Catch: a glowing star you drag and fling around the window, with real bounces. Xod chases it, catches it (streaks count, and it dances at 3 in a row), brings it back and asks for another throw.
+- Wishes: now and then, when you're around and it's quiet, Xod asks for something small: a treat, a game, a pet, one good thing about your day, or to show you a trick. "Not now" is always fine; at most three a day.
+- Keep petting and it giggles (a tickle); thank it in the chat and it blushes with heart eyes; it says good morning with a stretch; and once in a while it sneezes.
+- Xod's heart has a new Treats & play section with your stardust and best catch streak.
+
+**Voice mode**
+- It no longer answers background noise or made-up words. A stronger on-device model (Whisper large-v3 turbo) hears you better; transcripts Whisper itself doubts are dropped ("no, no, no…", one sentence over and over, "Thanks for watching!" into silence); sound with no speech isn't transcribed at all; and it learns how loud you are and ignores much quieter voices like a TV across the room.
+- It waits for the rest when you trail off on "and…" or "so the…", and asks you to repeat when it isn't sure what it heard.
+
 ## 0.3.1
 
 **Update with one click**

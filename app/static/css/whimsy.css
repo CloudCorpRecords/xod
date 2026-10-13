@@ -134,8 +134,8 @@ h3.font-bold, h2.font-bold { font-weight: 600; }
 .xod-mascot .xm-glow { transition: opacity 0.6s ease; opacity: 0.55; }
 .xod-mascot--small .xm-glow { opacity: 0.35; }
 /* Body, eyes and mouth are moved every frame by mascot.js; these only cross-fade the eye shapes. */
-.xod-mascot .xm-open, .xod-mascot .xm-shut, .xod-mascot .xm-joy, .xod-mascot .xm-dizzy { transition: opacity 0.14s ease; }
-.xod-mascot .xm-shut, .xod-mascot .xm-joy, .xod-mascot .xm-dizzy { opacity: 0; }
+.xod-mascot .xm-open, .xod-mascot .xm-shut, .xod-mascot .xm-joy, .xod-mascot .xm-dizzy, .xod-mascot .xm-love { transition: opacity 0.14s ease; }
+.xod-mascot .xm-shut, .xod-mascot .xm-joy, .xod-mascot .xm-dizzy, .xod-mascot .xm-love { opacity: 0; }
 .xod-mascot .xm-sweat { transition: opacity 0.3s ease; }
 .xod-mascot .xm-swirl { transform-box: fill-box; transform-origin: center; animation: swirl 0.8s linear infinite; }
 @keyframes swirl { to { transform: rotate(360deg); } }
@@ -403,6 +403,8 @@ h3.font-bold, h2.font-bold { font-weight: 600; }
 .xm-heart.is-ask { color: var(--lamp-soft); font-family: 'Fraunces', Georgia, serif; font-weight: 700; }
 .xm-heart.is-bang { color: var(--peony); font-family: 'Fraunces', Georgia, serif; font-weight: 700; }
 .xm-heart.is-boo { color: #cfe7f3; font-family: 'Fraunces', Georgia, serif; font-style: italic; }
+.xm-heart.is-achoo { color: #fffaf0; font-family: 'Fraunces', Georgia, serif; font-style: italic; font-weight: 700; }
+.xm-heart.is-giggle { color: var(--lamp-soft); font-family: 'Fraunces', Georgia, serif; font-style: italic; animation-name: noteUp; }
 @keyframes noteUp {
   0% { opacity: 0; transform: translate(0, 0) rotate(-10deg) scale(0.6); }
   25% { opacity: 1; }
@@ -963,3 +965,64 @@ body.xod-previewing .action-footer > button { white-space: nowrap; }
 .xv-icon:hover { color: #fff; background: rgba(255,255,255,0.06); }
 .xv-bar { flex-basis: 100%; height: 3px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
 .xv-bar > span { display: block; height: 100%; background: #f2b24a; transition: width .3s ease; }
+
+/* ---- Things that make Xod happy (js/joy.js) ---- */
+.xm-heart.is-dust { color: #ffd06b; font-family: 'Fraunces', Georgia, serif; font-weight: 700; text-shadow: 0 0 10px rgba(255, 208, 107, 0.7); animation-name: noteUp; }
+
+/* a stardust treat, tossed */
+.xj-star { position: fixed; left: 0; top: 0; z-index: 70; width: 20px; height: 20px; display: grid; place-items: center; pointer-events: none;
+  font-size: 18px; line-height: 1; color: #ffe39a; text-shadow: 0 0 6px #ffd06b, 0 0 16px rgba(242, 178, 74, 0.8); will-change: transform; }
+
+/* the star you play catch with */
+.xj-ball { position: fixed; left: 0; top: 0; z-index: 69; width: 26px; height: 26px; border-radius: 50%; cursor: grab; touch-action: none;
+  display: grid; place-items: center; will-change: transform;
+  background: radial-gradient(circle at 38% 32%, #fffaf0 0%, #ffe39a 35%, #f2b24a 70%, #c98a2e 100%);
+  box-shadow: 0 0 0 1px rgba(255, 250, 240, 0.5), 0 0 18px rgba(242, 178, 74, 0.75), 0 6px 14px rgba(0, 0, 0, 0.35);
+  animation: xjBallIn 0.35s cubic-bezier(.3, 1.6, .5, 1); }
+.xj-ball i { font-style: normal; font-size: 12px; color: #fffaf0; text-shadow: 0 0 4px #c98a2e; }
+.xj-ball.is-held { cursor: grabbing; box-shadow: 0 0 0 2px #fffaf0, 0 0 26px rgba(242, 178, 74, 0.95), 0 10px 22px rgba(0, 0, 0, 0.4); }
+.xj-ball.is-gone { opacity: 0; transition: opacity 0.35s ease; }
+@keyframes xjBallIn { from { scale: 0.2; opacity: 0; } to { scale: 1; opacity: 1; } }
+
+/* the game's little banner */
+.xj-hud { position: fixed; z-index: 70; top: 68px; left: 50%; translate: -50% 0; display: flex; align-items: center; gap: 10px;
+  padding: 6px 8px 6px 12px; border-radius: 999px; font-size: 12px; color: #fde68a;
+  background: rgba(20, 20, 38, 0.88); border: 1px solid rgba(242, 178, 74, 0.35); backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); animation: xjHudIn 0.3s ease; }
+.xj-hud .xj-dot { width: 8px; height: 8px; border-radius: 50%; background: #f2b24a; box-shadow: 0 0 8px #f2b24a; animation: xjPulse 1.4s ease-in-out infinite; }
+.xj-hud button { padding: 3px 10px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); color: #f4f4f5; font-weight: 600; }
+.xj-hud button:hover { background: rgba(255, 255, 255, 0.16); }
+@keyframes xjHudIn { from { opacity: 0; translate: -50% -8px; } to { opacity: 1; translate: -50% 0; } }
+@keyframes xjPulse { 50% { opacity: 0.4; } }
+
+/* hover Xod: treat, catch, heart */
+.xj-dock { position: fixed; z-index: 66; display: flex; gap: 4px; padding: 4px; border-radius: 999px; translate: -50% 4px; opacity: 0; pointer-events: none;
+  background: rgba(20, 20, 38, 0.92); border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  transition: opacity 0.18s ease, translate 0.18s ease; }
+.xj-dock.is-on { opacity: 1; translate: -50% 0; pointer-events: auto; }
+.xj-dock button { display: flex; align-items: center; gap: 4px; height: 28px; min-width: 28px; padding: 0 8px; border-radius: 999px; color: #d4d4d8; font-size: 12px; }
+.xj-dock button:hover { background: rgba(242, 178, 74, 0.16); color: #fde68a; }
+.xj-dock button span { color: #ffd06b; text-shadow: 0 0 6px rgba(255, 208, 107, 0.7); }
+.xj-dock button b { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* a wish in the wanderer's bubble */
+.xj-wish { margin: 0; }
+.xj-wish-actions { display: flex; gap: 0.35rem; margin-top: 0.5rem; }
+.xj-wish-actions button { font-size: 11.5px; padding: 0.25rem 0.65rem; border-radius: 8px; background: rgba(27, 26, 46, 0.07); color: #1b1a2e; }
+.xj-wish-actions button.is-main { background: #1b1a2e; color: #fffaf0; font-weight: 600; }
+
+/* Xod's heart: treats & play */
+.xh-joy { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 6px; }
+.xh-joy button { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 10px; font-size: 12.5px; color: #fde68a;
+  background: rgba(242, 178, 74, 0.1); border: 1px solid rgba(242, 178, 74, 0.3); }
+.xh-joy button:hover { background: rgba(242, 178, 74, 0.18); }
+.xh-joy b { font-variant-numeric: tabular-nums; }
+.xh-dust { color: #ffd06b; text-shadow: 0 0 6px rgba(255, 208, 107, 0.7); }
+
+@media (prefers-reduced-motion: reduce) {
+  .xj-ball, .xj-hud { animation: none; }
+  .xj-hud .xj-dot { animation: none; }
+}
+
+.xod-wanderer .xod-mascot--wander { transition: scale 0.35s cubic-bezier(.3, 1.5, .5, 1); }
+.xod-wanderer.is-joy .xod-mascot--wander { scale: 1.35; }

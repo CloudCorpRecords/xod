@@ -130,6 +130,8 @@ Say **"find me FDE jobs"** or **"remote staff ML engineer roles in New York"** a
 
 Xod's companion has a little life of its own. It has moods, a bond with you that grows as you work together, and it grows up through five stages (Hatchling, Sprout, Companion, Kindred, Luminary). When you're idle it leaves its spot and wanders around the window, thinking out loud. When you're away for a while it reads up on something you care about, thinks of an idea for one of your projects, or daydreams, and brings you a postcard when you're back. What you thank it for is how it learns what you like.
 
+You can make it happy, too. Every job you finish together leaves a little stardust: hover Xod and give it a treat, or play catch with a glowing star you fling around the window. Now and then it asks for something small (a game, a pet, one good thing about your day), and "Not now" is always fine.
+
 It learns from you too: your name, whether you like answers short or detailed, the topics you keep coming back to, and what you correct. **Tools → Xod's heart** shows all of it, and you can make it forget anything. It's a character, not a person: it never guilt-trips, its bond never drops because you were away, it never touches your files or accounts on its own, and everything stays on your Mac.
 
 ### Talk to it
