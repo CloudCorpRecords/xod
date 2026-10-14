@@ -19,6 +19,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-f2b24a?style=flat-square"></a>
   <img alt="Apple silicon" src="https://img.shields.io/badge/Mac-Apple%20silicon-0f1222?style=flat-square">
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-10%20%26%2011%20(preview)-0f1222?style=flat-square">
   <img alt="Runs locally" src="https://img.shields.io/badge/runs-on%20your%20Mac-93d17f?style=flat-square">
   <img alt="No telemetry" src="https://img.shields.io/badge/telemetry-none-a196ec?style=flat-square">
 </p>
@@ -59,7 +60,9 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 
 ## Install
 
-1. [Download `Xod-0.3.1-arm64.dmg`](https://github.com/CloudCorpRecords/xod/releases/latest) (about 410 MB) and open it.
+### Mac
+
+1. [Download the `.dmg` from the latest release](https://github.com/CloudCorpRecords/xod/releases/latest) (about 370 MB) and open it.
 2. Drag **Xod** onto **Applications**.
 3. Open Xod. Everything it needs is already inside, so it's ready in seconds; a short setup helps you pick a model. From then on Xod keeps itself up to date: the bottom of the sidebar shows your version, it checks GitHub every hour, and a new version is one **Update** click away.
 
@@ -72,6 +75,14 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 > Xod isn't notarized by Apple yet, so the first time you open it macOS says it can't check it. Click **Done**, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Xod. You only do this once.
 
 Needs a Mac with Apple silicon (M1 or newer), macOS 13 or later, and Google Chrome for Xod's browser.
+
+### Windows (preview)
+
+1. [Download `Xod-…-x64-setup.exe` from the latest release](https://github.com/CloudCorpRecords/xod/releases/latest) and run it. It installs for your user only (no admin), adds Xod to the Start menu and opens it.
+2. Windows SmartScreen may say it "protected your PC" (the installer isn't code-signed yet): click **More info → Run anyway**. Only once.
+3. Pick a model: a free local one in [LM Studio](https://lmstudio.ai) or [Ollama](https://ollama.com), or a cloud model with an API key (Fireworks, Claude, GPT, Gemini…) in Settings.
+
+Chats, web research in its own browser (Chrome or Edge), memory, the companion, files, terminal commands (PowerShell), building apps and background tasks work on Windows. Mac only for now: the built-in model engine, on-device images, video and voice, and the Calendar/Notes/Reminders/Mail connectors. Xod updates itself on Windows too. Your data is in `%APPDATA%\Xod`, API keys in Windows Credential Manager.
 
 ## A quick tour
 

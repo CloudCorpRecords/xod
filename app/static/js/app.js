@@ -11490,6 +11490,7 @@ class LocalSpeechRecognition {
       const res = await fetch("/api/voice/transcribe", { method: "POST", headers: { "Content-Type": type }, body: blob });
       const data = await res.json();
       const text = (data.text || "").trim();
+      if (data.mac_only) { showToast(data.error); this.onerror && this.onerror({ error: "not-allowed" }); this.onend && this.onend(); return; }
       if (!data.success) throw new Error(data.error || "transcription failed");
       if (text) {
         this.onresult && this.onresult({ resultIndex: 0, results: [Object.assign([{ transcript: text }], { isFinal: true })] });

@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+**Xod on Windows (preview)**
+- A Windows installer (`Xod-<version>-x64-setup.exe`): per user, no admin, Start menu and desktop shortcuts, everything inside (its own Python and packages). It updates itself like the Mac app: it downloads the new installer, checks it against the release's checksums and installs it when you quit or press Update.
+- Works on Windows: chats with LM Studio, Ollama or any cloud model; web research in its own browser (Chrome, or Edge, which every PC has); memory and the companion; files, terminal commands (in PowerShell), opening things in File Explorer, the Recycle Bin, the clipboard; building apps; background tasks and routines. API keys live in Windows Credential Manager, data in `%APPDATA%\Xod`.
+- The setup screen on a PC offers what works there (LM Studio, Ollama, a cloud model), and Xod's instructions to its model talk about File Explorer, the Recycle Bin and PowerShell instead of Finder, the Trash and zsh.
+- Mac only for now: the built-in model engine (MLX), on-device images, video and voice, and the Calendar/Notes/Reminders/Mail connectors.
+- Every release now builds and tests Windows too: a clean Windows machine starts Xod from scratch and has a chat, then the installer is built, installed and started.
+
 ## 0.4.1
 
 - Fixed: with a cloud model that thinks before answering (like the default one on Fireworks), a web answer could come back as only its thinking, with no answer. Xod now asks it to keep thinking short, leaves room for the thinking on top of the answer, and if a reply still ends with no answer it asks once more for just the answer.

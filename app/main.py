@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import os
 import json
 import logging
@@ -2934,9 +2935,15 @@ async def setup_complete_endpoint():
     from app.services import setup_wizard
     return setup_wizard.complete()
 
+VOICE_MAC_ONLY = {"success": False, "mac_only": True,
+                  "error": "Talking to Xod uses speech recognition that runs on a Mac (Apple silicon) for now. On this PC, type instead."}
+
+
 @app.post("/api/voice/transcribe")
 async def voice_transcribe_endpoint(request: Request):
     """Speech to text on this Mac (local Whisper). Body: the raw recording (webm/ogg/mp4/wav)."""
+    if sys.platform != "darwin":
+        return VOICE_MAC_ONLY
     from app.services import speech_to_text
     # ?partial=1: a live caption while you're still talking; skipped if Whisper is busy, so the
     # real transcription of what you said never waits behind a caption.
@@ -2946,6 +2953,8 @@ async def voice_transcribe_endpoint(request: Request):
 @app.post("/api/voice/prepare")
 async def voice_prepare_endpoint():
     """Loads speech recognition ahead of time (a conversation or "Hey Xod" listening is starting)."""
+    if sys.platform != "darwin":
+        return {**VOICE_MAC_ONLY, "ready": False}
     from app.services import speech_to_text
     return await speech_to_text.prepare()
 
@@ -2953,6 +2962,8 @@ async def voice_prepare_endpoint():
 @app.post("/api/voice/wake")
 async def voice_wake_endpoint(request: Request):
     """Hands-free: was this short clip "Hey Xod…"? Returns the transcript, wake and the rest of the sentence."""
+    if sys.platform != "darwin":
+        return VOICE_MAC_ONLY
     from app.services import speech_to_text
     return await speech_to_text.wake(await request.body())
 
