@@ -52,7 +52,7 @@ Thank you for your interest in contributing to **Xod**! We welcome contributions
    ```
    The build installs every package into a Python that ships inside Xod.app, so people who download it install nothing on first launch. Media Studio's heavy libraries (PyTorch, diffusers) and ffmpeg are fetched on first use instead (`app/services/media_packages.py`). It also writes the notices for everything bundled (`scripts/third_party_licenses.py`) and fails on GPL-family licenses.
 
-   Releases: push a tag like `v0.1.0` and `.github/workflows/release.yml` builds the installer and attaches it to a draft release.
+   Releases: write what changed under `## 0.5.1` (the new version) at the top of `docs/CHANGELOG.md`, commit it, then run `python scripts/release.py 0.5.1`. It sets the version everywhere, tags and pushes; `.github/workflows/release.yml` then builds the Mac and Windows apps and publishes the release, and installed copies update themselves within an hour. `--dry-run` shows what it would do.
 
 7. **Turn on the release check** (once per clone). It blocks commits that contain keys, databases, `.env` files or your home folder path:
    ```bash

@@ -1,8 +1,14 @@
 name: Release
 
-# Push a tag like v0.1.0 and this builds the Mac installer (.dmg) and the Windows installer (setup .exe), and
-# attaches both, with one SHA256SUMS.txt that the apps' updaters check downloads against, to a draft release.
-# Review the draft, then publish it by hand.
+# Push a tag like v0.1.0 (scripts/release.py does it) and this builds the Mac installer (.dmg) and the Windows
+# installer (setup .exe), attaches both, with one SHA256SUMS.txt that the apps' updaters check downloads against,
+# and publishes the release once everything is there. Installed copies of Xod then update themselves.
+#
+# Each release also carries the same installers under names that never change (Xod-Mac.dmg,
+# Xod-Windows-Setup.exe), so .../releases/latest/download/<that name> is always the newest version. The
+# updaters ignore those copies: they look for -arm64.dmg and -x64-setup.exe.
+#
+# Release notes: the version's section of docs/CHANGELOG.md, unless the release already has notes written by hand.
 on:
   push:
     tags: ["v*"]
@@ -34,14 +40,16 @@ jobs:
           npm run dist
       - name: Checksum
         working-directory: electron/dist
-        run: shasum -a 256 Xod-*.dmg > sums-mac.txt && cat sums-mac.txt
+        run: |
+          cp Xod-*-arm64.dmg Xod-Mac.dmg
+          shasum -a 256 Xod-*-arm64.dmg Xod-Mac.dmg > sums-mac.txt && cat sums-mac.txt
       - name: Attach to a draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Xod ${TAG#v}" --notes "Building…"
-          gh release upload "$TAG" electron/dist/Xod-*.dmg --clobber
+          gh release upload "$TAG" electron/dist/Xod-*-arm64.dmg electron/dist/Xod-Mac.dmg --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: sums-mac
@@ -68,7 +76,9 @@ jobs:
       - name: Checksum
         shell: bash
         working-directory: electron/dist
-        run: sha256sum Xod-*-x64-setup.exe | sed 's/ \*/  /' > sums-win.txt && cat sums-win.txt
+        run: |
+          cp Xod-*-x64-setup.exe Xod-Windows-Setup.exe
+          sha256sum Xod-*-x64-setup.exe Xod-Windows-Setup.exe | sed 's/ \*/  /' > sums-win.txt && cat sums-win.txt
       - name: Attach to the draft release
         shell: bash
         env:
@@ -77,25 +87,37 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           for i in 1 2 3 4 5 6 7 8 9; do gh release view "$TAG" >/dev/null 2>&1 && break; sleep 20; done
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Xod ${TAG#v}" --notes "Building…"
-          gh release upload "$TAG" electron/dist/Xod-*-x64-setup.exe --clobber
+          gh release upload "$TAG" electron/dist/Xod-*-x64-setup.exe electron/dist/Xod-Windows-Setup.exe --clobber
       - uses: actions/upload-artifact@v4
         with:
           name: sums-win
           path: electron/dist/sums-win.txt
 
-  checksums:
-    name: SHA256SUMS.txt for both
+  publish:
+    name: SHA256SUMS.txt, notes, publish
     needs: [mac, windows]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: sums-*
           merge-multiple: true
-      - name: Attach
+      - name: Attach the checksums
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
         run: |
           cat sums-mac.txt sums-win.txt > SHA256SUMS.txt && cat SHA256SUMS.txt
           gh release upload "${GITHUB_REF_NAME}" SHA256SUMS.txt --clobber
+      - name: Publish (installed copies of Xod update from here)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          BODY="$(gh release view "$TAG" --json body --jq .body)"
+          if [ "$BODY" = "Building…" ] || [ -z "$BODY" ]; then
+            python3 scripts/release.py --notes "$VERSION" > notes.md
+            gh release edit "$TAG" --notes-file notes.md
+          fi
+          gh release edit "$TAG" --draft=false --latest

@@ -10,7 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/CloudCorpRecords/xod/releases/latest"><b>Download for Mac</b></a> ·
+  <a href="https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Mac.dmg"><b>Download for Mac</b></a> ·
+  <a href="https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Windows-Setup.exe"><b>Download for Windows</b></a> ·
   <a href="docs/media/xod-launch.mp4">Watch the 2-minute film</a> ·
   <a href="#build-from-source">Build from source</a> ·
   <a href="#get-involved">Get involved</a>
@@ -62,7 +63,7 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 
 ### Mac
 
-1. [Download the `.dmg` from the latest release](https://github.com/CloudCorpRecords/xod/releases/latest) (about 370 MB) and open it.
+1. [Download Xod for Mac](https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Mac.dmg) (the latest version, about 370 MB) and open it.
 2. Drag **Xod** onto **Applications**.
 3. Open Xod. Everything it needs is already inside, so it's ready in seconds; a short setup helps you pick a model. From then on Xod keeps itself up to date: the bottom of the sidebar shows your version, it checks GitHub every hour, and a new version is one **Update** click away.
 
@@ -78,7 +79,7 @@ Needs a Mac with Apple silicon (M1 or newer), macOS 13 or later, and Google Chro
 
 ### Windows (preview)
 
-1. [Download `Xod-…-x64-setup.exe` from the latest release](https://github.com/CloudCorpRecords/xod/releases/latest) and run it. It installs for your user only (no admin), adds Xod to the Start menu and opens it.
+1. [Download Xod for Windows](https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Windows-Setup.exe) (the latest version) and run it. It installs for your user only (no admin), adds Xod to the Start menu and opens it.
 2. Windows SmartScreen may say it "protected your PC" (the installer isn't code-signed yet): click **More info → Run anyway**. Only once.
 3. Pick a model: a free local one in [LM Studio](https://lmstudio.ai) or [Ollama](https://ollama.com), or a cloud model with an API key (Fireworks, Claude, GPT, Gemini…) in Settings.
 
