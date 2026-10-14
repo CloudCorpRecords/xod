@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.5.1
+
+**The agent on Windows, tested end to end**
+- Asking Xod to create, rename or delete a file now does it, instead of searching the web for how to. The planner didn't know its own tools for writing, listing and managing files. For a clear request about your files it no longer gets web tools to wander off to. If the model can't make a plan for a task on your computer, Xod says so plainly instead of searching the web.
+- Undo works on Windows: files Xod made or copied go to the Recycle Bin, and deleted ones come back out of it to where they were. This also fixes "move to the Recycle Bin" in file clean-ups. These only worked on a Mac before.
+- Tidying a folder works on Windows. It used to refuse every folder as "outside your home folder". Windows installers (.msi, and setup .exe files) count as installers.
+- Paths written the Windows or PowerShell way (`%USERPROFILE%\Downloads`, `$env:USERPROFILE\Downloads`) are understood, and the model is told your real home folder.
+- After building an app, Xod now runs it and fixes its errors on Windows too. Before, it couldn't find Chrome there and skipped the check.
+- Browser tasks no longer loop retyping a message. A long text in a form field was shown to the model cut off with "…", so it looked unfinished. A link written in brackets, "(http://site/page):", opens the right page.
+- Commands start in your home folder, not in Xod's own. A folder listing asked for under another argument name no longer shows Xod's own folder. PowerShell's padded tables no longer hide the answer. A file that isn't there says so instead of reading as "opened".
+- Hardware answers include your graphics card and its memory, without the `wmic` command newer Windows doesn't have. Files made by tools are checked on Windows paths too (missing, empty or blank results are caught).
+- The page says "your PC", "Windows Credential Manager" and "File Explorer" on Windows instead of "your Mac", "Keychain" and "Finder".
+
+**More honest, on every computer**
+- A tool that failed no longer reads as a success in the answer. A file that couldn't be opened was written up as "opened and read". Failures are now marked as failures for the model that writes the answer.
+- Reading a short file ("buy milk, call mom") was taken for a failed read, and the repair went looking for the file in made-up places. Only a web page with almost no text counts as a failed read now.
+- Answers about files or your computer no longer end with "Web search didn't return anything usable" when they never searched the web.
+- Finding files works whatever the model calls the arguments (`file_name`, `path`…) instead of failing.
+- "Remember that …" gets a short "Got it" instead of a confused reply. The fact was always saved; now the answer says so.
+- In connected apps, the same change asked for twice in one reply happens once (no more duplicate reminders). A change that fails because the item wasn't looked up first tells the model to find it and try again.
+
+**Memory on Ollama**
+- Searching memory, past chats and the companion's notebook by meaning works with Ollama too, not only LM Studio. Both run the same small embedding model, nomic-embed-text. With Ollama as your model app, Xod downloads it once (274 MB) and says so.
+- "Get to know me from this computer" reads the time zone, language and region on Windows too.
+
+**Releases**
+- `python scripts/release.py 1.2.3` makes a release in one command. GitHub builds the Mac and Windows apps and publishes them, and installed copies update themselves.
+- Download links that always give the newest version: `…/releases/latest/download/Xod-Mac.dmg` and `…/releases/latest/download/Xod-Windows-Setup.exe`.
+- `run.ps1` starts Xod from source on Windows, like `run.sh` on a Mac.
+
+**Videos**
+- Five one-minute vertical videos of what Xod is good at, recorded from the real app on a PC with a free local model (`docs/media/shorts/`). `scripts/media/make_use_case_videos.py` makes them again.
+
+**Tests**
+- The test suites run on Windows: no more Mac-only commands (`pkill`, `lsof`, `/private/tmp`, bash loops), and tests that need a model use the one in `LLM_PROVIDER`/`LLM_MODEL` (e.g. Ollama) instead of only LM Studio. Tests that drove a browser or a task list now use their own throwaway data folder instead of yours.
+
 ## 0.5.0
 
 **Xod plugs itself in**

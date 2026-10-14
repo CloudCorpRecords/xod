@@ -5,8 +5,9 @@
 <h1 align="center">Xod</h1>
 
 <p align="center">
-  <b>A private AI that works on your Mac.</b><br>
-  It researches, works with your files and runs jobs in the background, and it asks before it acts.
+  <b>A private AI that works on your computer.</b><br>
+  It researches, works with your files and runs jobs in the background, and it asks before it acts.<br>
+  Free and open source, for Mac and Windows. It finds the AI on your computer and sets itself up.
 </p>
 
 <p align="center">
@@ -21,7 +22,7 @@
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-f2b24a?style=flat-square"></a>
   <img alt="Apple silicon" src="https://img.shields.io/badge/Mac-Apple%20silicon-0f1222?style=flat-square">
   <img alt="Windows" src="https://img.shields.io/badge/Windows-10%20%26%2011%20(preview)-0f1222?style=flat-square">
-  <img alt="Runs locally" src="https://img.shields.io/badge/runs-on%20your%20Mac-93d17f?style=flat-square">
+  <img alt="Runs locally" src="https://img.shields.io/badge/runs-on%20your%20computer-93d17f?style=flat-square">
   <img alt="No telemetry" src="https://img.shields.io/badge/telemetry-none-a196ec?style=flat-square">
 </p>
 
@@ -38,6 +39,13 @@
 
 All demos are recorded from the real app with a throwaway demo data folder. In the conversation video, long thinking pauses are shortened and labelled; speech is never sped up.
 
+**One-minute videos** (vertical, recorded on a Windows PC with a free local model; waits are sped up and say so):
+[Free AI on your own computer](docs/media/shorts/xod-private.mp4) ·
+[Research with sources](docs/media/shorts/xod-research.mp4) ·
+[Tidy a messy Downloads folder](docs/media/shorts/xod-tidy.mp4) ·
+[A chore that asks before it acts](docs/media/shorts/xod-chores.mp4) ·
+[An app from one sentence](docs/media/shorts/xod-build.mp4)
+
 ## Hand it a job
 
 - **"Every weekday at 8, give me the five biggest tech stories with sources."** Save it once as a routine; the report is waiting for you.
@@ -48,11 +56,12 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 
 |  |  |
 |---|---|
-| **Private by default** | Chats, files, voice and images stay on your Mac. Use Xod's built-in engine, LM Studio or Ollama. No account, no telemetry. |
+| **Private by default** | Chats, files, voice and images stay on your computer. Use Xod's built-in engine (Mac), Ollama, LM Studio or any local model server. No account, no telemetry. |
+| **Sets itself up** | It finds the AI on your computer (Ollama, LM Studio, llama.cpp, Jan…), reads your graphics card and picks a model that fits, installs Ollama with one click if you need it, and keeps it running: it restarts a stopped model app and frees memory a crashed one left behind. |
 | **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. |
 | **It reads the web itself** | It searches in its own browser, reads the top pages side by side and answers from them with sources. No search API key. |
 | **You stay in charge** | It stops for your OK before anything is sent, paid, posted or deleted. Every action is logged, and file changes can be undone. |
-| **Builds what you ask for** | Apps and games written, run, tested and fixed on your Mac, with a live preview beside the chat. |
+| **Builds what you ask for** | Apps and games written, run, tested and fixed on your computer, with a live preview beside the chat. |
 | **A companion that grows** | Moods, a bond with you, five stages to grow through, and a journal of what it thought about while you were away. |
 | **Talk to it** | Say "Hey Xod" and have a spoken back-and-forth, hands-free. It answers out loud, takes follow-ups and stops when you talk over it, all on your Mac. |
 | **Teach once, repeat forever** | Turn any chat into a routine. Xod remembers the steps that worked and runs it again, on a schedule if you like. |
@@ -81,9 +90,15 @@ Needs a Mac with Apple silicon (M1 or newer), macOS 13 or later, and Google Chro
 
 1. [Download Xod for Windows](https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Windows-Setup.exe) (the latest version) and run it. It installs for your user only (no admin), adds Xod to the Start menu and opens it.
 2. Windows SmartScreen may say it "protected your PC" (the installer isn't code-signed yet): click **More info → Run anyway**. Only once.
-3. Pick a model: a free local one in [LM Studio](https://lmstudio.ai) or [Ollama](https://ollama.com), or a cloud model with an API key (Fireworks, Claude, GPT, Gemini…) in Settings.
+3. Xod looks for a model on your PC and connects to it by itself: [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), or another local server like llama.cpp or Jan. Don't have one? The setup screen installs Ollama with one click and suggests a model that fits your graphics card, with a download button. Or add a cloud model's API key (Fireworks, Claude, GPT, Gemini…) in Settings.
 
-Chats, web research in its own browser (Chrome or Edge), memory, the companion, files, terminal commands (PowerShell), building apps and background tasks work on Windows. Mac only for now: the built-in model engine, on-device images, video and voice, and the Calendar/Notes/Reminders/Mail connectors. Xod updates itself on Windows too. Your data is in `%APPDATA%\Xod`, API keys in Windows Credential Manager.
+| Your graphics card | Suggested model | Download |
+|---|---|---|
+| No GPU, or 6–8 GB | Qwen 3.5 4B | 3.1 GB |
+| 10–16 GB (like an RTX 3060 12 GB or RTX 4070) | Qwen 3.5 9B | 6.1 GB |
+| 20 GB or more | Qwen 3.5 27B | 16.3 GB |
+
+Chats, web research in its own browser (Chrome or Edge), memory, the companion, files with undo (the Recycle Bin), terminal commands (PowerShell), building apps and background tasks work on Windows. Mac only for now: the built-in model engine, on-device images, video and voice, and the Calendar/Notes/Reminders/Mail connectors. Xod updates itself on Windows too. Your data is in `%APPDATA%\Xod`, API keys in Windows Credential Manager.
 
 ## A quick tour
 
@@ -163,8 +178,8 @@ Also inside: images and video (FLUX, AnimateDiff), long-term memory, projects, a
 
 ## Privacy and security
 
-- **Your data stays on your Mac** in `~/Library/Application Support/Xod`, readable only by your account. Set `XOD_DATA_DIR` to keep it elsewhere.
-- **Keys and logins live in the macOS Keychain**, never in files, logs or prompts.
+- **Your data stays on your computer**: `~/Library/Application Support/Xod` on a Mac, `%APPDATA%\Xod` on Windows, readable only by your account. Set `XOD_DATA_DIR` to keep it elsewhere.
+- **Keys and logins live in the macOS Keychain** (Windows: Credential Manager), never in files, logs or prompts.
 - **One small network check:** once a day Xod asks GitHub whether a newer version exists (nothing else is sent). Switch it off in Tools → What's coming next, or with `XOD_NO_UPDATE_CHECK=1`.
 - **Local only.** The server listens on `127.0.0.1` and refuses requests from websites, so a page you visit can't drive Xod.
 - **Untrusted text stays text.** AI output is sanitized, the UI runs under a strict Content-Security-Policy, and every UI library is bundled at a pinned version.
@@ -177,15 +192,17 @@ Found a security problem? Please report it privately; see [SECURITY.md](.github/
 ```bash
 git clone https://github.com/CloudCorpRecords/xod.git
 cd xod
-./run.sh                      # sets up .venv the first time, then serves http://localhost:8000
+./run.sh                      # Mac/Linux: sets up .venv the first time, then serves http://localhost:8000
+.\run.ps1                     # Windows (PowerShell): the same
 ```
 
-The desktop app: `cd electron && npm install && npm start`. The installer: `npm run dist`.
+The desktop app: `cd electron && npm install && npm start`. The installers: `npm run dist` (Mac), `npm run dist:win` (Windows).
+Releasing a new version: see [CONTRIBUTING.md](.github/CONTRIBUTING.md) (`python scripts/release.py 1.2.3`).
 
 ```
 xod/
 ├── app/          FastAPI server, agent, services and the web UI
-├── electron/     the Mac app and its installer
+├── electron/     the desktop app (Mac and Windows) and its installers
 ├── relay/        the Agent Mail post office (Python or Cloudflare Worker)
 ├── docs/         roadmap, changelog, screenshots and media
 ├── scripts/      release checks, license notices, screenshot and video tools

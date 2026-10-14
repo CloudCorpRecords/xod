@@ -108,6 +108,7 @@ test_runs/
 
 # --- Demo videos shown in the README (made from demo data only) ---
 !docs/media/*.mp4
+!docs/media/shorts/*.mp4
 
 # Marketing videos (made by scripts/media/make_use_case_videos.py; too big for the repo)
 marketing/
