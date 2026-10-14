@@ -30,7 +30,8 @@ def check(name, ok, detail=""):
 
 async def main():
     from app.config import settings
-    settings.llm_provider, settings.llm_base_url, settings.llm_model = "lm_studio", "http://127.0.0.1:1234/v1", "google/gemma-4-12b-qat"
+    from tests.support.local_model import local_model  # LLM_* if set, else LM Studio
+    settings.llm_provider, settings.llm_base_url, settings.llm_model = local_model()
     from app.services import user_memory as M
 
     check("a question isn't something to learn from", not M.worth_a_look("what's my name?"))
@@ -78,12 +79,17 @@ async def main():
     proj = FAKE_HOME / "Developer" / "tidepool"
     (proj / ".git").mkdir(parents=True)
     (proj / "README.md").write_text("# Tidepool\n\nA tiny iOS app that tracks local tide times for surfers.\n")
-    real_home = os.environ.get("HOME")
-    os.environ["HOME"] = str(FAKE_HOME)
+    # The pretend home for this one call: HOME on a Mac, USERPROFILE on Windows (where Path.home() looks).
+    real = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
+    os.environ["HOME"] = os.environ["USERPROFILE"] = str(FAKE_HOME)
     try:
         found = M._projects()
     finally:
-        os.environ["HOME"] = real_home
+        for k, v in real.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     check("projects: a git project and what its README says", found and found[0].startswith("tidepool: A tiny iOS app"), str(found))
     n_before = len(M.facts())
     got = await M.gather(["locale"])

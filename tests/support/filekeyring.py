@@ -10,6 +10,9 @@ class FileKeyring(KeyringBackend):
     priority = 1
 
     def _path(self):
+        if not os.environ.get("XOD_TEST_KEYRING_FILE"):      # a test that didn't name one: a throwaway file for this run
+            import tempfile
+            os.environ["XOD_TEST_KEYRING_FILE"] = os.path.join(tempfile.mkdtemp(prefix="xod-keys-"), "keys.json")
         return os.environ["XOD_TEST_KEYRING_FILE"]
 
     def _load(self):

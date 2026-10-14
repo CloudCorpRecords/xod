@@ -60,7 +60,8 @@ def task(title, request, status, result="", when=None, waiting=None):
 
 async def main():
     from app.config import settings
-    settings.llm_provider, settings.llm_base_url, settings.llm_model = "lm_studio", "http://127.0.0.1:1234/v1", "google/gemma-4-12b-qat"
+    from tests.support.local_model import local_model  # LLM_* if set, else LM Studio
+    settings.llm_provider, settings.llm_base_url, settings.llm_model = local_model()
     from app.services import recall, work_state, user_memory
     from app.services import task_queue as _tq   # creates the tasks table  # noqa: F401
 

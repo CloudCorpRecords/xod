@@ -12,10 +12,12 @@ Self-healing: break things on purpose and check Xod recovers by itself.
 
 Test data stays out of the real training set and lessons file.
 """
-import asyncio, json, os, subprocess, sys, time, uuid
+import asyncio, json, os, subprocess, sys, tempfile, time, uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+# Its own data folder: its own browser to kill and its own task list, never your real Xod's.
+os.environ["XOD_DATA_DIR"] = os.environ.get("XOD_TEST_DATA_DIR") or tempfile.mkdtemp(prefix="xod-heal-")
 import sys as _sys; _sys.path.insert(0, str(ROOT)); from app.paths import DATA_DIR as _DATA  # noqa: E402  (outside the repo)
 RUN = _DATA / "test_runs" / "self_heal"
 RUN.mkdir(parents=True, exist_ok=True)
@@ -91,8 +93,15 @@ async def test_wrong_filename():
 
 
 async def test_browser_killed():
-    from app.services.browser_sandbox import DEBUG_PORT
-    subprocess.run(["pkill", "-f", f"remote-debugging-port={DEBUG_PORT}"])
+    from app.services.browser_sandbox import DEBUG_PORT, browser_sandbox_service
+    import psutil
+    await browser_sandbox_service.navigate("about:blank")           # make sure it's running, then kill it (any system)
+    for p in psutil.process_iter(["cmdline"]):
+        try:
+            if f"--remote-debugging-port={DEBUG_PORT}" in (p.info["cmdline"] or []):
+                p.kill()
+        except psutil.Error:
+            pass
     await asyncio.sleep(2)
     final, ev = await run_healing("browser_navigate", {"url": "https://example.com"}, "Open example.com")
     res = final["result"]
@@ -129,7 +138,10 @@ async def test_hung_task():
 
 
 async def test_model_unloaded():
-    lms = str(Path.home() / ".lmstudio" / "bin" / "lms")
+    lms = str(Path.home() / ".lmstudio" / "bin" / ("lms.exe" if os.name == "nt" else "lms"))
+    if not os.path.exists(lms):
+        print("SKIP  G chat model unloaded -> reloaded  (needs LM Studio; this computer doesn't have it)", flush=True)
+        return
     subprocess.run([lms, "unload", "--all"], capture_output=True)
     await asyncio.sleep(2)
     chk = await doctor._check_chat_model()

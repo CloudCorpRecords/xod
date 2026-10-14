@@ -170,7 +170,11 @@ try:
     # M7: carol's keys, claiming to be alice
     from app.services import mail_crypto as mc
     carol_file = json.load(open(TMP / "carol-keys.json"))
-    carol_keys = next(json.loads(v)["secrets"] for k, v in carol_file.items() if k.endswith("\x00_vault"))  # app/services/keychain.py
+    # app/services/keychain.py: one "_vault" item, or on Windows (2,560 bytes an item) "_vault" says how many pieces follow.
+    vault = json.loads(next(v for k, v in carol_file.items() if k.endswith("\x00_vault")))
+    if "pieces" in vault:
+        vault = json.loads("".join(next(v for k, v in carol_file.items() if k.endswith(f"\x00_vault.{i}")) for i in range(1, vault["pieces"] + 1)))
+    carol_keys = vault["secrets"]
     carol = mc.Identity.from_secrets(carol_keys["Xod identity\nsign"], carol_keys["Xod identity\nbox"])
     bob_dir = json.loads(urllib.request.urlopen(f"http://{RELAY}/v1/names/bob{RUN}").read())
     env_ = mc.seal(carol, addrs["alice"], addrs["bob"], bob_dir["box_pub"], {"id": "forged-1", "thread": "t-forged", "kind": "message",

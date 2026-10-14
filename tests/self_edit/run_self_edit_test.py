@@ -128,7 +128,9 @@ async def test_yellow_real_model():
 
 
 async def test_red():
-    se.save_settings({"tier_overrides": {"lm_studio:google/gemma-4-12b-qat": "red"}})
+    from app.config import settings      # the model in use here, whichever it is (LM Studio, Ollama…), marked too weak
+    se.save_settings({"tier_overrides": {f"{settings.llm_provider}:{settings.llm_model}": "red",
+                                         "lm_studio:google/gemma-4-12b-qat": "red"}})
     r = await se.request_change("anything")
     se.save_settings({"tier_overrides": {}})
     report("Q6 red model refused", not r["success"] and r.get("tier") == "red", r.get("error", "")[:100])

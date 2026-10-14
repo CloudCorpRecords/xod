@@ -10,10 +10,12 @@ Repairs -> training data, and watching background jobs.
   O  environment lessons reach the planner prompt
 Uses its own dataset DB and lessons file.
 """
-import asyncio, json, os, sys, time
+import asyncio, json, os, sys, tempfile, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+os.environ["XOD_DATA_DIR"] = os.environ.get("XOD_TEST_DATA_DIR") or tempfile.mkdtemp(prefix="xod-jobs-")   # its own, not yours
+PY = "python" if os.name == "nt" else "python3"     # commands run in PowerShell on Windows, zsh/bash elsewhere
 import sys as _sys; _sys.path.insert(0, str(ROOT)); from app.paths import DATA_DIR as _DATA  # noqa: E402  (outside the repo)
 RUN = _DATA / "test_runs" / "learning_jobs"
 RUN.mkdir(parents=True, exist_ok=True)
@@ -45,7 +47,7 @@ async def wait(args):
 
 
 async def test_chatty_job():
-    cmd = "python3 -c \"import sys; [sys.stderr.write('x'*200+'\\n') for _ in range(2000)]; print('all done')\""
+    cmd = f"{PY} -c \"import sys; [sys.stderr.write('x'*200+'\\n') for _ in range(2000)]; print('all done')\""
     j = await sc.start_background_job("chatty", cmd)
     r = await wait({"condition": "job_done", "job_id": j["job_id"], "timeout_sec": 20})
     report("I chatty job finishes (no pipe deadlock)", r.get("met") and r["waited_sec"] < 15, json.dumps(r)[:120])
@@ -72,7 +74,8 @@ async def test_failing_job():
 
 
 async def test_check_job_incremental():
-    j = await sc.start_background_job("ticker", "for i in 1 2 3 4 5 6; do echo tick $i; sleep 0.5; done")
+    # One line that means the same in PowerShell and bash: tick 1..6, half a second apart.
+    j = await sc.start_background_job("ticker", f"{PY} -u -c \"import time; [(print('tick', i, flush=True), time.sleep(0.5)) for i in range(1, 7)]\"")
     await asyncio.sleep(1.2)
     a = await execute_tool("computer_check_job", {"job_id": j["job_id"]})
     await asyncio.sleep(2.5)

@@ -43,6 +43,20 @@ def check(name, ok, detail=""):
     print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  — {detail}" if detail and not ok else ""), flush=True)
 
 
+def vault_json():
+    """The vault as stored: one "_vault" item, or on Windows (2,560 bytes an item) "_vault" plus its pieces."""
+    raw = keyring.get_password("Xod API keys", "_vault")
+    head = json.loads(raw)
+    if "pieces" in head:
+        raw = "".join(keyring.get_password("Xod API keys", f"_vault.{i}") for i in range(1, head["pieces"] + 1))
+    return json.loads(raw)
+
+
+def one_vault_read(r):
+    """A launch's reads are just the vault: "_vault", and on Windows its pieces."""
+    return r and r[0] == ("Xod API keys", "_vault") and all(s == "Xod API keys" and a.startswith("_vault.") for s, a in r[1:])
+
+
 def main():
     # Saved the old way: one item per key.
     keyring.set_password("Xod API keys", "tavily_api_key", "tvly-old-123456789")
@@ -51,7 +65,7 @@ def main():
     check("an old key is still found", secret_store.get("tavily_api_key") == "tvly-old-123456789")
     check("…and so are connector tokens and identity keys",
           keychain.get_password("Xod MCP", "github:bearer_token") == "ghp-old-123456789" and keychain.get_password("Xod identity", "sign") == "sign-secret")
-    vault = json.loads(keyring.get_password("Xod API keys", "_vault"))
+    vault = vault_json()
     check("they're now in the one vault item", len(vault["secrets"]) == 3, json.dumps(sorted(vault["secrets"])))
 
     # Everything a launch reads. The first launch after the update also looks once for each old item
@@ -70,7 +84,7 @@ def main():
     first = launch()
     check("the first launch after the update never re-reads an old item it already moved",
           not any(r in first for r in [("Xod API keys", "tavily_api_key"), ("Xod MCP", "github:bearer_token"), ("Xod identity", "sign")]), str(first))
-    check("every launch after that reads the Keychain once", launch() == [("Xod API keys", "_vault")], str(reads))
+    check("every launch after that reads the Keychain once", one_vault_read(launch()), str(reads))
 
     secret_store.save("tavily_api_key", "tvly-new-987654321")
     check("saving a key updates the vault", secret_store.get("tavily_api_key") == "tvly-new-987654321")

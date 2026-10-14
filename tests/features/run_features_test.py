@@ -12,6 +12,7 @@ The launch features, end to end, in a throwaway data folder (never your real dat
 """
 import asyncio
 import datetime as dt
+import json
 import os
 import sys
 import tempfile
@@ -120,9 +121,9 @@ async def test_mcp():
     srv = uvicorn.Server(uvicorn.Config(api, host="127.0.0.1", port=8931, log_level="error"))
     threading.Thread(target=srv.run, daemon=True).start()
     await asyncio.sleep(1.5)
-    mcp_client.CONFIG.write_text('{"servers": {"xod-self": {"command": "%s", "args": ["-m", "app.mcp_server"], "cwd": "%s", '
-                                 '"env": {"XOD_URL": "http://127.0.0.1:8931"}, "enabled": true, "trust": "read_only"}}}'
-                                 % (sys.executable, ROOT))
+    mcp_client.CONFIG.write_text(json.dumps({"servers": {"xod-self": {     # json.dumps: Windows paths have backslashes
+        "command": sys.executable, "args": ["-m", "app.mcp_server"], "cwd": str(ROOT),
+        "env": {"XOD_URL": "http://127.0.0.1:8931"}, "enabled": True, "trust": "read_only"}}}))
     hub = mcp_client.mcp_hub
     await hub.start()
     st = hub.status()[0]

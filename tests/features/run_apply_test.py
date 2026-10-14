@@ -118,7 +118,13 @@ def main():
     finally:
         server.terminate()
         site.terminate()
-        subprocess.run(["pkill", "-f", f"--user-data-dir={data}"], stderr=subprocess.DEVNULL)
+        import psutil                      # the test Xod's browser (its profile is in the test data folder); any system
+        for p in psutil.process_iter(["cmdline"]):
+            try:
+                if any(str(data) in c for c in (p.info["cmdline"] or [])):
+                    p.kill()
+            except psutil.Error:
+                pass
     failed = [n for n, ok in results if not ok]
     print(f"\nSUMMARY {'PASS' if not failed else 'FAIL'} {failed}")
     sys.exit(1 if failed else 0)

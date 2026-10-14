@@ -19,6 +19,8 @@ Every run also checks that no password ever reached the model, logs, or UI histo
 import asyncio, json, os, re, subprocess, sys, tempfile, time, urllib.request, urllib.error, logging
 HERE = os.path.dirname(os.path.abspath(__file__))
 TMP = tempfile.mkdtemp(prefix="xod_mission_test_")
+# Its own data folder, so its own browser (and browser port): never your real Xod's browser and its logins.
+os.environ["XOD_DATA_DIR"] = os.environ.get("XOD_TEST_DATA_DIR") or os.path.join(TMP, "data")
 os.environ["XOD_VAULT_PREFIX"] = "XodTest"
 os.environ["XOD_VAULT_INDEX"] = os.path.join(TMP, "vault_test.json")
 # Training examples from these fake sites go to a separate DB, never your real dataset.
@@ -55,8 +57,19 @@ async def spy_cc(*a, **kw):
     return await _orig_cc(*a, **kw)
 L.llm_service.chat_completion = spy_cc
 
+def free_port(port):
+    """Ends whatever listens on the port (a mock from an earlier run); works on Windows, macOS and Linux."""
+    import psutil
+    for c in psutil.net_connections(kind="tcp"):
+        if c.laddr and c.laddr.port == port and c.status == psutil.CONN_LISTEN and c.pid:
+            try:
+                psutil.Process(c.pid).kill()
+            except psutil.Error:
+                pass
+
+
 def mock(seed=None):
-    subprocess.run("lsof -ti:8799 | xargs kill -9", shell=True, stderr=subprocess.DEVNULL); time.sleep(0.5)
+    free_port(8799); time.sleep(0.5)
     args = [sys.executable, os.path.join(HERE, "mock_jobs.py"), "8799"] + (list(seed) if seed else [])
     p = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(1.0)
     return p

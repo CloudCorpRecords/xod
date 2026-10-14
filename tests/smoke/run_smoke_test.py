@@ -129,11 +129,15 @@ async def ui_checks(base):
 
 
 def main():
-    data = Path(tempfile.mkdtemp(prefix="xod-smoke-", dir="/tmp"))
+    data = Path(tempfile.mkdtemp(prefix="xod-smoke-"))
     port = free_port()
     env = dict(os.environ, XOD_DATA_DIR=str(data), XOD_SECRETS_SERVICE="Xod test keys", PYTHONUNBUFFERED="1")
+    # The server's log goes to a file: a pipe nobody reads until the end fills up (a few KB on Windows) and the
+    # server stops mid-write, so every request after that hangs.
+    log_path = data.parent / f"{data.name}-server.log"
+    log = open(log_path, "w", encoding="utf-8", errors="replace")
     server = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
-                              cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                              cwd=ROOT, env=env, stdout=log, stderr=subprocess.STDOUT)
     base = f"http://127.0.0.1:{port}"
     try:
         for _ in range(120):
@@ -165,15 +169,17 @@ def main():
     finally:
         server.terminate()
         try:
-            out = server.communicate(timeout=10)[0]
+            server.wait(timeout=10)
         except Exception:
             server.kill()
-            out = ""
-        tracebacks = [l for l in (out or "").splitlines() if "Traceback" in l]
+        log.close()
+        out = log_path.read_text(encoding="utf-8", errors="replace")
+        tracebacks = [l for l in out.splitlines() if "Traceback" in l]
         check("no tracebacks in the server log", not tracebacks, f"{len(tracebacks)} tracebacks; see log")
         if tracebacks:
-            (data.parent / "xod-smoke-server.log").write_text(out)
-            print(f"      server log: {data.parent / 'xod-smoke-server.log'}")
+            print(f"      server log: {log_path}")
+        else:
+            log_path.unlink(missing_ok=True)
         shutil.rmtree(data, ignore_errors=True)
 
     failed = [n for n, ok in results if not ok]

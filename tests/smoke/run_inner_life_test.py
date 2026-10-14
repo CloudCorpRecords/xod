@@ -20,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+from tests.support.local_model import local_model, local_endpoint  # noqa: E402  (LLM_* if set, else LM Studio)
 TMP = tempfile.mkdtemp(prefix="xod-inner-")
 os.environ["XOD_DATA_DIR"] = TMP
 os.environ["XOD_DATASET_DB"] = str(Path(TMP) / "dataset.db")
@@ -76,7 +77,7 @@ def fake_ask_factory(sure: bool):
 
 async def main():
     from app.config import settings
-    settings.llm_provider, settings.llm_base_url, settings.llm_model = "lm_studio", "http://127.0.0.1:1234/v1", "google/gemma-4-12b-qat"
+    settings.llm_provider, settings.llm_base_url, settings.llm_model = local_model()
     from app.services import soul, curiosity, turn_quality, dataset_recorder, web_reader
     web_reader.search_and_read = fake_search_and_read
     turn_quality._judging = 99     # no background self-checks piling onto Gemma during the test (they're called directly below)
@@ -289,7 +290,7 @@ async def main():
     check("asking the same thing again labels them bad", lab["label"] == -1)
 
     # ---------------------------------------------------------------- its own check (Gemma)
-    soul.local_endpoint = lambda: {"provider": "lm_studio", "base_url": "http://127.0.0.1:1234/v1", "model": "google/gemma-4-12b-qat", "api_key": "lm-studio"}
+    soul.local_endpoint = local_endpoint
     good = turn_quality.begin("s4", "what is the capital of Australia")
     turn_quality.finish(good, "The capital of Australia is Canberra.", [])
     bad = turn_quality.begin("s5", "what is the capital of Australia")

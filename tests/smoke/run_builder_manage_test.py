@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
-TMP = Path(tempfile.mkdtemp(prefix="xod-manage-", dir="/private/tmp"))
+TMP = Path(tempfile.mkdtemp(prefix="xod-manage-")).resolve()     # /private/tmp on a Mac (resolved), %TEMP% on Windows
 os.environ["XOD_DATA_DIR"] = str(TMP / "data")
 os.environ["XOD_SECRETS_SERVICE"] = "Xod test keys"
 
