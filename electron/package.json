@@ -1,7 +1,7 @@
 {
   "name": "xod-desktop",
   "productName": "Xod",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Desktop shell for Xod, a local-first AI research and computer agent.",
   "author": {
     "name": "Xod Contributors",

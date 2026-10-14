@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.2
 
 **Xod on Windows (preview)**
 - A Windows installer (`Xod-<version>-x64-setup.exe`): per user, no admin, Start menu and desktop shortcuts, everything inside (its own Python and packages). It updates itself like the Mac app: it downloads the new installer, checks it against the release's checksums and installs it when you quit or press Update.

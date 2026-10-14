@@ -32,7 +32,7 @@ server = MCPServer(
                   "on-device image generation and a task inbox. Use ask_xod for research and questions, "
                   "start_task for longer jobs (it asks the user before sending or paying anything), and "
                   "get_task to check on one."),
-    version="0.4.1",
+    version="0.4.2",
 )
 
 
