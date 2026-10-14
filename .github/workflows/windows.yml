@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main, windows-port]
-    paths: ["app/**", "electron/**", "requirements.txt", "tests/smoke/run_platform_smoke.py", ".github/workflows/windows.yml"]
+    paths: ["app/**", "electron/**", "requirements.txt", "tests/smoke/**", ".github/workflows/windows.yml"]
 
 permissions:
   contents: read
@@ -33,6 +33,8 @@ jobs:
         run: python tests/smoke/run_platform_smoke.py
       - name: Cloud models never end on thinking alone
         run: python tests/smoke/run_cloud_thinking_test.py
+      - name: Computer tools and spoken replies on Windows
+        run: python tests/smoke/run_windows_tools_test.py
 
   installer:
     name: Build, install and run Xod-setup.exe

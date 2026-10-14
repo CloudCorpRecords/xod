@@ -4,7 +4,7 @@ The Windows side of Xod's computer tools (services/system_control.py hands off t
   commands     run in Windows PowerShell (what models write best for Windows), not cmd.exe
   open/reveal  os.startfile and Explorer (/select, highlights a file)
   find files   a walk of the folder (no Spotlight on Windows), stopped after a few seconds
-  trash        the Recycle Bin (recoverable), through .NET's FileSystem with the path passed as an argument
+  trash        the Recycle Bin (recoverable), through .NET's FileSystem, the path passed in an environment variable
   clipboard    Get-Clipboard / Set-Clipboard, the text passed on stdin (never pasted into a command)
   ports        psutil
   notify       a tray balloon
@@ -38,8 +38,10 @@ async def exec_shell(command: str, cwd: Optional[str], **kw):
 
 
 async def _ps(script: str, *args: str, stdin: Optional[bytes] = None, timeout: float = 15) -> Dict[str, Any]:
-    """Runs a fixed PowerShell script; values go in as $args, never into the script text."""
-    proc = await asyncio.create_subprocess_exec(*POWERSHELL, f"& {{ {script} }} @args", *args,
+    """Runs a fixed PowerShell script. Values go in as environment variables ($env:XOD_ARG0, …), never into the
+    script text (anything after -Command would be pasted into the script)."""
+    env = {**os.environ, **{f"XOD_ARG{i}": str(a) for i, a in enumerate(args)}}
+    proc = await asyncio.create_subprocess_exec(*POWERSHELL, script, env=env,
                                                 stdin=asyncio.subprocess.PIPE if stdin is not None else None,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, creationflags=NO_WINDOW)
     out, err = await asyncio.wait_for(proc.communicate(input=stdin), timeout=timeout)
@@ -85,7 +87,7 @@ def inspect_port(port: int) -> Dict[str, Any]:
 async def notify(title: str, message: str) -> Dict[str, Any]:
     script = ("Add-Type -AssemblyName System.Windows.Forms; $n = New-Object System.Windows.Forms.NotifyIcon; "
               "$n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; "
-              "$n.ShowBalloonTip(6000, $args[0], $args[1], 'Info'); Start-Sleep -Seconds 6; $n.Dispose()")
+              "$n.ShowBalloonTip(6000, $env:XOD_ARG0, $env:XOD_ARG1, 'Info'); Start-Sleep -Seconds 6; $n.Dispose()")
     try:
         asyncio.ensure_future(_ps(script, str(title)[:200], str(message)[:500], timeout=20))
         return {"success": True, "title": title, "message": message}
@@ -140,7 +142,7 @@ def find_files(query: str, root: str, max_results: int = 30, budget_s: float = 6
 
 
 async def to_recycle_bin(path: str) -> Dict[str, Any]:
-    script = ("Add-Type -AssemblyName Microsoft.VisualBasic; $p = $args[0]; "
+    script = ("Add-Type -AssemblyName Microsoft.VisualBasic; $p = $env:XOD_ARG0; "
               "if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } "
               "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }")
     r = await _ps(script, path)

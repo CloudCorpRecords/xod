@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import re
 import shutil
 import tempfile
@@ -27,6 +28,25 @@ from app.paths import DATA_DIR
 logger = logging.getLogger("xod.speech")
 
 SAY = shutil.which("say") or "/usr/bin/say"
+WIN = sys.platform == "win32"
+# Windows: the built-in System.Speech engine through PowerShell. Values go in as environment variables (XOD_ARG0…),
+# never into the script text: anything after -Command would be pasted into the script.
+_PS = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"]
+_WIN_VOICES = ("Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+               "$s.GetInstalledVoices() | Where-Object Enabled | ForEach-Object { $_.VoiceInfo.Name + '|' + $_.VoiceInfo.Culture.Name }")
+_WIN_SPEAK = ("Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+              "try { $s.SelectVoice($env:XOD_ARG0) } catch {}; $s.Rate = [int]$env:XOD_ARG1; "
+              "if ($env:XOD_ARG2) { $s.SetOutputToWaveFile($env:XOD_ARG2) } else { $s.SetOutputToDefaultAudioDevice() }; "
+              "$s.Speak([IO.File]::ReadAllText($env:XOD_ARG3, [Text.Encoding]::UTF8)); $s.Dispose()")
+
+
+def _win_env(*values: str) -> dict:
+    return {**os.environ, **{f"XOD_ARG{i}": str(v) for i, v in enumerate(values)}}
+
+
+def _win_rate(wpm: int) -> str:
+    """Words per minute (140-280, like macOS say) to System.Speech's -10..10."""
+    return str(max(-10, min(10, round((int(wpm) - 175) / 12))))
 CACHE = DATA_DIR / "cache" / "speech"
 MAX_CHARS = 1200
 RATE_MIN, RATE_MAX, RATE_DEFAULT = 140, 280, 190
@@ -68,6 +88,16 @@ async def list_voices(refresh: bool = False) -> List[Dict[str, str]]:
     if not refresh and _voices_cache["list"] and time.time() - _voices_cache["at"] < 300:
         return _voices_cache["list"]
     try:
+        if WIN:
+            proc = await asyncio.create_subprocess_exec(*_PS, _WIN_VOICES, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+            voices = []
+            for line in out.decode("utf-8", "replace").splitlines():
+                if "|" in line:
+                    name, culture = line.strip().split("|", 1)
+                    voices.append({"name": name, "lang": culture.replace("-", "_"), "quality": "standard"})
+            _voices_cache.update(at=time.time(), list=voices)
+            return voices
         proc = await asyncio.create_subprocess_exec(SAY, "-v", "?", stdout=asyncio.subprocess.PIPE,
                                                     stderr=asyncio.subprocess.DEVNULL)
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
@@ -91,7 +121,7 @@ def _system_lang() -> str:
 async def best_voice() -> str:
     voices = await list_voices()
     if not voices:
-        return "Samantha"
+        return "Microsoft Zira Desktop" if WIN else "Samantha"
     sys_lang = _system_lang()
     same = [v for v in voices if v["lang"] == sys_lang] or [v for v in voices if v["lang"][:2] == sys_lang[:2]] or voices
     return same[0]["name"]   # already sorted: premium, enhanced, then the good standard ones
@@ -185,9 +215,13 @@ async def synthesize(text: str, voice: Optional[str] = None, rate: Optional[int]
         src, out = Path(tmp) / "in.txt", Path(tmp) / "out.wav"
         src.write_text(words, encoding="utf-8")
         # Arguments, never a shell: the text is read from a file, so nothing in it can run.
-        proc = await asyncio.create_subprocess_exec(
-            SAY, "-v", voice, "-r", str(rate), "--file-format=WAVE", "--data-format=LEI16@22050",
-            "-o", str(out), "-f", str(src), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        if WIN:
+            proc = await asyncio.create_subprocess_exec(*_PS, _WIN_SPEAK, env=_win_env(voice, _win_rate(rate), out, src),
+                                                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                SAY, "-v", voice, "-r", str(rate), "--file-format=WAVE", "--data-format=LEI16@22050",
+                "-o", str(out), "-f", str(src), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
         try:
             _, err = await asyncio.wait_for(proc.communicate(), timeout=30)
         except asyncio.TimeoutError:
@@ -219,8 +253,12 @@ async def speak_out_loud(text: str, voice: Optional[str] = None) -> bool:
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
         f.write(words)
         path = f.name
-    proc = await asyncio.create_subprocess_exec(SAY, "-v", voice, "-r", str(get_settings()["rate"]), "-f", path,
-                                                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    if WIN:
+        proc = await asyncio.create_subprocess_exec(*_PS, _WIN_SPEAK, env=_win_env(voice, _win_rate(get_settings()["rate"]), "", path),
+                                                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+    else:
+        proc = await asyncio.create_subprocess_exec(SAY, "-v", voice, "-r", str(get_settings()["rate"]), "-f", path,
+                                                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
 
     async def _cleanup():
         try:
@@ -236,6 +274,12 @@ VOICE_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.universalac
 
 
 async def open_voice_settings() -> bool:
+    if WIN:
+        try:
+            os.startfile("ms-settings:speech")     # Settings → Time & language → Speech (more voices)
+            return True
+        except Exception:
+            return False
     proc = await asyncio.create_subprocess_exec("/usr/bin/open", VOICE_SETTINGS_URL,
                                                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
     return (await proc.wait()) == 0
