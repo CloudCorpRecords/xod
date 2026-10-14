@@ -151,6 +151,45 @@ async def to_recycle_bin(path: str) -> Dict[str, Any]:
     return {"success": False, "error": r["err"] or "couldn't move it to the Recycle Bin"}
 
 
+def _ps_sync(script: str, *args: str, timeout: float = 60) -> Dict[str, Any]:
+    """_ps for code that isn't async (activity undo, file plans). Same rule: values only as environment variables."""
+    env = {**os.environ, **{f"XOD_ARG{i}": str(a) for i, a in enumerate(args)}}
+    r = subprocess.run([*POWERSHELL, script], env=env, capture_output=True, timeout=timeout, creationflags=NO_WINDOW)
+    return {"code": r.returncode, "out": r.stdout.decode("utf-8", "replace"), "err": r.stderr.decode("utf-8", "replace").strip()}
+
+
+def recycle(path: str) -> None:
+    """Into the Recycle Bin (recoverable), for undo and file plans. Raises if it didn't go."""
+    script = ("Add-Type -AssemblyName Microsoft.VisualBasic; $p = $env:XOD_ARG0; "
+              "if (Test-Path -LiteralPath $p -PathType Container) { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteDirectory($p, 'OnlyErrorDialogs', 'SendToRecycleBin') } "
+              "else { [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile($p, 'OnlyErrorDialogs', 'SendToRecycleBin') }")
+    r = _ps_sync(script, path)
+    if r["code"] != 0 or os.path.exists(path):
+        raise RuntimeError(r["err"] or "couldn't move it to the Recycle Bin")
+
+
+def unrecycle(name: str, folder: str) -> None:
+    """Out of the Recycle Bin and back into folder: the newest item called name that was deleted from there.
+    (Explorer may hide extensions in the Recycle Bin's names, so "notes" with a .txt file counts as notes.txt.)"""
+    script = r"""
+$want = $env:XOD_ARG0; $dir = $env:XOD_ARG1.TrimEnd('\')
+$base = [IO.Path]::GetFileNameWithoutExtension($want); $ext = [IO.Path]::GetExtension($want)
+$shell = New-Object -ComObject Shell.Application
+$hit = @($shell.Namespace(10).Items()) | Where-Object {
+    ($_.Name -eq $want -or ($_.Name -eq $base -and [IO.Path]::GetExtension($_.Path) -eq $ext)) -and
+    ([string]$_.ExtendedProperty('System.Recycle.DeletedFrom')).TrimEnd('\') -eq $dir
+} | Sort-Object { $_.ExtendedProperty('System.Recycle.DateDeleted') } -Descending | Select-Object -First 1
+if (-not $hit) { [Console]::Error.WriteLine("It isn't in the Recycle Bin any more."); exit 3 }
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$shell.Namespace($dir).MoveHere($hit, 0x14)
+for ($i = 0; $i -lt 40 -and -not (Test-Path -LiteralPath (Join-Path $dir $want)); $i++) { Start-Sleep -Milliseconds 250 }
+if (-not (Test-Path -LiteralPath (Join-Path $dir $want))) { [Console]::Error.WriteLine("Windows didn't put it back."); exit 4 }
+"""
+    r = _ps_sync(script, name, folder)
+    if r["code"] != 0:
+        raise RuntimeError((r["err"] or "couldn't take it out of the Recycle Bin") + " You can use Restore in the Recycle Bin.")
+
+
 async def read_clipboard() -> Dict[str, Any]:
     r = await _ps("[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Clipboard -Raw")
     text = r["out"].rstrip("\r\n") if r["code"] == 0 else ""

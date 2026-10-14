@@ -307,6 +307,17 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                 yield ev
             return
 
+        # "Remember that my dog is called Biscuit": what Xod knows about you picks the fact up on its own (user_memory,
+        # in the background); the answer is just an OK. The planner had nothing to plan and wrote an echo with "Sources: None".
+        from app.services import user_memory as _um
+        rem = _um.REMEMBER_RE.match(user_query or "")
+        if rem and not has_image and not has_document and "?" not in user_query:
+            what = rem.group(1).strip().rstrip(".!")
+            what = re.sub(r"\bmy\b", "your", re.sub(r"\bI am\b|\bI'm\b", "you're", re.sub(r"\bI\b", "you", what)))
+            yield {"type": "content", "content": f"Got it: I'll remember that {what}."}
+            yield {"type": "done"}
+            return
+
         # "Check yourself" / "something's broken": the doctor answers, no planner, no free-written report.
         # (The planner reached for general system stats and the writer invented problems that weren't there.)
         if self._SELF_CHECK_RE.search(user_query):
@@ -1224,7 +1235,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         if links:
             return [{"type": "content", "content": "\n\n**Source links**\n" + "\n".join(
                 f"{i}. [{t.replace('[', '(').replace(']', ')')}]({u})" for i, (t, u) in enumerate(links[:6], 1))}]
-        if any("search" in (t.get("tool") or "") for t in getattr(evidence_board, "tool_audit_trail", [])):
+        web_search = {"web_search", "tavily_search", "you_search", "you_news_search", "omni_deep_search"}   # not memory_search, file search…
+        if any((t.get("tool") or "") in web_search for t in getattr(evidence_board, "tool_audit_trail", [])):
             # Searched, found nothing usable: don't let a from-memory answer pass as researched.
             return [{"type": "content", "content": "\n\n> ⚠️ Web search didn't return anything usable this time, so this answer "
                      "comes from the model's own knowledge and may be out of date. Try again, or add a search key in Settings."}]
@@ -1251,6 +1263,15 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"competitors?|teardown|who works at|email (address|of)|xod|"
         r"send (a |an |the )?(message|dm|email|text|note)|message (the|my|him|her|them)|reply to|"
         r"jobs? (on|at|in|near|for)|job (listings?|openings?|board)|hiring|resume|cv)\b", re.I)
+
+    # Something to do on this computer (its files, folders, apps or command line), not something to look up.
+    _LOCAL_ACTION_RE = re.compile(
+        r"\b(create|make|write|save|rename|delete|remove|move|copy|open|run|execute|tidy|organi[sz]e|clean ?up|unzip|zip|"
+        r"list|show me|find|read|what'?s (in|on)|how (big|many|much)|biggest|largest)\b.{0,80}\b(files?|folders?|director(y|ies)|desktop|documents|downloads|pictures|"
+        r"\.\w{2,4}\b|commands?|terminal|powershell|script)\b", re.I | re.S)
+    # Asking about the web, the world or the news: these keep their web tools even when a file is mentioned.
+    _WEB_WORDS_RE = re.compile(r"\b(web|online|internet|google|search (for|the)|look ?up|latest|news|price|weather|website|"
+                               r"site|url|https?|research|compare|reviews?|today'?s|current)\b", re.I)
 
     ROUTER_PROMPT = (
         "You are Xod, a helpful assistant on the user's Mac. Decide how to answer the user's latest message, "
@@ -2203,15 +2224,18 @@ Deliberate on the user objective from first principles and decide whether to ans
 
 TOOL ECOSYSTEM:
 1. Host Computer:
-   - computer_hardware_overview: Apple Silicon/Intel chip, CPU cores, macOS version, battery percentage.
+   - computer_hardware_overview: Apple Silicon/Intel chip, CPU cores, memory, graphics card (GPU) and its memory, macOS version, battery percentage.
    - computer_inspect_system: Host RAM utilization, CPU load, OS specs.
    - computer_inspect_port: Check process occupying a port. Args: {{"port": 8000}}
    - computer_kill_process: Terminate process by PID. Args: {{"pid": 1234}}
    - computer_run_command: Run terminal shell command in background. Args: {{"command": "..."}}
    - computer_find_files: Spotlight search for files on macOS. Args: {{"query": "pattern"}}
    - computer_directory_tree: Folder hierarchy tree. Args: {{"path": "...", "max_depth": 2}}
+   - computer_list_directory: What's in a folder: files and subfolders with sizes and dates. Args: {{"path": "..."}}
    - computer_read_file: Read file lines safely. Args: {{"filepath": "..."}}
+   - computer_write_file: Create a new file (or overwrite one) anywhere, e.g. a note on the Desktop. Args: {{"filepath": "...", "content": "..."}}
    - computer_edit_file: Surgically edit file lines. Args: {{"filepath": "...", "target_content": "...", "replacement_content": "..."}}
+   - computer_manage_file: Rename or move ("move" with the new path), copy, or delete a file or folder ("trash": to the Trash, recoverable), or make a folder ("mkdir"). Args: {{"action": "move|copy|trash|mkdir", "src": "...", "dst": "..."}}
    - computer_batch_organize: Organize messy files into categorized subfolders. Args: {{"source_dir": "..."}}
    - computer_reveal_finder: Open folder or highlight file in macOS Finder. Args: {{"path": "..."}}
    - computer_open_item: Launch macOS app or file. Args: {{"target": "..."}}
@@ -2291,9 +2315,16 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
         # tool and any connected MCP tools.
         try:
             from app.services import packs
+            # Something to do with the person's own files or command line, and nothing about the web: leave the web
+            # and browser tools out of the list, so a small model can't plan a web search for "create a file".
+            local_only = bool(self._LOCAL_ACTION_RE.search(query or "")) and not self._WEB_WORDS_RE.search(query or "") \
+                and not active_workspace_path
+            web_tool = re.compile(r"(web_|tavily_|you_search|browser_|audit_|trustmrr_)")
             deliberator_system_prompt = "\n".join(
                 line for line in deliberator_system_prompt.split("\n")
-                if not (m := re.match(r"\s+- ([a-z_]+):", line)) or packs.tool_allowed(m.group(1)))
+                if not (local_only and re.match(r"(3\. Live Web|4\. Autonomous Browser)", line))
+                and (not (m := re.match(r"\s+- ([a-z_]+):", line))
+                     or (packs.tool_allowed(m.group(1)) and not (local_only and web_tool.match(m.group(1))))))
             extra = []
             # Only offer the report tool when a report is wanted, so plain questions get plain answers.
             if re.search(r"\b(report|pdf|share|send this|write[- ]?up)\b", query or "", re.I):
@@ -2350,6 +2381,7 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
 
         raw_accumulated = ""
         emitted_any_reasoning = False
+        model_error = ""
 
         try:
             # Fast first: most plans don't need a thinking phase (it was ~half the planning time).
@@ -2366,6 +2398,9 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
                     think=think_mode,
                 ):
                     chunk_type = chunk.get("type")
+                    if chunk_type == "error":
+                        model_error = str(chunk.get("content") or "")[:300]    # said below if no plan comes of it
+                        continue
                     if chunk_type == "example_id":
                         self._planner_example = {"id": chunk["id"], "response": raw_accumulated}
                         continue
@@ -2450,7 +2485,16 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             }
 
         except Exception as e:
-            logger.error(f"Deliberation error: {e}")
+            logger.error(f"Deliberation error: {e}" + (f" (the model said: {model_error})" if model_error else ""))
+            if self._LOCAL_ACTION_RE.search(query or ""):
+                # Something to do on this computer: searching the web for it would only describe how to do it.
+                why = f" The model replied with an error: {model_error}" if model_error else " The model didn't give me a usable plan."
+                yield {"type": "deliberation_complete", "deliberation": {
+                    "thought": "", "decision": "direct_answer", "plan_title": "", "plan_steps": [], "task_focus": "general",
+                    "is_swarm": False,
+                    "direct_response": (f"I couldn't work out the steps for that just now, so I haven't done anything.{why} "
+                                        "Please ask again; if it keeps happening, a bigger model (Settings) usually plans these better.")}}
+                return
             yield {
                 "type": "deliberation_complete",
                 "deliberation": {
@@ -2556,8 +2600,10 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             return f"System AI Review: {result.get('status', 'OK')} ({len(result.get('diagnoses', []))} diagnosis, {len(result.get('remediations', []))} remediations)"
         elif "pid" in result and ("killed" in result or "success" in result):
             return f"Process PID {result.get('pid')}: Terminated successfully"
+        elif "content" in result and "filepath" in result:
+            return f"Read {result.get('name') or 'the file'} ({result.get('lines_count', 0)} lines)"
         elif "content" in result:
-            return f"Extracted webpage content ({result.get('length', 0)} chars)"
+            return f"Extracted webpage content ({result.get('length') or len(str(result.get('content') or ''))} chars)"
         elif "url" in result and "title" in result:
             return f"Navigated to {result.get('title') or result.get('url')}"
         elif "shortlisted_candidates" in result or "total_discovered" in result:

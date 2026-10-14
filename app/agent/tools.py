@@ -3287,9 +3287,15 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
             )
 
         elif name == "computer_find_files":
+            # Models name these all sorts of ways (file_name/pattern, path/directory); a missing "query" crashed it.
+            query = (arguments.get("query") or arguments.get("file_name") or arguments.get("filename") or arguments.get("name")
+                     or arguments.get("pattern") or "")
+            if not query:
+                return {"success": False, "error": "Say what to look for: a file name or part of one (query)."}
             return await system_control_service.find_files(
-                query=arguments["query"],
-                root_dir=arguments.get("root_dir") or active_workspace_path or None,
+                query=query,
+                root_dir=(arguments.get("root_dir") or arguments.get("path") or arguments.get("directory") or arguments.get("folder")
+                          or active_workspace_path or None),
                 max_results=arguments.get("max_results", 25)
             )
 
@@ -3388,7 +3394,9 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
             )
 
         elif name == "computer_list_directory":
-            target_path = arguments.get("path") or active_workspace_path or None
+            # Models name the folder all sorts of ways; a missed one used to list Xod's own folder instead.
+            target_path = (arguments.get("path") or arguments.get("directory") or arguments.get("target") or arguments.get("folder")
+                           or arguments.get("dir") or arguments.get("folder_path") or active_workspace_path or None)
             return system_control_service.list_directory(
                 path=target_path,
                 show_hidden=bool(arguments.get("show_hidden", False)),
@@ -3861,6 +3869,14 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
         selected_names = [n for n in selected_names if n != "computer_directory_tree"]
         affinities = [n for n in affinities if n != "computer_directory_tree"]
 
+    # Something to do with the person's own files or command line, and nothing about the web: no web or browser
+    # tools to wander off to (a small model would search the web for "create a file on my Desktop" and describe how).
+    from app.agent.researcher import AgenticResearcher as _R
+    if _R._LOCAL_ACTION_RE.search(query or "") and not _R._WEB_WORDS_RE.search(query or "") and not active_workspace_path:
+        web = ("web_", "tavily_", "you_search", "browser_", "audit_", "scan_", "recon_", "find_work_email", "verify_email")
+        selected_names = [n for n in selected_names if not n.startswith(web)]
+        affinities = [n for n in affinities if not n.startswith(web)]
+
     final_names = []
     # Add prioritized affinities first if relevant keywords match
     for name in affinities + selected_names:
@@ -3868,5 +3884,13 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
             final_names.append(name)
         if len(final_names) >= max_tools:
             break
+    # A request about the web (news, prices, a site…) keeps web search even when file tools filled the list first:
+    # "save the latest news to a file on my Desktop" needs both.
+    if _R._WEB_WORDS_RE.search(query or ""):
+        for name in ("web_search", "web_scrape"):
+            if name in tools_by_name and name not in final_names:
+                if len(final_names) >= max_tools:
+                    final_names.pop()
+                final_names.insert(0, name)
 
     return [tools_by_name[n] for n in final_names]

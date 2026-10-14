@@ -6,8 +6,8 @@ about flights?" searches them.
 
 Retrieval is hybrid, the way current agent-memory systems do it (Mem0, Zep, Letta's recall memory):
 - keywords: SQLite full-text search (BM25), for names, numbers and exact words;
-- meaning: embeddings from a small local model (nomic-embed-text in LM Studio; a built-in hashed vector when
-  that isn't available), for the same idea in other words;
+- meaning: embeddings from a small local model (nomic-embed-text in LM Studio or Ollama, services/embeddings.py;
+  a built-in hashed vector when neither has it), for the same idea in other words;
 - the two rankings merged with reciprocal-rank fusion, nudged toward recent episodes;
 - time: "yesterday", "last week", "in September", "3 days ago", "on Monday" narrow the search to that window.
 
@@ -33,11 +33,7 @@ from app.timefmt import nopad
 logger = logging.getLogger("xod.recall")
 
 DB = DATA_DIR / "recall.db"
-EMBED_URL = "http://127.0.0.1:1234/v1/embeddings"
-EMBED_MODEL = "text-embedding-nomic-embed-text-v1.5"
 _index_lock: Optional[asyncio.Lock] = None
-_embed_down_until = 0.0
-_embed_warm = False          # the first request may load the embedding model (several seconds)
 
 KIND_LABEL = {"chat": "chat", "task": "task", "companion": "Xod on its own"}
 SKIP_RE = re.compile(r"^\s*(hi|hey|hello|yo|thanks?( you)?|ok(ay)?|cool|nice|great|good (morning|night)|test|go ahead|yes|no|continue)\W*$", re.I)
@@ -72,31 +68,13 @@ def _hash_vec(text: str) -> np.ndarray:
 
 
 async def _embed(texts: List[str], query: bool = False) -> Tuple[List[np.ndarray], str]:
-    """Embeddings from the local model, in one request; the hashed fallback if it isn't available."""
-    global _embed_down_until, _embed_warm
+    """Embeddings from the local model (LM Studio or Ollama, services/embeddings.py), in one request; the hashed
+    fallback if neither has it."""
+    from app.services import embeddings
     prefix = "search_query: " if query else "search_document: "
-    if time.time() >= _embed_down_until:
-        try:
-            import httpx
-            timeout = 8.0 if len(texts) > 1 else 3.0
-            if not _embed_warm:
-                timeout = 40.0           # LM Studio loads the embedding model on first use
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                res = await client.post(EMBED_URL, json={"model": EMBED_MODEL, "input": [prefix + t[:2000] for t in texts]})
-            if res.status_code == 200:
-                rows = sorted(res.json().get("data", []), key=lambda d: d.get("index", 0))
-                vecs = []
-                for r in rows:
-                    v = np.array(r["embedding"], dtype=np.float32)
-                    n = np.linalg.norm(v)
-                    vecs.append(v / n if n else v)
-                if len(vecs) == len(texts):
-                    _embed_warm = True
-                    return vecs, "nomic"
-            _embed_down_until = time.time() + 120
-        except Exception as e:
-            logger.debug(f"recall: local embeddings unavailable ({e})")
-            _embed_down_until = time.time() + 120
+    vecs = await embeddings.nomic([prefix + t for t in texts], timeout=8.0 if len(texts) > 1 else 3.0)
+    if vecs:
+        return vecs, "nomic"
     return [_hash_vec(t) for t in texts], "hash"
 
 

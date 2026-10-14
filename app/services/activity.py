@@ -246,8 +246,13 @@ def recent(limit: int = 200, since: Optional[float] = None) -> List[Dict[str, An
 
 
 def _trash(p: Path) -> None:
-    """Into the macOS Trash (recoverable), not deleted. macOS 14+ has /usr/bin/trash (no Finder permission needed)."""
+    """Into the macOS Trash (recoverable), not deleted. macOS 14+ has /usr/bin/trash (no Finder permission needed).
+    On Windows: the Recycle Bin."""
     import subprocess
+    import sys
+    if sys.platform == "win32":
+        from app.services import system_control_win
+        return system_control_win.recycle(str(p))
     if Path("/usr/bin/trash").exists():
         r = subprocess.run(["/usr/bin/trash", str(p)], capture_output=True, text=True, timeout=30)
     else:
@@ -259,8 +264,12 @@ def _trash(p: Path) -> None:
 
 def _put_back(name: str, original: Path) -> None:
     """Out of the Trash and back where it was. Xod can't read the Trash itself (macOS keeps it private),
-    so Finder does it; the first time, macOS asks whether Xod may control Finder."""
+    so Finder does it; the first time, macOS asks whether Xod may control Finder. On Windows: the Recycle Bin."""
     import subprocess
+    import sys
+    if sys.platform == "win32":
+        from app.services import system_control_win
+        return system_control_win.unrecycle(name, str(original.parent))
     original.parent.mkdir(parents=True, exist_ok=True)
     script = ["on run argv", 'tell application "Finder"',
               "set hits to (every item of trash whose name is (item 1 of argv))",

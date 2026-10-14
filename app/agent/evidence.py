@@ -559,10 +559,17 @@ class EvidenceBoard:
 
         if self.computer_telemetry:
             lines.append(f"* Background Computer System & Shell Telemetry:")
-            for ct in self.computer_telemetry[-6:]:
+            for ct in self.computer_telemetry[-10:]:
                 t_name = ct.get("tool", "")
                 res = ct.get("result", {}) or {}
                 args = ct.get("args", {}) or {}
+                if isinstance(res, dict) and t_name != "computer_run_command" and \
+                        (res.get("success") is False or (res.get("error") and not res.get("success"))):
+                    # A failure, said as one: the lines below describe successes ("Opened …"), and the writer took a
+                    # failed open for an opened file.
+                    what = args.get("filepath") or args.get("path") or args.get("target") or args.get("src") or args.get("query") or ""
+                    lines.append(f"  - {t_name} FAILED{f' ({what})' if what else ''}: {str(res.get('error') or res.get('message') or 'it reported a failure')[:240]}")
+                    continue
                 if t_name == "computer_run_command":
                     lines.append(f"  - Command `$ {args.get('command')}`: exit {res.get('exit_code')}, output: {str(res.get('stdout', '') or res.get('stderr', ''))[:200]}")
                 elif t_name == "computer_directory_tree":
@@ -587,7 +594,16 @@ class EvidenceBoard:
                 elif t_name == "computer_run_applescript":
                     lines.append(f"  - AppleScript: exit {res.get('exit_code')}, output: {str(res.get('output', ''))[:150]}")
                 elif t_name == "computer_hardware_overview":
-                    lines.append(f"  - Hardware Overview: {res.get('chip')}, {res.get('cpu_cores')} cores, {res.get('macos_version')}, Battery: {res.get('battery', {}).get('percentage', 100)}% ({res.get('battery', {}).get('state', 'AC')})")
+                    # A Mac's and a PC's fields differ (macos_version/memory_gb vs os/ram_gb; battery shape): say what's there.
+                    bat = res.get("battery") or {}
+                    pct = bat.get("percentage", bat.get("percent"))
+                    plugged = bat.get("state") or ("plugged in" if bat.get("plugged_in") else "on battery" if bat else "")
+                    gpus = "; ".join(f"{g.get('name')} ({g.get('memory_gb')} GB{'' if g.get('dedicated') else ', shared'})"
+                                     for g in res.get("graphics") or [])
+                    parts = [res.get("macos_version") or res.get("os"), res.get("chip"), f"{res.get('cpu_cores')} cores" if res.get("cpu_cores") else "",
+                             f"memory {res.get('memory_gb') or res.get('ram_gb')} GB" if (res.get("memory_gb") or res.get("ram_gb")) else "",
+                             f"graphics: {gpus}" if gpus else "", f"battery {pct}% ({plugged})" if pct is not None else ""]
+                    lines.append("  - Hardware Overview: " + ", ".join(p for p in parts if p))
                 elif t_name == "computer_find_files":
                     f_names = [f.get("name", "") for f in res.get("results", [])[:5]]
                     lines.append(f"  - Spotlight Found {res.get('count', 0)} files matching '{args.get('query')}': {', '.join(f_names)}")

@@ -301,6 +301,21 @@ async def check() -> Dict[str, Any]:
             elif problem and not best and provider in ("ollama", "lm_studio", "local"):
                 notes.append(f"{problem}, and no other model was found on this computer. Open Tools → Setup & AI model to get one.")
 
+        # Searching memory by meaning needs a small embedding model (services/embeddings.py). With Ollama as the model
+        # app and none anywhere, fetch it once (274 MB), and say so.
+        if provider == "ollama" and not problem and os.environ.get("XOD_AUTOCONNECT", "").lower() != "off" \
+                and not _last_try.get("embeddings") and any(s["provider"] == "ollama" for s in servers):
+            _last_try["embeddings"] = time.time()
+            try:
+                from app.services import embeddings
+                have = await ollama_hub.installed()
+                if not any(m["name"].startswith(embeddings.OLLAMA_MODEL) for m in have) and not await embeddings.nomic(["search_query: hi"]):
+                    r = await ollama_hub.start_pull(embeddings.OLLAMA_MODEL)
+                    if r.get("success"):
+                        _event("fixed", "Getting a small model (274 MB) so Xod can search its memory by meaning.")
+            except Exception as e:
+                logger.debug(f"embedding model: {e}")
+
         # Another program filling the GPU: answers slow down, so say why.
         if pc["runs_on"] == "gpu" and provider == "ollama" and not problem:
             room = await ollama_hub.room_now(pc)

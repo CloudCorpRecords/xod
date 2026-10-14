@@ -19,6 +19,25 @@ if WIN:
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 STATE_FILE = DATA_DIR / "computer_state.json"
 
+
+def _graphics() -> Dict[str, Any]:
+    """The graphics cards (services/machine.py: any vendor, real memory) and what models can use, for hardware answers."""
+    try:
+        from app.services import machine
+        pc = machine.profile()
+        return {"graphics": [{"name": g["name"], "memory_gb": g["memory_gb"], "dedicated": g["dedicated"]} for g in pc["gpus"]],
+                "ai_models": {"run_on": pc["runs_on"], "memory_for_models_gb": pc["ai_memory_gb"], "summary": pc["summary"]}}
+    except Exception:
+        return {}
+
+
+def _tidy_output(text: str) -> str:
+    """Command output without the padding: PowerShell pads its tables to the console's width (hundreds of spaces a
+    line), which buried the one line the model needed. Trailing spaces go, and runs of blank lines become one."""
+    if not text:
+        return text
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").split("\n"))).strip("\n") + "\n"
+
 class SystemControlService:
     """
     Dedicated background computer control and telemetry service for Xod AI.
@@ -32,7 +51,8 @@ class SystemControlService:
         self.command_history: List[Dict[str, Any]] = []
         self.background_jobs: Dict[str, Dict[str, Any]] = {}
         self.computer_id: str = f"mac-{uuid.uuid4().hex[:8]}"
-        self.current_working_directory: str = os.getcwd()
+        # The person's home folder, not Xod's own (where the server runs: its code, or inside the installed app).
+        self.current_working_directory: str = os.path.expanduser("~")
         self._load_state()
 
     def _load_state(self):
@@ -269,6 +289,7 @@ class SystemControlService:
                         self.current_working_directory = lines[-1]
                         out_str = f"Changed directory to: {self.current_working_directory}"
 
+                out_str, err_str = _tidy_output(out_str), _tidy_output(err_str)
                 # Truncate output if massive to prevent UI / context exhaustion
                 max_chars = 15000
                 if len(out_str) > max_chars:
@@ -1311,8 +1332,12 @@ class SystemControlService:
         Opens a file, directory, or URL using macOS 'open'.
         Optionally specifies a target application (-a 'Visual Studio Code', -a 'Finder', etc.).
         """
+        path = os.path.expanduser(target)
+        if not re.match(r"^[a-z][a-z0-9+.-]*://", target, re.I) and (os.sep in path or "/" in path) and not os.path.exists(path):
+            # Said plainly: a raw "[WinError 2]" was read by the model as if the file had opened.
+            return {"success": False, "error": f"There's no file or folder at {target}: nothing was opened.", "not_found": True}
         if WIN:
-            r = winsys.open_target(os.path.expanduser(target))
+            r = winsys.open_target(path)
             return {**r, "app_name": "Default Application", "message": f"Opened {target}."} if r["success"] else r
         try:
             expanded = os.path.expanduser(target)
@@ -1372,7 +1397,7 @@ class SystemControlService:
         battery state, and operating system build.
         """
         if WIN:
-            return winsys.hardware()
+            return {**winsys.hardware(), **_graphics()}
         try:
             # macOS version
             os_ver = subprocess.check_output(["sw_vers", "-productVersion"], text=True).strip()
@@ -1425,7 +1450,8 @@ class SystemControlService:
                 "memory_used_gb": telemetry.get("memory", {}).get("used_gb", 0),
                 "disk_free_gb": telemetry.get("disk", {}).get("free_gb", 0),
                 "user_home": str(Path.home()),
-                "hostname": platform.node()
+                "hostname": platform.node(),
+                **_graphics(),
             }
         except Exception as e:
             return {"success": False, "error": str(e)}

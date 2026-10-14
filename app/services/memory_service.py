@@ -80,35 +80,12 @@ class MemoryService:
         if not text_clean:
             return np.zeros(self.embedding_dim, dtype=np.float32), "empty"
 
-        # 1. Try LM Studio or local OpenAI-compatible embedding endpoint. Every answer looks up
-        # memories first, so this must never hold one up: a short timeout, and after a failure
-        # (no embedding model, or LM Studio busy loading one) skip it for a few minutes.
-        base_url = settings.llm_base_url or "http://localhost:1234/v1"
-        try:
-            if time.time() < getattr(self, "_local_embed_down_until", 0):
-                raise RuntimeError("skipped: failed recently")
-            async with httpx.AsyncClient(timeout=1.5) as client:
-                res = await client.post(
-                    f"{base_url.rstrip('/')}/embeddings",
-                    json={
-                        "model": "text-embedding-nomic-embed-text-v1.5",
-                        "input": text_clean
-                    }
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    raw_vec = data.get("data", [{}])[0].get("embedding")
-                    if raw_vec and isinstance(raw_vec, list):
-                        v = np.array(raw_vec, dtype=np.float32)
-                        norm = np.linalg.norm(v)
-                        if norm > 0:
-                            v /= norm
-                        return v, "lm_studio_nomic_embed"
-            self._local_embed_down_until = time.time() + 300
-        except Exception as e:
-            logger.debug(f"Local LM Studio embeddings unavailable: {e}")
-            if "skipped" not in str(e):
-                self._local_embed_down_until = time.time() + 300
+        # 1. nomic-embed-text from LM Studio or Ollama (services/embeddings.py). Every answer looks up memories
+        # first, so this must never hold one up: a short timeout, and a server that failed is skipped for a while.
+        from app.services import embeddings
+        vecs = await embeddings.nomic([text_clean], timeout=1.5)
+        if vecs:
+            return vecs[0], "lm_studio_nomic_embed"      # the name stored memories already carry (LM Studio or Ollama: same model)
 
         # 2. Try OpenAI API if key configured
         if settings.openai_api_key and settings.openai_api_key.startswith("sk-"):

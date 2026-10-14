@@ -45,6 +45,7 @@ SEARCH_TOOLS = {"web_search", "tavily_search", "you_search", "you_news_search", 
                 "memory_search", "fs_search_workspace", "computer_find_files", "search_all_projects"}
 READ_TOOLS = {"web_scrape", "browser_extract_content", "browser_extract_markdown", "browser_extract_data",
               "fs_read_workspace_file", "computer_read_file"}
+FILE_READ_TOOLS = {"fs_read_workspace_file", "computer_read_file"}
 FILE_MAKING_TOOLS = {"media_generate_image", "media_generate_video", "media_image_create", "media_image_edit",
                      "media_video_splice", "media_video_extract_frame", "media_video_from_frame",
                      "media_video_trim", "media_video_gif", "media_video_overlay", "media_download_youtube",
@@ -67,7 +68,7 @@ def _output_paths(result: Dict[str, Any]) -> List[str]:
     paths = []
     for k in ("output_path", "file_path", "saved_path", "pdf_path"):
         v = result.get(k)
-        if isinstance(v, str) and v.startswith("/"):
+        if isinstance(v, str) and (v.startswith("/") or os.path.isabs(v)):     # C:\... on Windows too
             paths.append(v)
     return paths
 
@@ -113,10 +114,12 @@ def check_result(tool: str, args: Dict[str, Any], result: Any) -> Dict[str, Any]
         lists = [v for k, v in result.items() if isinstance(v, list) and k in ("results", "items", "organic", "data", "matches", "files", "memories", "news")]
         if lists and not any(lists) and not result.get("answer"):
             return {"ok": False, "problem": "empty", "detail": "the search returned no results"}
-    if tool in READ_TOOLS:
+    if tool in READ_TOOLS and tool not in FILE_READ_TOOLS:
+        # A web page with almost no text usually didn't load. A short file is just a short file ("buy milk"), and an
+        # empty one is an answer too: treating those as failures sent the repair after a file that was read fine.
         text = next((result.get(k) for k in ("content", "markdown", "text", "data") if isinstance(result.get(k), str)), None)
         if text is not None and len(text.strip()) < 40:
-            return {"ok": False, "problem": "empty", "detail": "the page/file had almost no readable content"}
+            return {"ok": False, "problem": "empty", "detail": "the page had almost no readable content"}
     return {"ok": True, "problem": None, "detail": ""}
 
 

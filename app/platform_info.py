@@ -37,7 +37,8 @@ def localize(text: str) -> str:
 import os  # noqa: E402
 
 SHELL_NOTE = ("Terminal commands run in Windows PowerShell on this PC (use PowerShell syntax: Get-ChildItem, Select-String, $env:USERPROFILE, ';' "
-              "between commands). AppleScript and Mac apps aren't available here. "
+              "between commands; Get-CimInstance, not wmic, which newer Windows doesn't have). AppleScript and Mac apps aren't available here. "
+              "For this PC's hardware (memory, graphics card) use computer_hardware_overview rather than a command. "
               # File tools take paths, not PowerShell: give the model the real home folder so it doesn't write $env:... there.
               f"In file tools, use real paths: the user's home folder is {os.path.expanduser('~')} "
               f"(Downloads is {os.path.join(os.path.expanduser('~'), 'Downloads')}); '~' works too.") if WINDOWS else ""

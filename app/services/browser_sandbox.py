@@ -249,6 +249,7 @@ MISSION_FAST_STEP_TOKENS = 1200
 # step, or a page with almost nothing to click). "always" / "never" are for testing.
 MISSION_VISION = os.environ.get("XOD_MISSION_VISION", "auto")
 MISSION_USE_VISION = MISSION_VISION != "never"
+_NO_VISION: set = set()   # "provider:model" that turned screenshots down this session
 # Extra actions the model may chain after the first one on the same page ("then").
 MISSION_MAX_CHAINED = 3
 MISSION_PAGE_CHUNK = 3500
@@ -3783,7 +3784,14 @@ class BrowserSandboxService:
         self.latest_mission = mission_record
         profile = load_user_profile()
         sites_seen: List[str] = []
-        use_vision = MISSION_USE_VISION
+        try:
+            from app.services.llm import llm_service as _llm
+            _ep = _llm.get_endpoint_info()
+            vision_key = f"{_ep.get('provider')}:{_ep.get('model')}"
+        except Exception:
+            vision_key = ""
+        # A model that turned screenshots down once isn't sent them again (each mission used to start with that error).
+        use_vision = MISSION_USE_VISION and vision_key not in _NO_VISION
 
         last_mark = [time.time()]
 
@@ -3979,6 +3987,7 @@ class BrowserSandboxService:
                 logger.warning(f"Browser mission LLM error: {e}")
                 if send_shot and re.search(r"image|vision|mtmd|multimodal|clip", str(e), re.I):
                     use_vision = False  # model can't take images; carry on with text only
+                    _NO_VISION.add(vision_key)
                     logger.warning("Model rejected screenshots; continuing without vision.")
                     mission_record["now"] = ""
                     continue

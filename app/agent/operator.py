@@ -46,6 +46,7 @@ VERBS_RE = re.compile(r"\b(add|create|make|new|put|schedule|book|set up|update|c
                       r"delete|remove|cancel|clear|complete|finish|check off|tick off|mark|archive|close|reopen|flag|list|show|find|"
                       r"search|look up|read|open|what'?s|what is|what are|do i have|when is|any|how many)\b", re.I)
 NOT_MINE_RE = re.compile(r"\b(how (do|does|to)|explain|what is a|history of|write (me )?(a|an) (essay|poem|story))\b", re.I)
+CHANGE_RE = re.compile(r"(update|edit|change|move|delete|remove|complete|archive|close|set_)", re.I)   # tools that change an item
 LAUNCH_RE = re.compile(r"^\s*(?:please |can you |could you |now |ok(?:ay)? )*(?:launch|open|start|fire up|boot up|run)\s+"
                        r"(?:up\s+)?(?:the\s+|my\s+)?(.{2,40}?)(?:\s+app)?\s*[.!?]*$", re.I)
 
@@ -185,7 +186,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         return
     tools = decision["tools"]
     now = time.strftime("%A %B %d, %Y, %I:%M %p")
-    convo: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM.format(now=now) +
+    from app import platform_info
+    convo: List[Dict[str, Any]] = [{"role": "system", "content": platform_info.localize(SYSTEM.format(now=now)) +
                                     ("\nYour reply will be read aloud: one short sentence." if spoken else "")}]
     for m in messages[-6:-1]:
         if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str) and m["content"].strip():
@@ -210,6 +212,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             final = content.strip()
             break
         convo.append({"role": "assistant", "content": content or "", "tool_calls": calls})
+        seen = set()
         for i, tc in enumerate(calls[:4]):
             name = tc.get("function", {}).get("name", "")
             raw = tc.get("function", {}).get("arguments") or "{}"
@@ -218,12 +221,21 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             except ValueError:
                 args = {}
             cid = tc.get("id") or f"op_{step}_{i}"
-            if name not in allowed:
-                res: Any = {"success": False, "error": f"{name} isn't one of the tools for this."}
+            same = (name, json.dumps(args, sort_keys=True, default=str))
+            if same in seen:
+                # The same call twice in one reply (small models do this) would add the reminder twice.
+                res: Any = {"success": True, "note": "Same as the call just above: done once, not again."}
+            elif name not in allowed:
+                res = {"success": False, "error": f"{name} isn't one of the tools for this."}
             else:
+                seen.add(same)
                 yield {"type": "tool_call", "name": name, "args": args, "id": cid}
+                looked = any(CHANGE_RE.search(u) is None for u in used)
                 used.append(name)
                 res = await execute_tool(name, args)
+                if isinstance(res, dict) and res.get("error") and CHANGE_RE.search(name) and not looked:
+                    # Changed something it hadn't looked up: point it at the way that works, so it tries again.
+                    res = {**res, "hint": "Find the item first with a list or search tool to get its exact id, then call this again with that id."}
                 yield {"type": "tool_result", "name": name, "id": cid, "summary": _summary(name, res), "data": res}
             if isinstance(res, dict) and res.get("needs_approval"):
                 waiting = res

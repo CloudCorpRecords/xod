@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -518,6 +519,8 @@ def _from_git() -> List[Dict[str, Any]]:
 
 
 def _from_locale() -> List[Dict[str, Any]]:
+    if sys.platform == "win32":
+        return _from_locale_windows()
     out = []
     try:
         tz = os.path.realpath("/etc/localtime").split("zoneinfo/")[-1]
@@ -534,6 +537,31 @@ def _from_locale() -> List[Dict[str, Any]]:
         out.append({"fact": f"Mac language is {names.get(lang[:2], lang)}", "topic": "preferences", "key": "language"})
     if loc and "_" in loc:
         out.append({"fact": f"Mac region is {loc.split('_')[1][:2]}", "topic": "location"})
+    return out
+
+
+LANGUAGES = {"en": "English", "es": "Spanish", "fr": "French", "de": "German", "pt": "Portuguese", "it": "Italian",
+             "ja": "Japanese", "zh": "Chinese", "ko": "Korean", "nl": "Dutch", "ru": "Russian", "ar": "Arabic", "hi": "Hindi"}
+
+
+def _from_locale_windows() -> List[Dict[str, Any]]:
+    """Windows: the time zone's name, and the language and region from the user's locale (like en-US)."""
+    import ctypes
+    import time as _time
+    out = []
+    tz = (_time.tzname[0] or "").strip()
+    if tz:
+        out.append({"fact": f"Time zone is {tz}", "topic": "location", "key": "timezone"})
+    try:
+        buf = ctypes.create_unicode_buffer(85)
+        if ctypes.windll.kernel32.GetUserDefaultLocaleName(buf, 85):
+            lang, _, region = buf.value.partition("-")
+            if lang:
+                out.append({"fact": f"PC language is {LANGUAGES.get(lang.lower(), buf.value)}", "topic": "preferences", "key": "language"})
+            if len(region) == 2:
+                out.append({"fact": f"PC region is {region.upper()}", "topic": "location"})
+    except Exception:
+        pass
     return out
 
 
