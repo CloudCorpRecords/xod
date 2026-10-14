@@ -67,8 +67,12 @@ jobs:
           $p = Start-Process $exe.FullName -ArgumentList "/S" -PassThru
           $p.WaitForExit()
           "Installed in $([math]::Round(((Get-Date) - $t).TotalSeconds)) s (exit $($p.ExitCode))"
-          $dir = Join-Path $env:LOCALAPPDATA "Programs\Xod"
-          if (!(Test-Path (Join-Path $dir "Xod.exe"))) { Get-ChildItem $env:LOCALAPPDATA\Programs; throw "Xod.exe not installed" }
+          # Per-user installs go in %LOCALAPPDATA%\Programs\<package name> (xod-desktop); the Start menu says "Xod".
+          $app = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Programs") -Recurse -Depth 1 -Filter Xod.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (!$app) { Get-ChildItem $env:LOCALAPPDATA\Programs; throw "Xod.exe not installed" }
+          $dir = $app.DirectoryName
+          "Installed at $dir"
+          if (!(Test-Path (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Xod.lnk"))) { "warning: no Start menu shortcut" }
           "INSTALL_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: The installed copy works (its own Python, from scratch)
         shell: pwsh
