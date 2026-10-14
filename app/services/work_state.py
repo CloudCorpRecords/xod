@@ -8,6 +8,7 @@ of a guess. xod_tasks (the tool) gives the full details and result of any one ta
 import re
 import time
 from typing import Any, Dict, List, Optional
+from app.timefmt import nopad
 
 # Asking about Xod's own work.
 WORK_RE = re.compile(
@@ -49,7 +50,7 @@ def _in(ts: Optional[float]) -> str:
         return f"in {m} min"
     if m < 60 * 24:
         return f"in {m // 60} h"
-    return time.strftime("%a %-I:%M %p", time.localtime(ts))
+    return time.strftime(nopad("%a %-I:%M %p"), time.localtime(ts))
 
 
 def _short(s: Any, n: int) -> str:
@@ -162,7 +163,7 @@ def task_details(t: Dict[str, Any]) -> Dict[str, Any]:
     hist = t.get("history") or []
     return {"id": t["id"], "title": t["title"], "request": t.get("request"), "status": t["status"],
             "waiting_for": t.get("waiting_kind"), "waiting_detail": t.get("waiting_detail"),
-            "created": time.strftime("%b %-d %-I:%M %p", time.localtime(t["created_at"])),
-            "finished": time.strftime("%b %-d %-I:%M %p", time.localtime(t["finished_at"])) if t.get("finished_at") else None,
+            "created": time.strftime(nopad("%b %-d %-I:%M %p"), time.localtime(t["created_at"])),
+            "finished": time.strftime(nopad("%b %-d %-I:%M %p"), time.localtime(t["finished_at"])) if t.get("finished_at") else None,
             "steps": t.get("steps"), "now": t.get("now"), "result": t.get("result"),
-            "history": [f"{time.strftime('%-I:%M %p', time.localtime(h.get('at', 0)))} {h.get('text')}" for h in hist[-15:]]}
+            "history": [f"{time.strftime(nopad('%-I:%M %p'), time.localtime(h.get('at', 0)))} {h.get('text')}" for h in hist[-15:]]}

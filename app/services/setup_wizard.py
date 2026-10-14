@@ -24,14 +24,19 @@ def _mac() -> Dict[str, Any]:
     free = shutil.disk_usage(DATA_DIR).free / 1024 ** 3
     apple = platform.system() == "Darwin" and platform.machine() == "arm64"
     issues: List[str] = []
-    if not apple:
+    windows = platform.system() == "Windows"
+    if windows:
+        issues.append("On this PC Xod uses LM Studio or Ollama (both free, lmstudio.ai / ollama.com) or a cloud model. The "
+                      "built-in model, on-device images, video and voice need a Mac with Apple silicon.")
+    elif not apple:
         issues.append("On-device images, video, voice and the built-in model need a Mac with Apple silicon (M1 or newer).")
     if ram < 8:
         issues.append("Less than 8 GB of memory: use a cloud model, local models won't fit.")
     if free < 10:
         issues.append(f"Only {free:.0f} GB of disk space free; models need 3–16 GB.")
-    return {"apple_silicon": apple, "ram_gb": ram, "disk_free_gb": round(free, 1),
-            "macos": platform.mac_ver()[0] or platform.system(), "issues": issues}
+    os_name = f"macOS {platform.mac_ver()[0]}" if platform.mac_ver()[0] else f"{platform.system()} {platform.release()}".strip()
+    return {"apple_silicon": apple, "windows": windows, "ram_gb": ram, "disk_free_gb": round(free, 1),
+            "macos": platform.mac_ver()[0] or platform.system(), "os": os_name, "issues": issues}
 
 
 async def _ollama() -> Dict[str, Any]:
@@ -77,8 +82,9 @@ async def status() -> Dict[str, Any]:
     from app.services.local_engine import CATALOG, is_downloaded, recommend, download_status
     mac = _mac()
     rec = recommend(mac["ram_gb"])
+    # The built-in engine is MLX: Apple silicon only, so other computers don't see it.
     builtin = [{**m, "downloaded": is_downloaded(m["repo"]), "recommended": m["id"] == rec["id"],
-                "fits": m["min_ram_gb"] <= mac["ram_gb"], "download": download_status(m["repo"])} for m in CATALOG]
+                "fits": m["min_ram_gb"] <= mac["ram_gb"], "download": download_status(m["repo"])} for m in CATALOG] if mac["apple_silicon"] else []
     lm, ol = await _lm_studio(), await _ollama()
     cloud = [p for p in ("anthropic", "openai", "gemini", "groq", "openrouter", "fireworks") if getattr(settings, f"{p}_api_key", "")]
     return {

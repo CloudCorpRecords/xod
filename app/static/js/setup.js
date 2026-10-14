@@ -84,17 +84,17 @@
     }
     const more = s.builtin.filter((m) => !m.recommended && !m.downloaded);
     shell(`
-      <h2 class="text-white text-lg font-semibold mt-2">Your Mac</h2>
+      <h2 class="text-white text-lg font-semibold mt-2">${s.mac.windows ? "Your PC" : "Your Mac"}</h2>
       <div class="flex flex-wrap gap-2 mt-2">
-        ${chip(s.mac.apple_silicon, s.mac.apple_silicon ? "Apple silicon" : "Not Apple silicon")}
+        ${s.mac.windows ? "" : chip(s.mac.apple_silicon, s.mac.apple_silicon ? "Apple silicon" : "Not Apple silicon")}
         ${chip(s.mac.ram_gb >= 8, `${s.mac.ram_gb} GB memory`)}
         ${chip(s.mac.disk_free_gb >= 10, `${Math.round(s.mac.disk_free_gb)} GB free`)}
-        ${chip(true, `macOS ${s.mac.macos}`)}
+        ${chip(true, s.mac.os || `macOS ${s.mac.macos}`)}
       </div>
       ${s.mac.issues.map((i) => `<p class="text-[12px] text-amber-300 mt-2">${esc(i)}</p>`).join("")}
 
       <h2 class="text-white text-lg font-semibold mt-6">Pick Xod's brain</h2>
-      <p class="text-[13px] text-zinc-400 mt-1">Everything below runs on your Mac and stays private. You can change it any time in Settings.</p>
+      <p class="text-[13px] text-zinc-400 mt-1">${opts.length ? `Everything below runs on your ${s.mac.windows ? "PC" : "Mac"} and stays private. ` : "No model found on this computer yet. "}You can change it any time in Settings.</p>
       <div class="space-y-2.5 mt-3">${opts.map(option).join("")}</div>
       ${more.length ? `
         <details class="mt-3">
@@ -105,7 +105,7 @@
         </details>` : ""}
       <div class="mt-5 p-4 rounded-2xl border border-white/[0.06] bg-surface-900/40 flex items-center gap-3">
         <i data-lucide="cloud" class="size-4 text-zinc-400 shrink-0"></i>
-        <p class="text-[12px] text-zinc-400 flex-1">Prefer a cloud model (Claude, GPT, Gemini)? Add its API key in Settings. ${s.cloud_keys.length ? `You already have: ${esc(s.cloud_keys.join(", "))}.` : ""}</p>
+        <p class="text-[12px] text-zinc-400 flex-1">${opts.length ? "Prefer a cloud model" : "Use a cloud model"} (Fireworks, Claude, GPT, Gemini)? Add its API key in Settings. ${s.cloud_keys.length ? `You already have: ${esc(s.cloud_keys.join(", "))}.` : ""}</p>
         <button data-setup="settings" class="px-3 py-1.5 rounded-lg text-[12px] text-zinc-200 bg-surface-700 hover:bg-surface-600 shrink-0">Open Settings</button>
       </div>`);
   }

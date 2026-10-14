@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -75,8 +76,11 @@ def free_port():
 def http(method, url, body=None, timeout=60):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"} if data else {})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.status, r.read().decode("utf-8", "replace")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:           # a failing endpoint is a failed check, not a crash of the test
+        return e.code, e.read().decode("utf-8", "replace")
 
 
 def main():
@@ -175,9 +179,10 @@ def main():
             server.kill()
         fake.shutdown()
         log.close()
-        errors = [l for l in (Path(data) / "server.log").read_text(errors="replace").splitlines() if "Traceback" in l or "ERROR" in l]
-        if errors:
-            print("      server log errors:\n        " + "\n        ".join(errors[:15]))
+        logtext = (Path(data) / "server.log").read_text(errors="replace")
+        if "Traceback" in logtext:          # show the first one whole
+            i = logtext.index("Traceback")
+            print("      server log, first error:\n        " + "\n        ".join(logtext[i:i + 3000].splitlines()[:40]))
 
     failed = [n for n, ok in results if not ok]
     print(f"\nSUMMARY {'PASS' if not failed else 'FAIL'} {failed}")

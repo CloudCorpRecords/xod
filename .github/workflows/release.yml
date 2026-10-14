@@ -1,6 +1,7 @@
 name: Release
 
-# Push a tag like v0.1.0 and this builds the Mac installer and attaches it to a draft release.
+# Push a tag like v0.1.0 and this builds the Mac installer (.dmg) and the Windows installer (setup .exe), and
+# attaches both, with one SHA256SUMS.txt that the apps' updaters check downloads against, to a draft release.
 # Review the draft, then publish it by hand.
 on:
   push:
@@ -33,11 +34,68 @@ jobs:
           npm run dist
       - name: Checksum
         working-directory: electron/dist
-        run: shasum -a 256 Xod-*.dmg > SHA256SUMS.txt && cat SHA256SUMS.txt
+        run: shasum -a 256 Xod-*.dmg > sums-mac.txt && cat sums-mac.txt
       - name: Attach to a draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Xod ${TAG#v}" --notes-file docs/CHANGELOG.md
-          gh release upload "$TAG" electron/dist/Xod-*.dmg electron/dist/SHA256SUMS.txt --clobber
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Xod ${TAG#v}" --notes "Building…"
+          gh release upload "$TAG" electron/dist/Xod-*.dmg --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sums-mac
+          path: electron/dist/sums-mac.txt
+
+  windows:
+    name: Build Xod-setup.exe (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+      - uses: astral-sh/setup-uv@v6
+      - name: Standalone Python 3.12 to bundle
+        run: uv python install 3.12
+      - name: Build the installer
+        working-directory: electron
+        run: |
+          npm ci
+          npm run dist:win
+      - name: Checksum
+        shell: bash
+        working-directory: electron/dist
+        run: sha256sum Xod-*-x64-setup.exe | sed 's/ \*/  /' > sums-win.txt && cat sums-win.txt
+      - name: Attach to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          for i in 1 2 3 4 5 6 7 8 9; do gh release view "$TAG" >/dev/null 2>&1 && break; sleep 20; done
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Xod ${TAG#v}" --notes "Building…"
+          gh release upload "$TAG" electron/dist/Xod-*-x64-setup.exe --clobber
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sums-win
+          path: electron/dist/sums-win.txt
+
+  checksums:
+    name: SHA256SUMS.txt for both
+    needs: [mac, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: sums-*
+          merge-multiple: true
+      - name: Attach
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cat sums-mac.txt sums-win.txt > SHA256SUMS.txt && cat SHA256SUMS.txt
+          gh release upload "${GITHUB_REF_NAME}" SHA256SUMS.txt --clobber

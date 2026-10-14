@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from app.paths import APP_ROOT, DATA_DIR
+from app.timefmt import nopad
 
 REPORTS_DIR = DATA_DIR / "reports"
 FONTS = APP_ROOT / "app" / "static" / "vendor" / "fonts"
@@ -117,7 +118,7 @@ footer {{ margin-top:48px; color:var(--muted); font-size:12px; }}
 <body><main>
 <div class="kicker">Research report</div>
 <h1>{html.escape(title)}</h1>
-<div class="meta">{when.strftime("%B %-d, %Y")} · {len(sources)} source{"s" if len(sources) != 1 else ""}</div>
+<div class="meta">{when.strftime(nopad("%B %-d, %Y"))} · {len(sources)} source{"s" if len(sources) != 1 else ""}</div>
 {f'<div class="question"><b>Question:</b> {html.escape(question)}</div>' if question else ""}
 <article>{body_html}</article>
 {f'<section class="sources"><h2>Sources</h2><ol>{src_html}</ol></section>' if sources else ""}

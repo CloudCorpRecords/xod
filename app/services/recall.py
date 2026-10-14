@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from app.paths import DATA_DIR
+from app.timefmt import nopad
 
 logger = logging.getLogger("xod.recall")
 
@@ -327,12 +328,12 @@ def when_label(ts: float) -> str:
     d = datetime.fromtimestamp(ts)
     days = (datetime.now().date() - d.date()).days
     if days == 0:
-        return f"today {d.strftime('%-I:%M %p')}"
+        return f"today {d.strftime(nopad('%-I:%M %p'))}"
     if days == 1:
-        return f"yesterday {d.strftime('%-I:%M %p')}"
+        return f"yesterday {d.strftime(nopad('%-I:%M %p'))}"
     if days < 7:
-        return d.strftime("%A %-I:%M %p")
-    return d.strftime("%b %-d, %Y")
+        return d.strftime(nopad("%A %-I:%M %p"))
+    return d.strftime(nopad("%b %-d, %Y"))
 
 
 async def search(query: str, k: int = 5, kinds: Optional[List[str]] = None, when: Optional[str] = None,

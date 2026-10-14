@@ -21,6 +21,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from app.paths import DATA_DIR
+from app.timefmt import nopad
 
 logger = logging.getLogger("xod.routines")
 DB = DATA_DIR / "xod.db"
@@ -81,7 +82,7 @@ def describe_schedule(s: Dict[str, Any]) -> str:
         return f"Every {n} hour{'s' if n != 1 else ''}"
     if kind in ("daily", "weekly"):
         h, m = _hm(s.get("time", "09:00"))
-        t = dt.time(h, m).strftime("%-I:%M %p")
+        t = dt.time(h, m).strftime(nopad("%-I:%M %p"))
         if kind == "daily":
             return f"Every day at {t}"
         days = [d for d in DAYS if d in s.get("days", [])]
