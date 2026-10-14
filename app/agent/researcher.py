@@ -2486,6 +2486,13 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
 
         except Exception as e:
             logger.error(f"Deliberation error: {e}" + (f" (the model said: {model_error})" if model_error else ""))
+            if model_error:
+                # The model itself failed (not running, not installed...): a web search would still need it
+                # to write the answer, so say what's wrong now instead of failing again a minute later.
+                yield {"type": "deliberation_complete", "deliberation": {
+                    "thought": "", "decision": "direct_answer", "plan_title": "", "plan_steps": [], "task_focus": "general",
+                    "is_swarm": False, "direct_response": model_error}}
+                return
             if self._LOCAL_ACTION_RE.search(query or ""):
                 # Something to do on this computer: searching the web for it would only describe how to do it.
                 why = f" The model replied with an error: {model_error}" if model_error else " The model didn't give me a usable plan."

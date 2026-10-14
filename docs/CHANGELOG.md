@@ -14,6 +14,7 @@
 - The page says "your PC", "Windows Credential Manager" and "File Explorer" on Windows instead of "your Mac", "Keychain" and "Finder".
 
 **More honest, on every computer**
+- With the model app off, a chat says so at once. Before, Xod searched the web for the question and failed again a minute later, with unrelated links under the error.
 - A tool that failed no longer reads as a success in the answer. A file that couldn't be opened was written up as "opened and read". Failures are now marked as failures for the model that writes the answer.
 - Reading a short file ("buy milk, call mom") was taken for a failed read, and the repair went looking for the file in made-up places. Only a web page with almost no text counts as a failed read now.
 - Answers about files or your computer no longer end with "Web search didn't return anything usable" when they never searched the web.
