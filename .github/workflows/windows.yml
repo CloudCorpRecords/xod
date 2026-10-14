@@ -40,6 +40,7 @@ jobs:
     name: Build, install and run Xod-setup.exe
     needs: backend
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -57,10 +58,15 @@ jobs:
           npm run dist:win
       - name: Install it (per user, silent)
         shell: pwsh
+        timeout-minutes: 20
         run: |
           $exe = Get-ChildItem electron/dist/Xod-*-x64-setup.exe | Select-Object -First 1
           "Installer: $($exe.Name), $([math]::Round($exe.Length / 1MB)) MB"
-          Start-Process $exe.FullName -ArgumentList "/S" -Wait
+          $t = Get-Date
+          # Wait for the installer itself (Start-Process -Wait would also wait for anything it starts).
+          $p = Start-Process $exe.FullName -ArgumentList "/S" -PassThru
+          $p.WaitForExit()
+          "Installed in $([math]::Round(((Get-Date) - $t).TotalSeconds)) s (exit $($p.ExitCode))"
           $dir = Join-Path $env:LOCALAPPDATA "Programs\Xod"
           if (!(Test-Path (Join-Path $dir "Xod.exe"))) { Get-ChildItem $env:LOCALAPPDATA\Programs; throw "Xod.exe not installed" }
           "INSTALL_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
