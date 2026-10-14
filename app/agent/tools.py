@@ -1,4 +1,4 @@
-import re
+import os
 import re
 import json
 import asyncio
@@ -2651,9 +2651,40 @@ def compact_startup(s: Dict[str, Any]) -> Dict[str, Any]:
         "website": s.get("website")
     }
 
+PATH_ARGS = {"path", "directory", "source_dir", "src", "dst", "source", "destination", "source_path", "destination_path",
+             "filepath", "file", "folder", "folder_path", "target", "target_folder", "root_dir", "root", "dest"}
+
+
+_PS_VAR = re.compile(r"\$\{?env:(\w+)\}?|\$\{?HOME\}?(?=[\\/]|$)", re.I)
+
+
+def _expand_path(v: str) -> str:
+    """%USERPROFILE%\\x (cmd), $env:USERPROFILE\\x or ${env:USERPROFILE}\\x (PowerShell), $HOME\\x → the real path.
+    Unknown variables are left as they are (the tool then says the path isn't there)."""
+    if "%" not in v and "$" not in v:
+        return v
+    v = _PS_VAR.sub(lambda m: os.environ.get(m.group(1), m.group(0)) if m.group(1) else os.path.expanduser("~"), v)
+    return os.path.expandvars(v) if "%" in v else v
+
+
+def _expand_path_args(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Models on Windows write paths the Windows or PowerShell way (%USERPROFILE%\\Downloads, $env:USERPROFILE\\Downloads);
+    the tools expect real paths."""
+    if not arguments or os.name != "nt":
+        return arguments
+    out = dict(arguments)
+    for k, v in arguments.items():
+        if k in PATH_ARGS and isinstance(v, str):
+            out[k] = _expand_path(v)
+        elif k in ("paths", "files", "sources") and isinstance(v, list):
+            out[k] = [_expand_path(x) if isinstance(x, str) else x for x in v]
+    return out
+
+
 async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None) -> Dict[str, Any]:
     """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first."""
     from app.services import activity
+    arguments = _expand_path_args(arguments)
     ctx = None
     try:
         ctx = await asyncio.to_thread(activity.before, name, arguments or {}, active_workspace_path)

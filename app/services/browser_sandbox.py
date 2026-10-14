@@ -491,7 +491,7 @@ _KNOWN_SITES = {
 def _guess_start_url(goal: str) -> str:
     m = re.search(r"https?://\S+", goal)
     if m:
-        return m.group(0).rstrip(").,")
+        return m.group(0).rstrip(").,:;!?'\"]>")      # "(http://site/page):" → http://site/page
     m = re.search(r"\b([a-z0-9-]+\.(?:com|io|ai|co|org|net|dev|app))\b", goal, re.I)
     if m:
         return f"https://{m.group(1)}"
@@ -1819,7 +1819,10 @@ class BrowserSandboxService:
                     let value = tag === 'input' || tag === 'textarea' || tag === 'select' ? clean(el.value || '') : null;
                     // Never expose password contents to the LLM or the UI.
                     if (value && (el.type || '').toLowerCase() === 'password') value = '[password entered]';
-                    if (value && value.length > 50) value = value.slice(0, 47) + '...';
+                    // Long values (a message typed into a textarea): its start and end and the length, so the
+                    // model can tell the text is all there. A plain cut ending in "..." looked unfinished, and
+                    // the model kept typing the message again.
+                    if (value && value.length > 160) value = `${{value.slice(0, 100)}} … ${{value.slice(-50)}} (all ${{value.length}} characters are in the field)`;
 
                     let href = el.getAttribute('href');
                     if (href && href.length > 80) href = href.slice(0, 77) + '...';

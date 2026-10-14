@@ -233,7 +233,9 @@ def _chrome() -> Optional[str]:
               "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"):
         if os.path.exists(p):
             return p
-    return shutil.which("google-chrome") or shutil.which("chromium")
+    # Everywhere else (Windows: Chrome per machine or per user, then Edge): the same list Xod's own browser uses.
+    from app.services.browser_sandbox import CHROME_BINARIES
+    return next((p for p in CHROME_BINARIES if p and os.path.exists(p)), None)
 
 
 async def check(url: str, seconds: float = 3.0, keys: bool = True) -> Dict[str, Any]:
@@ -340,7 +342,11 @@ async def check(url: str, seconds: float = 3.0, keys: bool = True) -> Dict[str, 
         logger.warning(f"preview check failed: {e}")
         return {"ran": False, "ok": True, "errors": [], "note": f"Couldn't run the check: {e}"}
     finally:
-        proc.kill()
+        if os.name == "nt":       # Chrome's helper processes outlive a plain kill on Windows: end the whole tree
+            subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+        else:
+            proc.kill()
+        await asyncio.sleep(0.3)
         shutil.rmtree(prof, ignore_errors=True)
 
 

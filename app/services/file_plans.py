@@ -60,9 +60,15 @@ def expand(p: str) -> Path:
     return Path(os.path.normpath(str(q)))
 
 
+def _inside(path: Any, folder: Any) -> bool:
+    """path is folder or under it (Windows: \\ and any capitalisation, like the file system itself)."""
+    s, f = os.path.normcase(str(path)), os.path.normcase(str(folder)).rstrip("\\/")
+    return s == f or s.startswith(f + os.sep)
+
+
 def tilde(p: Any) -> str:
     s, h = str(p), str(home())
-    return "~" + s[len(h):] if s == h or s.startswith(h + "/") else s
+    return "~" + s[len(h):].replace(os.sep, "/") if _inside(s, h) else s
 
 
 STANDARD = ("Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", "Applications", "Library", "Public",
@@ -73,7 +79,7 @@ def check_path(p: Path, role: str = "src") -> Optional[str]:
     """Why Xod may not touch this path, or None if it may."""
     h = home()
     s = str(p)
-    in_home = s == str(h) or s.startswith(str(h) + "/")
+    in_home = _inside(s, h)
     if not in_home and not s.startswith("/Volumes/"):
         return "it's outside your home folder"
     rel = Path(s[len(str(h)) + 1:]) if in_home and s != str(h) else None
@@ -85,11 +91,10 @@ def check_path(p: Path, role: str = "src") -> Optional[str]:
     if any(x.startswith(".") for x in parts):
         return "it's hidden (hidden files belong to apps and tools)"
     for guarded in (DATA_DIR, APP_ROOT):
-        g = str(guarded)
-        if s == g or s.startswith(g + "/") or g.startswith(s + "/"):
+        if _inside(s, guarded) or _inside(guarded, s):
             return "that's Xod's own data or code"
     if role == "src" and rel and len(parts) == 1 and parts[0] in STANDARD:
-        return f"~/{parts[0]} is one of your Mac's main folders"
+        return f"~/{parts[0]} is one of your main folders"
     if role == "src" and any(x.endswith((".app", ".photoslibrary", ".musiclibrary", ".tvlibrary", ".fcpbundle")) for x in parts[:-1]):
         return "it's inside an app or library bundle"
     return None
@@ -129,7 +134,7 @@ def fmt_bytes(n: float) -> str:
 # ------------------------------------------------------------------ kinds
 
 KINDS: List[Tuple[str, Tuple[str, ...]]] = [
-    ("Installers", (".dmg", ".pkg", ".mpkg")),
+    ("Installers", (".dmg", ".pkg", ".mpkg", ".exe", ".msi", ".msix")),
     ("Archives", (".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar")),
     ("Documents", (".pdf", ".doc", ".docx", ".pages", ".txt", ".rtf", ".md", ".odt", ".epub")),
     ("Spreadsheets", (".xlsx", ".xls", ".csv", ".numbers", ".tsv", ".ods")),
@@ -209,10 +214,12 @@ def plan_installers(folder: str = "~/Downloads", min_age_days: float = 1) -> Dic
     root = expand(folder)
     ops = []
     for p, st in _loose_files(root, min_age_sec=int(min_age_days * 86400)):
-        if p.suffix.lower() in (".dmg", ".pkg", ".mpkg"):
+        ext = p.suffix.lower()
+        # Windows: .msi/.msix are always installers; an .exe only when its name says so (others may be portable apps).
+        if ext in (".dmg", ".pkg", ".mpkg", ".msi", ".msix") or (ext == ".exe" and re.search(r"setup|install", p.name, re.I)):
             ops.append({"op": "trash", "src": str(p), "bytes": st.st_size})
     return build("Clear out old installers", ops,
-                 f"Move app installers (.dmg, .pkg) in {tilde(root)} to the Trash. Apps you installed stay installed.",
+                 f"Move app installers (.dmg, .pkg, .msi, setup .exe) in {tilde(root)} to the Trash. Apps you installed stay installed.",
                  source="installers", args={"folder": folder})
 
 
@@ -441,7 +448,7 @@ def build(title: str, raw_ops: List[Dict[str, Any]], why: str = "", source: str 
                 reason = check_path(dst, "dst")
                 if not reason and (dst == src):
                     reason = "it's already there"
-                if not reason and str(dst).startswith(str(src) + "/"):
+                if not reason and dst != src and _inside(dst, src):
                     reason = "can't move a folder into itself"
                 if not reason:
                     dst = _free_name(dst, taken)

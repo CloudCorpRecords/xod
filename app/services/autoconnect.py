@@ -291,7 +291,8 @@ async def check() -> Dict[str, Any]:
             if best and mine and (best["provider"], best["model"]) != (provider, model):
                 res = setup_wizard.choose(best["provider"], best["model"], best["base_url"], how="auto")
                 if res.get("success"):
-                    _event("connected", f"Connected to {best['server']}: {best['model']}." + (f" ({problem}.)" if problem else ""))
+                    # On a new install the "problem" is only the built-in default (LM Studio) not being there: not news.
+                    _event("connected", f"Connected to {best['server']}: {best['model']}." + (f" ({problem}.)" if problem and not never_chosen else ""))
                     problem = None
             elif problem and not mine:
                 alt = f" {best['server']} has {best['model']} ready: pick it in Tools → Setup & AI model." if best else ""
