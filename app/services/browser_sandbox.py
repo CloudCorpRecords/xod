@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import subprocess
 import time
 import urllib.parse
@@ -26,7 +27,15 @@ CHROME_BINARIES = [
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
     shutil.which("google-chrome") or "",
     shutil.which("chromium") or "",
-]
+] + ([                       # Windows: Chrome (per machine or per user), then Edge, which every Windows PC has
+    os.path.join(os.environ.get(v, ""), *rest)
+    for v, rest in (("PROGRAMFILES", ("Google", "Chrome", "Application", "chrome.exe")),
+                    ("PROGRAMFILES(X86)", ("Google", "Chrome", "Application", "chrome.exe")),
+                    ("LOCALAPPDATA", ("Google", "Chrome", "Application", "chrome.exe")),
+                    ("PROGRAMFILES(X86)", ("Microsoft", "Edge", "Application", "msedge.exe")),
+                    ("PROGRAMFILES", ("Microsoft", "Edge", "Application", "msedge.exe")))
+    if os.environ.get(v)
+] if sys.platform == "win32" else [])
 
 def _debug_port() -> int:
     """9228 for your normal Xod. Any other data folder (tests, a second copy) gets its own port, so it can

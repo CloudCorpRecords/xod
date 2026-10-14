@@ -19,7 +19,11 @@ const DATA_DIR = process.env.XOD_DATA_DIR || path.join(app.getPath("appData"), "
 const PACKAGED = app.isPackaged;
 const ROOT = PACKAGED ? path.join(process.resourcesPath, "backend") : path.resolve(__dirname, "..");
 const VENV_DIR = path.join(ROOT, ".venv");
-const PY = PACKAGED ? path.join(process.resourcesPath, "python", "bin", "python3.12") : path.join(VENV_DIR, "bin", "python");
+const WIN = process.platform === "win32";
+// The bundled Python's layout differs by system: bin/python3.12 on a Mac, python.exe at the top on Windows.
+const PY = PACKAGED
+  ? (WIN ? path.join(process.resourcesPath, "python", "python.exe") : path.join(process.resourcesPath, "python", "bin", "python3.12"))
+  : (WIN ? path.join(VENV_DIR, "Scripts", "python.exe") : path.join(VENV_DIR, "bin", "python"));
 const PREFERRED_PORT = Number(process.env.XOD_PORT || 8000);
 
 let server = null;          // the Python process we started (null if we attached to a running one)
@@ -71,7 +75,7 @@ async function pickPort() {
 }
 
 function findPython() {
-  for (const cmd of ["python3.12", "python3.13", "python3.11", "python3.10", "python3"]) {
+  for (const cmd of WIN ? ["py", "python"] : ["python3.12", "python3.13", "python3.11", "python3.10", "python3"]) {
     const r = spawnSync(cmd, ["-c", "import sys; print(sys.version_info[:2] >= (3, 10))"], { encoding: "utf8" });
     if (r.status === 0 && r.stdout.trim() === "True") return cmd;
   }
@@ -152,6 +156,10 @@ async function startServer() {
 function stopServer() {
   if (!server) return;
   const p = server;
+  if (WIN) {     // no signals on Windows: end the server and anything it started (browser, workers)
+    spawnSync("taskkill", ["/pid", String(p.pid), "/T", "/F"]);
+    return;
+  }
   p.kill("SIGTERM");
   setTimeout(() => { try { p.kill("SIGKILL"); } catch (e) {} }, 5000).unref();
 }
@@ -215,7 +223,7 @@ function showSplash() {
 function showMain() {
   mainWindow = new BrowserWindow({
     width: 1440, height: 920, minWidth: 900, minHeight: 600, show: false,
-    title: "Xod", backgroundColor: "#0f1222",
+    title: "Xod", backgroundColor: "#0f1222", autoHideMenuBar: WIN,
     webPreferences: { ...SECURE_PREFS, preload: path.join(__dirname, "preload.js") },
   });
   mainWindow.loadURL(appUrl);
@@ -291,8 +299,16 @@ function offerMoveToApplications() {
   }
 }
 
-// The standard Mac menus, plus "Check for Updates…" (electron/updater.js).
+// The standard Mac menus, plus "Check for Updates…" (electron/updater.js). Windows gets a plain File menu
+// (the Mac-only items like Services and Hide don't exist there); the bar stays hidden until Alt is pressed.
 function setMenu(checkForUpdates) {
+  if (WIN) {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { label: "File", submenu: [{ label: "Check for Updates…", click: checkForUpdates, enabled: app.isPackaged }, { type: "separator" }, { role: "quit" }] },
+      { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" },
+    ]));
+    return;
+  }
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: app.name, submenu: [
       { role: "about" },

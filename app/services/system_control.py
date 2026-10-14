@@ -727,7 +727,7 @@ class SystemControlService:
         """Terminates a process safely by PID (SIGTERM by default, SIGKILL if force=True)."""
         import signal
         try:
-            sig = signal.SIGKILL if force else signal.SIGTERM
+            sig = getattr(signal, "SIGKILL", signal.SIGTERM) if force else signal.SIGTERM   # Windows has no SIGKILL
             os.kill(pid, sig)
             return {"success": True, "pid": pid, "signal": "SIGKILL" if force else "SIGTERM"}
         except ProcessLookupError:

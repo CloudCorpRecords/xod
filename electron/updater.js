@@ -9,6 +9,10 @@
 // swaps the app bundle itself: a small script waits for Xod to quit, moves the new Xod.app into place
 // (keeping the old one until the new one is in), and opens it again.
 //
+// On Windows the release has an installer (Xod-<version>-x64-setup.exe, a per-user NSIS installer) instead:
+// it's downloaded and checked against SHA256SUMS.txt the same way, then run silently when Xod quits, and it
+// replaces the installed Xod in place (data in %APPDATA%\Xod is untouched) and opens it again.
+//
 // Automatic checks are off when "Tell me about new versions" is off, with XOD_NO_UPDATE_CHECK=1, or from
 // source; pressing "Check now" always checks.
 const { app, dialog, shell } = require("electron");
@@ -25,7 +29,8 @@ const BUNDLE_ID = "dev.xod.desktop";
 const FIRST_CHECK_MS = 8 * 1000;
 const CHECK_EVERY_MS = 3600 * 1000;
 const ON_FOCUS_AFTER_MS = 15 * 60 * 1000;
-const WORK = path.join(os.homedir(), "Library", "Caches", "Xod", "updates");
+const WIN = process.platform === "win32";
+const WORK = WIN ? path.join(os.tmpdir(), "Xod", "updates") : path.join(os.homedir(), "Library", "Caches", "Xod", "updates");
 
 // What the page sees. state: idle | checking | uptodate | available | downloading | ready | installing | manual | error
 let S = { state: "idle", current: app.getVersion(), latest: null, name: null, page: null, progress: 0, error: null, checkedAt: 0, packaged: app.isPackaged };
@@ -51,6 +56,7 @@ function currentBundle() {
 }
 
 function canReplace(bundle) {
+  if (WIN) return true;                 // the installer replaces it, wherever it is
   if (!bundle.endsWith(".app") || bundle.includes("/AppTranslocation/") || bundle.startsWith("/Volumes/")) return false;
   try { fs.accessSync(path.dirname(bundle), fs.constants.W_OK); fs.accessSync(bundle, fs.constants.W_OK); return true; } catch (e) { return false; }
 }
@@ -74,7 +80,8 @@ async function latest() {
   const d = await r.json();
   const version = String(d.tag_name || "").replace(/^v/, "");
   const arch = process.arch === "arm64" ? "arm64" : "x64";
-  const dmg = (d.assets || []).find((a) => a.name.endsWith(`-${arch}.dmg`));
+  // "dmg" is the download for this computer: the .dmg on a Mac, the setup .exe on Windows.
+  const dmg = (d.assets || []).find((a) => (WIN ? a.name.endsWith(`-${arch}-setup.exe`) : a.name.endsWith(`-${arch}.dmg`)));
   const sums = (d.assets || []).find((a) => a.name === "SHA256SUMS.txt");
   return { version, name: d.name, page: d.html_url, dmg, sums };
 }
@@ -127,6 +134,7 @@ async function stage(release, onProgress) {
   const want = line && line.trim().split(/\s+/)[0].toLowerCase();
   const got = await sha256(dmgPath);
   if (!want || want !== got) throw new Error("the download's checksum doesn't match the release");
+  if (WIN) return dmgPath;              // the checked installer; it runs when Xod quits (swap)
   const mnt = fs.mkdtempSync(path.join(os.tmpdir(), "xod-update-"));
   const staged = path.join(WORK, "Xod.app");
   run("/usr/bin/hdiutil", ["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mnt, dmgPath]);
@@ -148,6 +156,13 @@ async function stage(release, onProgress) {
 function swap(relaunch) {
   if (!ready || installing) return false;
   installing = true;
+  if (WIN) {
+    // Silent per-user install over the current one; --force-run opens Xod again afterwards.
+    const child = spawn(ready.appPath, relaunch ? ["/S", "--force-run"] : ["/S"], { detached: true, stdio: "ignore" });
+    child.unref();
+    log("installing", ready.version, relaunch ? "(then reopening)" : "(on quit)");
+    return true;
+  }
   const target = currentBundle();
   const script = path.join(WORK, "install.sh");
   fs.writeFileSync(script, `#!/bin/bash
@@ -214,7 +229,8 @@ async function check({ manual = false, appUrl = "" } = {}) {
       rel = r;
       if (!r.dmg || !canReplace(currentBundle())) {
         set({ state: "manual", latest: r.version, name: r.name, page: r.page, checkedAt,
-              error: "Xod can't replace itself where it's installed. Download it and drag it to Applications." });
+              error: WIN ? "There's no Windows installer in this release yet. Download it from the release page."
+                     : "Xod can't replace itself where it's installed. Download it and drag it to Applications." });
         return S;
       }
       set({ state: "available", latest: r.version, name: r.name, page: r.page, checkedAt });

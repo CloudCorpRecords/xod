@@ -11,10 +11,15 @@ Same calls as `keyring`: get_password / set_password / delete_password(service, 
 Items from before this are moved in the first time they're asked for and then never read again;
 the old items are left alone until that secret is saved or removed (so an older Xod still works).
 Tests that set XOD_SECRETS_SERVICE get their own vault and never look at the old items.
+
+On Windows the vault lives in Credential Manager (keyring's Windows backend, protected per user by Windows),
+which holds at most 2,560 bytes per item: there it's split into pieces ("_vault.1", "_vault.2", …) and the
+"_vault" item only says how many there are.
 """
 import json
 import logging
 import os
+import sys
 import threading
 from typing import Dict, Optional
 
@@ -26,6 +31,7 @@ logger = logging.getLogger("xod.secrets")
 DEFAULT_SERVICE = "Xod API keys"
 SERVICE = os.environ.get("XOD_SECRETS_SERVICE", DEFAULT_SERVICE)
 ACCOUNT = "_vault"
+CHUNK = 1000 if sys.platform == "win32" else 0   # characters per piece (Windows stores them as UTF-16)
 LEGACY = SERVICE == DEFAULT_SERVICE  # only the real vault looks at the old one-per-key items
 
 _lock = threading.RLock()
@@ -42,6 +48,9 @@ def _load() -> Dict[str, object]:
         raw = None
         try:
             raw = keyring.get_password(SERVICE, ACCOUNT)
+            if raw and raw.startswith('{"pieces":'):
+                n = int(json.loads(raw)["pieces"])
+                raw = "".join(keyring.get_password(SERVICE, f"{ACCOUNT}.{i}") or "" for i in range(1, n + 1))
         except Exception as e:
             logger.warning(f"Keychain read failed: {type(e).__name__}")
         try:
@@ -55,7 +64,23 @@ def _load() -> Dict[str, object]:
 
 
 def _store() -> None:
-    keyring.set_password(SERVICE, ACCOUNT, json.dumps(_vault))
+    data = json.dumps(_vault)
+    if not CHUNK:
+        keyring.set_password(SERVICE, ACCOUNT, data)
+        return
+    pieces = [data[i:i + CHUNK] for i in range(0, len(data), CHUNK)] or [""]
+    for i, piece in enumerate(pieces, 1):
+        keyring.set_password(SERVICE, f"{ACCOUNT}.{i}", piece)
+    try:
+        old = json.loads(keyring.get_password(SERVICE, ACCOUNT) or "{}").get("pieces", 0)
+    except (ValueError, AttributeError):
+        old = 0
+    keyring.set_password(SERVICE, ACCOUNT, json.dumps({"pieces": len(pieces)}))
+    for i in range(len(pieces) + 1, int(old) + 1):     # a shorter vault than before: remove the leftover pieces
+        try:
+            keyring.delete_password(SERVICE, f"{ACCOUNT}.{i}")
+        except Exception:
+            pass
 
 
 def get_password(service: str, account: str) -> Optional[str]:

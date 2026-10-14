@@ -1,0 +1,88 @@
+name: Windows
+
+# Xod on Windows, from scratch: the server and a full chat on a clean Windows machine, then the installer is built,
+# installed the way a person would (per user, no admin), and the installed copy is started and tested.
+# Runs on pushes to main that touch the app or the desktop shell, and by hand.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, windows-port]
+    paths: ["app/**", "electron/**", "requirements.txt", "tests/smoke/run_platform_smoke.py", ".github/workflows/windows.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Server and a chat on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Xod's packages
+        run: python -m pip install -r requirements.txt
+      - name: From scratch (secrets in Windows Credential Manager)
+        env:
+          XOD_REAL_KEYRING: "1"
+        run: python tests/smoke/run_platform_smoke.py
+      - name: Cloud models never end on thinking alone
+        run: python tests/smoke/run_cloud_thinking_test.py
+
+  installer:
+    name: Build, install and run Xod-setup.exe
+    needs: backend
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+      - uses: astral-sh/setup-uv@v6
+      - name: Standalone Python 3.12 to bundle
+        run: uv python install 3.12
+      - name: Build the installer
+        working-directory: electron
+        run: |
+          npm ci
+          npm run dist:win
+      - name: Install it (per user, silent)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem electron/dist/Xod-*-x64-setup.exe | Select-Object -First 1
+          "Installer: $($exe.Name), $([math]::Round($exe.Length / 1MB)) MB"
+          Start-Process $exe.FullName -ArgumentList "/S" -Wait
+          $dir = Join-Path $env:LOCALAPPDATA "Programs\Xod"
+          if (!(Test-Path (Join-Path $dir "Xod.exe"))) { Get-ChildItem $env:LOCALAPPDATA\Programs; throw "Xod.exe not installed" }
+          "INSTALL_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: The installed copy works (its own Python, from scratch)
+        shell: pwsh
+        env:
+          XOD_REAL_KEYRING: "1"
+        run: |
+          $env:XOD_BACKEND_DIR = Join-Path $env:INSTALL_DIR "resources\backend"
+          python tests/smoke/run_platform_smoke.py --python (Join-Path $env:INSTALL_DIR "resources\python\python.exe")
+      - name: The app itself starts and serves Xod
+        shell: pwsh
+        run: |
+          $env:XOD_DATA_DIR = Join-Path $env:RUNNER_TEMP "xod-app-data"
+          $env:XOD_NO_UPDATE_CHECK = "1"
+          $p = Start-Process (Join-Path $env:INSTALL_DIR "Xod.exe") -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 120; $i++) {
+            Start-Sleep -Seconds 1
+            try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/ -TimeoutSec 2; if ($r.Content -match "<title>\s*Xod") { $ok = $true; break } } catch {}
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
+          if (!$ok) { throw "Xod.exe didn't start its server" }
+          "Xod.exe started and served the app after $i s"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Xod-windows-installer
+          path: electron/dist/Xod-*-x64-setup.exe
+          retention-days: 7

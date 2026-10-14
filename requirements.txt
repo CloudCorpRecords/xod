@@ -38,21 +38,21 @@ markdown==3.10.3             # shareable reports from the agent
 # Media downloads (uses the ffmpeg bundled with imageio-ffmpeg)
 yt-dlp==2026.8.19
 
-# Secrets: API keys and saved logins live in the macOS Keychain
+# Secrets: API keys and saved logins live in the macOS Keychain (Windows: Credential Manager)
 keyring==25.7.0
 cryptography==50.0.2         # Agent Mail: end-to-end encryption and signatures
 psutil==7.2.2
 
-# On-device image & video generation (media worker; Apple silicon). The Mac app downloads
+# On-device image & video generation (media worker; Apple silicon only, so Mac only). The Mac app downloads
 # these the first time Media Studio is used (app/services/media_packages.py).
-torch==2.14.1
-sympy==1.14.0                # torch
-networkx==3.7                # torch
-mpmath==1.3.0                # sympy
-diffusers==0.41.0
+torch==2.14.1; sys_platform == "darwin"
+sympy==1.14.0; sys_platform == "darwin"                # torch
+networkx==3.7; sys_platform == "darwin"                # torch
+mpmath==1.3.0; sys_platform == "darwin"                # sympy
+diffusers==0.41.0; sys_platform == "darwin"
 transformers==5.19.0
-accelerate==1.15.0
-peft==0.21.2                 # LoRA hot-swapping
+accelerate==1.15.0; sys_platform == "darwin"
+peft==0.21.2; sys_platform == "darwin"                 # LoRA hot-swapping
 safetensors==0.8.0
 sentencepiece==0.2.2         # FLUX / T5 tokenizer
 piexif==1.1.3                # used by the vendored mflux (app/vendor)
@@ -60,7 +60,7 @@ imageio-ffmpeg==0.6.0        # ffmpeg for video tools and downloads (the Mac app
 numpy==2.5.4
 Pillow==12.3.0
 
-# On-device models (MLX)
-mlx==0.32.3
-mlx-lm==0.32.0
-mlx-whisper==0.4.3           # local speech to text for voice input
+# On-device models (MLX: Apple silicon only; on Windows Xod uses LM Studio, Ollama or a cloud model)
+mlx==0.32.3; sys_platform == "darwin"
+mlx-lm==0.32.0; sys_platform == "darwin"
+mlx-whisper==0.4.3; sys_platform == "darwin"           # local speech to text for voice input

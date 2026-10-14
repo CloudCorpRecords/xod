@@ -9,6 +9,11 @@ const fs = require("fs");
 const path = require("path");
 
 const OUT = path.join(__dirname, "..", "python-runtime");
+// Layouts differ: a Mac Python is bin/python3.12 + lib/python3.12/site-packages; a Windows one is python.exe at the
+// top + Lib/site-packages.
+const WIN = process.platform === "win32";
+const exeIn = (root) => (WIN ? path.join(root, "python.exe") : path.join(root, "bin", "python3.12"));
+const libIn = (root) => (WIN ? path.join(root, "Lib") : path.join(root, "lib", "python3.12"));
 const SKIP = new Set(["test", "tests", "idlelib", "tkinter", "turtledemo", "__pycache__", "ensurepip/_bundled-unused"]);
 
 function findSource() {
@@ -16,7 +21,7 @@ function findSource() {
   for (const uv of ["uv", path.join(process.env.HOME || "", ".local", "bin", "uv")]) {
     try {
       const exe = execFileSync(uv, ["python", "find", "3.12"], { encoding: "utf8" }).trim();
-      return path.resolve(fs.realpathSync(exe), "..", "..");
+      return WIN ? path.dirname(fs.realpathSync(exe)) : path.resolve(fs.realpathSync(exe), "..", "..");
     } catch (e) { /* try the next */ }
   }
   const managed = path.join(process.env.HOME || "", ".local", "share", "uv", "python");
@@ -43,7 +48,7 @@ function copy(src, dst) {
 }
 
 const src = findSource();
-const exe = path.join(src, "bin", "python3.12");
+const exe = exeIn(src);
 const version = execFileSync(exe, ["-c", "import sys; print(sys.version.split()[0])"], { encoding: "utf8" }).trim();
 fs.rmSync(OUT, { recursive: true, force: true });
 copy(src, OUT);
@@ -51,9 +56,9 @@ fs.writeFileSync(path.join(OUT, "XOD_PYTHON_VERSION"), version + "\n");
 console.log(`Bundled Python ${version} from ${src} → ${OUT}`);
 
 // Xod's packages, installed into the bundled Python itself (it's relocatable, so no venv needed).
-const py = path.join(OUT, "bin", "python3.12");
+const py = exeIn(OUT);
 // uv marks its Pythons "externally managed"; this copy is Xod's own, so drop the marker.
-fs.rmSync(path.join(OUT, "lib", "python3.12", "EXTERNALLY-MANAGED"), { force: true });
+fs.rmSync(path.join(libIn(OUT), "EXTERNALLY-MANAGED"), { force: true });
 const reqs = path.join(__dirname, "..", "..", "requirements.txt");
 const sh = (args) => execFileSync(py, args, { stdio: "inherit", env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: "1" } });
 sh(["-m", "pip", "install", "--no-compile", "--only-binary=:all:", "-r", reqs]);
@@ -63,15 +68,15 @@ sh(["-m", "pip", "install", "--no-compile", "--only-binary=:all:", "-r", reqs]);
 // than redistributed inside the app.
 sh(["-m", "pip", "uninstall", "-y", "torch", "diffusers", "accelerate", "peft", "sympy", "networkx", "mpmath", "imageio-ffmpeg"]);
 // Drop the packages' own test suites (never imported by the app).
-const sp = path.join(OUT, "lib", "python3.12", "site-packages");
+const sp = path.join(libIn(OUT), "site-packages");
 for (const name of fs.readdirSync(sp)) {
   const d = path.join(sp, name, "tests");
   if (fs.existsSync(d) && fs.lstatSync(d).isDirectory()) fs.rmSync(d, { recursive: true, force: true });
 }
 // Precompiled bytecode (hash-based, so it stays valid inside a read-only, signed app): faster launch.
-sh(["-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash", path.join(OUT, "lib", "python3.12")]);
+sh(["-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash", libIn(OUT)]);
 fs.copyFileSync(reqs, path.join(OUT, "XOD_REQUIREMENTS"));
 // Notices for everything that ships inside the app (fails the build on a GPL-family license).
-execFileSync("python3", [path.join(__dirname, "..", "..", "scripts", "third_party_licenses.py"), sp,
+execFileSync(WIN ? py : "python3", [path.join(__dirname, "..", "..", "scripts", "third_party_licenses.py"), sp,
   path.join(OUT, "THIRD_PARTY_LICENSES.txt")], { stdio: "inherit" });
 console.log("Installed Xod's packages into the bundled Python.");
