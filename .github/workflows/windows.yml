@@ -86,16 +86,25 @@ jobs:
         run: |
           $env:XOD_DATA_DIR = Join-Path $env:RUNNER_TEMP "xod-app-data"
           $env:XOD_NO_UPDATE_CHECK = "1"
+          if (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue) { throw "port 8000 is already in use before Xod starts" }
+          $t = Get-Date
           $p = Start-Process (Join-Path $env:INSTALL_DIR "Xod.exe") -PassThru
           $ok = $false
           for ($i = 0; $i -lt 120; $i++) {
             Start-Sleep -Seconds 1
             try { $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8000/ -TimeoutSec 2; if ($r.Content -match "<title>\s*Xod") { $ok = $true; break } } catch {}
           }
+          $secs = [math]::Round(((Get-Date) - $t).TotalSeconds)
+          # The server answering must be the installed app's own Python, started by Xod.exe.
+          $owner = (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1).OwningProcess
+          $exePath = if ($owner) { (Get-Process -Id $owner).Path } else { "" }
+          $data = Test-Path (Join-Path $env:XOD_DATA_DIR "xod.db")
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force
           if (!$ok) { throw "Xod.exe didn't start its server" }
-          "Xod.exe started and served the app after $i s"
+          "Xod.exe opened and served the app in $secs s; server: $exePath; data folder created: $data"
+          if ($exePath -notlike "$env:INSTALL_DIR*") { throw "the server on port 8000 isn't the installed Xod's ($exePath)" }
+          if (!$data) { throw "Xod.exe didn't use its data folder" }
       - uses: actions/upload-artifact@v4
         with:
           name: Xod-windows-installer
