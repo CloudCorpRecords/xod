@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0
+
+**Xod plugs itself in**
+- Xod keeps finding the AI on your computer and keeps it working, without being asked. Every 30 seconds (and whenever you open the model picker) it looks for model servers: Ollama, LM Studio, and any other OpenAI-compatible one on the usual ports (llama.cpp, Jan, KoboldCpp, GPT4All, text-generation-webui), or at an address you list in `XOD_LOCAL_SERVERS`.
+- A new install connects itself to the best model it finds (one that can use tools and fits your computer) and says so. If the model it picked goes away, it switches to the next best. A model you picked is never swapped: if it stops working, Xod tells you once what else is ready.
+- If the model app you use is installed but not running, Xod starts it (Ollama, or LM Studio's server).
+- When Ollama crashes, the processes holding its models can keep running and keep your GPU's memory (11 GB in one test). Xod now notices and frees it.
+- Models on another local server (llama.cpp, Jan…) can be picked in the setup screen or in Settings ("Another local server"). The header shows that server by name.
+- The header's status refreshes on its own every 30 seconds, and what Xod fixed or noticed appears as a notice.
+
+**Knows any computer**
+- Xod reads the graphics card on any computer: NVIDIA, AMD, Intel or Apple, on Windows, Mac or Linux. It gets the real memory size (Windows' usual report stops at 4 GB), whether the card has its own memory or shares the computer's, and whether models can use it. It also sees how much GPU memory other programs are using right now, free memory, and whether you're on battery.
+- Model sizes, recommendations and context are based on that. If a game or another app is filling your GPU, the setup screen says a model would start slower, and the header says why answers are slow.
+
+**Local models on Windows, made easy**
+- The setup screen has a Local models section. It can install Ollama with one click (the official installer, checked to be signed by Ollama, installed for your user without admin) or start it if it's installed but stopped.
+- It shows the models on your computer, with what each can do (use tools, think, see images), a warning for models that can't use tools, and Use and Delete buttons.
+- Recommended models for your computer are marked by whether they fit its GPU. Download any of them with a progress bar. Stop a download and it picks up where it left off; downloads keep going if you close the window.
+- Add any model: paste a name from ollama.com, `ollama run …`, or a Hugging Face link (even to one file, to pick its quality). Xod explains when it can't, for example a repository with no GGUF files.
+
+**Fixed: Ollama cut off long prompts**
+- Ollama ran every model with a 4,096-token context and silently dropped the start of longer prompts: Xod's instructions, its tools and the beginning of the chat. Each model now gets a context that fits your computer (32k on a 16 GB GPU), without using extra disk space.
+- Clear messages instead of raw errors when Ollama isn't running, the chosen model isn't installed, or Ollama crashes in the middle of an answer. Before, a cut-off answer looked finished.
+- A model that can't use tools still answers when Xod hands it tools. When you delete a model with `ollama rm`, Xod's copy of it is removed too, so the disk space comes back. Picking a model no longer resets Ollama's address to the default port.
+- Fixed: the header said "AI offline" while chats worked with Ollama, and LM Studio wasn't found while Ollama was selected.
+
+**Tests**
+- New: `tests/smoke/run_local_models_test.py`, 43 checks with a stand-in Ollama (no GPU or download needed). It covers long prompts, thinking models, models that can't use tools, Ollama quitting or crashing mid-answer, missing models, GPUs from every vendor, and Xod connecting itself. It runs on Windows in CI. `--real` also runs it against the Ollama on your computer.
+
 ## 0.4.2
 
 **Xod on Windows (preview)**
