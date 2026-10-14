@@ -30,11 +30,12 @@ async def main():
     from app.services.system_control import system_control_service as sc
 
     r = await sc.run_command("Get-Date -Format yyyy; $PSVersionTable.PSVersion.Major")
-    check("commands run in PowerShell", r.get("success") and r.get("stdout", "").strip()[:2] == "20", str(r)[:300])
+    check("commands run in PowerShell", r.get("exit_code") == 0 and r.get("stdout", "").strip()[:2] == "20", str(r)[:300])
     work = tempfile.mkdtemp(prefix="xod cd test ")       # a space in the name, like real Windows folders
     r = await sc.run_command(f'cd "{work}"')
     r2 = await sc.run_command("(Get-Location).Path")
-    check("cd sticks between commands (folders with spaces too)", os.path.normcase(work) in os.path.normcase(r2.get("stdout", "")), f"{r} {r2}"[:400])
+    # (Windows may write the temp folder with its short 8.3 name, RUNNER~1: compare the folder's own name.)
+    check("cd sticks between commands (folders with spaces too)", os.path.basename(work).lower() in r2.get("stdout", "").lower(), f"{r} {r2}"[:400])
 
     w = await sc.write_clipboard("Xod clipboard ✓ héllo")
     rd = await sc.read_clipboard()
