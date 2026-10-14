@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fixed: with a cloud model that thinks before answering (like the default one on Fireworks), a web answer could come back as only its thinking, with no answer. Xod now asks it to keep thinking short, leaves room for the thinking on top of the answer, and if a reply still ends with no answer it asks once more for just the answer.
+- The header no longer says "AI offline" when your chats run on a cloud model and LM Studio is closed: it says "Ready · Fireworks" (or that the key is missing).
+
 ## 0.4.0
 
 **A life of its own, told now and then**

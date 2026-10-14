@@ -94,6 +94,38 @@ def parse_llm_json(text: str) -> Dict[str, Any]:
     return {}
 
 
+CLOUD_PROVIDERS = ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic")
+CLOUD_THINK_HEADROOM = 2048      # tokens a cloud reasoning model may spend thinking before the answer even starts
+_no_effort: set = set()          # (provider, model) that rejected reasoning_effort
+
+
+def _quiet_thinking(payload: Dict[str, Any], info: Dict[str, Any], think: Optional[bool]) -> None:
+    """think=False: as little thinking as the model allows, so the answer comes quickly and fits its budget.
+    Local servers can switch it off. Fireworks can only turn it down (reasoning_effort low), and a reasoning model
+    there still thinks first, which used to use up a short answer's whole budget (an answer that was all thinking):
+    cloud requests get room for that on top."""
+    if think is not False:
+        return
+    p = info["provider"]
+    if p in ("lm_studio", "ollama"):
+        payload["reasoning_effort"] = "none"
+    elif p == "xod":
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+    elif p in CLOUD_PROVIDERS:
+        if p == "fireworks" and (p, info["model"]) not in _no_effort:
+            payload["reasoning_effort"] = "low"
+        payload["max_tokens"] = int(payload.get("max_tokens") or 1024) + CLOUD_THINK_HEADROOM
+
+
+def _effort_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int, body: str) -> bool:
+    """A model that doesn't take reasoning_effort: remember that, drop it, and the caller retries."""
+    if status == 400 and "reasoning_effort" in payload and "reason" in (body or "").lower():
+        _no_effort.add((info["provider"], info["model"]))
+        payload.pop("reasoning_effort", None)
+        return True
+    return False
+
+
 class LLMService:
     def __init__(self):
         pass
@@ -545,12 +577,10 @@ class LLMService:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
-        if think is False and info["provider"] in ("lm_studio", "ollama"):
-            payload["reasoning_effort"] = "none"
-        if think is False and info["provider"] == "xod":
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        _quiet_thinking(payload, info, think)
 
         last_err: Optional[Exception] = None
+        grown = False
         started = time.time()
         is_specialist = info["provider"] == "specialist"
         timeout = httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0) if is_specialist else LLM_TIMEOUT
@@ -561,6 +591,8 @@ class LLMService:
                     if res.status_code in RETRYABLE_STATUS and attempt < MAX_ATTEMPTS and not is_specialist:
                         logger.warning(f"LLM HTTP {res.status_code}, retrying ({attempt}/{MAX_ATTEMPTS})")
                         await asyncio.sleep(1.5 * attempt)
+                        continue
+                    if res.status_code != 200 and _effort_rejected(payload, info, res.status_code, res.text):
                         continue
                     if res.status_code != 200:
                         raise Exception(f"LLM API returned HTTP {res.status_code}: {res.text}")
@@ -573,6 +605,11 @@ class LLMService:
                     answered = bool(msg.get("content"))
                     if msg.get("reasoning") and not msg.get("reasoning_content"):
                         msg["reasoning_content"] = msg["reasoning"]   # mlx_lm.server's name for it
+                    if (not msg.get("content") and msg.get("reasoning_content") and choice.get("finish_reason") == "length"
+                            and not grown and info["provider"] in CLOUD_PROVIDERS):
+                        grown = True              # all thinking, no answer: it ran out of room; once more with plenty
+                        payload["max_tokens"] = int(payload["max_tokens"]) * 3
+                        continue
                     if not msg.get("content") and msg.get("reasoning_content"):
                         if choice.get("finish_reason") == "length":
                             logger.warning(
@@ -642,10 +679,12 @@ class LLMService:
         task: Optional[str] = None,
         group_id: Optional[str] = None,
         think: Optional[bool] = None,
+        _rescue: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Streams text chunks and reasoning tokens directly. task: see chat_completion.
         think=False skips a local reasoning model's thinking phase (much faster first word)."""
         streamed: List[str] = []
+        reasoned = 0
         started = time.time()
         if not endpoint_override and not tier:
             from app.services import llm_routing
@@ -683,10 +722,7 @@ class LLMService:
         if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini"):
             payload["stream_options"] = {"include_usage": True}   # token counts for cost tracking
         _usage: Optional[Dict[str, Any]] = None
-        if think is False and info["provider"] in ("lm_studio", "ollama"):
-            payload["reasoning_effort"] = "none"
-        if think is False and info["provider"] == "xod":
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        _quiet_thinking(payload, info, think)
 
         async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
             for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -694,6 +730,8 @@ class LLMService:
                     async with client.stream("POST", url, json=payload, headers=headers) as response:
                         if response.status_code != 200:
                             err_body = await response.aread()
+                            if _effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
                             if response.status_code in RETRYABLE_STATUS and attempt < MAX_ATTEMPTS:
                                 logger.warning(f"LLM HTTP {response.status_code}, retrying ({attempt}/{MAX_ATTEMPTS})")
                                 await asyncio.sleep(1.5 * attempt)
@@ -725,6 +763,7 @@ class LLMService:
                                     if delta.get("reasoning") and not delta.get("reasoning_content"):
                                         delta["reasoning_content"] = delta["reasoning"]
                                     if delta.get("reasoning_content"):
+                                        reasoned += len(delta["reasoning_content"])
                                         yield {"type": "reasoning", "content": delta["reasoning_content"]}
                                     # Final content tokens
                                     if delta.get("content"):
@@ -749,6 +788,16 @@ class LLMService:
                         )
                         if ex_id:  # lets the caller label this decision once its outcome is known
                             yield {"type": "example_id", "id": ex_id}
+                    if not streamed and reasoned and not _rescue:
+                        # It thought but never answered (a reasoning model that used up its budget thinking): ask
+                        # once more for just the answer, with more room, so the chat never ends on thoughts alone.
+                        logger.warning(f"{info['provider']} returned only reasoning ({reasoned} chars); asking for the answer")
+                        async for ch in self.stream_chat_completion(
+                                messages=messages + [{"role": "user", "content": "Now write your final answer directly, without thinking out loud."}],
+                                temperature=temperature, max_tokens=max(int(max_tokens) * 3, 1500), tier=tier,
+                                endpoint_override=endpoint_override, task=task, group_id=group_id, think=False, _rescue=True):
+                            if ch.get("type") != "reasoning":
+                                yield ch
                     return
                 except (httpx.ConnectError, httpx.ConnectTimeout) as e:
                     if attempt < MAX_ATTEMPTS:

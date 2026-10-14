@@ -1532,8 +1532,15 @@ async def get_llm_models(provider: Optional[str] = None):
 
 @app.get("/api/lmstudio/status")
 async def get_lmstudio_status():
-    """Fetches real-time status and loaded instances from LM Studio native v1 API."""
-    return await llm_service.get_lmstudio_status()
+    """Fetches real-time status and loaded instances from LM Studio native v1 API. "active" says which model answers
+    chats: with a cloud provider set up, that one (the header shows it as ready even when LM Studio is off)."""
+    status = await llm_service.get_lmstudio_status()
+    info = llm_service.get_endpoint_info()
+    from app.services.llm import CLOUD_PROVIDERS
+    if info.get("provider") in CLOUD_PROVIDERS:
+        status = {**status, "active": {"cloud": True, "provider": info["provider"], "ready": info.get("api_key") not in ("", "missing", None),
+                                       "model": str(info.get("model") or "").split("/")[-1]}}
+    return status
 
 class ModelActionRequest(BaseModel):
     model_key: Optional[str] = None

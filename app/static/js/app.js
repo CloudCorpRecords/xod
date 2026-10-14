@@ -565,7 +565,14 @@ async function updateLMStudioUI() {
     const res = await fetch("/api/lmstudio/status");
     const data = await res.json();
 
-    if (data.online) {
+    // Chats answered by a cloud model (Settings → provider): that's what "ready" means, LM Studio or not.
+    if (data.active && data.active.cloud) {
+      const who = data.active.provider.charAt(0).toUpperCase() + data.active.provider.slice(1);
+      llmText.textContent = `AI model: ${data.active.model} (${who})`;
+      llmText.title = `${who}: ${data.active.model}`;
+      if (pulseDot) pulseDot.className = `size-2 rounded-full ${data.active.ready ? "bg-emerald-400" : "bg-amber-400"}`;
+      setHeaderStatus(data.active.ready ? "ok" : "warn", data.active.ready ? `Ready · ${who}` : `${who} key missing`);
+    } else if (data.online) {
       if (data.loaded_model) {
         const m = data.loaded_model;
         const caps = [];
