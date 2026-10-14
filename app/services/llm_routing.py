@@ -27,7 +27,7 @@ from app.paths import DATA_DIR
 
 logger = logging.getLogger("xod.routing")
 DB = DATA_DIR / "xod.db"
-LOCAL_PROVIDERS = ("xod", "lm_studio", "ollama", "specialist")
+LOCAL_PROVIDERS = ("xod", "lm_studio", "ollama", "local", "specialist")
 FAILURES_TO_ESCALATE = 2
 
 # Prefix match on the model id. Approximate; users can override in settings ("price_overrides").

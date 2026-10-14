@@ -1535,6 +1535,9 @@ User Query / Intent:
 Provide a concise 2-3 sentence executive diagnosis and assessment. Be crisp, factual, and direct."""
 
             endpoint = llm_service.resolve_endpoint_for_tier("local")
+            if endpoint.get("provider") == "ollama":   # same model Ollama already has loaded, not a second copy
+                from app.services.ollama_context import long_context_model
+                endpoint = {**endpoint, "model": await long_context_model(endpoint["base_url"], endpoint["model"])}
             async with httpx.AsyncClient(timeout=8.0) as client:
                 res = await client.post(
                     f"{endpoint['base_url']}/chat/completions",

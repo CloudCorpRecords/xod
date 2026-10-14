@@ -6,6 +6,7 @@ import httpx
 import logging
 from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
 from app.config import settings
+from app.services import ollama_context
 
 logger = logging.getLogger("llm")
 
@@ -95,6 +96,12 @@ def parse_llm_json(text: str) -> Dict[str, Any]:
 
 
 CLOUD_PROVIDERS = ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic")
+# Models on this computer. "local": any other OpenAI-compatible server here (llama.cpp, Jan, KoboldCpp, GPT4All…),
+# found by services/autoconnect.py.
+LOCAL_PROVIDERS = ("xod", "lm_studio", "ollama", "local")
+ENDS_WITH_DONE = ("ollama", "lm_studio")   # local servers that always finish a stream with [DONE]
+PROVIDER_NAMES = {"ollama": "Ollama", "lm_studio": "LM Studio", "xod": "The built-in model", "local": "The local model server", "openai": "OpenAI",
+                  "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter", "fireworks": "Fireworks", "anthropic": "Claude"}
 CLOUD_THINK_HEADROOM = 2048      # tokens a cloud reasoning model may spend thinking before the answer even starts
 _no_effort: set = set()          # (provider, model) that rejected reasoning_effort
 
@@ -109,7 +116,7 @@ def _quiet_thinking(payload: Dict[str, Any], info: Dict[str, Any], think: Option
     p = info["provider"]
     if p in ("lm_studio", "ollama"):
         payload["reasoning_effort"] = "none"
-    elif p == "xod":
+    elif p in ("xod", "local"):     # mlx_lm.server, llama.cpp and most other servers read the chat template's switch
         payload["chat_template_kwargs"] = {"enable_thinking": False}
     elif p in CLOUD_PROVIDERS:
         if p == "fireworks" and (p, info["model"]) not in _no_effort:
@@ -153,6 +160,10 @@ class LLMService:
             base_url = settings.llm_base_url or "http://localhost:11434/v1"
             api_key = "ollama"
             m = model or settings.llm_model or "llama3.1"
+        elif provider == "local":
+            base_url = settings.llm_base_url or "http://localhost:8080/v1"
+            api_key = "local"
+            m = model or settings.llm_model or "default"
         elif provider == "openai":
             base_url = "https://api.openai.com/v1"
             api_key = settings.openai_api_key or "missing"
@@ -210,7 +221,7 @@ class LLMService:
         if settings.anthropic_api_key and settings.anthropic_api_key.strip():
             cloud_options.append({"provider": "anthropic", "model": "claude-opus-5-5", "label": "Anthropic Claude Opus"})
 
-        local_configured = settings.llm_provider in ("lm_studio", "ollama", "xod")
+        local_configured = settings.llm_provider in LOCAL_PROVIDERS
         return {
             "local_ready": True,
             "local_provider": settings.llm_provider if local_configured else "lm_studio",
@@ -303,7 +314,8 @@ class LLMService:
     # ------------------------------------------------------------------
     def get_lmstudio_native_base(self) -> str:
         """Derives root URL for LM Studio native /api/v1 endpoints."""
-        url = settings.llm_base_url or "http://localhost:1234/v1"
+        # LLM_BASE_URL is LM Studio's only when LM Studio is the provider (with Ollama it's Ollama's port).
+        url = (settings.llm_base_url if settings.llm_provider == "lm_studio" else "") or "http://localhost:1234/v1"
         return url.replace("/v1", "").rstrip("/")
 
     async def get_lmstudio_status(self) -> Dict[str, Any]:
@@ -574,6 +586,8 @@ class LLMService:
             "temperature": temperature,
             "max_tokens": max_tokens
         }
+        if info["provider"] == "ollama":
+            payload["model"] = await ollama_context.long_context_model(info["base_url"], info["model"])
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
@@ -594,8 +608,11 @@ class LLMService:
                         continue
                     if res.status_code != 200 and _effort_rejected(payload, info, res.status_code, res.text):
                         continue
+                    if res.status_code != 200 and await ollama_context.retry_after_error(payload, info, res.status_code, res.text):
+                        continue
                     if res.status_code != 200:
-                        raise Exception(f"LLM API returned HTTP {res.status_code}: {res.text}")
+                        raise Exception(ollama_context.friendly_error(info, res.status_code, res.text)
+                                        or f"LLM API returned HTTP {res.status_code}: {res.text}")
                     data = res.json()
                     from app.services import llm_routing
                     llm_routing.record(info["provider"], info["model"], data.get("usage"),
@@ -626,12 +643,14 @@ class LLMService:
                             latency_ms=int((time.time() - started) * 1000), group_id=group_id, meta=meta,
                         )
                     return msg
-                except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError) as e:
+                except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ReadError) as e:
                     last_err = e
                     if attempt < MAX_ATTEMPTS and not is_specialist:
                         logger.warning(f"LLM {type(e).__name__}, retrying ({attempt}/{MAX_ATTEMPTS})")
                         await asyncio.sleep(1.5 * attempt)
                         continue
+            if isinstance(last_err, httpx.ConnectError) and ollama_context.friendly_error(info):
+                raise Exception(ollama_context.friendly_error(info))
             raise Exception(
                 f"Could not get a response from {info['provider']} at {info['base_url']} "
                 f"after {MAX_ATTEMPTS} tries ({type(last_err).__name__}). "
@@ -648,7 +667,7 @@ class LLMService:
         if route and route.endpoint:
             return False                       # this turn runs on a cloud model: nothing to warm
         info = self.get_endpoint_info()
-        if info["provider"] not in ("lm_studio", "xod", "ollama"):
+        if info["provider"] not in LOCAL_PROVIDERS:
             return False
         try:
             from app.services.memory_broker import memory_broker
@@ -657,6 +676,8 @@ class LLMService:
         except Exception:
             pass
         payload: Dict[str, Any] = {"model": info["model"], "messages": messages, "temperature": 0.0, "max_tokens": 1}
+        if info["provider"] == "ollama":
+            payload["model"] = await ollama_context.long_context_model(info["base_url"], info["model"])
         if info["provider"] in ("lm_studio", "ollama"):
             payload["reasoning_effort"] = "none"
         else:
@@ -719,6 +740,8 @@ class LLMService:
             "max_tokens": max_tokens,
             "stream": True
         }
+        if info["provider"] == "ollama":
+            payload["model"] = await ollama_context.long_context_model(info["base_url"], info["model"])
         if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini"):
             payload["stream_options"] = {"include_usage": True}   # token counts for cost tracking
         _usage: Optional[Dict[str, Any]] = None
@@ -732,11 +755,14 @@ class LLMService:
                             err_body = await response.aread()
                             if _effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
+                            if await ollama_context.retry_after_error(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
                             if response.status_code in RETRYABLE_STATUS and attempt < MAX_ATTEMPTS:
                                 logger.warning(f"LLM HTTP {response.status_code}, retrying ({attempt}/{MAX_ATTEMPTS})")
                                 await asyncio.sleep(1.5 * attempt)
                                 continue
-                            yield {"type": "error", "content": f"LLM error {response.status_code}: {err_body.decode('utf-8')}"}
+                            yield {"type": "error", "content": ollama_context.friendly_error(info, response.status_code, err_body.decode("utf-8", "ignore"))
+                                   or f"LLM error {response.status_code}: {err_body.decode('utf-8')}"}
                             return
 
                         async for line in response.aiter_lines():
@@ -776,6 +802,9 @@ class LLMService:
                                         logger.warning(f"LLM stream hit max_tokens={max_tokens}; output was cut off.")
                                 except Exception:
                                     continue
+                        else:
+                            if info["provider"] in ENDS_WITH_DONE:   # no [DONE]: the server went away mid-answer
+                                raise httpx.RemoteProtocolError("the stream ended without [DONE]")
                     from app.services import llm_routing
                     llm_routing.record(info["provider"], info["model"], _usage,
                                        prompt_chars=len(json.dumps(messages)), completion_chars=sum(len(x) for x in streamed))
@@ -804,10 +833,16 @@ class LLMService:
                         logger.warning(f"LLM {type(e).__name__}, retrying ({attempt}/{MAX_ATTEMPTS})")
                         await asyncio.sleep(1.5 * attempt)
                         continue
-                    yield {"type": "error", "content": f"Could not connect to {info['provider']} at {info['base_url']}. Is your local LLM running?"}
+                    yield {"type": "error", "content": ollama_context.friendly_error(info)
+                           or f"Could not connect to {info['provider']} at {info['base_url']}. Is your local LLM running?"}
                     return
                 except httpx.ReadTimeout:
                     yield {"type": "error", "content": f"{info['provider']} stopped responding (no output for {LLM_TIMEOUT.read:.0f}s)."}
+                    return
+                except (httpx.RemoteProtocolError, httpx.ReadError):
+                    # The model server went away in the middle of the answer (crashed, ran out of memory, was quit).
+                    yield {"type": "error", "content": f"{PROVIDER_NAMES.get(info['provider'], info['provider'])} stopped in the middle of the "
+                           "answer (it may have crashed or run out of memory). Try again; if it keeps happening, pick a smaller model."}
                     return
 
     async def deliberate_stream(
@@ -852,6 +887,8 @@ class LLMService:
             "max_tokens": max_tokens,
             "stream": True
         }
+        if info["provider"] == "ollama":
+            payload["model"] = await ollama_context.long_context_model(info["base_url"], info["model"])
         if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini"):
             payload["stream_options"] = {"include_usage": True}   # token counts for cost tracking
         _usage: Optional[Dict[str, Any]] = None
@@ -869,11 +906,14 @@ class LLMService:
                     async with client.stream("POST", url, json=payload, headers=headers) as response:
                         if response.status_code != 200:
                             err_body = await response.aread()
+                            if await ollama_context.retry_after_error(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
                             if response.status_code in RETRYABLE_STATUS and attempt < MAX_ATTEMPTS:
                                 logger.warning(f"LLM HTTP {response.status_code}, retrying ({attempt}/{MAX_ATTEMPTS})")
                                 await asyncio.sleep(1.5 * attempt)
                                 continue
-                            yield {"type": "error", "content": f"LLM error {response.status_code}: {err_body.decode('utf-8')}"}
+                            yield {"type": "error", "content": ollama_context.friendly_error(info, response.status_code, err_body.decode("utf-8", "ignore"))
+                                   or f"LLM error {response.status_code}: {err_body.decode('utf-8')}"}
                             return
 
                         async for line in response.aiter_lines():
@@ -936,6 +976,9 @@ class LLMService:
 
                                 except Exception:
                                     continue
+                        else:
+                            if info["provider"] in ENDS_WITH_DONE:   # no [DONE]: the server went away mid-answer
+                                raise httpx.RemoteProtocolError("the stream ended without [DONE]")
 
                     break
                 except (httpx.ConnectError, httpx.ConnectTimeout) as e:
@@ -943,10 +986,16 @@ class LLMService:
                         logger.warning(f"LLM {type(e).__name__}, retrying ({attempt}/{MAX_ATTEMPTS})")
                         await asyncio.sleep(1.5 * attempt)
                         continue
-                    yield {"type": "error", "content": f"Could not connect to {info['provider']} at {info['base_url']}. Is your local LLM running?"}
+                    yield {"type": "error", "content": ollama_context.friendly_error(info)
+                           or f"Could not connect to {info['provider']} at {info['base_url']}. Is your local LLM running?"}
                     return
                 except httpx.ReadTimeout:
                     yield {"type": "error", "content": f"{info['provider']} stopped responding (no output for {LLM_TIMEOUT.read:.0f}s)."}
+                    return
+                except (httpx.RemoteProtocolError, httpx.ReadError):
+                    # The model server went away in the middle of the answer (crashed, ran out of memory, was quit).
+                    yield {"type": "error", "content": f"{PROVIDER_NAMES.get(info['provider'], info['provider'])} stopped in the middle of the "
+                           "answer (it may have crashed or run out of memory). Try again; if it keeps happening, pick a smaller model."}
                     return
 
         formatted_tool_calls = []

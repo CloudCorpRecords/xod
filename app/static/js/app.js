@@ -572,6 +572,13 @@ async function updateLMStudioUI() {
       llmText.title = `${who}: ${data.active.model}`;
       if (pulseDot) pulseDot.className = `size-2 rounded-full ${data.active.ready ? "bg-emerald-400" : "bg-amber-400"}`;
       setHeaderStatus(data.active.ready ? "ok" : "warn", data.active.ready ? `Ready · ${who}` : `${who} key missing`);
+    } else if (data.active && ["ollama", "local"].includes(data.active.provider)) {
+      const a = data.active;
+      const who = a.server || "Ollama";
+      llmText.textContent = `AI model: ${a.model} (${who})`;
+      llmText.title = a.problem || `${who}: ${a.model}`;
+      if (pulseDot) pulseDot.className = `size-2 rounded-full ${a.ready ? "bg-emerald-400" : "bg-red-400"}`;
+      setHeaderStatus(a.ready ? "ok" : "off", a.ready ? `Ready · ${who}` : a.problem);
     } else if (data.online) {
       if (data.loaded_model) {
         const m = data.loaded_model;
@@ -599,6 +606,23 @@ async function updateLMStudioUI() {
     setHeaderStatus("idle", "Local");
   }
 }
+
+// Xod keeps its AI connected by itself (services/autoconnect.py): every 30 s, refresh the header and show what it
+// fixed or noticed since the last look. Notices from before this page opened aren't repeated.
+let autoconnectSeen = null;
+async function watchAutoconnect() {
+  try {
+    const s = await (await fetch(`/api/autoconnect?since=${autoconnectSeen ?? 0}`)).json();
+    const fresh = autoconnectSeen === null ? s.events.filter((e) => Date.now() / 1000 - e.at < 120) : s.events;
+    for (const e of fresh) showToast(e.message);
+    if (s.events.length) autoconnectSeen = Math.max(autoconnectSeen ?? 0, ...s.events.map((e) => e.id));
+    else if (autoconnectSeen === null) autoconnectSeen = 0;
+    if (fresh.some((e) => e.kind === "connected")) await loadConfig();
+    else await updateLMStudioUI();
+  } catch (e) {}
+}
+document.addEventListener("DOMContentLoaded", () => setInterval(watchAutoconnect, 30000));
+setTimeout(watchAutoconnect, 5000);
 
 async function openLMStudioModal() {
   document.getElementById("lmStudioModal").classList.remove("hidden");
@@ -757,6 +781,13 @@ function handleProviderChange() {
     if (pills) pills.classList.add("hidden");
     if (lmContainer) lmContainer.classList.add("hidden");
     document.getElementById("inputLlmBaseUrl").value = "http://localhost:11434/v1";
+  } else if (provider === "local") {
+    grpBaseUrl.classList.remove("hidden");
+    grpCloud.classList.add("hidden");
+    if (pills) pills.classList.add("hidden");
+    if (lmContainer) lmContainer.classList.add("hidden");
+    const url = document.getElementById("inputLlmBaseUrl");
+    if (/:(1234|11434)\//.test(url.value) || !url.value) url.value = "http://localhost:8080/v1";   // llama.cpp's default
   } else if (provider === "fireworks") {
     grpBaseUrl.classList.add("hidden");
     grpCloud.classList.remove("hidden");

@@ -540,7 +540,7 @@ def _choose(s: Dict[str, Any]) -> str:
     return "daydream"
 
 
-LOCAL_PROVIDERS = ("lm_studio", "ollama", "xod")
+LOCAL_PROVIDERS = ("lm_studio", "ollama", "xod", "local")
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1", "[::1]")
 
 

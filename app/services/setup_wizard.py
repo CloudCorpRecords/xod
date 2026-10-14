@@ -26,8 +26,8 @@ def _mac() -> Dict[str, Any]:
     issues: List[str] = []
     windows = platform.system() == "Windows"
     if windows:
-        issues.append("On this PC Xod uses LM Studio or Ollama (both free, lmstudio.ai / ollama.com) or a cloud model. The "
-                      "built-in model, on-device images, video and voice need a Mac with Apple silicon.")
+        issues.append("On this PC Xod runs local models with Ollama (Xod can install it below) or LM Studio, or uses a cloud "
+                      "model. On-device images, video and voice need a Mac with Apple silicon for now.")
     elif not apple:
         issues.append("On-device images, video, voice and the built-in model need a Mac with Apple silicon (M1 or newer).")
     if ram < 8:
@@ -43,7 +43,8 @@ async def _ollama() -> Dict[str, Any]:
     try:
         async with httpx.AsyncClient(timeout=1.5) as c:
             r = await c.get("http://localhost:11434/api/tags")
-        models = [m["name"] for m in r.json().get("models", [])]
+        from app.services.ollama_context import is_variant
+        models = [m["name"] for m in r.json().get("models", []) if not is_variant(m["name"])]   # not Xod's own long-context copies
         return {"online": True, "models": models}
     except Exception:
         return {"online": False, "models": []}
@@ -98,10 +99,12 @@ async def status() -> Dict[str, Any]:
     }
 
 
-def choose(provider: str, model: str) -> Dict[str, Any]:
+def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> Dict[str, Any]:
+    """Switches Xod's model. base_url: where a "local" server is (autoconnect found it). how: "you" when the person
+    picked it, "auto" when Xod did; Xod only changes a model on its own while the choice is still its own."""
     from app.config import update_env_variable
     from app.services.local_engine import catalog_entry, is_downloaded
-    allowed = {"xod", "lm_studio", "ollama", "anthropic", "openai", "gemini", "groq", "openrouter", "fireworks"}
+    allowed = {"xod", "lm_studio", "ollama", "local", "anthropic", "openai", "gemini", "groq", "openrouter", "fireworks"}
     if provider not in allowed:
         return {"success": False, "error": f"Unknown provider {provider}"}
     if provider == "xod":
@@ -109,13 +112,31 @@ def choose(provider: str, model: str) -> Dict[str, Any]:
             return {"success": False, "error": "Pick one of the built-in models."}
         if not is_downloaded(model):
             return {"success": False, "error": "That model isn't downloaded yet."}
+    # Ollama's address before switching: the one in use if Ollama is already the provider, else OLLAMA_HOST or the default.
+    from app.services.ollama_hub import root as ollama_root
+    ollama_url = f"{ollama_root()}/v1"
     update_env_variable("LLM_PROVIDER", provider)
     update_env_variable("LLM_MODEL", model)
     if provider == "ollama":
-        update_env_variable("LLM_BASE_URL", "http://localhost:11434/v1")
+        update_env_variable("LLM_BASE_URL", ollama_url)
     elif provider == "lm_studio":
-        update_env_variable("LLM_BASE_URL", "http://localhost:1234/v1")
+        update_env_variable("LLM_BASE_URL", base_url or "http://localhost:1234/v1")
+    elif provider == "local":
+        if not base_url.startswith(("http://localhost", "http://127.0.0.1")):
+            return {"success": False, "error": "A local server's address must be on this computer."}
+        update_env_variable("LLM_BASE_URL", base_url)
+    from app.services.storage import set_setting
+    set_setting(CHOSEN_BY_KEY, how)
     return {"success": True, "provider": provider, "model": model}
+
+
+CHOSEN_BY_KEY = "model_chosen_by"
+
+
+def chosen_by() -> str:
+    """ "you" or "auto". Settings from before this existed count as the person's own."""
+    from app.services.storage import get_setting
+    return get_setting(CHOSEN_BY_KEY, "") or "you"
 
 
 def complete() -> Dict[str, Any]:

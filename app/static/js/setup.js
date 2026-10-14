@@ -69,9 +69,10 @@
                        + (heavy ? ` At ${gb.toFixed(1)} GB it's large for a ${s.mac.ram_gb} GB Mac, so answers will be slow; the built-in ${(s.builtin.find((x) => x.recommended) || {}).label || "model"} is about three times faster.` : ""),
                   recommended: !!lm.loaded && !heavy });
     }
-    if (ol.online && ol.models.length) {
-      opts.push({ provider: "ollama", model: ol.models[0], label: ol.models[0], icon: "server", title: `Ollama: ${ol.models[0]}`,
-                  sub: "Already installed. Nothing to download." });
+    // Ollama models are listed in their own section (ollamaSection) on a PC; on a Mac, alongside the built-in ones.
+    if (s.mac.apple_silicon && ol.online && ol.models.length) {
+      for (const m of ol.models) opts.push({ provider: "ollama", model: m, label: m, icon: "server", title: `Ollama: ${m}`,
+                                             sub: "Already installed. Nothing to download." });
     }
     const rec = s.builtin.find((m) => m.recommended);
     const noLocal = !opts.some((o) => o.recommended);
@@ -87,6 +88,8 @@
       <h2 class="text-white text-lg font-semibold mt-2">${s.mac.windows ? "Your PC" : "Your Mac"}</h2>
       <div class="flex flex-wrap gap-2 mt-2">
         ${s.mac.windows ? "" : chip(s.mac.apple_silicon, s.mac.apple_silicon ? "Apple silicon" : "Not Apple silicon")}
+        ${hub && !s.mac.apple_silicon ? chip(hub.machine.runs_on !== "cpu", hub.machine.summary) : ""}
+        ${hub && hub.machine.power && hub.machine.power.battery && !hub.machine.power.plugged_in ? chip(false, "On battery") : ""}
         ${chip(s.mac.ram_gb >= 8, `${s.mac.ram_gb} GB memory`)}
         ${chip(s.mac.disk_free_gb >= 10, `${Math.round(s.mac.disk_free_gb)} GB free`)}
         ${chip(true, s.mac.os || `macOS ${s.mac.macos}`)}
@@ -94,8 +97,10 @@
       ${s.mac.issues.map((i) => `<p class="text-[12px] text-amber-300 mt-2">${esc(i)}</p>`).join("")}
 
       <h2 class="text-white text-lg font-semibold mt-6">Pick Xod's brain</h2>
-      <p class="text-[13px] text-zinc-400 mt-1">${opts.length ? `Everything below runs on your ${s.mac.windows ? "PC" : "Mac"} and stays private. ` : "No model found on this computer yet. "}You can change it any time in Settings.</p>
+      <p class="text-[13px] text-zinc-400 mt-1">${opts.length || (hub && hub.models.length) ? `Everything below runs on your ${s.mac.windows ? "PC" : "Mac"} and stays private. ` : "No model found on this computer yet. "}You can change it any time in Settings.</p>
       <div class="space-y-2.5 mt-3">${opts.map(option).join("")}</div>
+      ${otherServers()}
+      ${s.mac.apple_silicon ? "" : ollamaSection()}
       ${more.length ? `
         <details class="mt-3">
           <summary class="text-[13px] text-zinc-400 cursor-pointer hover:text-white">More built-in sizes</summary>
@@ -108,6 +113,206 @@
         <p class="text-[12px] text-zinc-400 flex-1">${opts.length ? "Prefer a cloud model" : "Use a cloud model"} (Fireworks, Claude, GPT, Gemini)? Add its API key in Settings. ${s.cloud_keys.length ? `You already have: ${esc(s.cloud_keys.join(", "))}.` : ""}</p>
         <button data-setup="settings" class="px-3 py-1.5 rounded-lg text-[12px] text-zinc-200 bg-surface-700 hover:bg-surface-600 shrink-0">Open Settings</button>
       </div>`);
+  }
+
+  // ---------------------------------------------------------------- Ollama (backend: services/ollama_hub.py)
+  const btn = "px-3 py-1.5 rounded-lg text-[12px] shrink-0";
+  const badge = (cls, text) => `<span class="text-[10px] px-2 py-0.5 rounded-full ${cls}">${esc(text)}</span>`;
+
+  function pullBar(name, p) {
+    return `<div data-pull="${esc(name)}" class="mt-2.5">
+      <div class="h-2 rounded-full bg-surface-700 overflow-hidden"><div data-pull-bar class="h-full bg-brand-500 transition-all" style="width:${p.percent || 0}%"></div></div>
+      <div class="flex items-center justify-between mt-1.5">
+        <span data-pull-text class="text-[11px] text-zinc-400">${esc(pullText(p))}</span>
+        <button data-setup="ol-cancel" data-name="${esc(name)}" class="text-[11px] text-zinc-500 hover:text-white">Stop</button>
+      </div></div>`;
+  }
+
+  function pullText(p) {
+    if (!p.total_gb) return `${p.phase || "Starting"}…`;
+    return `${p.downloaded_gb} of ${p.total_gb} GB (${p.percent}%)${p.mb_per_s ? ` · ${p.mb_per_s} MB/s` : ""}${p.phase && p.phase !== "Downloading" ? ` · ${p.phase}` : ""}`;
+  }
+
+  // Where models run on this computer (services/machine.py): a GPU, a Mac's shared memory, or the processor.
+  function bestGpu() {
+    const pc = hub.machine;
+    return pc.runs_on === "gpu" ? pc.gpus.find((g) => g.name === pc.gpu) : null;
+  }
+
+  function fitText(gb, fits, fitsNow) {
+    const pc = hub.machine, g = bestGpu();
+    const busy = fits && fitsNow === false ? ` · other programs are using your ${pc.runs_on === "gpu" ? "GPU" : "memory"} right now (${hub.room_now_gb} GB free), so it would start slower` : "";
+    if (pc.runs_on === "cpu") return (fits ? "Fits your memory (runs on the processor)" : "Too big for this computer's memory: very slow") + busy;
+    if (pc.runs_on === "unified") return (fits ? `Fits your ${pc.ram_gb} GB Mac` : `Too big for your ${pc.ram_gb} GB Mac: very slow`) + busy;
+    if (fits) return "Fits your GPU" + busy;
+    return gb < g.memory_gb ? `Tight on your ${g.memory_gb} GB GPU: some of it may run on the processor, slower`
+                            : "Bigger than your GPU: runs partly on the processor, slower";
+  }
+
+  function installedRow(m) {
+    const caps = [m.tools ? badge("bg-emerald-500/10 text-emerald-300", "Tools") : badge("bg-amber-500/10 text-amber-300", "No tools"),
+                  m.thinking ? badge("bg-surface-700 text-zinc-300", "Thinks") : "", m.vision ? badge("bg-surface-700 text-zinc-300", "Sees images") : ""].join(" ");
+    return `<div class="flex items-center gap-2 p-3 rounded-2xl border ${m.in_use ? "border-brand-500/60 bg-brand-500/[0.07]" : "border-white/[0.08] bg-surface-900/60"}">
+      <i data-lucide="server" class="size-4 text-zinc-400 shrink-0 ml-1"></i>
+      <div class="min-w-0 flex-1">
+        <p class="text-white text-[13px] font-medium truncate flex items-center gap-2">${esc(m.name)} ${m.in_use ? badge("bg-brand-500 text-surface-900 font-semibold", "In use") : ""}</p>
+        <p class="text-[11px] text-zinc-400 mt-0.5 flex items-center gap-1.5 flex-wrap">${m.size_gb} GB ${caps}</p>
+        ${m.tools ? "" : `<p class="text-[11px] text-amber-300/90 mt-1">Can't use tools, so it can chat but not browse, work with files or run tasks.</p>`}
+      </div>
+      ${m.in_use ? "" : `<button data-setup="pick" data-provider="ollama" data-model="${esc(m.name)}" data-label="${esc(m.name)}" data-download="0" class="${btn} bg-surface-700 text-white hover:bg-surface-600">Use</button>`}
+      ${m.in_use ? "" : `<button data-setup="ol-delete" data-name="${esc(m.name)}" class="p-1.5 rounded-lg text-zinc-500 hover:text-red-300 hover:bg-surface-700" title="Delete from this computer"><i data-lucide="trash-2" class="size-3.5"></i></button>`}
+    </div>`;
+  }
+
+  function catalogCard(m) {
+    const p = m.pull || {};
+    const busy = p.status === "downloading";
+    const action = busy ? "" : `<button data-setup="ol-pull" data-name="${esc(m.name)}" class="${btn} ${m.recommended ? "bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400" : "bg-surface-700 text-white hover:bg-surface-600"}">Download</button>`;
+    return `<div class="p-3.5 rounded-2xl border ${m.recommended ? "border-brand-500/60 bg-brand-500/[0.07]" : "border-white/[0.08] bg-surface-900/60"}">
+      <div class="flex items-start gap-3">
+        <div class="min-w-0 flex-1">
+          <p class="text-white text-[13px] font-medium flex items-center gap-2 flex-wrap">${esc(m.label)}
+            ${m.recommended ? badge("bg-brand-500 text-surface-900 font-semibold", "Recommended") : ""}</p>
+          <p class="text-[11px] text-zinc-400 mt-0.5">${esc(m.blurb)}</p>
+          <p class="text-[11px] mt-1 ${m.fits && m.fits_now !== false ? "text-emerald-300/90" : "text-amber-300/90"}">${m.size_gb} GB · ${fitText(m.size_gb, m.fits, m.fits_now)}</p>
+        </div>${action}
+      </div>
+      ${busy ? pullBar(m.name, p) : p.status === "error" ? `<p class="text-[11px] text-red-300 mt-2">${esc(p.error)}</p>` : ""}
+    </div>`;
+  }
+
+  // Other model servers Xod found running here (llama.cpp, Jan, KoboldCpp…; services/autoconnect.py).
+  function otherServers() {
+    const servers = ((auto && auto.servers) || []).filter((x) => x.provider === "local");
+    if (!servers.length) return "";
+    const cur = state.current;
+    return `<h3 class="text-white text-[15px] font-semibold mt-6">Other model servers <span class="text-zinc-500 font-normal text-[12px]">found running on this computer</span></h3>
+      <div class="space-y-2 mt-3">${servers.flatMap((sv) => (sv.models.length ? sv.models : [{ id: "default" }]).map((m) => {
+        const inUse = cur.provider === "local" && cur.model === m.id && (auto.current.base_url || "") === sv.base_url;
+        return `<div class="flex items-center gap-2 p-3 rounded-2xl border ${inUse ? "border-brand-500/60 bg-brand-500/[0.07]" : "border-white/[0.08] bg-surface-900/60"}">
+          <i data-lucide="server" class="size-4 text-zinc-400 shrink-0 ml-1"></i>
+          <div class="min-w-0 flex-1">
+            <p class="text-white text-[13px] font-medium truncate flex items-center gap-2">${esc(m.id)} ${inUse ? badge("bg-brand-500 text-surface-900 font-semibold", "In use") : ""}</p>
+            <p class="text-[11px] text-zinc-400 mt-0.5">${esc(sv.name)} · ${esc(sv.base_url.replace(/\/v1$/, ""))}</p>
+          </div>
+          ${inUse ? "" : `<button data-setup="pick" data-provider="local" data-model="${esc(m.id)}" data-label="${esc(m.id)}" data-base="${esc(sv.base_url)}" data-download="0" class="${btn} bg-surface-700 text-white hover:bg-surface-600">Use</button>`}
+        </div>`;
+      })).join("")}</div>`;
+  }
+
+  function ollamaSection() {
+    const h = hub;
+    if (!h) return "";
+    let top;
+    if (!h.installed_app) {
+      const i = h.install || {};
+      const working = ["downloading", "installing", "starting"].includes(i.status);
+      top = `<div class="p-4 rounded-2xl border border-brand-500/40 bg-brand-500/[0.06]">
+        <p class="text-white text-[13px] font-medium">Install Ollama to run models on this PC</p>
+        <p class="text-[12px] text-zinc-400 mt-1">Free and open source (ollama.com). Xod downloads the official installer (about 1.5 GB, it includes the GPU libraries), checks it's signed by Ollama and installs it for you. No admin needed.</p>
+        ${working ? `<p class="text-[12px] text-brand-300 mt-3 flex items-center gap-2"><i data-lucide="loader-2" class="size-3.5 animate-spin"></i>${
+            i.status === "downloading" ? `Downloading Ollama… ${i.percent}%` : i.status === "installing" ? "Installing…" : "Starting Ollama…"}</p>`
+          : `<div class="mt-3 flex items-center gap-3">${h.can_install
+              ? `<button data-setup="ol-install" class="${btn} bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Install Ollama</button>`
+              : `<a href="https://ollama.com/download" target="_blank" class="${btn} bg-brand-500 text-surface-900 font-semibold">Get Ollama</a>`}
+              ${i.status === "error" ? `<span class="text-[12px] text-red-300">${esc(i.error)}</span>` : ""}</div>`}
+      </div>`;
+    } else if (!h.running) {
+      top = `<div class="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/[0.05] flex items-center gap-3">
+        <p class="text-[13px] text-zinc-200 flex-1">Ollama is installed but not running.</p>
+        <button data-setup="ol-start" class="${btn} bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Start Ollama</button></div>`;
+    }
+    const usable = h.models.filter((m) => !m.embedding);
+    return `
+      <h3 class="text-white text-[15px] font-semibold mt-6">Local models <span class="text-zinc-500 font-normal text-[12px]">with Ollama${h.version ? ` ${esc(h.version)}` : ""}</span></h3>
+      ${top ? `<div class="mt-3">${top}</div>` : ""}
+      ${h.running && usable.length ? `<p class="text-[12px] text-zinc-400 mt-3">On this computer</p><div class="space-y-2 mt-2">${usable.map(installedRow).join("")}</div>` : ""}
+      ${h.running ? `
+        <p class="text-[12px] text-zinc-400 mt-4">Get a model <span class="text-zinc-500">· picked for ${bestGpu() ? `your ${bestGpu().memory_gb} GB GPU` : h.machine.runs_on === "unified" ? `your ${h.machine.ram_gb} GB Mac` : "this computer's processor"}</span></p>
+        <div class="space-y-2 mt-2">${h.catalog.filter((m) => !m.installed).map(catalogCard).join("")}</div>
+        <div class="mt-4 p-3.5 rounded-2xl border border-white/[0.06] bg-surface-900/40">
+          <p class="text-[12px] text-zinc-300">Add any model</p>
+          <p class="text-[11px] text-zinc-500 mt-0.5">A name from ollama.com (like <span class="text-zinc-400">llama3.1:8b</span>) or a Hugging Face link to a GGUF model.</p>
+          <form data-setup-form="ol-find" class="mt-2 flex gap-2">
+            <input id="olQuery" autocomplete="off" spellcheck="false" placeholder="huggingface.co/… or model:tag" class="flex-1 min-w-0 px-3 py-1.5 rounded-lg bg-surface-800 border border-white/[0.08] text-[12px] text-white placeholder-zinc-600 outline-none focus:border-brand-400">
+            <button class="${btn} bg-surface-700 text-white hover:bg-surface-600">Find</button>
+          </form>
+          <div id="olFound">${foundHtml()}</div>
+        </div>` : ""}`;
+  }
+
+  let found = null;      // result of the "Add any model" lookup
+  function foundHtml() {
+    if (!found) return "";
+    if (found.loading) return `<p class="text-[11px] text-zinc-400 mt-2">Looking it up…</p>`;
+    if (!found.success) return `<p class="text-[11px] text-red-300 mt-2">${esc(found.error)}</p>`;
+    const p = (hub.pulls.find((x) => x.name === found.name)) || {};
+    const fits = !found.size_gb || found.size_gb + 2.5 <= hub.budget_gb;
+    const full = /:[^/]*$/.test(found.name) ? found.name : `${found.name}:latest`;   // how Ollama lists it
+    const have = hub.models.find((m) => m.name === found.name || m.name === full);
+    return `<div class="mt-2.5 flex items-center gap-3">
+        <div class="min-w-0 flex-1">
+          <p class="text-[12px] text-white truncate">${esc(found.name)}</p>
+          <p class="text-[11px] ${fits ? "text-zinc-400" : "text-amber-300/90"}">${found.source === "huggingface" ? "Hugging Face" : "ollama.com"}${found.quant ? ` · ${esc(found.quant)}` : ""}${found.size_gb ? ` · ${found.size_gb} GB · ${fitText(found.size_gb, fits)}` : ""}</p>
+        </div>
+        ${p.status === "downloading" ? "" : have
+          ? (have.in_use ? badge("bg-brand-500 text-surface-900 font-semibold", "In use")
+             : `<button data-setup="pick" data-provider="ollama" data-model="${esc(have.name)}" data-label="${esc(have.name)}" data-download="0" class="${btn} bg-surface-700 text-white hover:bg-surface-600">Use</button>`)
+          : `<button data-setup="ol-pull" data-name="${esc(found.name)}" class="${btn} bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Download</button>`}
+      </div>${p.status === "downloading" ? pullBar(found.name, p) : ""}`;
+  }
+
+  let hub = null;
+  let hubTimer = null;
+  async function loadHub() {
+    try { hub = await (await fetch("/api/ollama")).json(); } catch (e) { hub = null; }
+  }
+
+  // While Ollama installs or models download: move the bars in place; redraw when something finishes.
+  function watchHub() {
+    clearInterval(hubTimer);
+    hubTimer = setInterval(async () => {
+      if (!$("setupWizard") || !hub) return clearInterval(hubTimer);
+      const installing = ["downloading", "installing", "starting"].includes((hub.install || {}).status);
+      const active = hub.pulls.filter((p) => p.status === "downloading");
+      if (!installing && !active.length) return clearInterval(hubTimer);
+      if (installing) {
+        const prev = hub.install.status;
+        await loadHub();
+        if (hub.install.status !== prev || hub.install.status === "downloading") redraw();
+        return;
+      }
+      let finished = false;
+      for (const p of active) {
+        const s = await (await fetch(`/api/ollama/pull?name=${encodeURIComponent(p.name)}`)).json();
+        Object.assign(p, s);
+        if (s.status !== "downloading") { finished = true; continue; }
+        document.querySelectorAll(`[data-pull="${CSS.escape(p.name)}"]`).forEach((el) => {
+          el.querySelector("[data-pull-bar]").style.width = `${s.percent}%`;
+          el.querySelector("[data-pull-text]").textContent = pullText(s);
+        });
+      }
+      if (finished) {
+        const done = active.filter((p) => p.status === "done").map((p) => p.name);
+        await loadHub();
+        redraw();
+        if (done.length) showToast(`${done.join(", ")} downloaded. Click Use to switch to it.`);
+      }
+    }, 1500);
+  }
+
+  function redraw() {
+    const scroller = document.querySelector("#setupWizard > div");
+    const top = scroller ? scroller.scrollTop : 0;
+    const q = $("olQuery") ? $("olQuery").value : "";
+    stepChoose();
+    const again = document.querySelector("#setupWizard > div");
+    if (again) again.scrollTop = top;
+    if ($("olQuery")) $("olQuery").value = q;
+  }
+
+  async function olPost(path, body) {
+    return (await fetch(`/api/ollama/${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })).json();
   }
 
   function stepDownload() {
@@ -135,7 +340,7 @@
 
   async function useChoice() {
     const r = await (await fetch("/api/setup/choose", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider: choice.provider, model: choice.model }) })).json();
+      body: JSON.stringify({ provider: choice.provider, model: choice.model, base_url: choice.base || "" }) })).json();
     if (!r.success) { showToast(r.error || "Couldn't use that model"); return stepChoose(); }
     stepTest();
   }
@@ -143,7 +348,8 @@
   async function stepTest() {
     shell(`
       <h2 class="text-white text-lg font-semibold mt-2">Saying hi to ${esc(choice.label)}</h2>
-      <p class="text-[13px] text-zinc-400 mt-1">${choice.provider === "xod" ? "Starting the built-in model (the first start takes up to a minute)…" : "Checking it answers…"}</p>
+      <p class="text-[13px] text-zinc-400 mt-1">${choice.provider === "xod" ? "Starting the built-in model (the first start takes up to a minute)…"
+        : choice.provider === "ollama" ? "Loading it into memory and checking it answers (the first load can take a minute)…" : "Checking it answers…"}</p>
       <div id="setupTest" class="mt-5 p-4 rounded-2xl bg-surface-900/60 border border-white/[0.06] text-[13px] text-zinc-300 flex items-center gap-2">
         <i data-lucide="loader-2" class="size-4 animate-spin text-brand-400"></i> Waiting for an answer…
       </div>`);
@@ -175,13 +381,23 @@
   }
 
   async function open() {
-    shell(`<div class="py-16 text-center text-zinc-400 text-[13px]"><i data-lucide="loader-2" class="size-5 animate-spin mx-auto mb-2 text-brand-400"></i>Checking your Mac…</div>`);
-    state = await (await fetch("/api/setup")).json();
+    shell(`<div class="py-16 text-center text-zinc-400 text-[13px]"><i data-lucide="loader-2" class="size-5 animate-spin mx-auto mb-2 text-brand-400"></i>Checking your computer…</div>`);
+    await reload();
     stepChoose();
+    watchHub();
+  }
+
+  let auto = null;      // what autoconnect found: other servers, this computer
+  async function reload() {
+    // A fresh look around first (it may start Ollama or connect a model), then what there is.
+    auto = await fetch("/api/autoconnect/check", { method: "POST" }).then((r) => r.json()).catch(() => null);
+    const [s] = await Promise.all([fetch("/api/setup").then((r) => r.json()), loadHub()]);
+    state = s;
   }
 
   function close() {
     clearInterval(pollTimer);
+    clearInterval(hubTimer);
     const root = $("setupWizard");
     if (root) root.remove();
     if (typeof loadConfig === "function") loadConfig();
@@ -193,7 +409,27 @@
     const act = b.dataset.setup;
     if (act === "close") return close();
     if (act === "settings") { close(); return openSettingsModal(); }
-    if (act === "back") { clearInterval(pollTimer); state = await (await fetch("/api/setup")).json(); return stepChoose(); }
+    if (act === "back") { clearInterval(pollTimer); await reload(); stepChoose(); return watchHub(); }
+    if (act === "ol-install" || act === "ol-start") {
+      b.disabled = true;
+      b.textContent = act === "ol-install" ? "Starting…" : "Starting Ollama…";
+      const r = await olPost(act === "ol-install" ? "install" : "start");
+      if (!r.success) showToast(r.error || "Couldn't start Ollama");
+      await reload(); redraw(); return watchHub();
+    }
+    if (act === "ol-pull") {
+      b.disabled = true;
+      const r = await olPost("pull", { name: b.dataset.name });
+      if (!r.success) { b.disabled = false; return showToast(r.error || "Couldn't start the download"); }
+      await loadHub(); redraw(); return watchHub();
+    }
+    if (act === "ol-cancel") { await olPost("pull/cancel", { name: b.dataset.name }); await loadHub(); return redraw(); }
+    if (act === "ol-delete") {
+      if (!confirm(`Delete ${b.dataset.name} from this computer? You can download it again later.`)) return;
+      const r = await olPost("delete", { name: b.dataset.name });
+      if (!r.success) return showToast(r.error || "Couldn't delete it");
+      await reload(); return redraw();
+    }
     if (act === "retest") return stepTest();
     if (act === "starter") {
       const t = STARTERS[+b.dataset.i];
@@ -203,7 +439,8 @@
       return;
     }
     if (act === "pick") {
-      choice = { provider: b.dataset.provider, model: b.dataset.model, label: b.dataset.label, needsDownload: b.dataset.download === "1" };
+      choice = { provider: b.dataset.provider, model: b.dataset.model, label: b.dataset.label, base: b.dataset.base || "",
+                 needsDownload: b.dataset.download === "1" };
       if (choice.needsDownload) {
         const r = await (await fetch("/api/setup/download", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repo: choice.model }) })).json();
         if (!r.success) return showToast(r.error || "Couldn't start the download");
@@ -213,11 +450,24 @@
     }
   });
 
+  document.addEventListener("submit", async (e) => {
+    const f = e.target.closest("[data-setup-form='ol-find']");
+    if (!f) return;
+    e.preventDefault();
+    const query = $("olQuery").value.trim();
+    if (!query) return;
+    found = { loading: true };
+    $("olFound").innerHTML = foundHtml();
+    found = await olPost("resolve", { query });
+    $("olFound").innerHTML = foundHtml();
+    if (window.lucide) lucide.createIcons();
+  });
+
   window.openSetupWizard = open;
   document.addEventListener("DOMContentLoaded", async () => {
     try {
       const s = await (await fetch("/api/setup")).json();
-      if (s.show_on_start) { state = s; stepChoose(); }
+      if (s.show_on_start) { await loadHub(); state = s; stepChoose(); watchHub(); }
     } catch (e) {}
   });
 })();

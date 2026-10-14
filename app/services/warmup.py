@@ -61,7 +61,7 @@ def warm(spoken: bool = False, after_answer: bool = False) -> Dict[str, Any]:
     global _last, _task
     from app.services.llm import llm_service
     info = llm_service.get_endpoint_info()
-    if info.get("provider") not in ("lm_studio", "ollama", "xod"):
+    if info.get("provider") not in ("lm_studio", "ollama", "xod", "local"):
         return {"warmed": False, "reason": "not a local model"}
     now = time.time()
     if _task and not _task.done():

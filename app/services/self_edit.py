@@ -131,7 +131,7 @@ def tier_for(provider: str, model: str) -> Dict[str, str]:
         size = float(m.group(1))
         return ({"tier": "yellow", "why": f"{size:g}B local model: can propose changes for your approval"} if size >= YELLOW_MIN_B
                 else {"tier": "red", "why": f"{size:g}B model: too small to change code"})
-    if provider in ("lm_studio", "ollama", "xod"):
+    if provider in ("lm_studio", "ollama", "xod", "local"):
         return {"tier": "red", "why": "unknown local model size"}
     return {"tier": "yellow", "why": "unrecognised API model: can propose changes for your approval"}
 
@@ -142,7 +142,7 @@ def editor_model() -> Dict[str, Any]:
     ed = get_settings().get("editor") or {}
     if ed.get("provider") and ed.get("model"):
         key_field = f"{ed['provider']}_api_key"
-        if ed["provider"] in ("lm_studio", "ollama", "xod") or getattr(settings, key_field, ""):
+        if ed["provider"] in ("lm_studio", "ollama", "xod", "local") or getattr(settings, key_field, ""):
             return {"provider": ed["provider"], "model": ed["model"], "source": "editor setting",
                     **tier_for(ed["provider"], ed["model"])}
         missing = f"the {ed['provider']} API key isn't set"
@@ -525,7 +525,7 @@ async def _ask_editor(ed: Dict[str, Any], messages: List[Dict[str, Any]]) -> Dic
     # Local models think at ~15-20 tokens/s here: a long think blew past the 5-minute timeout three times
     # in a row. They answer directly (the staged checks still catch mistakes, with one retry);
     # API models think.
-    local = ed["provider"] in ("lm_studio", "ollama", "xod")
+    local = ed["provider"] in ("lm_studio", "ollama", "xod", "local")
     reply = await llm_service.chat_completion(messages=messages, temperature=0.1, max_tokens=3500 if local else 8000,
                                               endpoint_override=override, think=not local, task="self_edit")
     return parse_llm_json(reply.get("content", "")) or {}
@@ -545,7 +545,7 @@ async def request_change(goal: str, hint_files: Optional[List[str]] = None, requ
                 "error": f"{ed['model']} isn't allowed to change Xod's code ({ed['why']}). Set a stronger editor model "
                          "in Tools → Health → Self-editing, e.g. Claude Opus with an Anthropic key."}
     change_id = f"edit-{uuid.uuid4().hex[:8]}"
-    local = ed["provider"] in ("lm_studio", "ollama", "xod")
+    local = ed["provider"] in ("lm_studio", "ollama", "xod", "local")
     # Local models are slow to read long prompts: a tighter excerpt keeps them under the timeout.
     context = _gather_context(goal, [_rel(f) for f in hint_files or []], 22_000 if local else 150_000)
     messages = [{"role": "system", "content": EDITOR_PROMPT},

@@ -469,6 +469,8 @@ async def _start_task_worker():
     asyncio.create_task(soul.life_loop())   # when you're away, the companion does things for itself
     from app.services import recall
     recall.schedule_index(20)               # catch Xod's memory up on chats and tasks since it last ran
+    from app.services import autoconnect
+    asyncio.create_task(autoconnect.loop())  # keeps finding the AI on this computer and keeps it working
 
 
 @app.get("/api/mcp")
@@ -1096,7 +1098,7 @@ async def chat_endpoint(request: ChatRequest):
         learn_wanted, learn_turn, local_model = False, None, True
         try:
             learn_wanted = user_memory.worth_a_look(said) or bool(user_memory.FORGET_ALL_RE.match(said))
-            local_model = llm_service.get_endpoint_info().get("provider") in ("lm_studio", "ollama", "xod") and not route.endpoint
+            local_model = llm_service.get_endpoint_info().get("provider") in ("lm_studio", "ollama", "xod", "local") and not route.endpoint
             if learn_wanted and not local_model:
                 learn_turn = user_memory.start_learning(said)
         except Exception as e:
@@ -1310,6 +1312,13 @@ async def update_config(req: ConfigUpdateRequest):
         yt_val = req.youtube_api_key.strip()
         update_env_variable("YOUTUBE_API_KEY", yt_val)
         youtube_client.set_api_key(yt_val)
+
+    picked = [(new, getattr(settings, field)) for new, field in ((req.llm_provider, "llm_provider"), (req.llm_base_url, "llm_base_url"),
+                                                                 (req.llm_model, "llm_model")) if new is not None]
+    if any(new != old for new, old in picked):    # the person changed the model here: it's theirs, Xod won't swap it
+        from app.services.storage import set_setting
+        from app.services.setup_wizard import CHOSEN_BY_KEY
+        set_setting(CHOSEN_BY_KEY, "you")
 
     if req.llm_provider is not None:
         update_env_variable("LLM_PROVIDER", req.llm_provider)
@@ -1535,12 +1544,20 @@ async def get_llm_models(provider: Optional[str] = None):
 async def get_lmstudio_status():
     """Fetches real-time status and loaded instances from LM Studio native v1 API. "active" says which model answers
     chats: with a cloud provider set up, that one (the header shows it as ready even when LM Studio is off)."""
-    status = await llm_service.get_lmstudio_status()
     info = llm_service.get_endpoint_info()
+    # LM Studio's details only matter when it's the provider (asking a port nobody listens on takes ~2 s on Windows).
+    status = await llm_service.get_lmstudio_status() if info.get("provider") in ("lm_studio", "xod") else {
+        "online": False, "server_url": llm_service.get_lmstudio_native_base(), "loaded_model": None, "models": [], "total_models": 0}
     from app.services.llm import CLOUD_PROVIDERS
     if info.get("provider") in CLOUD_PROVIDERS:
         status = {**status, "active": {"cloud": True, "provider": info["provider"], "ready": info.get("api_key") not in ("", "missing", None),
                                        "model": str(info.get("model") or "").split("/")[-1]}}
+    elif info.get("provider") == "ollama":
+        from app.services.ollama_context import status as ollama_status
+        status = {**status, "active": await ollama_status(info["base_url"], info["model"])}
+    elif info.get("provider") == "local":
+        from app.services.autoconnect import local_status
+        status = {**status, "active": await local_status(info["base_url"], info["model"])}
     return status
 
 class ModelActionRequest(BaseModel):
@@ -2842,6 +2859,7 @@ class LabExportRequest(BaseModel):
 class SetupChoice(BaseModel):
     provider: str
     model: str
+    base_url: Optional[str] = ""
 
 class SetupDownload(BaseModel):
     repo: str
@@ -2917,7 +2935,7 @@ async def setup_download_status_endpoint(repo: str):
 @app.post("/api/setup/choose")
 async def setup_choose_endpoint(req: SetupChoice):
     from app.services import setup_wizard
-    return setup_wizard.choose(req.provider, req.model)
+    return setup_wizard.choose(req.provider, req.model, req.base_url or "")
 
 @app.post("/api/setup/test")
 async def setup_test_endpoint():
@@ -2934,6 +2952,71 @@ async def setup_test_endpoint():
 async def setup_complete_endpoint():
     from app.services import setup_wizard
     return setup_wizard.complete()
+
+# This computer and the AI on it (services/machine.py, services/autoconnect.py).
+@app.get("/api/machine")
+async def machine_endpoint(fresh: bool = False):
+    from app.services import machine
+    return await asyncio.to_thread(machine.profile, fresh)
+
+@app.get("/api/autoconnect")
+async def autoconnect_state_endpoint(since: int = 0):
+    """What Xod found and did; `events` holds only those after `since` (an event id) for the page's notices."""
+    from app.services import autoconnect
+    s = autoconnect.state()
+    return {**s, "events": autoconnect.events(since)}
+
+@app.post("/api/autoconnect/check")
+async def autoconnect_check_endpoint():
+    from app.services import autoconnect
+    return await autoconnect.check()
+
+# Local models through Ollama: install it, recommended models for this computer, downloads (services/ollama_hub.py).
+class OllamaModel(BaseModel):
+    name: str
+
+class OllamaQuery(BaseModel):
+    query: str
+
+@app.get("/api/ollama")
+async def ollama_overview_endpoint():
+    from app.services import ollama_hub
+    return await ollama_hub.overview()
+
+@app.post("/api/ollama/install")
+async def ollama_install_endpoint():
+    from app.services import ollama_hub
+    return await ollama_hub.install_ollama()
+
+@app.post("/api/ollama/start")
+async def ollama_start_endpoint():
+    from app.services import ollama_hub
+    return await ollama_hub.start_ollama()
+
+@app.post("/api/ollama/resolve")
+async def ollama_resolve_endpoint(req: OllamaQuery):
+    from app.services import ollama_hub
+    return await ollama_hub.resolve(req.query)
+
+@app.post("/api/ollama/pull")
+async def ollama_pull_endpoint(req: OllamaModel):
+    from app.services import ollama_hub
+    return await ollama_hub.start_pull(req.name)
+
+@app.get("/api/ollama/pull")
+async def ollama_pull_status_endpoint(name: str):
+    from app.services import ollama_hub
+    return ollama_hub.pull_status(name)
+
+@app.post("/api/ollama/pull/cancel")
+async def ollama_pull_cancel_endpoint(req: OllamaModel):
+    from app.services import ollama_hub
+    return ollama_hub.cancel_pull(req.name)
+
+@app.post("/api/ollama/delete")
+async def ollama_delete_endpoint(req: OllamaModel):
+    from app.services import ollama_hub
+    return await ollama_hub.delete(req.name)
 
 VOICE_MAC_ONLY = {"success": False, "mac_only": True,
                   "error": "Talking to Xod uses speech recognition that runs on a Mac (Apple silicon) for now. On this PC, type instead."}

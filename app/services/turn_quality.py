@@ -229,7 +229,7 @@ async def understand(query: str, history: List[Dict[str, Any]]) -> str:
             {"role": "user", "content": f"Conversation:\n{_conversation(history)}\n\nLatest message: {query}"}]
     # Blocks the answer, so it gets a few seconds at most (a warm local model takes 1-2 s, a cloud one well under 1);
     # on a timeout the question is used as it was asked.
-    local = llm_service.get_endpoint_info().get("provider") in ("lm_studio", "ollama", "xod")
+    local = llm_service.get_endpoint_info().get("provider") in ("lm_studio", "ollama", "xod", "local")
     try:
         msg = await asyncio.wait_for(llm_service.chat_completion(messages=msgs, temperature=0.0, max_tokens=90, think=False,
                                                                  task="understand"), 6 if local else 8)
