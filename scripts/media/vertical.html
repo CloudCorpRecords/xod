@@ -1,0 +1,138 @@
+<!doctype html>
+<!-- Vertical (9:16, 1080×1920) pieces for Xod's short use-case videos, in the launch film's style: the real moon
+     (mascot.js) and fonts from app/static. Open as vertical.html#<scene>?<params>:
+       #hook?h=…&s=…      the opening card: a big line and a smaller one (animated, about 3.5 s)
+       #end               the closing card: free, open source, Mac and Windows, the download link (animated)
+       #frame             the still background behind the app: sky, a glow where the app sits, the brand bar
+       #mask              white rounded rectangle on black: the app clip's rounded corners (for ffmpeg)
+       #caption?t=…       a caption, on a transparent background (top band); *word* is highlighted
+       #badge?t=…         the small "sped up" pill, on a transparent background
+     Lines in h, s and t break at "|". -->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Xod vertical</title>
+<link rel="stylesheet" href="../../app/static/vendor/fonts/fonts.css">
+<link rel="stylesheet" href="../../app/static/css/whimsy.css">
+<style>
+  :root { --ink: #0f1222; --paper: #fffaf0; --lamp: #f2b24a; --lamp-soft: #ffd06b; --dim: #a39e97;
+          --ease: cubic-bezier(0.16, 1, 0.3, 1);
+          --app-x: 24px; --app-y: 340px; --app-w: 1032px; --app-h: 1290px; }
+  html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; color: var(--paper);
+               font-family: Figtree, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  body { background: var(--ink); }
+  body.clear { background: transparent; }
+  body.sky::before { content: ""; position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 90% 45% at 50% 108%, rgba(242,178,74,.18), transparent 70%),
+                radial-gradient(ellipse 80% 40% at 50% -6%, rgba(161,150,236,.12), transparent 70%); }
+  #sky { position: fixed; inset: 0; }
+  .s { position: absolute; border-radius: 50%; background: var(--paper); opacity: var(--o);
+       animation: tw var(--d) ease-in-out infinite var(--dl); }
+  @keyframes tw { 50% { opacity: calc(var(--o) * .25); } }
+  .scene { position: fixed; inset: 0; display: none; }
+  .scene.on { display: block; }
+  .scene.on.center { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 40px; padding: 0 80px; }
+  h1 { font-family: Fraunces, Georgia, serif; font-weight: 600; font-size: 104px; line-height: 1.04; letter-spacing: -0.02em; margin: 0;
+       font-variation-settings: "SOFT" 100, "WONK" 0, "opsz" 144; }
+  h1 em, .cap em { font-style: italic; color: var(--lamp-soft); font-variation-settings: "SOFT" 100, "WONK" 1, "opsz" 144; }
+  .sub { font-size: 44px; line-height: 1.3; color: var(--dim); margin: 0; font-weight: 500; }
+  .in { opacity: 0; filter: blur(14px); transform: translateY(26px) scale(.985); animation: rise 1.2s var(--ease) forwards; }
+  .d1 { animation-delay: .15s } .d2 { animation-delay: .55s } .d3 { animation-delay: 1s } .d4 { animation-delay: 1.5s } .d5 { animation-delay: 2s }
+  @keyframes rise { to { opacity: 1; filter: blur(0); transform: none; } }
+  .xod-mascot.big { width: 300px !important; height: 300px !important; }
+  .xod-mascot.mid { width: 220px !important; height: 220px !important; }
+  .xod-mascot.tiny { width: 76px !important; height: 76px !important; }
+  .pill { display: inline-flex; gap: 14px; align-items: center; padding: 22px 44px; border-radius: 999px;
+          background: var(--lamp); color: var(--ink); font-weight: 700; font-size: 40px; }
+  .chips { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center; }
+  .chip { padding: 14px 28px; border-radius: 999px; border: 1.5px solid rgba(255,250,240,.18); background: rgba(255,250,240,.05);
+          font-size: 32px; color: var(--paper); }
+  .url { font-size: 34px; color: var(--paper); opacity: .85; }
+
+  /* the frame behind the app */
+  .glow { position: absolute; left: var(--app-x); top: var(--app-y); width: var(--app-w); height: var(--app-h); border-radius: 36px;
+          box-shadow: 0 0 0 2px rgba(255,250,240,.10), 0 30px 90px rgba(0,0,0,.55), 0 0 120px rgba(242,178,74,.10); background: #0b0e1b; }
+  .brand { position: absolute; left: 0; right: 0; top: 1660px; height: 260px; display: flex; align-items: center; justify-content: center; gap: 30px; padding: 0 60px; }
+  .brand > .xod-mascot { flex: none; }
+  .brand .name { font-family: Fraunces, Georgia, serif; font-weight: 600; font-size: 64px; }
+  .brand .line { display: flex; flex-direction: column; gap: 6px; }
+  .brand .small { font-size: 30px; color: var(--dim); }
+  .brand .small b { color: var(--lamp-soft); font-weight: 600; }
+  .mask { position: absolute; inset: 0; background: #000; }
+  .mask div { position: absolute; inset: 0; border-radius: 36px; background: #fff; }
+
+  /* captions (top band, 1080 × 330) and the badge */
+  .cap { position: absolute; left: 60px; right: 60px; top: 0; height: 330px; display: flex; align-items: center; justify-content: center;
+         text-align: center; font-family: Fraunces, Georgia, serif; font-weight: 600; font-size: 68px; line-height: 1.1; letter-spacing: -0.01em;
+         font-variation-settings: "SOFT" 100, "WONK" 0, "opsz" 144; text-shadow: 0 4px 24px rgba(0,0,0,.5); }
+  .cap.long { font-size: 58px; }
+  .badge { position: absolute; left: 0; top: 0; display: inline-flex; align-items: center; gap: 12px; padding: 14px 26px; border-radius: 999px;
+           background: rgba(15,18,34,.82); border: 1.5px solid rgba(242,178,74,.55); color: var(--lamp-soft); font-weight: 700; font-size: 30px; }
+</style>
+</head>
+<body>
+<div id="sky"></div>
+
+<section class="scene center" id="hook">
+  <div class="in d1"><div class="xod-mascot xod-mascot--hero big" data-mood="idle"></div></div>
+  <h1 class="in d2" id="hookH"></h1>
+  <p class="sub in d3" id="hookS"></p>
+</section>
+
+<section class="scene center" id="end">
+  <div class="in d1"><div class="xod-mascot xod-mascot--hero mid" data-mood="idle"></div></div>
+  <h1 class="in d2">Try Xod. It's free.</h1>
+  <p class="sub in d3">Open source. Runs on your own computer.<br>No account, no subscription.</p>
+  <div class="chips in d4"><span class="chip">Windows</span><span class="chip">Mac</span><span class="chip">Your own AI, or a cloud one</span></div>
+  <div class="in d5" style="display:flex;flex-direction:column;gap:22px;align-items:center;margin-top:10px">
+    <span class="pill">Download free</span>
+    <span class="url">github.com/CloudCorpRecords/xod</span>
+  </div>
+</section>
+
+<section class="scene" id="frame">
+  <div class="glow"></div>
+  <div class="brand">
+    <div class="xod-mascot xod-mascot--hero tiny" data-mood="idle"></div>
+    <div class="line">
+      <span class="name">Xod</span>
+      <span class="small"><b>Free &amp; open source</b> · Windows &amp; Mac · github.com/CloudCorpRecords/xod</span>
+    </div>
+  </div>
+</section>
+
+<section class="scene" id="mask"><div class="mask"><div></div></div></section>
+
+<section class="scene" id="caption"><div class="cap"><span id="capT"></span></div></section>
+
+<section class="scene" id="badge"><div class="badge" id="badgeT"></div></section>
+
+<script>
+  const q = new URLSearchParams(location.hash.split("?")[1] || "");
+  const scene = (location.hash.split("?")[0] || "#hook").slice(1);
+  const lines = (s) => (s || "").split("|").map((l) => l.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))
+                                                  .replace(/\*([^*]+)\*/g, "<em>$1</em>")).join("<br>");
+  document.querySelectorAll(".scene").forEach((s) => s.classList.toggle("on", s.id === scene));
+  if (scene === "hook") { hookH.innerHTML = lines(q.get("h")); hookS.innerHTML = lines(q.get("s")); }
+  if (scene === "caption") { capT.innerHTML = lines(q.get("t")); if ((q.get("t") || "").length > 60) capT.parentElement.classList.add("long"); }
+  if (scene === "badge") badgeT.textContent = q.get("t") || "";
+  const clear = ["caption", "badge"].includes(scene);
+  document.body.classList.toggle("clear", clear);
+  document.body.classList.toggle("sky", !clear && scene !== "mask");
+  if (!clear && scene !== "mask") {
+    const sky = document.getElementById("sky");
+    for (let i = 0; i < 190; i++) {
+      const s = document.createElement("span");
+      const z = Math.random() < .85 ? 1.6 : 2.8;
+      s.className = "s";
+      Object.assign(s.style, { left: Math.random() * 100 + "%", top: Math.pow(Math.random(), 1.4) * 96 + "%", width: z + "px", height: z + "px" });
+      s.style.setProperty("--o", (.15 + Math.random() * .55).toFixed(2));
+      s.style.setProperty("--d", 3 + Math.random() * 5 + "s");
+      s.style.setProperty("--dl", -Math.random() * 8 + "s");
+      sky.appendChild(s);
+    }
+  }
+</script>
+<script src="../../app/static/js/mascot.js"></script>
+</body>
+</html>

@@ -20,7 +20,22 @@ from typing import List, Optional, Tuple
 
 import websockets
 
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+def _chrome() -> str:
+    """Google Chrome on this computer (macOS, Windows or Linux)."""
+    import os
+    import platform
+    if platform.system() == "Darwin":
+        return "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    if platform.system() == "Windows":
+        for base in (os.environ.get("ProgramFiles", r"C:\Program Files"), os.environ.get("ProgramFiles(x86)", ""), os.environ.get("LOCALAPPDATA", "")):
+            p = Path(base) / "Google" / "Chrome" / "Application" / "chrome.exe"
+            if base and p.exists():
+                return str(p)
+    return shutil.which("google-chrome") or shutil.which("chromium") or "google-chrome"
+
+
+CHROME = _chrome()
 
 # A cursor drawn into the page (headless Chrome has none), with a soft ring on clicks.
 CURSOR_JS = r"""
@@ -90,7 +105,11 @@ class Studio:
     async def __aexit__(self, *exc):
         self.reader.cancel()
         await self.ws.close()
-        self.chrome.terminate()
+        if CHROME.lower().endswith(".exe"):      # Windows: Chrome's helper processes outlive a plain terminate
+            subprocess.run(["taskkill", "/PID", str(self.chrome.pid), "/T", "/F"], capture_output=True)
+        else:
+            self.chrome.terminate()
+        time.sleep(0.5)
         shutil.rmtree(self.profile, ignore_errors=True)
 
     async def _read(self):
@@ -206,8 +225,8 @@ def frames_to_mp4(frames, out: Path, fps=30, size: Optional[Tuple[int, int]] = (
             f = tmp / f"{i:06d}.jpg"
             f.write_bytes(data)
             nxt = frames[i + 1][0] if i + 1 < len(frames) else t + 0.5
-            lines += [f"file '{f}'", f"duration {max(0.001, (nxt - t) / speed):.4f}"]
-        lines.append(f"file '{tmp / f'{len(frames) - 1:06d}.jpg'}'")
+            lines += [f"file '{f.as_posix()}'", f"duration {max(0.001, (nxt - t) / speed):.4f}"]   # ffmpeg reads \ as an escape
+        lines.append(f"file '{(tmp / f'{len(frames) - 1:06d}.jpg').as_posix()}'")
         (tmp / "list.txt").write_text("\n".join(lines))
         vf = f"fps={fps}"
         if crop:
