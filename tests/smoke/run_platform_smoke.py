@@ -93,7 +93,7 @@ def main():
 
     data = tempfile.mkdtemp(prefix="xod-fresh-")
     port = free_port()
-    env = {**os.environ, "XOD_DATA_DIR": data, "PYTHONUNBUFFERED": "1", "LLM_PROVIDER": "lm_studio", "LLM_BASE_URL": model_url,
+    env = {**os.environ, "XOD_DATA_DIR": data, "PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1", "LLM_PROVIDER": "lm_studio", "LLM_BASE_URL": model_url,
            "LLM_MODEL": "stand-in", "XOD_SECRETS_SERVICE": "Xod smoke test keys"}
     if not os.environ.get("XOD_REAL_KEYRING"):
         kr = Path(data) / "test-keyring.json"

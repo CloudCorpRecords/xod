@@ -114,7 +114,8 @@ async function ensurePythonEnv() {
 }
 
 function serverEnv() {
-  const env = { ...process.env, PYTHONUNBUFFERED: "1", XOD_DATA_DIR: DATA_DIR };
+  // PYTHONUTF8: on Windows Python would otherwise read and write text as cp1252 and fail on emoji, accents, etc.
+  const env = { ...process.env, PYTHONUNBUFFERED: "1", PYTHONUTF8: "1", XOD_DATA_DIR: DATA_DIR };
   if (PACKAGED) Object.assign(env, { XOD_PACKAGED: "1", PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" });
   return env;
 }

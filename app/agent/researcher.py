@@ -233,6 +233,9 @@ When the user asks in natural language to perform computer actions or browse the
 """
         except Exception:
             pass
+        from app import platform_info
+        if platform_info.WINDOWS:
+            system_prompt = platform_info.localize(system_prompt) + "\n\n" + platform_info.SHELL_NOTE
 
         if active_workspace_path:
             system_prompt += f"""
@@ -2336,6 +2339,9 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
         except Exception:
             pass
 
+        from app import platform_info
+        if platform_info.WINDOWS:
+            deliberator_system_prompt = platform_info.localize(deliberator_system_prompt) + "\n\n" + platform_info.SHELL_NOTE
         delib_messages = [
             {"role": "system", "content": deliberator_system_prompt},
             *delib_history,
@@ -2588,3 +2594,7 @@ AgenticResearcher.ROUTER_PROMPT_SPOKEN = AgenticResearcher.ROUTER_PROMPT.replace
     "3. Otherwise answer it yourself right away, out loud: one to three short, natural spoken sentences, "
     "with no lists, headings or markdown.")
 assert AgenticResearcher.ROUTER_PROMPT_SPOKEN != AgenticResearcher.ROUTER_PROMPT
+# On Windows: "the user's PC", File Explorer, PowerShell (app/platform_info.py). Unchanged on a Mac.
+from app import platform_info as _plat  # noqa: E402
+AgenticResearcher.ROUTER_PROMPT = _plat.localize(AgenticResearcher.ROUTER_PROMPT)
+AgenticResearcher.ROUTER_PROMPT_SPOKEN = _plat.localize(AgenticResearcher.ROUTER_PROMPT_SPOKEN)

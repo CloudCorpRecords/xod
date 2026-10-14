@@ -10,6 +10,11 @@ import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional, AsyncGenerator, Callable
 from app.paths import DATA_DIR
+import sys
+
+WIN = sys.platform == "win32"     # Windows versions of the Mac commands: services/system_control_win.py
+if WIN:
+    from app.services import system_control_win as winsys
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 STATE_FILE = DATA_DIR / "computer_state.json"
@@ -72,6 +77,8 @@ class SystemControlService:
         """
         Discovers all active listening TCP ports in real time via lsof.
         """
+        if WIN:
+            return winsys.listening_ports()
         try:
             out = subprocess.check_output(
                 ["lsof", "-iTCP", "-sTCP:LISTEN", "-P", "-n"],
@@ -144,6 +151,12 @@ class SystemControlService:
                 mem_info["swap_used_gb"] = round(psutil.swap_memory().used / (1024 ** 3), 2)
                 level = subprocess.check_output(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"], text=True).strip()
                 mem_info["pressure_level"] = {"1": "normal", "2": "elevated", "4": "critical"}.get(level, "normal")
+            elif WIN:
+                import psutil
+                vm = psutil.virtual_memory()
+                mem_info.update(total_gb=round(vm.total / 1024 ** 3, 2), free_gb=round(vm.available / 1024 ** 3, 2),
+                                used_gb=round((vm.total - vm.available) / 1024 ** 3, 2), pressure_pct=vm.percent,
+                                pressure_level="critical" if vm.percent > 92 else "elevated" if vm.percent > 80 else "normal")
         except Exception:
             pass
 
@@ -208,6 +221,13 @@ class SystemControlService:
             "uptime_seconds": time.time()
         }
 
+    @staticmethod
+    async def _shell(command: str, cwd: str):
+        """The user's shell: zsh/bash on a Mac, Windows PowerShell on Windows."""
+        if WIN:
+            return await winsys.exec_shell(command, cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        return await asyncio.create_subprocess_shell(command, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+
     async def run_command(self, command: str, cwd: Optional[str] = None, timeout_sec: int = 45) -> Dict[str, Any]:
         """
         Executes a shell command in the background asynchronously with timeout protection.
@@ -222,7 +242,7 @@ class SystemControlService:
         effective_command = command
         is_cd = command.strip().startswith("cd ")
         if is_cd and "&& pwd" not in command:
-            effective_command = f"{command} && pwd"
+            effective_command = f"{command}{winsys.cd_suffix()}" if WIN else f"{command} && pwd"
 
         start_t = time.time()
         record: Dict[str, Any] = {
@@ -234,12 +254,7 @@ class SystemControlService:
         }
 
         try:
-            proc = await asyncio.create_subprocess_shell(
-                effective_command,
-                cwd=target_cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
+            proc = await self._shell(effective_command, target_cwd)
 
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
@@ -319,7 +334,7 @@ class SystemControlService:
         effective_command = command
         is_cd = command.strip().startswith("cd ")
         if is_cd and "&& pwd" not in command:
-            effective_command = f"{command} && pwd"
+            effective_command = f"{command}{winsys.cd_suffix()}" if WIN else f"{command} && pwd"
 
         process_id = f"proc-{uuid.uuid4().hex[:8]}"
         start_t = time.time()
@@ -334,12 +349,7 @@ class SystemControlService:
         }
 
         try:
-            proc = await asyncio.create_subprocess_shell(
-                effective_command,
-                cwd=target_cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
+            proc = await self._shell(effective_command, target_cwd)
 
             stdout_chunks: List[str] = []
             stderr_chunks: List[str] = []
@@ -451,6 +461,8 @@ class SystemControlService:
         Optionally plays a gentle subtle chime.
         """
         # Text goes in as arguments, never pasted into the script: a message can't break out and run AppleScript.
+        if WIN:
+            return await winsys.notify(title, message)
         line = 'display notification (item 2 of argv) with title (item 1 of argv)' + (' sound name "Tink"' if sound else "")
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -497,6 +509,8 @@ class SystemControlService:
                 return {"success": False, "error": f"Path not found on computer: {path}"}
 
         target_str = str(target_path.resolve())
+        if WIN:
+            return winsys.reveal(target_str, target_path.is_dir())
         try:
             if target_path.is_dir():
                 cmd = ["open", target_str]
@@ -544,6 +558,9 @@ class SystemControlService:
             target_path = DATA_DIR / "media_studio"
 
         target_str = str(target_path.resolve())
+        if WIN:
+            r = winsys.open_target(target_str)
+            return {**r, "opened_folder": target_str, "message": f"Opened folder {target_path.name} in File Explorer."} if r["success"] else r
         try:
             proc = await asyncio.create_subprocess_exec("open", target_str)
             await proc.communicate()
@@ -555,6 +572,8 @@ class SystemControlService:
         """
         Opens a file or URL in the background without stealing user window focus (-g flag).
         """
+        if WIN:
+            return winsys.open_target(target)
         try:
             proc = await asyncio.create_subprocess_exec(
                 "open", "-g", target,
@@ -573,6 +592,9 @@ class SystemControlService:
         """
         target_root = os.path.expanduser(root_dir) if root_dir else os.path.expanduser("~")
         results = []
+        if WIN:
+            found = await asyncio.to_thread(winsys.find_files, query, target_root, max_results)
+            return {"success": True, "count": len(found), "query": query, "root": target_root, "results": found}
         try:
             cmd = ["mdfind"]
             if root_dir and os.path.isdir(target_root):
@@ -621,6 +643,8 @@ class SystemControlService:
         if not os.path.exists(src_path):
             return {"success": False, "error": f"Source path does not exist: {src_path}"}
 
+        if action == "trash" and WIN:
+            return await winsys.to_recycle_bin(src_path)
         if action == "trash":
             # /usr/bin/trash (macOS 14+) takes the path as an argument: no Finder permission prompt, and no way
             # for a file name to inject AppleScript. Older macOS: Finder, with the path passed as an argument too.
@@ -672,6 +696,8 @@ class SystemControlService:
 
     async def read_clipboard(self) -> Dict[str, Any]:
         """Reads current plain text from macOS system clipboard via pbpaste."""
+        if WIN:
+            return await winsys.read_clipboard()
         try:
             proc = await asyncio.create_subprocess_exec(
                 "pbpaste",
@@ -686,6 +712,8 @@ class SystemControlService:
 
     async def write_clipboard(self, text: str) -> Dict[str, Any]:
         """Copies text directly into macOS system clipboard via pbcopy."""
+        if WIN:
+            return await winsys.write_clipboard(text)
         try:
             proc = await asyncio.create_subprocess_exec(
                 "pbcopy",
@@ -700,6 +728,8 @@ class SystemControlService:
 
     async def inspect_port(self, port: int) -> Dict[str, Any]:
         """Inspects which process and PID is listening on or connected to a given local port."""
+        if WIN:
+            return winsys.inspect_port(port)
         try:
             proc = await asyncio.create_subprocess_exec(
                 "lsof", "-i", f":{port}",
@@ -746,12 +776,7 @@ class SystemControlService:
         if not os.path.isdir(target_cwd):
             target_cwd = os.getcwd()
 
-        proc = await asyncio.create_subprocess_shell(
-            command,
-            cwd=target_cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
+        proc = await self._shell(command, target_cwd)
 
         job_info: Dict[str, Any] = {
             "id": job_id,
@@ -1286,6 +1311,9 @@ class SystemControlService:
         Opens a file, directory, or URL using macOS 'open'.
         Optionally specifies a target application (-a 'Visual Studio Code', -a 'Finder', etc.).
         """
+        if WIN:
+            r = winsys.open_target(os.path.expanduser(target))
+            return {**r, "app_name": "Default Application", "message": f"Opened {target}."} if r["success"] else r
         try:
             expanded = os.path.expanduser(target)
             cmd = ["open"]
@@ -1316,6 +1344,8 @@ class SystemControlService:
         Executes native macOS AppleScript automation safely via osascript.
         Allows controlling Finder, Safari, Notes, Music, Terminal, System Settings, etc.
         """
+        if WIN:
+            return dict(winsys.APPLESCRIPT_ON_WINDOWS)
         try:
             proc = await asyncio.create_subprocess_exec(
                 "osascript", "-e", script,
@@ -1341,6 +1371,8 @@ class SystemControlService:
         Retrieves detailed macOS hardware specs, Apple Silicon / Intel architecture,
         battery state, and operating system build.
         """
+        if WIN:
+            return winsys.hardware()
         try:
             # macOS version
             os_ver = subprocess.check_output(["sw_vers", "-productVersion"], text=True).strip()

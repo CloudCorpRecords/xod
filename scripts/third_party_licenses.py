@@ -47,7 +47,7 @@ def license_of(meta) -> str:
 def main(site: Path, out: Path) -> int:
     rows, texts, bad = [], [], []
     for dist in sorted(site.glob("*.dist-info"), key=lambda p: p.name.lower()):
-        meta = Parser().parsestr((dist / "METADATA").read_text(errors="replace"))
+        meta = Parser().parsestr((dist / "METADATA").read_text(encoding="utf-8", errors="replace"))
         name, version = meta["Name"], meta["Version"]
         lic = license_of(meta)
         files = [p for p in dist.rglob("*") if p.is_file() and re.match(r"(LICEN[CS]E|COPYING|NOTICE|AUTHORS)", p.name, re.I)]
@@ -55,7 +55,7 @@ def main(site: Path, out: Path) -> int:
         if COPYLEFT.search(lic) and not WEAK_OK.search(lic):
             bad.append(f"{name} {version}: {lic}")
         for f in files:
-            texts.append(f"\n{'=' * 78}\n{name} {version} — {f.relative_to(dist)}\n{'=' * 78}\n{f.read_text(errors='replace').strip()}\n")
+            texts.append(f"\n{'=' * 78}\n{name} {version} — {f.relative_to(dist)}\n{'=' * 78}\n{f.read_text(encoding='utf-8', errors='replace').strip()}\n")
 
     w = max(len(r[0]) for r in rows) + 2
     lines = ["Xod ships with the following third-party software. Thank you to everyone who made it.", "",
@@ -64,7 +64,7 @@ def main(site: Path, out: Path) -> int:
     lines += ["", f"Python packages ({len(rows)})", "-" * 24]
     lines += [f"{n:<{w}} {v:<14} {l}" for n, v, l in rows]
     lines += ["", "", "License texts", "=" * 13]
-    out.write_text("\n".join(lines) + "".join(texts))
+    out.write_text("\n".join(lines) + "".join(texts), encoding="utf-8")
     print(f"Wrote {out} ({len(rows)} packages)")
     if bad:
         print("Copyleft licenses that can't ship in Xod.app:\n  " + "\n  ".join(bad))

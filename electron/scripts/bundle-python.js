@@ -60,7 +60,7 @@ const py = exeIn(OUT);
 // uv marks its Pythons "externally managed"; this copy is Xod's own, so drop the marker.
 fs.rmSync(path.join(libIn(OUT), "EXTERNALLY-MANAGED"), { force: true });
 const reqs = path.join(__dirname, "..", "..", "requirements.txt");
-const sh = (args) => execFileSync(py, args, { stdio: "inherit", env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: "1" } });
+const sh = (args) => execFileSync(py, args, { stdio: "inherit", env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: "1", PYTHONUTF8: "1" } });
 sh(["-m", "pip", "install", "--no-compile", "--only-binary=:all:", "-r", reqs]);
 // Media Studio's libraries are a one-time download on first use instead (app/services/media_packages.py),
 // which keeps Xod's download about a third smaller. pip stays, to fetch them.
@@ -78,5 +78,5 @@ sh(["-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash"
 fs.copyFileSync(reqs, path.join(OUT, "XOD_REQUIREMENTS"));
 // Notices for everything that ships inside the app (fails the build on a GPL-family license).
 execFileSync(WIN ? py : "python3", [path.join(__dirname, "..", "..", "scripts", "third_party_licenses.py"), sp,
-  path.join(OUT, "THIRD_PARTY_LICENSES.txt")], { stdio: "inherit" });
+  path.join(OUT, "THIRD_PARTY_LICENSES.txt")], { stdio: "inherit", env: { ...process.env, PYTHONUTF8: "1" } });
 console.log("Installed Xod's packages into the bundled Python.");

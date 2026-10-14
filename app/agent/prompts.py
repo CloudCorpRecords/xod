@@ -121,3 +121,10 @@ def format_memory_context(memories: list) -> str:
         lines.append(f"{i}. [{cat}] **{title}**{score_str}:\n   {content}")
     lines.append("CRITICAL: You must strictly respect all user preferences and architectural patterns recalled above.")
     return "\n".join(lines)
+
+
+# On Windows the instructions above talk about File Explorer, the Recycle Bin and PowerShell (app/platform_info.py).
+from app import platform_info as _plat  # noqa: E402
+if _plat.WINDOWS:
+    BASE_RESEARCHER_PROMPT = _plat.localize(BASE_RESEARCHER_PROMPT) + "\n\n" + _plat.SHELL_NOTE
+    PERSONA_PROMPTS = {k: _plat.localize(v) + "\n\n" + _plat.SHELL_NOTE for k, v in PERSONA_PROMPTS.items()}

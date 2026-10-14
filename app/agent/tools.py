@@ -2604,6 +2604,29 @@ TOOL_DEFINITIONS = [
     }
 ]
 
+
+def _localize_tools() -> None:
+    """On Windows: no AppleScript tool, and descriptions that say File Explorer / Recycle Bin / PowerShell
+    instead of Finder / Trash / zsh (app/platform_info.py)."""
+    from app import platform_info as plat
+    if not plat.WINDOWS:
+        return
+
+    def walk(o):
+        if isinstance(o, dict):
+            return {k: (plat.localize(v) if k == "description" else walk(v)) for k, v in o.items()}
+        if isinstance(o, list):
+            return [walk(x) for x in o]
+        return o
+    kept = [walk(t) for t in TOOL_DEFINITIONS if t["function"]["name"] not in plat.MAC_ONLY_TOOLS]
+    for t in kept:
+        if t["function"]["name"] in ("computer_run_command", "computer_start_job"):
+            t["function"]["description"] += " " + plat.SHELL_NOTE
+    TOOL_DEFINITIONS[:] = kept
+
+
+_localize_tools()
+
 def compact_startup(s: Dict[str, Any]) -> Dict[str, Any]:
     """Compacts startup dictionary to reduce token consumption for local LLMs."""
     if not isinstance(s, dict):
