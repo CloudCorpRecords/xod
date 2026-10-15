@@ -3942,6 +3942,16 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
     if only_asks(query):
         selected_names = [n for n in selected_names if n not in CHANGE_TOOLS]
         affinities = [n for n in affinities if n not in CHANGE_TOOLS]
+    # Tools that can't work on this computer are left out rather than tried (services/capabilities.py): no Chrome or
+    # Edge, no browser tools. (Asked "why?", the agent explains from the same report.)
+    try:
+        from app.services import capabilities
+        if not capabilities._browser():
+            blocked = ("browser_", "web_scrape")
+            selected_names = [n for n in selected_names if not n.startswith(blocked)]
+            affinities = [n for n in affinities if not n.startswith(blocked)]
+    except Exception:
+        pass
 
     final_names = []
     # Add prioritized affinities first if relevant keywords match

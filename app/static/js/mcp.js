@@ -52,6 +52,15 @@
     const servers = all.filter((s) => !s.connector);          // connectors are shown as cards above
     const byName = Object.fromEntries(all.map((s) => [s.name, s]));
     const main = connectors.filter((c) => !c.advanced), extra = connectors.filter((c) => c.advanced);
+    // Grouped (Work and tasks, Design, Money, Developers…); a group opens by itself when one of its apps is on.
+    const groups = [...new Set(main.map((c) => c.group || "Other"))];
+    const groupHtml = (g, i) => {
+      const cs = main.filter((c) => (c.group || "Other") === g);
+      const anyOn = cs.some((c) => c.state !== "off");
+      return `<details class="pt-1" ${i === 0 || anyOn ? "open" : ""}><summary class="text-[12px] text-zinc-300 cursor-pointer font-semibold">${esc(g)}
+        <span class="text-zinc-500 font-normal">${cs.length}${anyOn ? ` · ${cs.filter((c) => c.state === "connected").length} on` : ""}</span></summary>
+        <div class="space-y-2 mt-2">${cs.map((c) => connectorCard(c, byName[c.id])).join("")}</div></details>`;
+    };
     body.innerHTML = `
       ${pending.length ? `<section class="space-y-2"><h4 class="text-[13px] font-semibold text-amber-200">Waiting for your OK</h4>
         ${pending.map((p) => `<div class="task-card space-y-1.5"><p class="text-[13px] text-white">${esc(p.tool_name)} <span class="text-zinc-500">on ${esc(p.server)}</span></p>
@@ -61,7 +70,7 @@
       <section class="space-y-2">
         <h4 class="text-[13px] font-semibold text-white">Apps</h4>
         <p class="text-[12px] text-zinc-400">Connect once; Xod uses them when a request needs them. Reading is automatic, anything that changes something asks you first.</p>
-        ${main.map((c) => connectorCard(c, byName[c.id])).join("")}
+        ${groups.map(groupHtml).join("")}
         ${extra.length ? `<details class="pt-1"><summary class="text-[12px] text-zinc-400 cursor-pointer">More (advanced)</summary>
           <div class="space-y-2 mt-2">${extra.map((c) => connectorCard(c, byName[c.id])).join("")}</div></details>` : ""}
       </section>
@@ -116,7 +125,7 @@
     const on = c.state !== "off";
     const needsInput = !on || c.state === "error" || c.state === "needs_sign_in";
     return `
-      <div class="task-card space-y-2" data-connector="${esc(c.id)}">
+      <div class="task-card space-y-2" data-connector="${esc(c.id)}" ${c.id === "mac" ? "data-no-pc-words" : ""}>
         <div class="flex items-start gap-3">
           <span class="size-9 rounded-xl bg-surface-900 border border-white/[0.06] grid place-items-center shrink-0"><i data-lucide="${esc(c.icon)}" class="size-4 text-zinc-200"></i></span>
           <div class="flex-1 min-w-0">
@@ -124,6 +133,7 @@
             <p class="text-[12px] text-zinc-400 mt-0.5">${esc(c.blurb)}</p>
           </div>
         </div>
+        ${c.unavailable ? `<p class="text-[12px] text-zinc-500">Not on this computer: ${esc(c.unavailable)}</p>` : ""}
         ${c.state === "error" && c.error ? `<p class="text-[12px] text-red-300">${esc(c.error)}</p>` : ""}
         ${c.kind === "token" && needsInput ? `<div class="space-y-1.5"><p class="text-[11px] text-zinc-500">${esc(c.token_help)} <a href="${esc(c.token_url)}" target="_blank" rel="noopener" class="text-brand-300 hover:underline">Make a token</a></p>
           <input type="password" data-cn-token autocomplete="off" placeholder="Paste token" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[12px] text-white focus:outline-none focus:border-brand-500"></div>` : ""}
@@ -132,7 +142,7 @@
           <input type="password" data-cn-secret autocomplete="off" placeholder="Client secret" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[12px] text-white"></div>` : ""}
         ${c.id === "mac" && !on ? `<p class="text-[11px] text-zinc-500">macOS asks once per app the first time Xod uses Calendar, Reminders, Notes or Mail.</p>` : ""}
         <div class="flex items-center gap-2 flex-wrap">
-          ${needsInput ? `<button data-cn="connect" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 text-[12px] font-semibold hover:bg-brand-400">${c.kind === "oauth" || c.kind === "own" ? (on ? "Sign in again" : "Connect and sign in") : on ? "Try again" : "Connect"}</button>` : ""}
+          ${needsInput && !c.unavailable ? `<button data-cn="connect" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 text-[12px] font-semibold hover:bg-brand-400">${c.kind === "oauth" || c.kind === "own" ? (on ? "Sign in again" : "Connect and sign in") : on ? "Try again" : c.kind === "open" ? "Connect (no account)" : "Connect"}</button>` : ""}
           ${c.state === "signing_in" ? `<span class="text-[11px] text-zinc-500">A sign-in page opened in your browser.</span>` : ""}
           ${server && c.state === "connected" ? `<select data-cn="trust" class="bg-surface-900 border border-surface-700 rounded-lg px-2 py-1 text-[11px] text-white">
             ${Object.entries(TRUST).map(([k, v]) => `<option value="${k}" ${server.trust === k ? "selected" : ""}>${v}</option>`).join("")}</select>` : ""}

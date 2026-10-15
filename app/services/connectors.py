@@ -9,27 +9,70 @@ kinds:
   oauth  hosted server with sign-in in the browser and automatic client registration
   own    hosted server that needs your own OAuth client (Google Workspace)
   token  hosted server signed in with a token you paste (GitHub, until Xod has a registered app)
+  open   hosted server that needs no account (public docs and data)
   local  runs on this Mac, no account
+
+Every hosted one is checked before it goes in: scripts/check_connectors.py (it answers as an MCP server over Streamable
+HTTP, and an "oauth" one lets Xod register by itself, so no developer account is needed), then
+tests/features/run_connectors_test.py --all, which goes through Xod's own sign-in up to each sign-in page. Left out
+for now: Figma (refuses clients it hasn't approved), Gamma (refuses Xod's local return address), Asana and Square
+(older SSE transport), Box, Slack and HubSpot (need your own app). Each has a group, for the panel.
 """
+import sys
 from typing import Any, Dict, List, Optional
 
 from app.services import mcp_client, mcp_oauth
 
+
+def _o(cid: str, name: str, icon: str, group: str, url: str, blurb: str, **kw: Any) -> Dict[str, Any]:
+    return {"id": cid, "name": name, "icon": icon, "group": group, "kind": "oauth", "url": url, "blurb": blurb, "trust": "read_only", **kw}
+
+
+def _open(cid: str, name: str, icon: str, url: str, blurb: str) -> Dict[str, Any]:
+    """No account: public docs and data. Nothing of yours to change, so its tools run without asking."""
+    return {"id": cid, "name": name, "icon": icon, "group": "Look things up (no account)", "kind": "open", "url": url,
+            "trust": "always", "blurb": blurb}
+
+
 CATALOG: List[Dict[str, Any]] = [
-    {"id": "mac", "name": "This Mac", "icon": "laptop",
+    {"id": "mac", "name": "This Mac", "icon": "laptop", "group": "On this computer",
      "blurb": "Calendar, Reminders, Notes and Mail on this Mac, including Google or iCloud accounts you've added to macOS. Nothing leaves the computer.",
-     "kind": "local", "command": "{xod_python}", "args": ["-m", "app.connectors.mac"], "trust": "read_only"},
-    {"id": "notion", "name": "Notion", "icon": "notebook-pen",
-     "blurb": "Search, read and update your Notion pages and databases.",
-     "kind": "oauth", "url": "https://mcp.notion.com/mcp", "trust": "read_only"},
-    {"id": "linear", "name": "Linear", "icon": "list-checks",
-     "blurb": "Find, create and update Linear issues and projects.",
-     "kind": "oauth", "url": "https://mcp.linear.app/mcp", "trust": "read_only"},
-    {"id": "github", "name": "GitHub", "icon": "github",
+     "kind": "local", "command": "{xod_python}", "args": ["-m", "app.connectors.mac"], "trust": "read_only",
+     "only_on": "darwin", "unavailable_why": "It talks to the Mac's own Calendar, Reminders, Notes and Mail apps, so it only works on a Mac."},
+    _o("notion", "Notion", "notebook-pen", "Work and tasks", "https://mcp.notion.com/mcp", "Search, read and update your Notion pages and databases."),
+    _o("linear", "Linear", "list-checks", "Work and tasks", "https://mcp.linear.app/mcp", "Find, create and update Linear issues and projects."),
+    _o("atlassian", "Jira and Confluence", "kanban-square", "Work and tasks", "https://mcp.atlassian.com/v1/mcp",
+       "Atlassian's server: search and update Jira issues and Confluence pages."),
+    _o("todoist", "Todoist", "check-square", "Work and tasks", "https://ai.todoist.net/mcp", "Your Todoist tasks and projects: read, add, complete."),
+    _o("clickup", "ClickUp", "list-todo", "Work and tasks", "https://mcp.clickup.com/mcp", "Tasks, docs and spaces in ClickUp."),
+    _o("monday", "monday.com", "layout-grid", "Work and tasks", "https://mcp.monday.com/mcp", "Boards, items and updates in monday.com."),
+    _o("airtable", "Airtable", "table", "Work and tasks", "https://mcp.airtable.com/mcp", "Read and update your Airtable bases."),
+    _o("zapier", "Zapier", "zap", "Work and tasks", "https://mcp.zapier.com/api/mcp/mcp",
+       "Reach the 8,000 apps Zapier connects (Gmail, Slack, Sheets, HubSpot…): pick which actions Xod may use in Zapier."),
+    _o("dropbox", "Dropbox", "package", "Files", "https://mcp.dropbox.com/mcp", "Find, read and organize files in your Dropbox."),
+    _o("canva", "Canva", "palette", "Design and content", "https://mcp.canva.com/mcp", "Find and create Canva designs."),
+    _o("webflow", "Webflow", "globe", "Design and content", "https://mcp.webflow.com/mcp", "Your Webflow sites, pages and CMS."),
+    _o("wix", "Wix", "globe", "Design and content", "https://mcp.wix.com/mcp", "Your Wix sites and their content."),
+    _o("stripe", "Stripe", "credit-card", "Money", "https://mcp.stripe.com", "Customers, payments, invoices and products in Stripe."),
+    _o("paypal", "PayPal", "wallet", "Money", "https://mcp.paypal.com/mcp", "Invoices, orders and transactions in PayPal."),
+    _o("intercom", "Intercom", "message-circle", "Customers", "https://mcp.intercom.com/mcp", "Conversations and contacts in Intercom."),
+    {"id": "github", "name": "GitHub", "icon": "github", "group": "Developers",
      "blurb": "Repos, issues, pull requests and code search.",
      "kind": "token", "url": "https://api.githubcopilot.com/mcp/", "trust": "read_only",
      "token_help": "Make a fine-grained token at github.com/settings/personal-access-tokens with access to the repos you want, then paste it here. It goes into your Keychain.",
      "token_url": "https://github.com/settings/personal-access-tokens/new"},
+    _o("sentry", "Sentry", "bug", "Developers", "https://mcp.sentry.dev/mcp", "Errors and issues in Sentry, with their stack traces."),
+    _o("vercel", "Vercel", "triangle", "Developers", "https://mcp.vercel.com", "Projects, deployments and logs on Vercel."),
+    _o("netlify", "Netlify", "cloud", "Developers", "https://netlify-mcp.netlify.app/mcp", "Sites, deploys and settings on Netlify."),
+    _o("supabase", "Supabase", "database", "Developers", "https://mcp.supabase.com/mcp", "Your Supabase projects: tables, queries, logs."),
+    _o("neon", "Neon", "database", "Developers", "https://mcp.neon.tech/mcp", "Neon Postgres projects, branches and queries."),
+    _o("prisma", "Prisma Postgres", "database", "Developers", "https://mcp.prisma.io/mcp", "Prisma Postgres databases."),
+    _o("cloudflare", "Cloudflare", "cloud", "Developers", "https://mcp.cloudflare.com/mcp", "Your Cloudflare account: Workers, DNS, settings."),
+    _open("huggingface", "Hugging Face", "smile", "https://huggingface.co/mcp", "Search models, datasets, papers and Spaces on Hugging Face."),
+    _open("mslearn", "Microsoft Learn", "book-open", "https://learn.microsoft.com/api/mcp", "Microsoft's official docs: Windows, Office, Azure, .NET, PowerShell."),
+    _open("context7", "Context7", "library", "https://mcp.context7.com/mcp", "Up-to-date documentation for thousands of code libraries."),
+    _open("deepwiki", "DeepWiki", "git-branch", "https://mcp.deepwiki.com/mcp", "Ask about any public GitHub repository: how it works, where things are."),
+    _open("cloudflare-docs", "Cloudflare docs", "book-open", "https://docs.mcp.cloudflare.com/mcp", "Cloudflare's documentation."),
     {"id": "google-calendar", "name": "Google Calendar (official)", "icon": "calendar",
      "blurb": "Google's own Calendar server. Needs your own Google Cloud OAuth client; most people should use This Mac instead.",
      "kind": "own", "url": "https://calendarmcp.googleapis.com/mcp/v1", "trust": "read_only", "advanced": True,
@@ -53,8 +96,10 @@ def catalog() -> List[Dict[str, Any]]:
         if s:
             state = ("connected" if s["connected"] else "signing_in" if s["signing_in"]
                      else "needs_sign_in" if s["needs_sign_in"] else "error" if s["error"] else "connecting")
+        unavailable = c.get("unavailable_why") if c.get("only_on") and not sys.platform.startswith(c["only_on"]) else None
         out.append({**{k: v for k, v in c.items() if k not in ("command", "args")}, "state": state,
-                    "error": _friendly(c, s and s["error"]), "tools": len(s["tools"]) if s else 0})
+                    "error": _friendly(c, s and s["error"]), "tools": len(s["tools"]) if s else 0, "unavailable": unavailable,
+                    "group": c.get("group") or ("More (advanced)" if c.get("advanced") else "Other")})
     return out
 
 
@@ -79,12 +124,17 @@ async def connect(cid: str, redirect_uri: str, token: Optional[str] = None,
     c = _BY_ID.get(cid)
     if not c:
         return {"success": False, "error": "Unknown connector."}
+    if c.get("only_on") and not sys.platform.startswith(c["only_on"]):
+        return {"success": False, "error": c.get("unavailable_why") or "Not available on this computer."}
     from app.services import keychain
     cfg = mcp_client.load_config()
     spec = cfg.get(cid) or {"enabled": True, "trust": c.get("trust", "ask"), "connector": cid}
     spec["enabled"] = True
     if c["kind"] == "local":
         spec.update(command=c["command"], args=c["args"])
+    elif c["kind"] == "open":
+        spec["url"] = c["url"]           # no account: a plain connection
+        spec.pop("auth", None)
     else:
         spec["url"] = c["url"]
         spec["auth"] = "bearer" if c["kind"] == "token" else "oauth"

@@ -218,10 +218,12 @@ async def installed() -> List[Dict[str, Any]]:
             if ollama_context.is_variant(t["name"]):
                 continue
             try:
-                caps = (await c.post(f"{root()}/api/show", json={"model": t["name"]})).json().get("capabilities") or []
+                shown = (await c.post(f"{root()}/api/show", json={"model": t["name"]})).json()
             except Exception:
-                caps = []
-            out.append({"name": t["name"], "size_gb": round(t.get("size", 0) / 1024 ** 3, 1),
+                shown = {}
+            caps = shown.get("capabilities") or []
+            context = next((v for k, v in (shown.get("model_info") or {}).items() if k.endswith(".context_length") and isinstance(v, int)), None)
+            out.append({"name": t["name"], "size_gb": round(t.get("size", 0) / 1024 ** 3, 1), "context": context,
                         "tools": "tools" in caps, "thinking": "thinking" in caps, "vision": "vision" in caps,
                         "embedding": "embedding" in caps and "completion" not in caps,
                         "in_use": settings.llm_provider == "ollama" and ollama_context._same(settings.llm_model or "", t)})

@@ -64,10 +64,10 @@ def events(since: int = 0) -> List[Dict[str, Any]]:
 
 # ---------------------------------------------------------------- finding servers and apps
 
-async def _models(c: httpx.AsyncClient, base: str) -> Optional[List[Dict[str, Any]]]:
+async def _models(c: httpx.AsyncClient, base: str, key: str = "") -> Optional[List[Dict[str, Any]]]:
     """An OpenAI-compatible server's models, or None if nothing answers there."""
     try:
-        r = await c.get(f"{base}/v1/models")
+        r = await c.get(f"{base}/v1/models", headers={"Authorization": f"Bearer {key}"} if key else None)
         if r.status_code != 200:
             return None
         return [m for m in r.json().get("data", []) if isinstance(m, dict) and m.get("id")]
@@ -125,9 +125,11 @@ async def discover() -> List[Dict[str, Any]]:
 
 async def local_status(base_url: str, model: str) -> Dict[str, Any]:
     """For the header, when the model is on another local server: is it answering, with this model?"""
-    server = next((s["name"] for s in _servers if s["base_url"] == base_url), "Local server")
-    async with httpx.AsyncClient(timeout=2) as c:
-        models = await _models(c, base_url[:-3] if base_url.endswith("/v1") else base_url)
+    from app.services import model_sources
+    server = next((s["name"] for s in _servers if s["base_url"] == base_url),
+                  next((s["name"] for s in model_sources.listing() if f"{s['url']}/v1" == base_url), "Local server"))
+    async with httpx.AsyncClient(timeout=3) as c:
+        models = await _models(c, base_url[:-3] if base_url.endswith("/v1") else base_url, model_sources.key_for(base_url))
     if models is None:
         return {"cloud": False, "provider": "local", "server": server, "model": model, "ready": False, "problem": f"{server} isn't running"}
     ids = [m["id"] for m in models]
@@ -220,14 +222,18 @@ async def _start_lm_studio(lms: str) -> bool:
 def rank(servers: List[Dict[str, Any]], budget_gb: float) -> List[Dict[str, Any]]:
     """Every model on offer, best first: one that can call tools, fits this computer, then the biggest that fits.
     (A model already loaded in LM Studio comes before others there: nothing to load.)"""
+    from app.services import model_scores
+    tested = model_scores.all_scores()
     out = []
     for s in servers:
         for m in s["models"]:
             size = m.get("size_gb") or 0
             fits = not size or size + 2.5 <= budget_gb
             score = (m.get("tools") is not False) * 4 + fits * 2 + (s.get("loaded") == m["id"]) * 1
+            # A model tested on this computer (services/model_scores.py) ranks by its score among equals.
+            measured = (tested.get(f"{s['provider']}:{m['id']}") or {}).get("score") or 0
             out.append({"provider": s["provider"], "server": s["name"], "base_url": s["base_url"], "model": m["id"],
-                        "tools": m.get("tools"), "size_gb": size or None, "fits": fits, "_key": (score, size if fits else -size)})
+                        "tools": m.get("tools"), "size_gb": size or None, "fits": fits, "_key": (score, measured, size if fits else -size)})
     out.sort(key=lambda x: x["_key"], reverse=True)
     for x in out:
         x.pop("_key")
@@ -239,7 +245,11 @@ async def _usable(provider: str, model: str, servers: List[Dict[str, Any]]) -> O
     if provider not in ("ollama", "lm_studio", "local"):
         return None            # cloud models and the built-in engine look after themselves
     from app.services.llm import PROVIDER_NAMES
-    s = next((x for x in servers if x["provider"] == provider), None)
+    from app.config import settings
+    same = [x for x in servers if x["provider"] == provider]
+    # Several "local" servers: the one at the chosen address.
+    s = next((x for x in same if provider != "local" or x["base_url"].rstrip("/") == (settings.llm_base_url or "").rstrip("/")), None) \
+        or (same[0] if same and provider != "local" else None)
     if not s:
         return f"{PROVIDER_NAMES[provider]} isn't running"
     if provider == "ollama":
@@ -269,7 +279,13 @@ async def check() -> Dict[str, Any]:
 
         provider, model = settings.llm_provider, settings.llm_model
         servers = await discover()
-        problem = await _usable(provider, model, servers)
+        # Servers you added (on your network) count when checking your choice, but Xod never picks one by itself.
+        from app.services import model_sources
+        try:
+            added = [s for s in await model_sources.discover() if s["online"] and s["provider"] == "local"]
+        except Exception:
+            added = []
+        problem = await _usable(provider, model, servers + added)
 
         # The chosen server is installed but not running: start it.
         if problem and "isn't running" in problem:
@@ -281,7 +297,7 @@ async def check() -> Dict[str, Any]:
             if started:
                 _event("fixed", f"Started {'Ollama' if provider == 'ollama' else 'LM Studio'}, which wasn't running.")
                 servers = await discover()
-                problem = await _usable(provider, model, servers)
+                problem = await _usable(provider, model, servers + added)
 
         pc = await asyncio.to_thread(machine.profile)
         ranked = rank(servers, pc["ai_memory_gb"])

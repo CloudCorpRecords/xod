@@ -490,6 +490,83 @@ async def _start_task_worker():
     phone.start()                           # the linked phone (Telegram), if there is one
 
 
+class ModelRef(BaseModel):
+    provider: str
+    model: str
+    base_url: Optional[str] = ""
+    sees: Optional[bool] = None
+
+
+class ModelUse(BaseModel):
+    job: str
+    provider: str
+    model: str
+    base_url: Optional[str] = ""
+
+
+class ModelSourceAdd(BaseModel):
+    url: str
+    name: Optional[str] = ""
+    key: Optional[str] = ""
+
+
+@app.get("/api/capabilities")
+async def capabilities_endpoint():
+    """What works on this computer with this model, what's limited and why, and what's off (services/capabilities.py)."""
+    from app.services import capabilities
+    return await capabilities.report()
+
+
+@app.get("/api/models")
+async def models_endpoint():
+    """Every model Xod can use, on every server, with what it can do, its score and its jobs (services/model_hub.py)."""
+    from app.services import model_hub
+    return await model_hub.all_models()
+
+
+@app.post("/api/models/use")
+async def models_use_endpoint(req: ModelUse):
+    from app.services import model_hub
+    return model_hub.use_for(req.job, req.provider, req.model, req.base_url or "")
+
+
+@app.get("/api/models/catalog")
+async def models_catalog_endpoint():
+    from app.services import model_hub
+    return await model_hub.catalog()
+
+
+@app.get("/api/models/search")
+async def models_search_endpoint(q: str):
+    from app.services import model_hub
+    return await model_hub.search_hf(q)
+
+
+@app.post("/api/models/test")
+async def models_test_endpoint(req: ModelRef):
+    """Scores a model on this computer, in the background (services/model_scores.py)."""
+    from app.services import model_scores
+    return model_scores.start(req.provider, req.model, req.base_url or "", req.sees)
+
+
+@app.get("/api/models/test")
+async def models_test_status_endpoint(key: str):
+    from app.services import model_scores
+    return model_scores.status(key)
+
+
+@app.post("/api/models/sources")
+async def models_source_add_endpoint(req: ModelSourceAdd):
+    from app.services import model_sources
+    return await model_sources.add(req.url, req.name or "", req.key or "")
+
+
+@app.delete("/api/models/sources/{sid}")
+async def models_source_remove_endpoint(sid: str):
+    from app.services import model_sources
+    return {"success": model_sources.remove(sid)}
+
+
 class PhoneConnectRequest(BaseModel):
     token: str
 

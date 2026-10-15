@@ -13,7 +13,29 @@
 - With Ollama, Xod fetches one by itself when your chat model can't see and there's room on the disk: Qwen3-VL 4B (3.1 GB) on most PCs, the 8B with 20 GB or more of AI memory. One you already have is used instead. With no vision model and no room, Xod says so instead of guessing.
 - If the vision model doesn't fit next to the chat model on the GPU, Xod lets the chat model go for a moment and looks again.
 
+**AI models, in one place (Tools → AI models)**
+- Every model Xod can use on one list: on this computer (Ollama, LM Studio, llama.cpp…), on servers you add, and cloud ones with a key. Each shows what it can do (call tools, see, think, how much it reads at once), its size and whether it fits your GPU, and which job it has.
+- Swap the model for a job with one click: chat, or seeing (the model that describes pictures). Memory search stays fixed, and the panel says why (another model would make what's already saved unsearchable).
+- Test any model on this computer and get a score out of 100: speed, calling a tool, picking the right tool out of three, not calling one it doesn't need, answering in valid JSON, two reasoning problems, following an instruction, and reading a number off a picture for models that see. Each check says what went wrong ("it only thought, and never gave an answer"). When Xod picks a model by itself, it prefers the better score.
+- Get more: recommended chat and seeing models marked by whether they fit, and a Hugging Face search (GGUF models, downloaded by Ollama).
+- Model servers: add a server on your network (a PC with a big GPU, a home server, Tailscale) or an online OpenAI-compatible service, with a key kept in the Keychain / Credential Manager. Online ones must use https. Xod never switches to one by itself.
+
+**What works, and why not**
+- The models panel shows what works right now on this computer with this model, what's limited and how, and what's off, why, and the one-click fix: answering, calling tools, seeing, long files, browsing, web search, files and commands, memory search, voice, images and video, connected apps, phone, cloud help, building apps.
+- Ask Xod "what can't you do?", "why can't you see images?" or "what isn't available right now?" and it answers from that check, made just then, not from what a model imagines about itself.
+- Tools that can't work here are left out instead of tried (no Chrome or Edge: no browser tools).
+
+**Connect to more**
+- 29 one-click connections, grouped: Jira and Confluence, Todoist, ClickUp, monday.com, Airtable, Zapier (and the thousands of apps it reaches), Dropbox, Canva, Webflow, Wix, Stripe, PayPal, Intercom, Sentry, Vercel, Netlify, Supabase, Neon, Prisma Postgres, Cloudflare, alongside Notion, Linear and GitHub. Plus five with no account at all (Hugging Face, Microsoft Learn, Context7, DeepWiki, Cloudflare docs), whose tools run without asking since they can't change anything of yours.
+- Each was checked through Xod's own sign-in up to the real sign-in page (`tests/features/run_connectors_test.py --all`, and `scripts/check_connectors.py` for any address). Figma and Gamma were left out because they refuse Xod's sign-in today; the code says which others can't be one-click yet and why.
+- A request that names a connected app ("add milk to my Todoist") goes to it.
+- "This Mac" isn't offered on Windows, and says why (it drives the Mac's own apps). It used to connect there with tools that would all fail.
+
+**Fixed**
+- Choosing a model server address that isn't allowed was refused, but only after the switch had already been saved.
+
 **Tests**
+- New: models, scores, what works and connecting against a stand-in Ollama (32 checks), on Windows in CI.
 - New: the phone link against a stand-in Telegram (22 checks: pairing, strangers ignored, tasks, approvals, answers, results, connected apps, the listening loop), and vision against a stand-in Ollama (8 checks). Both run on Windows in CI. Checked for real on this PC: a question from the "phone" answered by the local model in 18 s, an invoice image read correctly in 21 s, and the desktop app hiding to the tray, reopening and starting hidden.
 
 ## 0.5.2

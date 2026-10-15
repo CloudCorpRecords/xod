@@ -95,13 +95,14 @@ def parse_llm_json(text: str) -> Dict[str, Any]:
     return {}
 
 
-CLOUD_PROVIDERS = ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic")
+CLOUD_PROVIDERS = ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic", "custom")   # custom: an online server you added
 # Models on this computer. "local": any other OpenAI-compatible server here (llama.cpp, Jan, KoboldCpp, GPT4All…),
 # found by services/autoconnect.py.
 LOCAL_PROVIDERS = ("xod", "lm_studio", "ollama", "local")
 ENDS_WITH_DONE = ("ollama", "lm_studio")   # local servers that always finish a stream with [DONE]
 PROVIDER_NAMES = {"ollama": "Ollama", "lm_studio": "LM Studio", "xod": "The built-in model", "local": "The local model server", "openai": "OpenAI",
-                  "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter", "fireworks": "Fireworks", "anthropic": "Claude"}
+                  "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter", "fireworks": "Fireworks", "anthropic": "Claude",
+                  "custom": "Your model server"}
 CLOUD_THINK_HEADROOM = 2048      # tokens a cloud reasoning model may spend thinking before the answer even starts
 _no_effort: set = set()          # (provider, model) that rejected reasoning_effort
 
@@ -160,9 +161,11 @@ class LLMService:
             base_url = settings.llm_base_url or "http://localhost:11434/v1"
             api_key = "ollama"
             m = model or settings.llm_model or "llama3.1"
-        elif provider == "local":
+        elif provider in ("local", "custom"):
+            # A server on this computer, or one you added (services/model_sources.py) with its key, if it has one.
+            from app.services import model_sources
             base_url = settings.llm_base_url or "http://localhost:8080/v1"
-            api_key = "local"
+            api_key = model_sources.key_for(base_url) or ("local" if provider == "local" else "missing")
             m = model or settings.llm_model or "default"
         elif provider == "openai":
             base_url = "https://api.openai.com/v1"

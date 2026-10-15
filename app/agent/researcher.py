@@ -183,6 +183,13 @@ class AgenticResearcher:
             doc_name = (attached_document.get("name") if attached_document else None) or "Attached Document"
             evidence_board.doc_telemetry.append(attached_document or {"name": doc_name})
 
+        # "What can't you do?" / "Why can't you see images?": answered from what was just checked on this computer with
+        # this model (services/capabilities.py), not from what a model imagines about itself.
+        if not has_image and not has_document and self._ABOUT_SELF_RE.search(user_query or ""):
+            async for ev in self._answer_about_self(user_query, messages):
+                yield ev
+            return
+
         # -------------------------------------------------------------
         # STEP 1: DELIBERATION PHASE ("Think First, Decide, Then Act")
         # -------------------------------------------------------------
@@ -1826,6 +1833,44 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
     # Values a plan step can't know in advance (they come from earlier steps' results).
     _PLACEHOLDER_RE = re.compile(r"replace[_ ]?with|from[_ ]step|<[^>]+>|\{\{.*\}\}|^\$\w+$|previous[_ ]step|placeholder", re.I)
     _CARRY_KEYS = ("job_id", "pid", "output_path", "path", "filepath", "url", "port", "session_id", "tab_id")
+
+    _ABOUT_SELF_RE = re.compile(
+        r"\b(what (can|can't|cannot|can not) you (do|see|use|access|connect to)\s*(\?|$|\.|for me\b|here\b|now\b|right now|on (this|my)\b|and\b)|"
+        r"what tools (do you have|can you use|are (there|available))|which tools (do you have|can you use|are (there|available))|"
+        r"what('s| is) (not |un)?(available|working|supported)( (for you|on this|here|right now))?\s*(\?|$)|"
+        r"what (doesn't|does not|won't|isn't|is not) (work|available|supported)|"
+        r"why (can'?t|cannot|don't|won't|didn't) you (see|look at|read (images|pictures)|use (tools|the browser|apps)|hear|browse|connect|access|call tools)|"
+        r"are you able to (see|use|read|browse|hear|connect)|can you (see|look at|read) (images|pictures|photos|screenshots)|"
+        r"(your|xod's) (limits|limitations|capabilities|abilities)|what (are|is) (you|xod) capable of)", re.I)
+
+    async def _answer_about_self(self, question: str, messages: List[Dict[str, Any]]) -> AsyncGenerator[Dict[str, Any], None]:
+        from app.services import capabilities
+        yield {"type": "status", "content": "Checking what works on this computer…"}
+        rep = await capabilities.report()
+        facts = capabilities.as_text(rep)
+        yield {"type": "tool_call", "name": "xod_capabilities", "args": {}, "id": "caps"}
+        yield {"type": "tool_result", "name": "xod_capabilities", "id": "caps",
+               "summary": f"{rep['counts']['ok']} working, {rep['counts']['limited']} limited, {rep['counts']['off']} not available",
+               "data": {"items": [{k: i[k] for k in ("name", "status", "why")} for i in rep["items"]]}}
+        prompt = [{"role": "system", "content": (
+            "You are Xod. Answer the person's question about what you can and can't do, using ONLY the report below, which was "
+            "checked just now on their computer with their model. Be specific: name what doesn't work or is limited, say why in "
+            "plain words, and what would fix it. If they asked about one thing, answer about that thing. Short: a few sentences "
+            f"or a short list. Don't mention the report itself.\n\n{facts}")},
+                  {"role": "user", "content": question}]
+        said = ""
+        try:
+            async for ch in llm_service.stream_chat_completion(messages=prompt, temperature=0.2, max_tokens=700, think=False, task="about_self"):
+                if ch.get("type") == "content" and ch.get("content"):
+                    said += ch["content"]
+                    yield {"type": "content", "content": ch["content"]}
+                elif ch.get("type") == "error" and not said:
+                    break
+        except Exception:
+            pass
+        if not said.strip():     # the model isn't answering (one of the things that may be off): the facts themselves
+            yield {"type": "content", "content": facts.replace("WHAT XOD CAN DO RIGHT NOW (checked just now on this computer):\n", "")}
+        yield {"type": "done"}
 
     def _remember_values(self, result: Any) -> None:
         if isinstance(result, dict):

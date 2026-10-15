@@ -42,6 +42,17 @@ DOMAINS = [
     (re.compile(r"\bnotion\b", re.I), ("notion", "")),
     (re.compile(r"\b(linear|issues?|tickets?|backlog|sprint)\b", re.I), ("linear", "")),
     (re.compile(r"\b(github|repo|repos|repository|pull requests?|PRs?)\b", re.I), ("github", "")),
+    # The other one-click connectors (services/connectors.py): words that mean them. Only connected ones have tools.
+    *[(re.compile(rf"\b({words})\b", re.I), (server, "")) for words, server in (
+        (r"jira|confluence|atlassian", "atlassian"), (r"todoist|tasks? list", "todoist"), (r"clickup", "clickup"),
+        (r"monday(\.com)?|boards?", "monday"), (r"airtable|bases?", "airtable"), (r"zapier|zaps?", "zapier"),
+        (r"dropbox", "dropbox"), (r"canva|designs?", "canva"), (r"webflow", "webflow"), (r"wix", "wix"),
+        (r"stripe|payments?|invoices?|subscriptions?|customers?", "stripe"), (r"paypal", "paypal"),
+        (r"intercom|support conversations?", "intercom"), (r"sentry|errors?|exceptions?|crash(es)?", "sentry"),
+        (r"vercel|deploy(ment)?s?", "vercel"), (r"netlify", "netlify"), (r"supabase", "supabase"), (r"neon", "neon"),
+        (r"prisma", "prisma"), (r"cloudflare|dns|workers?", "cloudflare"), (r"hugging ?face|datasets?|spaces?", "huggingface"),
+        (r"microsoft (learn|docs)|powershell docs|azure docs", "mslearn"), (r"context7|library docs|api docs", "context7"),
+        (r"deepwiki", "deepwiki"), (r"cloudflare docs", "cloudflare-docs"))],
 ]
 VERBS_RE = re.compile(r"\b(add|create|make|new|put|schedule|book|set up|update|change|edit|rename|move|reschedule|push|postpone|"
                       r"delete|remove|cancel|clear|complete|finish|check off|tick off|mark|archive|close|reopen|flag|list|show|find|"
@@ -186,8 +197,7 @@ def route(query: str, has_attachment: bool = False, messages: Optional[List[Dict
             return {"mode": "apps", "tools": tools}
     if NOT_MINE_RE.search(q) or not VERBS_RE.search(q):
         return None
-    if not any(rx.search(q) for rx, _ in DOMAINS):
-        return None
+    # The app's words (DOMAINS) or its name: only connected apps have tools, so "boards" alone does nothing without monday.com.
     tools = tools_for(q)
     if not tools:
         return None

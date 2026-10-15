@@ -75,20 +75,30 @@ async def main():
     hub = mcp_client.mcp_hub
 
     # C1
-    await connectors.connect("mac", REDIRECT)
-    st = await wait_state("mac", ("connected", "error"))
-    tools = next(s for s in hub.status() if s["name"] == "mac")["tools"]
-    reads = {t["name"] for t in tools if t["read_only"]}
-    check("C1 This Mac connects", st["state"] == "connected" and len(tools) == 18, f"{len(tools)} tools, {st.get('error')}")
-    from app.services.mcp_client import _destructive
-    c = hub.conns["mac"]
-    deletes = sorted(t.name for t in c.tools if _destructive(t))
-    check("C1b deleting tools are marked destructive (they always ask)",
-          deletes == ["calendar_delete_event", "mail_delete", "notes_delete", "reminders_delete"], str(deletes))
-    check("C1 reads are read-only, writes ask", "calendar_events" in reads and "mail_draft" not in reads and "notes_create" not in reads)
+    r = await connectors.connect("mac", REDIRECT)
+    if sys.platform != "darwin":
+        # Its tools drive the Mac's own apps: off a Mac it isn't offered (they'd all fail), and says why.
+        st = next(c for c in connectors.catalog() if c["id"] == "mac")
+        check("C1 This Mac isn't offered off a Mac, and says why", not r["success"] and st["state"] == "off"
+              and "only works on a Mac" in (st.get("unavailable") or ""), f"{r} {st.get('unavailable')}")
+    else:
+        st = await wait_state("mac", ("connected", "error"))
+        tools = next(s for s in hub.status() if s["name"] == "mac")["tools"]
+        reads = {t["name"] for t in tools if t["read_only"]}
+        check("C1 This Mac connects", st["state"] == "connected" and len(tools) == 18, f"{len(tools)} tools, {st.get('error')}")
+        from app.services.mcp_client import _destructive
+        c = hub.conns["mac"]
+        deletes = sorted(t.name for t in c.tools if _destructive(t))
+        check("C1b deleting tools are marked destructive (they always ask)",
+              deletes == ["calendar_delete_event", "mail_delete", "notes_delete", "reminders_delete"], str(deletes))
+        check("C1 reads are read-only, writes ask", "calendar_events" in reads and "mail_draft" not in reads and "notes_create" not in reads)
 
-    # C2 + C3
-    for cid, host in (("notion", "notion"), ("linear", "linear.app")):
+    # C2 + C3 (with --all: every one-click sign-in in the catalog, through Xod's own sign-in, not just a metadata check)
+    from urllib.parse import urlparse as _u
+    pairs = [("notion", "notion"), ("linear", "linear.app")]
+    if "--all" in sys.argv:
+        pairs = [(c["id"], "") for c in connectors.CATALOG if c["kind"] == "oauth"]
+    for cid, host in pairs:
         opened.clear()
         await connectors.connect(cid, REDIRECT)
         for _ in range(120):
@@ -97,7 +107,7 @@ async def main():
             await asyncio.sleep(0.25)
         url = opened[0] if opened else ""
         q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-        good = (host in urllib.parse.urlparse(url).netloc and q.get("client_id") and q.get("code_challenge")
+        good = ((host in urllib.parse.urlparse(url).netloc if host else bool(url)) and q.get("client_id") and q.get("code_challenge")
                 and q.get("redirect_uri", [""])[0] == REDIRECT and q.get("state"))
         check(f"C2 {cid}: registers and opens its sign-in page", bool(good), urllib.parse.urlparse(url).netloc or "no page opened")
         st = next(c for c in connectors.catalog() if c["id"] == cid)

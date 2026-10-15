@@ -61,6 +61,7 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 | **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. |
 | **Always there** | Close the window and Xod keeps working from the tray (the menu bar on a Mac), and it can start when you log in. |
 | **In your pocket** | Message Xod from your phone through a Telegram bot of your own: it does the job on your computer, asks before anything is sent or paid, and you approve with one tap. Nothing is opened to the internet. |
+| **Your models, your choice** | One list of every model on this computer, your network and the cloud, with what each can do and a score from a test on your computer. Swap the model for chat or for seeing with a click, and ask Xod what works right now and why not. |
 | **It sees** | Screenshots in its browser and pictures you attach, even when your chat model reads text only: Xod adds a small local vision model that describes them. |
 | **It reads the web itself** | It searches in its own browser, reads the top pages side by side and answers from them with sources. No search API key. |
 | **You stay in charge** | It stops for your OK before anything is sent, paid, posted or deleted. Every action is logged, and file changes can be undone. |
@@ -68,7 +69,7 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 | **A companion that grows** | Moods, a bond with you, five stages to grow through, and a journal of what it thought about while you were away. |
 | **Talk to it** | Say "Hey Xod" and have a spoken back-and-forth, hands-free. It answers out loud, takes follow-ups and stops when you talk over it, all on your Mac. |
 | **Teach once, repeat forever** | Turn any chat into a routine. Xod remembers the steps that worked and runs it again, on a schedule if you like. |
-| **Plays well with others** | One-click connections to your Mac's Calendar, Notes, Mail and Reminders, Notion, Linear and GitHub, plus any MCP tool. Claude Desktop, Cursor and others can hand work to Xod. |
+| **Plays well with others** | 29 one-click connections, each checked to sign in: your Mac's Calendar, Notes, Mail and Reminders, Notion, Linear, GitHub, Jira, Todoist, Airtable, Zapier, Dropbox, Canva, Stripe, Vercel, Supabase and more, plus any MCP tool. Claude Desktop, Cursor and others can hand work to Xod. |
 | **Cloud only when it helps** | Optionally pass the hard steps to Claude, GPT or Gemini, with your permission, the cost shown, and a monthly budget. |
 
 ## Install

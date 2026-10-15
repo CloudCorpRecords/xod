@@ -61,8 +61,12 @@ async def model() -> Optional[str]:
     found = None
     try:
         from app.services import ollama_hub
+        from app.services.storage import get_setting
         seeing = [m for m in await ollama_hub.installed() if m.get("vision") and not m.get("embedding")]
-        if seeing:
+        chosen = get_setting("vision_model", "")         # picked in the models panel (services/model_hub.py)
+        if chosen and any(m["name"] == chosen for m in seeing):
+            found = chosen
+        elif seeing:
             found = min(seeing, key=lambda m: m.get("size_gb") or 99)["name"]
     except Exception:
         pass

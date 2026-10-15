@@ -104,9 +104,15 @@ def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> D
     picked it, "auto" when Xod did; Xod only changes a model on its own while the choice is still its own."""
     from app.config import update_env_variable
     from app.services.local_engine import catalog_entry, is_downloaded
-    allowed = {"xod", "lm_studio", "ollama", "local", "anthropic", "openai", "gemini", "groq", "openrouter", "fireworks"}
+    allowed = {"xod", "lm_studio", "ollama", "local", "custom", "anthropic", "openai", "gemini", "groq", "openrouter", "fireworks"}
     if provider not in allowed:
         return {"success": False, "error": f"Unknown provider {provider}"}
+    # Checked before anything is saved (a refused address used to leave the provider switched anyway).
+    from app.services import model_sources
+    if provider == "local" and not (base_url.startswith(("http://localhost", "http://127.0.0.1")) or model_sources.is_mine(base_url)):
+        return {"success": False, "error": "A local server's address must be on this computer, or one you added under Model servers."}
+    if provider == "custom" and not model_sources.is_mine(base_url):
+        return {"success": False, "error": "Add that server under Model servers first."}
     if provider == "xod":
         if not catalog_entry(model):
             return {"success": False, "error": "Pick one of the built-in models."}
@@ -121,9 +127,7 @@ def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> D
         update_env_variable("LLM_BASE_URL", ollama_url)
     elif provider == "lm_studio":
         update_env_variable("LLM_BASE_URL", base_url or "http://localhost:1234/v1")
-    elif provider == "local":
-        if not base_url.startswith(("http://localhost", "http://127.0.0.1")):
-            return {"success": False, "error": "A local server's address must be on this computer."}
+    elif provider in ("local", "custom"):
         update_env_variable("LLM_BASE_URL", base_url)
     from app.services.storage import set_setting
     set_setting(CHOSEN_BY_KEY, how)
