@@ -56,6 +56,8 @@ def chat(base, text, history):
                 tools.append(ev["name"].split("__")[-1])
                 if (ev.get("data") or {}).get("needs_approval"):
                     approvals.append(ev["data"])
+                elif (ev.get("data") or {}).get("error"):
+                    print(f"     {ev['name'].split('__')[-1]} failed: {str(ev['data']['error'])[:200]}", flush=True)
     history += [{"role": "user", "content": text}, {"role": "assistant", "content": content}]
     print(f"   » {text}\n     tools: {tools}\n     {content[:200]!r}", flush=True)
     return content, approvals, tools

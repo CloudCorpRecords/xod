@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.5.2
+
+**Safer with your files**
+- Xod can't be talked into deleting the wrong thing. A model filling in a path it didn't know with "..." or "." had Windows read it as Xod's own folder, which nearly went to the Recycle Bin. Deleting or moving now needs a real, full path, and never touches a whole top folder (your home folder, Desktop, a drive), Xod itself, or Windows' own folders.
+- "Delete the receipt" when there are two receipts asks which one, instead of picking one, or the whole Receipts folder.
+- A question never changes anything. "What's the last line of this log?" once tried to edit the log to find out.
+- An answer can't claim it did something it didn't. "I've added the line to todo.txt", with nothing run, now goes to the planner, which actually does it.
+- The file browser's Delete moves things to the Recycle Bin (the Trash on a Mac) instead of erasing them.
+- New lines a model writes as `\n` become real new lines in notes and text files.
+
+**Connected apps (Reminders, Calendar…) get it done**
+- A change to the wrong or a made-up item is caught before it runs. Small models copy ids badly (or invent "1234567890"); Xod now looks the items up itself, uses the one you plainly named ("move my dentist appointment" → Dentist), and otherwise hands the model the real list to pick from. A run of the connected-apps test used to fail somewhere every time; it now passes.
+- Adding something that's already there doesn't make a duplicate.
+- "Delete the eggs reminder" after checking it off finds it (finished items are looked at too when nothing open matches).
+- A reply that says "Ready to delete it: press Approve" without having made the approval card is caught, and the model is told to actually do it.
+- When an app's tool fails, the reason and what was sent are logged, so a failure can be traced.
+
+**Steadier browser**
+- Xod's browser isn't ended just because it was slow to answer for a second (a busy page, a slow PC): it's asked again before Xod decides it's gone. That had lost half-filled forms waiting for your OK.
+- Long browser steps no longer drop their connection to the page when Chrome is busy.
+- Signing up on a site where you don't have an account works: Xod opens the sign-up page instead of typing a new password into the sign-in form (which failed, and then asked you for a password that didn't exist). The password it makes is saved to Windows Credential Manager (the Keychain on a Mac) and the account creation waits for your OK.
+
+**Answers about your computer**
+- "Which programs use the most memory?" and other questions about this PC are answered from the PC, not from a web search on how to open Task Manager.
+- The local IP address is the real one (Wi-Fi or Ethernet), not a disconnected adapter's 169.254 address.
+- Disk space, the busiest programs and uptime are reported on Windows. They used to read as zero.
+- The end of a long file can be read directly (the last lines of a log).
+- Zipping and unzipping a folder are built in (a zip can't write outside its folder). A model asking to "zip" with the folder-sorting tool used to sort your whole Downloads folder instead.
+- Copying to the clipboard works however the model names the text, and "what's on my clipboard?" is answered with what's there.
+- Searching for files works when the model writes the folder into the search (`C:\Users\you\Downloads\*.pdf`).
+- "Create todo.txt on my Desktop" writes the file instead of building a to-do app.
+
+**Everything works on Windows**
+- Desktop, Documents and Downloads are found where Windows really keeps them, including when OneDrive has moved them.
+- "Open Spotify", "launch Calculator": apps from the Start menu open, Store apps too.
+- Notifications from finished tasks and new mail show on Windows.
+- Xod's browser restarts cleanly on Windows. A leftover one used to block the next one from starting.
+- The space review adds up folder sizes on Windows (they all showed as 0). Captions on videos work (Windows paths broke ffmpeg's text filter). The résumé picker finds résumés on Windows. Deleting a media model frees the space (it went to a hidden folder instead of the Recycle Bin).
+- Health checks whether Ollama is really answering, and offers to start Ollama (it said "ok" even with Ollama closed, and its fix started LM Studio).
+- "Get to know me" reads your Windows account name and Start menu apps, and doesn't offer the Mac's Contacts.
+- The last Mac wording on the page is gone on Windows, and the terminal's preset commands are PowerShell ones there.
+- After an update, the page always loads the new scripts (each is stamped with its file's time).
+
+**Tests**
+- The Windows suite checks 54 things on a clean Windows PC in CI (41 more than before). An agent test drove 19 real requests through the chat with a local model (Qwen 2.5 14B), checking the result on disk each time: everything it caught is fixed above.
+- The test suites' browser connections no longer drop on a busy PC, and the connected-apps test prints why a tool failed.
+
 ## 0.5.1
 
 **The agent on Windows, tested end to end**

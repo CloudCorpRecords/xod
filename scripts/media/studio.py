@@ -92,7 +92,8 @@ class Studio:
             except Exception:
                 time.sleep(0.2)
         target = next(t for t in tabs if t["type"] == "page")
-        self.ws = await websockets.connect(target["webSocketDebuggerUrl"], max_size=200_000_000)
+        # No keep-alive pings: a busy headless Chrome can miss one, and the connection is dropped mid-test.
+        self.ws = await websockets.connect(target["webSocketDebuggerUrl"], max_size=200_000_000, ping_interval=None)
         self.reader = asyncio.create_task(self._read())
         await self.cmd("Page.enable")
         await self.cmd("Emulation.setDeviceMetricsOverride", width=self.w, height=self.h,
