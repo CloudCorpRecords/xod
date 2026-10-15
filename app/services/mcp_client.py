@@ -364,6 +364,7 @@ class MCPHub:
             out["data"] = structured
         if is_error:
             out["error"] = out["content"][:500] or "The tool reported an error."
+            logger.warning(f"MCP {full_name} failed: {out['error'][:200]} (args: {json.dumps(args, default=str)[:300]})")
         return out
 
     async def approve(self, pid: str) -> Dict[str, Any]:

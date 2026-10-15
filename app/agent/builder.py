@@ -218,8 +218,14 @@ def is_three(spec: Dict[str, Any], query: str) -> bool:
     return bool(re.search(r"\bgames?\b", query, re.I)) and not OTHER_ENGINE_RE.search(query)
 
 
+# "Create todo.txt on my Desktop" names a file to write, not a to-do app to build.
+_PLAIN_FILE_RE = re.compile(r"\b[\w\- ]+\.(txt|md|csv|tsv|json|log|docx?|xlsx?|pptx?|pdf|rtf|ini|ya?ml|xml|ps1|bat|cmd|sh|py)\b", re.I)
+
+
 def wants_build(query: str) -> bool:
     q = (query or "").strip()
+    if _PLAIN_FILE_RE.search(q) and not re.search(r"\b(game|app|application|web ?site|web ?page|site)\b", q, re.I):
+        return False
     if q and len(q) < 400 and WANT_GAME_RE.search(q) and not re.search(r"\b(recommend|suggest|buy|download|steam|xbox|playstation|switch|best)\b", q, re.I):
         return True
     return bool(q) and len(q) < 1500 and bool(BUILD_RE.search(q)) and not (NOT_BUILD_RE.search(q) and not re.search(r"\b(game|app)\b", q, re.I))
@@ -563,8 +569,9 @@ class Builder:
     def _place(text: str, app_dir: Path) -> Optional[Path]:
         """'my desktop', 'documents', 'a folder called games', 'a games folder on my desktop', '~/Projects'."""
         t = re.sub(r"[.!?]+$", "", text.strip()).strip().strip("\"'")
+        from app.platform_info import real_folder
         home = Path.home()
-        named = {"desktop": home / "Desktop", "documents": home / "Documents", "downloads": home / "Downloads", "home": home}
+        named = {**{k: Path(real_folder(str(home / k.title()))) for k in ("desktop", "documents", "downloads")}, "home": home}
         m = re.search(r"\b(?:a |the )?(?:new )?folder (?:called|named) [\"']?([\w .-]{1,60}?)[\"']?(?: (?:in|on|inside) (?:my |the )?(\w+))?$", t, re.I) or \
             re.search(r"\b(?:a |the |my )?(?:new )?[\"']?([\w.-]{1,40})[\"']? folder(?: (?:in|on|inside) (?:my |the )?(\w+))?$", t, re.I)
         if m:

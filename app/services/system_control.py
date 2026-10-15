@@ -148,7 +148,8 @@ class SystemControlService:
         disk storage, top resource-intensive processes (with RSS MB), and active listening ports.
         """
         try:
-            load_1, load_5, load_15 = os.getloadavg()
+            import psutil     # os.getloadavg on Mac/Linux; psutil works it out on Windows (after a few seconds)
+            load_1, load_5, load_15 = os.getloadavg() if hasattr(os, "getloadavg") else psutil.getloadavg()
         except Exception:
             load_1, load_5, load_15 = 0.0, 0.0, 0.0
 
@@ -183,9 +184,8 @@ class SystemControlService:
         # Disk stats
         disk_info = {"total_gb": 0.0, "free_gb": 0.0, "used_gb": 0.0, "percent_used": 0.0}
         try:
-            statvfs = os.statvfs(os.path.expanduser("~"))
-            total = statvfs.f_frsize * statvfs.f_blocks
-            free = statvfs.f_frsize * statvfs.f_bavail
+            du = shutil.disk_usage(os.path.expanduser("~"))     # every system (os.statvfs isn't on Windows)
+            total, free = du.total, du.free
             used = total - free
             disk_info["total_gb"] = round(total / (1024 ** 3), 2)
             disk_info["free_gb"] = round(free / (1024 ** 3), 2)
@@ -196,9 +196,9 @@ class SystemControlService:
             pass
 
         # Top 8 CPU & Memory processes with RSS (MB)
-        top_procs: List[Dict[str, Any]] = []
+        top_procs: List[Dict[str, Any]] = self._top_processes_psutil() if WIN else []    # no ps on Windows
         try:
-            ps_out = subprocess.check_output(
+            ps_out = [] if WIN else subprocess.check_output(
                 ["ps", "-A", "-o", "pid,%cpu,%mem,rss,comm", "-r"],
                 text=True
             ).strip().splitlines()
@@ -238,8 +238,71 @@ class SystemControlService:
             "active_ports_count": len(listening_ports),
             "background_jobs_count": len(self.background_jobs),
             "current_working_directory": self.current_working_directory,
-            "uptime_seconds": time.time()
+            "uptime_seconds": self._uptime_seconds(),
+            "network": self._network()
         }
+
+    @staticmethod
+    def _network() -> Dict[str, Any]:
+        """This computer's local IP: the one its internet traffic leaves from (no packet is sent to find it), and the
+        addresses of the network adapters that are up. 169.254.x.x (an adapter with no network) is left out."""
+        import socket
+        primary = ""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("192.0.2.1", 9))      # a documentation address: connect() on UDP only picks the route
+            primary = s.getsockname()[0]
+            s.close()
+        except OSError:
+            pass
+        adapters = []
+        try:
+            import psutil
+            stats = psutil.net_if_stats()
+            for name, addrs in psutil.net_if_addrs().items():
+                if not (stats.get(name) and stats[name].isup):
+                    continue
+                for a in addrs:
+                    if a.family == socket.AF_INET and not a.address.startswith(("127.", "169.254.")):
+                        adapters.append({"adapter": name, "ip": a.address})
+        except Exception:
+            pass
+        return {"local_ip": primary or (adapters[0]["ip"] if adapters else ""), "adapters": adapters}
+
+    @staticmethod
+    def _uptime_seconds() -> float:
+        try:
+            import psutil
+            return round(time.time() - psutil.boot_time())
+        except Exception:
+            return 0.0
+
+    _procs: Dict[int, Any] = {}
+
+    def _top_processes_psutil(self, n: int = 8) -> List[Dict[str, Any]]:
+        """Busiest processes by CPU, then memory. CPU % is measured since the last call (the first call has
+        nothing to compare against, so it's sorted by memory), on one core = 100% like ps."""
+        import psutil
+        rows, alive = [], {}
+        total_mem = psutil.virtual_memory().total or 1
+        for p in psutil.process_iter(["pid", "name", "exe", "memory_info"]):
+            try:
+                proc = self._procs.get(p.pid) or p
+                alive[p.pid] = proc
+                cpu = proc.cpu_percent(None)
+                rss = (p.info["memory_info"].rss if p.info["memory_info"] else 0)
+                if p.pid == 0 or not p.info["name"] or p.info["name"] == "System Idle Process":
+                    continue
+                rows.append({"pid": p.pid, "cpu_pct": f"{cpu:.1f}", "mem_pct": f"{100 * rss / total_mem:.1f}",
+                             "rss_mb": round(rss / 1024 ** 2, 1), "command": p.info["name"],
+                             "full_path": p.info["exe"] or p.info["name"], "_cpu": cpu, "_rss": rss})
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        type(self)._procs = alive
+        # The busiest by CPU and the biggest by memory (a question can be about either).
+        by_cpu = sorted(rows, key=lambda r: (-r["_cpu"], -r["_rss"]))[:n // 2 + 1]
+        by_mem = [r for r in sorted(rows, key=lambda r: -r["_rss"]) if r not in by_cpu][:n - len(by_cpu)]
+        return [{k: v for k, v in r.items() if not k.startswith("_")} for r in by_cpu + by_mem]
 
     @staticmethod
     async def _shell(command: str, cwd: str):
@@ -653,6 +716,11 @@ class SystemControlService:
         - 'move': Moves or renames file safely.
         - 'mkdir': Creates directory path recursively.
         """
+        why = self._unsafe_target(src, destructive=action in ("trash", "delete", "remove", "move"))
+        if not why and action in ("move", "copy", "zip") and dst:
+            why = self._unsafe_target(dst, destructive=False)
+        if why:
+            return {"success": False, "refused": True, "error": why}
         src_path = os.path.expanduser(src)
         if action == "mkdir":
             try:
@@ -713,7 +781,56 @@ class SystemControlService:
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
-        return {"success": False, "error": f"Unknown action: {action}"}
+        elif action == "zip":
+            # The folder (or file) into a .zip next to it, or at dst. Never over an existing file.
+            base = os.path.abspath(src_path).rstrip("\\/")
+            out = os.path.expanduser(dst) if dst else base + ".zip"
+            if os.path.isdir(out):
+                out = os.path.join(out, os.path.basename(base) + ".zip")
+            if not out.lower().endswith(".zip"):
+                out += ".zip"
+            if os.path.exists(out):
+                return {"success": False, "error": f"{out} already exists: choose another name (or move that one away first)."}
+            try:
+                import zipfile
+                os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+                count = 0
+                with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+                    if os.path.isdir(base):
+                        for root, _dirs, files in os.walk(base):
+                            for f in files:
+                                full = os.path.join(root, f)
+                                if os.path.abspath(full) == os.path.abspath(out):
+                                    continue
+                                z.write(full, os.path.relpath(full, os.path.dirname(base)))
+                                count += 1
+                    else:
+                        z.write(base, os.path.basename(base))
+                        count = 1
+                return {"success": True, "action": "zip", "src": base, "dst": out, "files": count, "size_bytes": os.path.getsize(out)}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        elif action == "unzip":
+            if not src_path.lower().endswith(".zip"):
+                return {"success": False, "error": f"{src} isn't a .zip file."}
+            out = os.path.expanduser(dst) if dst else os.path.splitext(src_path)[0]
+            why = self._unsafe_target(out, destructive=False)
+            if why:
+                return {"success": False, "refused": True, "error": why}
+            try:
+                import zipfile
+                with zipfile.ZipFile(src_path) as z:
+                    root = os.path.abspath(out)
+                    for m in z.namelist():     # nothing may land outside the folder ("../../x" in a zip)
+                        if not os.path.abspath(os.path.join(root, m)).startswith(root + os.sep) and os.path.abspath(os.path.join(root, m)) != root:
+                            return {"success": False, "error": f"The zip has a file that would land outside {out} ({m}): not unzipped."}
+                    z.extractall(root)
+                    return {"success": True, "action": "unzip", "src": src_path, "dst": root, "files": len(z.namelist())}
+            except Exception as e:
+                return {"success": False, "error": str(e)}
+
+        return {"success": False, "error": f"Unknown action: {action}. Use trash, copy, move, mkdir, zip or unzip."}
 
     async def read_clipboard(self) -> Dict[str, Any]:
         """Reads current plain text from macOS system clipboard via pbpaste."""
@@ -923,11 +1040,58 @@ class SystemControlService:
             "logs": info["logs"][-tail:]
         }
 
+    def _unsafe_target(self, raw: str, destructive: bool) -> Optional[str]:
+        """Why a path must not be changed (None if it's fine). destructive: trash, delete or move it away.
+        Models fill in paths they don't know with "..." or ".", which Windows reads as the current folder: once, Xod's
+        own folder was nearly sent to the Recycle Bin that way. So: real, full paths only, and never a whole top
+        folder (home, Desktop, a drive), Xod itself, or the system."""
+        s = (raw or "").strip().strip("\"'")
+        if not s or set(s) <= set(". "):
+            return f"'{raw}' isn't a path: nothing was changed. Use the file's full path, from a search or a folder listing."
+        full = os.path.expanduser(s)
+        if destructive and not os.path.isabs(full):
+            return (f"'{raw}' isn't a full path: nothing was changed. Use the file's full path, from a search or a folder listing "
+                    f"(like {os.path.join(os.path.expanduser('~'), 'Downloads', 'file.pdf')}).")
+        try:
+            p = Path(full).resolve()
+        except Exception:
+            return f"'{raw}' isn't a valid path: nothing was changed."
+        rp = os.path.normcase(str(p))
+        if self._is_protected_path(p):
+            return f"{p} is part of the system: Xod doesn't change it."
+        if destructive:
+            home = Path.home()
+            tops = {home, Path(p.anchor)} | {home / d for d in ("Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos", "Movies", "OneDrive")}
+            try:
+                from app.platform_info import known_folders
+                tops |= {Path(v) for v in known_folders().values()}
+            except Exception:
+                pass
+            if rp in {os.path.normcase(str(t.resolve() if t.exists() else t)) for t in tops}:
+                return f"{p} is a whole top folder: Xod won't delete or move it. Name the files inside it instead."
+            from app.paths import APP_ROOT
+            for own, inside_too in ((APP_ROOT, True), (DATA_DIR, False)):
+                o = os.path.normcase(str(Path(own).resolve()))
+                what = "code" if inside_too else "data folder"
+                if o.startswith(rp.rstrip("\\/") + os.sep):
+                    return f"{p} holds Xod's own {what}: Xod won't delete or move it."
+                if rp == o or (inside_too and rp.startswith(o + os.sep)):
+                    return f"{p} is Xod's own {what}: Xod won't delete or move it."
+        return None
+
     def _is_protected_path(self, p: Path) -> bool:
-        """Guards critical macOS system paths from accidental modification."""
+        """Guards critical system paths (macOS and Windows) from accidental modification."""
         try:
             resolved = str(p.resolve())
             home_str = str(Path.home())
+            if WIN:
+                low = os.path.normcase(resolved)
+                system = [os.environ.get(v) for v in ("WINDIR", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData")]
+                for d in filter(None, system):
+                    d = os.path.normcase(os.path.abspath(d))
+                    if low == d or low.startswith(d + os.sep):
+                        return True
+                return False
             if resolved.startswith(home_str) or resolved.startswith("/tmp") or resolved.startswith("/private/tmp"):
                 return False
             if resolved == "/":
@@ -945,11 +1109,13 @@ class SystemControlService:
         filepath: str,
         start_line: Optional[int] = None,
         end_line: Optional[int] = None,
-        max_bytes: int = 60000
+        max_bytes: int = 60000,
+        tail: Optional[int] = None
     ) -> Dict[str, Any]:
         """
         Reads text content from ANY file across the host filesystem.
-        Supports 1-indexed line range slicing (start_line to end_line) with line numbers.
+        Supports 1-indexed line range slicing (start_line to end_line) with line numbers, tail=N for the last N
+        lines, and a negative start_line counts from the end (-1 is the last line).
         """
         try:
             p = Path(os.path.expanduser(filepath)).resolve()
@@ -962,6 +1128,12 @@ class SystemControlService:
             raw_text = p.read_text(encoding="utf-8", errors="replace")
             all_lines = raw_text.splitlines()
             total_lines = len(all_lines)
+
+            if tail:
+                start_line, end_line = max(1, total_lines - int(tail) + 1), total_lines
+            elif start_line is not None and int(start_line) < 0:
+                start_line = max(1, total_lines + int(start_line) + 1)
+                end_line = end_line if end_line and int(end_line) > 0 else total_lines
 
             # Handle line range slicing if specified
             if start_line is not None or end_line is not None:
@@ -991,7 +1163,7 @@ class SystemControlService:
             content = raw_text[:max_bytes] if is_truncated else raw_text
             numbered_content = "\n".join([f"{i+1}: {line}" for i, line in enumerate(content.splitlines()[:400])])
 
-            return {
+            out = {
                 "success": True,
                 "filepath": str(p),
                 "name": p.name,
@@ -1001,6 +1173,11 @@ class SystemControlService:
                 "content": content,
                 "numbered_preview": numbered_content
             }
+            if is_truncated:     # the end of a long file is often what was asked about (a log's last lines)
+                out["last_lines"] = "\n".join(f"{total_lines - 20 + i + 1}: {l}" for i, l in enumerate(all_lines[-20:])) \
+                    if total_lines >= 20 else "\n".join(all_lines)
+                out["note"] = f"Cut off at {max_bytes} bytes; last_lines has the end. Read more with start_line/end_line, or tail=N."
+            return out
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -1010,9 +1187,12 @@ class SystemControlService:
         Automatically creates missing parent directories.
         """
         try:
+            why = self._unsafe_target(filepath, destructive=False)
+            if why:
+                return {"success": False, "refused": True, "error": why}
             p = Path(os.path.expanduser(filepath)).resolve()
-            if self._is_protected_path(p):
-                return {"success": False, "error": f"Cannot write to protected system path: {filepath}"}
+            if p.is_dir():
+                return {"success": False, "error": f"{p} is a folder, not a file: give the file's name inside it."}
 
             if create_dirs:
                 p.parent.mkdir(parents=True, exist_ok=True)
@@ -1050,6 +1230,10 @@ class SystemControlService:
             if self._is_protected_path(p):
                 return {"success": False, "error": f"Cannot edit protected system file: {filepath}"}
 
+            if not target_content:     # "" is found between every character: replacing it would scramble the file
+                return {"success": False, "error": "target_content is empty: give the exact text to replace (to add to the end, "
+                                                   "use the file's last line as target_content and repeat it with the new text after it).",
+                        "filepath": str(p)}
             original_text = p.read_text(encoding="utf-8")
             count = original_text.count(target_content)
 

@@ -1972,7 +1972,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "computer_inspect_system",
-            "description": "Gathers computer telemetry: CPU load averages, RAM free/used, disk usage, and top active background processes.",
+            "description": "What's running on this computer now: the programs using the most CPU and memory, RAM free/used, CPU load, disk space, and the local IP address (network).",
             "parameters": {
                 "type": "object",
                 "properties": {}
@@ -2033,22 +2033,22 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "computer_manage_file",
-            "description": "Performs safe file management on the user's computer: 'trash' (safely moves to macOS Trash via Finder so it's fully recoverable), 'copy', 'move' (rename/move), and 'mkdir' (creates directories).",
+            "description": "Performs safe file management on the user's computer: 'trash' (safely moves to macOS Trash via Finder so it's fully recoverable), 'copy', 'move' (rename/move), 'mkdir' (creates directories), 'zip' (a file or folder into a .zip) and 'unzip' (a .zip into a folder). Always full paths.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["trash", "copy", "move", "mkdir"],
+                        "enum": ["trash", "copy", "move", "mkdir", "zip", "unzip"],
                         "description": "File operation to perform."
                     },
                     "src": {
                         "type": "string",
-                        "description": "Source path or target directory to create."
+                        "description": "Full path of the file or folder (or the directory to create, or the .zip to unzip)."
                     },
                     "dst": {
                         "type": "string",
-                        "description": "Destination path (required for copy and move)."
+                        "description": "Destination path (required for copy and move; for zip the .zip to make, for unzip the folder to unzip into; both optional)."
                     }
                 },
                 "required": ["action", "src"]
@@ -2228,6 +2228,10 @@ TOOL_DEFINITIONS = [
                     "end_line": {
                         "type": "integer",
                         "description": "Optional 1-indexed ending line number."
+                    },
+                    "tail": {
+                        "type": "integer",
+                        "description": "Optional: read only the last N lines (e.g. 1 for the last line of a log)."
                     }
                 },
                 "required": ["filepath"]
@@ -2661,10 +2665,25 @@ _PS_VAR = re.compile(r"\$\{?env:(\w+)\}?|\$\{?HOME\}?(?=[\\/]|$)", re.I)
 def _expand_path(v: str) -> str:
     """%USERPROFILE%\\x (cmd), $env:USERPROFILE\\x or ${env:USERPROFILE}\\x (PowerShell), $HOME\\x → the real path.
     Unknown variables are left as they are (the tool then says the path isn't there)."""
+    from app.platform_info import real_folder
     if "%" not in v and "$" not in v:
-        return v
+        return real_folder(v)
     v = _PS_VAR.sub(lambda m: os.environ.get(m.group(1), m.group(0)) if m.group(1) else os.path.expanduser("~"), v)
-    return os.path.expandvars(v) if "%" in v else v
+    return real_folder(os.path.expandvars(v) if "%" in v else v)
+
+
+_PLAIN_TEXT = {"", ".txt", ".md", ".markdown", ".csv", ".tsv", ".log", ".text", ".rtf", ".ini", ".cfg", ".conf"}
+
+
+def _real_newlines(filepath: str, text: Any) -> Any:
+    """Models often write a new line as the two characters \\n inside tool arguments: "buy bread\\nwalk the dog" then
+    lands in a notes file as one line. For plain-text files with no real line breaks, they become real ones. Code is
+    left alone (print("a\\nb") means what it says)."""
+    if not isinstance(text, str) or "\n" in text or ("\\n" not in text and "\\t" not in text):
+        return text
+    if os.path.splitext(str(filepath or ""))[1].lower() not in _PLAIN_TEXT:
+        return text
+    return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
 
 
 def _expand_path_args(arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -3292,24 +3311,31 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                      or arguments.get("pattern") or "")
             if not query:
                 return {"success": False, "error": "Say what to look for: a file name or part of one (query)."}
-            return await system_control_service.find_files(
-                query=query,
-                root_dir=(arguments.get("root_dir") or arguments.get("path") or arguments.get("directory") or arguments.get("folder")
-                          or active_workspace_path or None),
-                max_results=arguments.get("max_results", 25)
-            )
+            root = (arguments.get("root_dir") or arguments.get("path") or arguments.get("directory") or arguments.get("folder")
+                    or active_workspace_path or None)
+            # "C:\Users\me\Downloads\*.pdf" or "~/Downloads/*.pdf" as the query: the folder part is where to look.
+            head, tail = os.path.split(_expand_path(os.path.expanduser(str(query))))
+            if head and tail and os.path.isabs(head) and os.path.isdir(head) and not root:
+                query, root = tail, head
+            return await system_control_service.find_files(query=query, root_dir=root, max_results=arguments.get("max_results", 25))
 
         elif name == "computer_manage_file":
-            return await system_control_service.manage_file(
-                action=arguments["action"],
-                src=arguments["src"],
-                dst=arguments.get("dst")
-            )
+            # The words models use for these: "compress", "extract", "delete", "rename"...
+            act = str(arguments.get("action") or "").strip().lower()
+            act = {"compress": "zip", "archive": "zip", "extract": "unzip", "unpack": "unzip", "decompress": "unzip",
+                   "delete": "trash", "remove": "trash", "recycle": "trash", "rename": "move", "duplicate": "copy",
+                   "create_folder": "mkdir", "make_dir": "mkdir", "makedirs": "mkdir"}.get(act, act)
+            src = arguments.get("src") or arguments.get("path") or arguments.get("source") or arguments.get("source_path") or ""
+            dst = arguments.get("dst") or arguments.get("destination") or arguments.get("dest") or arguments.get("target") or arguments.get("destination_path")
+            return await system_control_service.manage_file(action=act, src=src, dst=dst)
 
         elif name == "computer_clipboard":
-            act = arguments.get("action", "read")
-            if act == "write":
-                return await system_control_service.write_clipboard(arguments.get("text", ""))
+            act = str(arguments.get("action", "read")).lower()
+            text = next((arguments[k] for k in ("text", "content", "value", "data", "clipboard") if isinstance(arguments.get(k), str)), None)
+            if act in ("write", "copy", "set") or (text and act not in ("read", "get", "paste")):
+                if not text:
+                    return {"success": False, "error": "Nothing to copy: put the text in 'text'."}
+                return await system_control_service.write_clipboard(text)
             return await system_control_service.read_clipboard()
 
         elif name == "computer_inspect_port":
@@ -3362,21 +3388,34 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
 
         elif name == "computer_read_file":
             filepath = arguments.get("filepath") or arguments.get("file_path") or arguments.get("path") or ""
-            return system_control_service.read_file(
-                filepath=filepath,
-                start_line=arguments.get("start_line"),
-                end_line=arguments.get("end_line")
-            )
+            start, end = arguments.get("start_line"), arguments.get("end_line")
+            tail = arguments.get("tail") or arguments.get("last_lines") or arguments.get("last_n")
+            # What models write instead: lines="10-20", line_range="last" / "-5" / "100-120"
+            spec = str(arguments.get("lines") or arguments.get("line_range") or "").strip().lower()
+            if spec and start is None and end is None and not tail:
+                m = re.fullmatch(r"(\d+)\s*[-:]\s*(\d+)", spec)
+                if m:
+                    start, end = int(m.group(1)), int(m.group(2))
+                elif spec in ("last", "end", "tail"):
+                    tail = 1
+                elif re.fullmatch(r"-\d+", spec):
+                    tail = int(spec[1:])
+            def num(v):
+                try:
+                    return int(v) if v not in (None, "") else None
+                except (TypeError, ValueError):
+                    return None
+            return system_control_service.read_file(filepath=filepath, start_line=num(start), end_line=num(end), tail=num(tail))
 
         elif name == "computer_write_file":
             filepath = arguments.get("filepath") or arguments.get("file_path") or arguments.get("path") or ""
-            content = arguments.get("content", "")
+            content = _real_newlines(filepath, arguments.get("content", ""))
             return system_control_service.write_file(filepath=filepath, content=content)
 
         elif name == "computer_edit_file":
             filepath = arguments.get("filepath") or arguments.get("file_path") or arguments.get("path") or ""
-            target_content = arguments.get("target_content") or arguments.get("search_text") or ""
-            replacement_content = arguments.get("replacement_content") or arguments.get("replace_text") or ""
+            target_content = _real_newlines(filepath, arguments.get("target_content") or arguments.get("search_text") or "")
+            replacement_content = _real_newlines(filepath, arguments.get("replacement_content") or arguments.get("replace_text") or "")
             allow_multiple = bool(arguments.get("allow_multiple", False))
             return system_control_service.edit_file(
                 filepath=filepath,
@@ -3404,7 +3443,13 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
             )
 
         elif name == "computer_batch_organize":
-            source_dir = arguments.get("source_dir") or arguments.get("directory") or arguments.get("path") or "~/Downloads"
+            source_dir = arguments.get("source_dir") or arguments.get("directory") or arguments.get("path") or arguments.get("folder")
+            if not source_dir:
+                # Never a guess: a stray call (a model trying to "zip" with it) used to sort the whole Downloads folder.
+                return {"success": False, "error": "Say which folder to sort (source_dir), e.g. ~/Downloads."}
+            if arguments.get("action") or arguments.get("dst"):
+                return {"success": False, "error": "This sorts a folder's files into subfolders by type. To zip, move or copy, "
+                                                   "use computer_manage_file (action zip / move / copy)."}
             return system_control_service.batch_organize_files(source_dir=source_dir)
 
         elif name == "computer_open_item":
@@ -3629,6 +3674,24 @@ def select_tools_for_query(query: str, persona: str = "ultimate_researcher", max
     except Exception as e:
         logger.warning(f"MCP tools unavailable: {e}")
     return tools
+
+
+# A question ("what's the last line of big.log?") never changes anything: a small model once tried to "edit" a log
+# to read its end. Only when the request asks for no change at all; "what's in it? delete it" still can.
+_QUESTION_RE = re.compile(r"^\s*(?:please\s+|ok(?:ay)?\s+|hey\s+xod,?\s+)?(?:(?:what|what's|whats|which|how|where|when|who|whose|why|"
+                          r"tell me|show me|list|find|count|look|check|can you (?:tell|show|find|list|check|see))\b"
+                          r"|(?:is|are|was|were|does|do|did|has|have)\b.*\?\s*$)", re.I | re.S)    # "Do it." is an order
+_CHANGE_RE = re.compile(r"\b(create|make|write|add|append|insert|edit|change|replace|rename|move|delete|remove|trash|erase|zip|unzip|"
+                        r"compress|extract|copy|duplicate|save|fix|update|organi[sz]e|tidy|clean|sort|put|set|install|uninstall|kill|"
+                        r"close|run|start|stop|open|download|convert|merge|split|empty|undo|restore|turn|send|build|generate|draft)\b", re.I)
+CHANGE_TOOLS = {"computer_write_file", "computer_edit_file", "computer_manage_file", "computer_batch_organize", "computer_kill_process",
+                "fs_write_workspace_file", "fs_move_file", "fs_organize_files", "fs_create_folder"}
+
+
+def only_asks(query: str) -> bool:
+    """True for a plain question about things, with nothing to change."""
+    q = query or ""
+    return bool(_QUESTION_RE.search(q)) and not _CHANGE_RE.search(q)
 
 
 def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_tools: int = 25, active_workspace_path: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -3876,6 +3939,9 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
         web = ("web_", "tavily_", "you_search", "browser_", "audit_", "scan_", "recon_", "find_work_email", "verify_email")
         selected_names = [n for n in selected_names if not n.startswith(web)]
         affinities = [n for n in affinities if not n.startswith(web)]
+    if only_asks(query):
+        selected_names = [n for n in selected_names if n not in CHANGE_TOOLS]
+        affinities = [n for n in affinities if n not in CHANGE_TOOLS]
 
     final_names = []
     # Add prioritized affinities first if relevant keywords match

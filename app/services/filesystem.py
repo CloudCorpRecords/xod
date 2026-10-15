@@ -12,11 +12,12 @@ from app.paths import DATA_DIR
 
 logger = logging.getLogger("filesystem_service")
 
-# Common safe Mac locations
+# Common safe locations (on Windows, wherever Windows really keeps them: OneDrive often moves Desktop and Documents)
+from app.platform_info import real_folder
 USER_HOME = Path.home()
-DOCUMENTS_DIR = USER_HOME / "Documents"
-DESKTOP_DIR = USER_HOME / "Desktop"
-DOWNLOADS_DIR = USER_HOME / "Downloads"
+DOCUMENTS_DIR = Path(real_folder(str(USER_HOME / "Documents")))
+DESKTOP_DIR = Path(real_folder(str(USER_HOME / "Desktop")))
+DOWNLOADS_DIR = Path(real_folder(str(USER_HOME / "Downloads")))
 CURRENT_REPO = Path(__file__).resolve().parent.parent.parent
 
 # Protected system paths that should never be deleted, moved, or overwritten
@@ -388,6 +389,10 @@ class FileSystemService:
 
         if str(source) in PROTECTED_PATHS:
             return {"error": "Cannot rename protected system path."}
+        from app.services.system_control import system_control_service
+        why = system_control_service._unsafe_target(str(source), destructive=True)
+        if why:
+            return {"error": why}
 
         clean_name = new_name.strip()
         if not clean_name:
@@ -420,6 +425,11 @@ class FileSystemService:
         destination = self.resolve_path(raw_destination)
         if str(destination) in PROTECTED_PATHS:
             return {"error": "Cannot move into protected system path."}
+        from app.services.system_control import system_control_service
+        why = system_control_service._unsafe_target(str(source), destructive=True) or \
+            system_control_service._unsafe_target(str(destination), destructive=False)
+        if why:
+            return {"error": why}
 
         try:
             if destination.exists() and destination.is_dir():
@@ -513,7 +523,8 @@ class FileSystemService:
             return {"error": f"Failed to duplicate item: {str(e)}"}
 
     def delete_item(self, raw_path: str) -> Dict[str, Any]:
-        """Deletes a file or directory with system path guards."""
+        """Moves a file or folder to the Trash (Recycle Bin on Windows), so it can be put back. Never a system
+        folder, a whole top folder like the home folder or Desktop, or Xod itself (the same guard as the agent's tools)."""
         target = self.resolve_path(raw_path)
         if not target.exists():
             return {"error": "Path does not exist."}
@@ -522,13 +533,25 @@ class FileSystemService:
         for prot in PROTECTED_PATHS:
             if target_str == prot or target_str.startswith(prot + "/") and prot in ["/System", "/Library", "/usr", "/bin", "/sbin"]:
                 return {"error": f"Cannot delete protected system directory: {target_str}"}
+        from app.services.system_control import system_control_service
+        why = system_control_service._unsafe_target(target_str, destructive=True)
+        if why:
+            return {"error": why}
 
         try:
-            if target.is_dir():
+            if sys.platform == "win32":
+                from app.services.system_control_win import recycle
+                recycle(target_str)
+            elif os.path.exists("/usr/bin/trash"):
+                import subprocess
+                r = subprocess.run(["/usr/bin/trash", target_str], capture_output=True, text=True, timeout=60)
+                if r.returncode != 0:
+                    return {"error": f"Failed to move it to the Trash: {r.stderr.strip()[:200]}"}
+            elif target.is_dir():
                 shutil.rmtree(target)
             else:
                 target.unlink()
-            return {"success": True, "path": target_str, "name": target.name}
+            return {"success": True, "path": target_str, "name": target.name, "recoverable": sys.platform == "win32" or os.path.exists("/usr/bin/trash")}
         except Exception as e:
             return {"error": f"Failed to delete item: {str(e)}"}
 

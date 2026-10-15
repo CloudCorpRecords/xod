@@ -199,7 +199,7 @@ You have direct non-intrusive access to control this computer in the background:
 - `computer_start_job` / `computer_list_jobs` / `computer_stop_job`: Run and monitor background daemons.
 - `computer_wait_for`: Wait until a job finishes or prints something, a file appears, a port opens, or a URL responds.
 - `computer_check_job`: See a background job's status and the output since you last looked.
-- `computer_inspect_system`: Gather live CPU, RAM, disk, and process telemetry.
+- `computer_inspect_system`: What's running now: the programs using the most CPU and memory, RAM, disk space, CPU load, local IP address.
 - `computer_reveal_finder`: Reveal files or directories in Finder.
 - `browser_navigate`: Navigate to any URL live via Chrome CDP. Automatically returns top interactive elements with Set-of-Marks numeric tags (`[1]`, `[2]`), detected forms, headings, text snippet, and screenshot. You can act on numeric indices immediately!
 - `browser_smart_inspect`: Instant multimodal inspection returning Set-of-Marks tags, forms, headings, text, and screenshot in a single call.
@@ -1252,6 +1252,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"\b(files?|folders?|director(y|ies)|desktop|downloads folder|my downloads|documents folder|finder|terminal|shell|command line|"
         r"script|run (this|the|a|my)|install|uninstall|ports?\b|process(es)?\b|kill|clipboard|screenshot|screen ?shot|"
         r"open (the |my )?(app|file|folder|website|site|page|link)|launch|my mac|this mac|my computer|my laptop|"
+        r"(this|my) (pc|computer|machine|laptop|desktop computer)('?s)?|ip address|disk space|free space|(using|uses|use) (the most |a lot of |so much )?(memory|ram|cpu)|"
         r"organi[sz]e|clean ?up|tidy|rename|delete|trash|move (the|my|these|this)|edit (the|my|this)|"
         r"repo(sitory)?|workspace|codebase|my project|this project|"
         r"browser|log ?in|sign ?(up|in)|apply (for|to)|fill (out|in)|submit|book (a|me|the)|order|buy|add to cart|check ?out|"
@@ -1268,7 +1269,12 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
     _LOCAL_ACTION_RE = re.compile(
         r"\b(create|make|write|save|rename|delete|remove|move|copy|open|run|execute|tidy|organi[sz]e|clean ?up|unzip|zip|"
         r"list|show me|find|read|what'?s (in|on)|how (big|many|much)|biggest|largest)\b.{0,80}\b(files?|folders?|director(y|ies)|desktop|documents|downloads|pictures|"
-        r"\.\w{2,4}\b|commands?|terminal|powershell|script)\b", re.I | re.S)
+        r"\.\w{2,4}\b|commands?|terminal|powershell|script)\b"
+        # ...or about this computer itself: what's running, its memory, disk, network ("which programs use the most memory on this PC?")
+        r"|\b(?:this|my|the) (?:pc|computer|laptop|machine|mac|desktop computer)(?:'?s)?\b.{0,60}\b(?:memory|ram|cpu|processor|processes|programs|apps|"
+        r"running|disk|drive|storage|space|battery|ip|network|wi-?fi|uptime|graphics|gpu|ports?)\b"
+        r"|\b(?:memory|ram|cpu|processes|programs|apps|running|disk|drive|storage|space|battery|ip address|network|wi-?fi|uptime|graphics|gpu|ports?)\b"
+        r".{0,60}\b(?:on|in|of) (?:this|my) (?:pc|computer|laptop|machine|mac)\b", re.I | re.S)
     # Asking about the web, the world or the news: these keep their web tools even when a file is mentioned.
     _WEB_WORDS_RE = re.compile(r"\b(web|online|internet|google|search (for|the)|look ?up|latest|news|price|weather|website|"
                                r"site|url|https?|research|compare|reviews?|today'?s|current)\b", re.I)
@@ -1301,6 +1307,21 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"who won|score[sd]?|results?|standings|weather|forecast|rain|snow|temperature|tomorrow|yesterday|last night|stock|share price|release date|"
         r"when (is|does|will)|open(ing)? hours|20(2[5-9]|3\d))\b", re.I)
     _REFERS_BACK_RE = re.compile(r"\b(it|that|this|those|these|them|they|he|she|the (first|second|last|other) one)\b", re.I)
+    # An answer that says it changed something on the computer (only tools can): "I have added the line to todo.txt".
+    _CLAIMS_DONE_RE = re.compile(
+        r"^\W*(?:(?:ok(?:ay)?|done|sure|great|alright|all set)\W+)?(?:i\s*(?:'ve|have|just)?|i've|it's been|it has been|this has been)\s+"
+        r"(?:successfully\s+|now\s+)?(?:added|appended|created|made|deleted|removed|moved|saved|renamed|updated|written|wrote|copied|"
+        r"trashed|sent|scheduled|set up|installed|uninstalled|opened|closed|changed|edited|inserted|organi[sz]ed|zipped|downloaded|put)\b"
+        r".{0,120}?\b(?:files?|folders?|line|lines|desktop|documents|downloads|calendar|reminders?|email|inbox|todo|list|"
+        r"\.[a-z0-9]{2,4}\b|recycle bin|trash|clipboard|it|them)\b"
+        r"|^\W*(?:the|your)\s+(?:[\w.`'\"\-]+\s+){0,4}?(?:files?|folders?|line|lines|todo|list|reminders?|email|event)\b.{0,60}?"
+        r"(?:\b(?:has|have) been\s+(?:successfully\s+)?(?:added|appended|created|deleted|removed|moved|saved|renamed|updated|written|copied|"
+        r"trashed|sent|scheduled|changed|edited|organi[sz]ed|zipped)\b|\bnow (?:contains|has|says|reads|includes|lists)\b|\bis now\b)", re.I | re.S)
+    # "Now add a second line to it": a change to something from earlier in the chat. Only tools can do that.
+    _CHANGE_IT_RE = re.compile(
+        r"^\s*(?:(?:now|also|and|then|ok(?:ay)?|please|can you|could you)[\s,]+)*(?:add|append|insert|delete|remove|rename|move|put|"
+        r"change|edit|update|replace|undo|copy|paste|save|fix|clear|empty|sort)\b.{0,50}?\b(?:it|that|this|them|those|these|the (?:file|folder|"
+        r"line|list|text|note|document|item|entry|row|column))\b", re.I | re.S)
 
     ROUTER_PROMPT_SPOKEN = None   # set below: the same prompt, answering out loud
 
@@ -1377,6 +1398,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         q = (query or "").strip()
         if len(q) < 40 and self._CONFIRM_RE.search(q):
             return False          # "go ahead", "yes": answering something the planner asked
+        if self._CHANGE_IT_RE.search(q):
+            return False          # "now add a line to it": a change, which needs tools
         return 0 < len(q) <= 600 and not self._FAST_EXCLUDE_RE.search(q)
 
     @staticmethod
@@ -1413,7 +1436,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                                 evidence_board: EvidenceBoard) -> AsyncGenerator[Dict[str, Any], None]:
         """Yields chat events, or a single {"type": "_fast_declined"} (before anything visible)
         when the planner should take this one."""
-        head, mode, line, answer = "", None, "", ""
+        head, mode, line, answer, held, shown = "", None, "", "", "", False
         has_history = any(m.get("role") == "assistant" for m in messages[:-1])
         # A follow-up rewritten as a standalone request stands on its own: it can be searched directly.
         full = getattr(self, "_understood", "") or query
@@ -1461,7 +1484,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                         mode, answer = "answer", head.lstrip()
                         if prefetch is not None:
                             prefetch.cancel()      # answering from what it knows: no web needed
-                        yield {"type": "content", "content": answer}
+                        held = answer
+                        shown = False
                     continue
                 if mode == "search":
                     line += tok
@@ -1469,7 +1493,21 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                         break          # the queries are all we need; stop the model here
                 else:
                     answer += tok
-                    yield ch
+                    held += tok
+                    # The opening waits until it can be checked: "I've added the line to your todo.txt" with no tool
+                    # run is a made-up action. Then the planner does it for real (nothing has been shown yet).
+                    if not shown:
+                        if len(answer) < 90:
+                            continue
+                        if self._CLAIMS_DONE_RE.search(answer[:200]):
+                            mode = "tools"
+                            break
+                        shown = True
+                    # The last few characters wait a moment: small models sometimes end an answer with the word
+                    # "TOOLS" (the router's other choice), which must not reach the page.
+                    if len(held) > 8:
+                        yield {"type": "content", "content": held[:-8]}
+                        held = held[-8:]
         finally:
             await stream.aclose()
             if prefetch is not None and mode != "search" and not (mode is None and re.sub(r"^[\s*`#>_]+", "", head).upper().startswith("SEARCH")):
@@ -1497,7 +1535,14 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         if mode == "tools":
             yield {"type": "_fast_declined"}
             return
+        if mode == "answer" and self._CLAIMS_DONE_RE.search(answer[:200]) and not shown:
+            mode = "tools"         # a short made-up "done": do it for real
+            yield {"type": "_fast_declined"}
+            return
         if mode == "answer":
+            rest = re.sub(r"\s*\bTOOLS\s*$", "", held)
+            if rest:
+                yield {"type": "content", "content": rest}
             yield {"type": "done"}
             return
 
@@ -1748,6 +1793,36 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             for k in self._CARRY_KEYS:
                 if result.get(k) not in (None, "", []):
                     self._carried[k] = result[k]
+            # What this turn's searches turned up (files and folders), for _which_one.
+            found = [r.get("name") or os.path.basename(str(r.get("path") or "")) for r in (result.get("results") or [])
+                     if isinstance(r, dict)]
+            if found:
+                self._carried["_found"] = found
+
+    def _which_one(self, fn_name: str, args: Dict[str, Any], user_query: str) -> Optional[Dict[str, Any]]:
+        """"Delete the receipt" when the search found receipt1.pdf and receipt2.pdf: ask which one rather than pick.
+        Only for deleting, and only when the person didn't name the file (its name isn't in what they said)."""
+        if fn_name != "computer_manage_file" or str(args.get("action", "")).lower() not in ("trash", "delete", "remove"):
+            return None
+        target = os.path.basename(str(args.get("src") or args.get("path") or "").rstrip("\\/"))
+        found = self._carried.get("_found") or []
+        q = (user_query or "").lower()
+        if not target or len(found) < 2 or re.search(r"\b(all|every|both|each|them|these|those)\b", q):
+            return None
+        # Named exactly ("delete receipt2.pdf", "delete the Receipts folder"): no question.
+        if re.search(rf"\b{re.escape(target.lower())}\b", q) or (os.path.splitext(target)[0].lower() != target.lower()
+                                                                  and re.search(rf"\b{re.escape(os.path.splitext(target)[0].lower())}\b", q)):
+            return None
+        # What they called it ("the receipt") against everything the search found (receipt1.pdf, receipt2.pdf, the Receipts folder…).
+        words = {w for w in re.findall(r"[a-z0-9]{3,}", q) if w not in {"delete", "remove", "trash", "the", "my", "file", "folder", "please",
+                                                                         "recycle", "bin", "from", "and", "get", "rid", "throw", "away"}}
+        stems = {re.sub(r"(es|s)$", "", w) for w in words}
+        alike = [n for n in found if any(s and s in n.lower() for s in stems)]
+        if len(alike) < 2:
+            return None
+        return {"success": False, "skipped": True, "needs_choice": True, "candidates": alike[:10],
+                "error": f"Not deleted: several files match ({', '.join(alike[:10])}) and the person didn't say which. "
+                         "Ask them which one (or whether all of them) before deleting anything."}
 
     def _fill_placeholders(self, fn_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Fills arguments that point at an earlier step's result (e.g. "REPLACE_WITH_JOB_ID_FROM_STEP_1"),
@@ -1806,8 +1881,19 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         """Runs a tool, checks the result for real, and repairs failures (see agent/healing.py).
         Yields UI events, then {"type": "_final", "tool", "args", "result"} with whichever call worked."""
         from app.agent.healing import Repairer, check_result
+        from app.agent.tools import CHANGE_TOOLS, only_asks
         args = self._fill_placeholders(fn_name, args)
         result: Dict[str, Any] = {}
+        if fn_name in CHANGE_TOOLS and only_asks(user_query):
+            # A question never changes the person's files, whatever the plan says.
+            result = {"success": False, "skipped": True, "error": "Not run: the person only asked a question, so nothing gets changed. "
+                      "Answer it from what was read (to see the end of a file, read it with tail=<number of lines>)."}
+            yield {"type": "_final", "tool": fn_name, "args": args, "result": result, "shown": False}
+            return
+        which = self._which_one(fn_name, args, user_query)
+        if which:
+            yield {"type": "_final", "tool": fn_name, "args": args, "result": which, "shown": False}
+            return
         async for ev in self._exec_tool_stream(fn_name, args, call_id, active_workspace_path):
             if ev["type"] == "_result":
                 result = ev["result"]
@@ -2225,7 +2311,7 @@ Deliberate on the user objective from first principles and decide whether to ans
 TOOL ECOSYSTEM:
 1. Host Computer:
    - computer_hardware_overview: Apple Silicon/Intel chip, CPU cores, memory, graphics card (GPU) and its memory, macOS version, battery percentage.
-   - computer_inspect_system: Host RAM utilization, CPU load, OS specs.
+   - computer_inspect_system: What's running now: the programs using the most CPU and memory, RAM in use, CPU load, free disk space, local IP address.
    - computer_inspect_port: Check process occupying a port. Args: {{"port": 8000}}
    - computer_kill_process: Terminate process by PID. Args: {{"pid": 1234}}
    - computer_run_command: Run terminal shell command in background. Args: {{"command": "..."}}

@@ -613,11 +613,21 @@ class EvidenceBoard:
                 elif t_name == "computer_manage_file":
                     lines.append(f"  - File Operation '{args.get('action')}': {args.get('src')} ({res.get('note', 'success')})")
                 elif t_name == "computer_clipboard":
-                    lines.append(f"  - System Clipboard: {res.get('chars', 0)} characters")
+                    text = res.get("text")
+                    lines.append(f"  - System Clipboard: {res.get('chars', 0)} characters"
+                                 + (f'; it says: "{str(text)[:1500]}"' if text else " written" if args.get("action") == "write" else ""))
                 elif t_name == "computer_start_job":
                     lines.append(f"  - Daemon Job '{res.get('name')}' (PID {res.get('pid')}): {res.get('status')}")
                 elif t_name == "computer_inspect_system":
-                    lines.append(f"  - Host Specs: {res.get('os')} ({res.get('arch')}), RAM: {res.get('memory', {}).get('used_gb')}/{res.get('memory', {}).get('total_gb')} GB, CPU Load: {res.get('cpu_load')}")
+                    mem, disk, net = res.get("memory") or {}, res.get("disk") or {}, res.get("network") or {}
+                    procs = "; ".join(f"{p.get('command')} ({p.get('rss_mb')} MB, {p.get('cpu_pct')}% CPU)" for p in (res.get("top_processes") or [])[:8])
+                    by_mem = sorted(res.get("top_processes") or [], key=lambda p: -(p.get("rss_mb") or 0))[:5]
+                    lines.append(f"  - Host Specs: {res.get('os')} ({res.get('arch')}), RAM: {mem.get('used_gb')}/{mem.get('total_gb')} GB used "
+                                 f"({mem.get('free_gb')} GB free), CPU Load: {res.get('cpu_load')}, disk: {disk.get('free_gb')} GB free of {disk.get('total_gb')} GB"
+                                 + (f", local IP address: {net.get('local_ip')}" if net.get("local_ip") else "")
+                                 + (f" (adapters: {', '.join(a['adapter'] + ' ' + a['ip'] for a in net.get('adapters') or [])})" if net.get("adapters") else "")
+                                 + (f"\n    Busiest programs (CPU first): {procs}" if procs else "")
+                                 + (f"\n    Most memory: {'; '.join(str(p.get('command')) + ' ' + str(p.get('rss_mb')) + ' MB' for p in by_mem)}" if by_mem else ""))
                 elif t_name == "computer_wait_for":
                     state = "condition met" if res.get("met") else f"NOT met: {res.get('error')}"
                     lines.append(f"  - Waited {res.get('waited_sec')} s for {res.get('condition')} ({json.dumps({k: v for k, v in args.items() if k != 'condition'})[:120]}): {state}; {res.get('detail', '')}")
