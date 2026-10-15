@@ -112,6 +112,23 @@ class Doctor:
                 return _check("chat_model", "Chat model", "fail", f"{label} failed to start: {local_engine.last_error[-160:]}",
                               "load_chat_model", "Start it")
             return _check("chat_model", "Chat model", "ok", f"{label} ready (starts with your next message)")
+        if settings.llm_provider in ("ollama", "local"):
+            # The same check as the header: is the model app answering, and does it have this model?
+            from app.services.llm import llm_service
+            info = llm_service.get_endpoint_info()
+            try:
+                if settings.llm_provider == "ollama":
+                    from app.services.ollama_context import status as local_check
+                else:
+                    from app.services.autoconnect import local_status as local_check
+                st = await local_check(info["base_url"], info["model"])
+            except Exception as e:
+                st = {"ready": False, "problem": str(e)}
+            if st.get("ready") is False:
+                return _check("chat_model", "Chat model", "fail", f"{st.get('problem') or 'The model app isn’t answering'} ({info['model']}).",
+                              "start_ollama" if settings.llm_provider == "ollama" else None,
+                              "Start Ollama" if settings.llm_provider == "ollama" else None)
+            return _check("chat_model", "Chat model", "ok", f"{info['model']} ready")
         if settings.llm_provider != "lm_studio":
             key_field = f"{settings.llm_provider}_api_key"
             has = bool(getattr(settings, key_field, "")) if hasattr(settings, key_field) else True
@@ -256,6 +273,10 @@ class Doctor:
                     ok = await self._load_chat_model()
                     return {"ok": ok, "detail": self._did("Started LM Studio's server" + (" and loaded the chat model" if ok else ""))}
                 return {"ok": False, "detail": "LM Studio's command-line tool isn't installed; open LM Studio yourself."}
+            if fix_id == "start_ollama":
+                from app.services import ollama_hub
+                r = await ollama_hub.start_ollama()
+                return {"ok": bool(r.get("success")), "detail": self._did("Started Ollama") if r.get("success") else r.get("error", "")}
             if fix_id == "restart_browser":
                 from app.services.browser_sandbox import browser_sandbox_service as sb
                 res = await sb.restart_browser(clear_profile=False, force=True)  # never wipes logins

@@ -57,7 +57,8 @@ def expand(p: str) -> Path:
     q = Path(p).expanduser()
     if not q.is_absolute():
         q = home() / q
-    return Path(os.path.normpath(str(q)))
+    from app.platform_info import real_folder      # Windows: the Desktop OneDrive moved, etc.
+    return Path(os.path.normpath(real_folder(str(q))))
 
 
 def _inside(path: Any, folder: Any) -> bool:

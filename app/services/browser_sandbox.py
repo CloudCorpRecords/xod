@@ -9,6 +9,7 @@ import shutil
 import sys
 import subprocess
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -50,11 +51,44 @@ def _debug_port() -> int:
 
 
 DEBUG_PORT = _debug_port()
+# DevTools connections are made with ping_interval=None: they're local, a closed Chrome still ends them, and a busy
+# Chrome (a heavy page, a slow PC) can miss a keep-alive ping, which dropped the connection in the middle of a step.
 # Chrome profile (cookies, logins, local storage). Lives in the git-ignored data/ folder
 # so sessions survive reboots; /tmp is wiped by macOS. The folder name must keep
 # "xod_ai_browser_sandbox" because restart code finds Chrome by it.
 DATA_DIR = str(XOD_DATA_DIR / "xod_ai_browser_sandbox")
 LEGACY_DATA_DIR = "/tmp/xod_ai_browser_sandbox"
+
+
+def _kill_own_browser(port_too: bool = False) -> int:
+    """Ends this Xod's own Chrome: processes started with its profile folder (and, with port_too, whatever holds its
+    debug port). Works on Mac and Windows alike (pkill and lsof don't exist on Windows, and a Chrome left holding the
+    profile there makes the next one hand over to it and quit). Returns how many it ended."""
+    import psutil
+    mine = os.path.normcase(os.path.abspath(DATA_DIR))
+    victims = {}
+    for p in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            for arg in p.info["cmdline"] or []:
+                if arg.startswith("--user-data-dir=") and os.path.normcase(os.path.abspath(arg.split("=", 1)[1].strip('"'))) == mine:
+                    victims[p.pid] = p
+                    break
+        except Exception:
+            continue
+    if port_too:
+        try:
+            for c in psutil.net_connections(kind="tcp"):
+                if c.laddr and c.laddr.port == DEBUG_PORT and c.status == psutil.CONN_LISTEN and c.pid and c.pid != os.getpid():
+                    victims.setdefault(c.pid, psutil.Process(c.pid))
+        except Exception:
+            pass
+    for p in victims.values():
+        try:
+            p.kill()
+        except Exception:
+            pass
+    psutil.wait_procs(list(victims.values()), timeout=3)
+    return len(victims)
 
 BOOTSTRAP_SCRIPT = """
 (() => {
@@ -435,6 +469,11 @@ def _is_password_field(element: Optional[Dict[str, Any]]) -> bool:
     return bool(element) and (element.get("type") or "").lower() == "password"
 
 
+def _label(e: Dict[str, Any]) -> str:
+    """What an element says, lowercased: its text, name, placeholder and value."""
+    return f"{e.get('text', '')} {e.get('name', '')} {e.get('placeholder', '')} {e.get('value', '')}".lower()
+
+
 def _describe_saved_login(url: str) -> str:
     info = credential_vault.describe_login(url)
     return f"yes (username {info['username']})" if info else "none"
@@ -615,8 +654,7 @@ class BrowserSandboxService:
 
             # Also kill any stale chrome on DEBUG_PORT
             try:
-                import subprocess
-                subprocess.run(f"lsof -ti:{DEBUG_PORT} | xargs kill -9", shell=True, stderr=subprocess.DEVNULL)
+                _kill_own_browser(port_too=True)
             except Exception:
                 pass
 
@@ -640,13 +678,20 @@ class BrowserSandboxService:
 
     async def ensure_browser_running(self) -> bool:
         """Verifies Chrome is running on DEBUG_PORT or launches it in configured mode."""
-        try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=1.0) as resp:
-                data = json.loads(resp.read().decode())
-                if data:
-                    return True
-        except Exception:
-            pass
+        # A busy Chrome (a heavy page, a slow PC) can take more than a second to answer: ask again, longer, before
+        # deciding it's gone, because what follows ends it, and with it a half-filled form waiting for the person's OK.
+        for wait in (1.0, 2.5, 4.0):
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=wait) as resp:
+                    data = json.loads(resp.read().decode())
+                    if data:
+                        return True
+                    break      # it answered, with no pages: start fresh
+            except urllib.error.URLError as e:
+                if isinstance(getattr(e, "reason", None), ConnectionRefusedError):
+                    break      # nothing on the port: no need to wait
+            except Exception:
+                pass
 
         # If not responding, clean up any stale chrome processes & singleton locks
         if self.proc:
@@ -661,8 +706,8 @@ class BrowserSandboxService:
             self.proc = None
 
         try:
-            subprocess.run(["pkill", "-9", "-f", f"--user-data-dir={re.escape(DATA_DIR)}"], stderr=subprocess.DEVNULL)   # only this Xod's browser
-            await asyncio.sleep(0.3)
+            if _kill_own_browser():     # only this Xod's browser
+                await asyncio.sleep(0.3)
         except Exception:
             pass
 
@@ -794,10 +839,9 @@ class BrowserSandboxService:
                         pass
                 self.proc = None
 
-            # Step 2: Kill any orphaned or zombie Chrome processes on Mac
+            # Step 2: Kill any orphaned Chrome of this Xod's (its profile, or its debug port)
             try:
-                subprocess.run(["pkill", "-9", "-f", f"--user-data-dir={re.escape(DATA_DIR)}"], stderr=subprocess.DEVNULL)   # only this Xod's browser
-                subprocess.run(f"lsof -ti:{DEBUG_PORT} | xargs kill -9", shell=True, stderr=subprocess.DEVNULL)
+                _kill_own_browser(port_too=True)
                 await asyncio.sleep(0.4)
             except Exception:
                 pass
@@ -868,7 +912,7 @@ class BrowserSandboxService:
             ws_url = await self._get_active_tab_ws_url()
 
             recovery_log = []
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Page.enable")
                 await self._send_cdp(ws, "Runtime.enable")
 
@@ -1161,7 +1205,7 @@ class BrowserSandboxService:
         async with self._lock:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 return await self.detect_captcha_internal(ws)
 
@@ -1283,7 +1327,7 @@ class BrowserSandboxService:
         async with self._lock:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Page.enable")
                 await self._send_cdp(ws, "Runtime.enable")
                 return await self.handle_captcha_internal(ws, auto_click=auto_click, wait_sec=wait_sec)
@@ -1297,7 +1341,7 @@ class BrowserSandboxService:
         async with self._lock:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 return await self._dismiss_overlays_internal(ws)
 
@@ -1409,7 +1453,7 @@ class BrowserSandboxService:
             if not url.startswith("http://") and not url.startswith("https://") and not url.startswith("file://") and not url.startswith("about:"):
                 url = f"https://{url}"
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Page.enable")
                 await self._send_cdp(ws, "Runtime.enable")
 
@@ -1585,7 +1629,7 @@ class BrowserSandboxService:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Page.enable")
                 await self._send_cdp(ws, "Runtime.enable")
 
@@ -1675,7 +1719,7 @@ class BrowserSandboxService:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Page.enable")
                 await self._send_cdp(ws, "Runtime.enable")
 
@@ -1856,7 +1900,7 @@ class BrowserSandboxService:
             }})()
             """
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 res = await self._send_cdp(ws, "Runtime.evaluate", {
                     "expression": scan_script,
@@ -2041,7 +2085,7 @@ class BrowserSandboxService:
             }})()
             """
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 await self._send_cdp(ws, "Page.enable")
 
@@ -2316,7 +2360,7 @@ class BrowserSandboxService:
                 };
             })""" + f"({json.dumps(fill_params)})"
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 await self._send_cdp(ws, "Page.enable")
 
@@ -2386,7 +2430,7 @@ class BrowserSandboxService:
             }})()
             """
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 res = await self._send_cdp(ws, "Runtime.evaluate", {
                     "expression": script,
@@ -2409,7 +2453,7 @@ class BrowserSandboxService:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Network.enable")
 
                 if action == "clear":
@@ -2593,7 +2637,7 @@ class BrowserSandboxService:
             }})()
             """
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 await self._send_cdp(ws, "Page.enable")
 
@@ -2769,7 +2813,7 @@ class BrowserSandboxService:
             }})()
             """
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 await self._send_cdp(ws, "Page.enable")
 
@@ -2876,7 +2920,7 @@ class BrowserSandboxService:
             }})()
             """
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 await self._send_cdp(ws, "Page.enable")
 
@@ -2941,7 +2985,7 @@ class BrowserSandboxService:
             }})()
             """
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 res = await self._send_cdp(ws, "Runtime.evaluate", {
                     "expression": find_script,
@@ -2998,7 +3042,7 @@ class BrowserSandboxService:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Input.dispatchKeyEvent", {
                     "type": "rawKeyDown",
                     "windowsVirtualKeyCode": vk_code,
@@ -3136,7 +3180,7 @@ class BrowserSandboxService:
             })()
             """
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 res = await self._send_cdp(ws, "Runtime.evaluate", {
                     "expression": script,
@@ -3209,7 +3253,7 @@ class BrowserSandboxService:
             })()
             """
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 res = await self._send_cdp(ws, "Runtime.evaluate", {
                     "expression": script,
@@ -3230,7 +3274,7 @@ class BrowserSandboxService:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 res = await self._send_cdp(ws, "Runtime.evaluate", {
                     "expression": expression,
@@ -3316,7 +3360,7 @@ class BrowserSandboxService:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 # Move mouse to position
                 await self._send_cdp(ws, "Input.dispatchMouseEvent", {
                     "type": "mouseMoved",
@@ -3372,7 +3416,7 @@ class BrowserSandboxService:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 for ch in text:
                     await self._send_cdp(ws, "Input.dispatchKeyEvent", {
                         "type": "keyDown",
@@ -3513,7 +3557,7 @@ class BrowserSandboxService:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Page.enable")
                 res = await self._send_cdp(ws, "Page.printToPDF", {
                     "landscape": landscape,
@@ -3568,7 +3612,7 @@ class BrowserSandboxService:
             if not valid_files:
                 return {"success": False, "error": "No valid file paths provided"}
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "DOM.enable")
                 await self._send_cdp(ws, "Runtime.enable")
 
@@ -3647,7 +3691,7 @@ class BrowserSandboxService:
             await self.ensure_browser_running()
             ws_url = await self._get_active_tab_ws_url()
 
-            async with websockets.connect(ws_url, max_size=50*1024*1024) as ws:
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Accessibility.enable")
                 res = await self._send_cdp(ws, "Accessibility.getFullAXTree")
                 nodes = res.get("nodes", [])
@@ -4470,6 +4514,12 @@ class BrowserSandboxService:
         """Types the saved username/password straight from the Keychain; the LLM never sees them."""
         creds = credential_vault.get_login(self.current_url)
         site = credential_vault.site_key(self.current_url)
+        link = None if creds else self._signup_link()
+        if not creds and link:
+            # No account yet, and the site lets you make one: that's the way on (the person isn't asked to log in).
+            return {"success": False, "error": f"There's no saved login for {site}, so there's no account to sign in to. "
+                    f"Open the sign-up page (click element [{link['index']}] \"{(link.get('text') or '').strip()[:40]}\"), "
+                    "type the profile email there, then use create_password."}
         if not creds:
             return {"success": False, "needs_user": True,
                     "error": f"I don't have a saved login for {site}. Log in once yourself with **Take Over** "
@@ -4492,6 +4542,18 @@ class BrowserSandboxService:
         pw_fields = self._password_field_indexes()
         if not pw_fields:
             return {"success": False, "error": "no password field on this page"}
+        # A sign-in form isn't a sign-up form: a new password typed into "Sign in" only fails, again and again, and
+        # then the person gets asked for a password that doesn't exist. Point at the way to make the account instead.
+        els = self.indexed_elements or []
+        buttons = [e for e in els if (e.get("tag") or "").lower() == "button" or (e.get("type") or "").lower() == "submit"]
+        signs_in = any(re.search(r"\b(sign ?in|log ?in)\b", _label(b)) for b in buttons) or re.search(r"/(login|signin|sign-in|log-in)\b", self.current_url or "", re.I)
+        signs_up = any(re.search(r"\b(sign ?up|create|register|join|get started)\b", _label(b)) for b in buttons)
+        if len(pw_fields) == 1 and signs_in and not signs_up:
+            link = self._signup_link()
+            return {"success": False, "error": "This is a sign-in form, and there's no account yet, so a new password can't work here. "
+                    + (f"Open the sign-up page first (click element [{link['index']}] \"{(link.get('text') or '').strip()[:40]}\"), then use "
+                       "create_password on that form." if link else "Look for a 'Create account' or 'Sign up' link and use create_password there; "
+                       "if the site has none, ask the user.")}
         # Trust the page over the model's index guesses: first password box is the new
         # password, a second one is the confirmation.
         idx = pw_fields[0]
@@ -4512,6 +4574,11 @@ class BrowserSandboxService:
         # than keeping one for a sign-up that never finished.
         credential_vault.save_login(self.current_url, username, password, source="created by Xod")
         return {"success": True, "message": f"New password saved to Keychain for {site}"}
+
+    def _signup_link(self) -> Optional[Dict[str, Any]]:
+        """A "Create an account" / "Sign up" link or button on this page, if there is one."""
+        return next((e for e in (self.indexed_elements or []) if (e.get("tag") or "").lower() in ("a", "button")
+                     and re.search(r"\b(create (an |your )?account|sign ?up|register|join( now)?|new here)\b", _label(e))), None)
 
     def _password_field_indexes(self) -> List[int]:
         return [el["index"] for el in (self.indexed_elements or []) if _is_password_field(el) and not el.get("is_disabled")]

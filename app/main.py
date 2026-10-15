@@ -196,7 +196,15 @@ async def serve_index():
     index_file = STATIC_DIR / "index.html"
     if not index_file.exists():
         raise HTTPException(status_code=404, detail="index.html not found")
-    return index_file.read_text(encoding="utf-8")
+
+    # Each script and stylesheet gets ?v=<its file's change time>, so a changed file is always fetched fresh
+    # (after an update, or an edit) and an unchanged one stays cached. No version to bump by hand.
+    def stamp(m: "re.Match") -> str:
+        try:
+            return f"{m.group(1)}?v={int((STATIC_DIR / m.group(2)).stat().st_mtime)}"
+        except OSError:
+            return m.group(0)
+    return re.sub(r'(/static/([^"?\s]+\.(?:js|css)))\?v=[\w.-]+', stamp, index_file.read_text(encoding="utf-8"))
 
 @app.get("/api/sessions")
 async def get_sessions():
@@ -3651,6 +3659,9 @@ async def preview_launch(req: PreviewLaunchRequest):
     if not req.url.startswith(previews.PREFIX):
         raise HTTPException(status_code=400, detail="Not a preview")
     base = previews.SERVER_BASE or "http://127.0.0.1:8000"
+    if sys.platform == "win32":
+        import webbrowser
+        return {"ok": webbrowser.open(base + req.url)}
     _sp.Popen(["open", base + req.url], stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
     return {"ok": True}
 
@@ -3792,8 +3803,26 @@ async def jobs_profile_save(request: Request):
 
 @app.get("/api/jobs/resumes")
 async def jobs_resumes():
-    """Résumé / CV files on this Mac (Spotlight), so you can pick yours instead of typing a path."""
+    """Résumé / CV files on this computer (Spotlight on a Mac), so you can pick yours instead of typing a path."""
     import subprocess as _sp
+    if sys.platform == "win32":     # no Spotlight: look through the usual folders by name
+        import time as _time
+        want = re.compile(r"(resume|résumé|\bcv\b|_cv|cv_|curriculum)", re.I)
+        found, t0 = [], _time.time()
+        for root in [Path.home() / d for d in ("Documents", "Desktop", "Downloads", "OneDrive")]:
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if not d.startswith(".") and d.lower() not in ("node_modules", "appdata")]
+                for n in filenames:
+                    if n.lower().endswith((".pdf", ".docx", ".doc")) and want.search(n):
+                        p = os.path.join(dirpath, n)
+                        try:
+                            found.append({"path": p, "name": n, "modified": os.stat(p).st_mtime})
+                        except OSError:
+                            pass
+                if _time.time() - t0 > 6:
+                    break
+        found.sort(key=lambda f: -f["modified"])
+        return {"files": found[:12]}
     q = ('(kMDItemFSName == "*resume*"cd || kMDItemFSName == "*résumé*"cd || kMDItemFSName == "*cv*"cd || kMDItemFSName == "*curriculum*"cd) && '
          '(kMDItemContentTypeTree == "com.adobe.pdf" || kMDItemFSName == "*.docx"cd || kMDItemFSName == "*.doc"cd)')
     try:

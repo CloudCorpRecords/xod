@@ -32,6 +32,7 @@ import logging
 import math
 import random
 import re
+import sys
 import threading
 import time
 from collections import Counter
@@ -507,6 +508,13 @@ def note_busy(delta: int) -> None:
 
 
 def _on_power() -> bool:
+    if sys.platform != "darwin":
+        try:
+            import psutil
+            b = psutil.sensors_battery()
+            return b is None or bool(b.power_plugged) or b.percent >= 50     # no battery: a desktop, always on power
+        except Exception:
+            return True
     try:
         import subprocess
         out = subprocess.run(["pmset", "-g", "batt"], capture_output=True, text=True, timeout=5).stdout

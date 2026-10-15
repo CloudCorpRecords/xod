@@ -397,6 +397,12 @@ SOURCES = [
     {"id": "projects", "label": "Your code projects", "reads": "names and README first lines of git projects in Documents, Desktop, Developer and similar folders",
      "model": True},
 ]
+if sys.platform == "win32":     # no Contacts app on Windows; the rest read the Windows equivalents
+    SOURCES = [s for s in SOURCES if s["id"] != "contacts"]
+    for s in SOURCES:
+        s.update({"account": {"label": "Your Windows account name", "reads": "the full name on your Windows user account"},
+                  "locale": {"reads": "your PC's time zone, region and language"},
+                  "apps": {"reads": "the names of the apps in your Start menu, to see what you work on and enjoy"}}.get(s["id"], {}))
 
 
 def _run(cmd: List[str], timeout: float = 10.0) -> str:
@@ -407,8 +413,21 @@ def _run(cmd: List[str], timeout: float = 10.0) -> str:
         return ""
 
 
+def _windows_full_name() -> str:
+    """The display name on the Windows account (a Microsoft account's name, or a local account's full name)."""
+    import ctypes
+    size = ctypes.c_ulong(256)
+    buf = ctypes.create_unicode_buffer(256)
+    try:
+        if ctypes.windll.secur32.GetUserNameExW(3, buf, ctypes.byref(size)):     # 3: NameDisplay
+            return buf.value.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _from_account() -> List[Dict[str, Any]]:
-    full = _run(["/usr/bin/id", "-F"])
+    full = _windows_full_name() if sys.platform == "win32" else _run(["/usr/bin/id", "-F"])
     return [{"fact": f"Name is {full}", "topic": "identity", "key": "name"}] if full and " " in full or full.istitle() else []
 
 
@@ -565,8 +584,19 @@ def _from_locale_windows() -> List[Dict[str, Any]]:
     return out
 
 
+_WIN_BUILTIN = re.compile(r"(^(Settings|Calculator|Camera|Clock|Photos|Paint|Notepad|Snipping Tool|File Explorer|Microsoft Store|"
+                          r"Windows .*|Microsoft Edge|Media Player|Feedback Hub|Get Help|Tips|Maps|Weather|Xbox.*|Phone Link|Sticky Notes|"
+                          r"Control Panel|Task Manager|Run|Command Prompt|Registry Editor|Character Map|Xod|Sound Recorder|"
+                          r"Microsoft Clipchamp|Family|Copilot|Dev Home|Quick Assist|Solitaire.*|Steps Recorder|Remote Desktop.*|"
+                          r"Recovery Drive|Narrator|Magnifier|On-Screen Keyboard|Paint 3D|WordPad|Snip & Sketch|Mail|Calendar|People)$)|"
+                          r"(Uninstall|Readme|Help|Documentation|Website|Release Notes|Manual|License|Changelog)", re.I)
+
+
 def _apps() -> List[str]:
     names = set()
+    if sys.platform == "win32":
+        from app.agent.operator import _windows_apps
+        return sorted({name for name, _ in _windows_apps().values() if not _WIN_BUILTIN.search(name)})[:200]
     for base in ("/Applications", os.path.expanduser("~/Applications")):
         try:
             for n in os.listdir(base):
@@ -650,6 +680,8 @@ async def _summarize(kind: str, items: List[str]) -> List[Dict[str, Any]]:
 SOURCE_LABEL = {"account": "your Mac account", "contacts": "your Contacts card", "profile": "Xod's job profile",
                 "git": "your git settings", "locale": "your Mac's settings", "apps": "the apps on your Mac",
                 "projects": "your code projects"}
+if sys.platform == "win32":
+    SOURCE_LABEL.update(account="your Windows account", locale="your PC's settings", apps="the apps on your PC")
 
 
 async def gather(sources: List[str]) -> Dict[str, Any]:

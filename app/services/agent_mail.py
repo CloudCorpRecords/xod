@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import sqlite3
+import sys
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -542,11 +543,15 @@ def re_clean(text: str) -> str:
 
 
 def _notify(title: str, text: str) -> None:
-    """A Mac notification; fire and forget. Text goes in as arguments, never into the script."""
+    """A desktop notification; fire and forget. Text goes in as arguments, never into the script."""
     if os.environ.get("XOD_TEST_KEYRING_FILE"):
         return   # tests stay quiet
     import subprocess
     try:
+        if sys.platform == "win32":
+            from app.services.system_control_win import notify_bg
+            notify_bg(f"Xod: {title}", text)
+            return
         subprocess.Popen(["/usr/bin/osascript", "-e", "on run argv", "-e",
                           "display notification (item 2 of argv) with title \"Xod\" subtitle (item 1 of argv)",
                           "-e", "end run", str(title)[:120], str(text)[:300]],

@@ -59,14 +59,15 @@ class VoiceEngine:
         ]
 
     def _resolve_standard_path(self, name: str) -> str:
+        from app.platform_info import real_folder
         name_clean = name.lower().strip()
         home = str(os.path.expanduser("~"))
         if "download" in name_clean:
-            return os.path.join(home, "Downloads")
+            return real_folder(os.path.join(home, "Downloads"))
         if "desktop" in name_clean:
-            return os.path.join(home, "Desktop")
+            return real_folder(os.path.join(home, "Desktop"))
         if "document" in name_clean:
-            return os.path.join(home, "Documents")
+            return real_folder(os.path.join(home, "Documents"))
         return home
 
     # Fast-path actions that change files. In a hands-free conversation a misheard sentence must not

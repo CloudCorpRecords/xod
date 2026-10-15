@@ -267,7 +267,7 @@ async def check(url: str, seconds: float = 3.0, keys: bool = True) -> Dict[str, 
         async with httpx.AsyncClient() as c:
             targets = (await c.get(f"http://127.0.0.1:{port}/json/list", timeout=5)).json()
         ws_url = next(t["webSocketDebuggerUrl"] for t in targets if t.get("type") == "page")
-        async with websockets.connect(ws_url, max_size=50_000_000) as ws:
+        async with websockets.connect(ws_url, max_size=50_000_000, ping_interval=None) as ws:     # no keep-alive pings: a busy Chrome can miss one and drop the connection
             n = 0
 
             async def send(method, params=None):

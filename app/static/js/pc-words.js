@@ -16,10 +16,39 @@
     [/\bYour Mac\b/g, "Your PC"],
     [/\byour Mac\b/g, "your PC"],
     [/macOS shows the orange mic dot/g, "Windows shows the mic icon"],
+    [/\byour entire Mac\b/g, "your entire PC"],
+    [/\bMac Locations\b/g, "PC Locations"],
+    [/\bDownload to Mac\b/g, "Download to PC"],
+    [/\bthe Trash\b/g, "the Recycle Bin"],
+    [/^Move to Trash$/g, "Move to Recycle Bin"],
+    [/\(Cmd\+V\)/g, "(Ctrl+V)"],
+    [/~\/Library\/Application Support\/Xod/g, "%APPDATA%\\Xod"],
+    [/\bmacOS List View\b/g, "List View"],
+    [/visible macOS desktop window/g, "visible desktop window"],
+    [/Safe macOS Background Automations/g, "Safe Background Automations"],
+    [/Send macOS Notification Banner/g, "Send Windows Notification"],
+    [/Spotlight Instant File Finder/g, "Instant File Finder"],
+    [/Native macOS Index \(mdfind\)/g, "Folder search"],
+    [/Direct Port Inspector \(lsof\)/g, "Direct Port Inspector"],
   ];
+  // Terminal presets that are Mac/Linux commands: their PowerShell equivalents.
+  const PRESETS = {
+    "sw_vers": ["winver", "(Get-CimInstance Win32_OperatingSystem).Caption"],
+    "df -h": ["disk space", "Get-PSDrive -PSProvider FileSystem"],
+    "uptime": ["uptime", "(Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime"],
+  };
+  function presets(root) {
+    root.querySelectorAll?.("button[onclick^=\"setCockpitCmd('\"]").forEach((b) => {
+      const cmd = (b.getAttribute("onclick").match(/setCockpitCmd\('(.*)'\)/) || [])[1];
+      const p = PRESETS[cmd];
+      if (!p) return;
+      b.textContent = p[0];
+      b.setAttribute("onclick", `setCockpitCmd('${p[1]}')`);     // fixed commands, no quotes in them
+    });
+  }
   const SKIP = "script, style, textarea, input, .prose-custom, [data-no-pc-words]";
   const fix = (s) => RULES.reduce((t, [re, to]) => t.replace(re, to), s);
-  const touches = (s) => s && /Mac|Keychain|Finder|macOS/.test(s);
+  const touches = (s) => s && /Mac|Keychain|Finder|macOS|Cmd\+|Library|lsof|mdfind|Spotlight|Trash/.test(s);
 
   function walk(root) {
     if (root.nodeType === 3) {
@@ -50,6 +79,7 @@
 
   const start = () => {
     walk(document.body);
+    presets(document.body);
     new MutationObserver((muts) => {
       for (const m of muts) {
         if (m.type === "characterData") walk(m.target);

@@ -14,6 +14,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -29,6 +30,24 @@ DAY = 86400
 
 def _du_kb(path: Path, timeout: float) -> Optional[int]:
     """Folder size in KB from du (fast, in C). None if it took too long or wasn't allowed."""
+    if sys.platform == "win32":     # no du: add it up ourselves, within the same time budget
+        total, t0, stack = 0, time.time(), [str(path)]
+        while stack:
+            if time.time() - t0 > timeout:
+                return None
+            try:
+                with os.scandir(stack.pop()) as it:
+                    for e in it:
+                        try:
+                            if e.is_dir(follow_symlinks=False):
+                                stack.append(e.path)
+                            elif e.is_file(follow_symlinks=False):
+                                total += e.stat(follow_symlinks=False).st_size
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+        return total // 1024
     try:
         r = subprocess.run(["du", "-skx", str(path)], capture_output=True, text=True, timeout=timeout)
         m = re.match(r"(\d+)", r.stdout)
@@ -41,6 +60,8 @@ def _mdls(paths: List[str], names: List[str]) -> List[Dict[str, Any]]:
     """Spotlight metadata for several files in one call."""
     if not paths:
         return []
+    if sys.platform == "win32":     # no Spotlight: callers fall back to what the file system says
+        return [{} for _ in paths]
     argv = ["mdls"] + [x for n in names for x in ("-name", n)] + paths
     try:
         out = subprocess.run(argv, capture_output=True, text=True, timeout=10).stdout
@@ -74,6 +95,8 @@ def _mdls(paths: List[str], names: List[str]) -> List[Dict[str, Any]]:
 
 
 def _mdfind(query: str, onlyin: Optional[Path] = None, limit: int = 200, timeout: float = 8) -> List[str]:
+    if sys.platform == "win32":     # no Spotlight: callers walk the folders instead
+        return []
     argv = ["mdfind"] + (["-onlyin", str(onlyin)] if onlyin else []) + [query]
     try:
         out = subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout

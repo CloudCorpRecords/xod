@@ -2881,13 +2881,13 @@
         <h4 class="font-bold text-white text-sm">Delete from Computer</h4>
       </div>
       <p class="text-xs text-zinc-300">
-        Are you sure you want to permanently delete <strong id="cfDeleteTargetName" class="text-white font-mono"></strong>?
+        Move <strong id="cfDeleteTargetName" class="text-white font-mono"></strong> to the Trash?
       </p>
       <p class="text-[11px] text-zinc-400 bg-surface-900 p-2.5 rounded-lg font-mono truncate" id="cfDeleteTargetPath"></p>
-      <p class="text-[11px] text-rose-400">This action cannot be undone.</p>
+      <p class="text-[11px] text-zinc-400">You can put it back from the Trash until it's emptied.</p>
       <div class="flex items-center justify-end gap-2 pt-2 border-t border-surface-700/60">
         <button onclick="closeCfDeleteModal()" class="px-3 py-1.5 rounded-lg text-xs text-zinc-300 hover:bg-surface-750">Cancel</button>
-        <button onclick="submitCfDelete()" id="btnSubmitCfDelete" class="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold">Delete Permanently</button>
+        <button onclick="submitCfDelete()" id="btnSubmitCfDelete" class="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold">Move to Trash</button>
       </div>
     </div>
   </div>
@@ -3445,7 +3445,7 @@
                 <span class="text-xs font-medium">Host Machine</span>
                 <i data-lucide="monitor" class="size-4 text-rose-400"></i>
               </div>
-              <div class="text-base font-bold text-white truncate" id="telemOsText">macOS</div>
+              <div class="text-base font-bold text-white truncate" id="telemOsText">…</div>
               <div class="text-[11px] text-zinc-400 flex items-center justify-between font-mono pt-1 border-t border-surface-750">
                 <span>Arch: <strong id="telemArchText" class="text-zinc-200">arm64</strong></span>
                 <span class="text-emerald-400 font-semibold">Non-intrusive</span>

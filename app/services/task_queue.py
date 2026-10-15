@@ -17,6 +17,7 @@ import json
 import logging
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -82,9 +83,13 @@ def _row(r: sqlite3.Row) -> Dict[str, Any]:
 
 
 def notify(title: str, message: str) -> None:
-    """Mac notification; never blocks or fails the task."""
+    """A desktop notification (Mac or Windows); never blocks or fails the task."""
     esc = lambda t: (t or "").replace("\\", "\\\\").replace('"', '\\"')[:220]
     try:
+        if sys.platform == "win32":
+            from app.services.system_control_win import notify_bg
+            notify_bg(f"Xod: {title}", message)
+            return
         subprocess.Popen(["osascript", "-e", f'display notification "{esc(message)}" with title "Xod" subtitle "{esc(title)}"'],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:

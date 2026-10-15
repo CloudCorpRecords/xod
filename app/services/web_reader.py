@@ -192,7 +192,7 @@ class _Tab:
 
     async def _open_tab(self, sb):
         browser_ws = (await asyncio.to_thread(_http_json, "/json/version"))["webSocketDebuggerUrl"]
-        async with websockets.connect(browser_ws, max_size=8 * 1024 * 1024) as bws:
+        async with websockets.connect(browser_ws, max_size=8 * 1024 * 1024, ping_interval=None) as bws:
             await bws.send(json.dumps({"id": 1, "method": "Target.createTarget",
                                        "params": {"url": "about:blank", "background": True}}))
             while True:
@@ -203,7 +203,7 @@ class _Tab:
             raise RuntimeError(msg["error"].get("message", "couldn't open a tab"))
         self.id = msg["result"]["targetId"]
         sb.reader_tabs.add(self.id)
-        self.ws = await websockets.connect(f"ws://127.0.0.1:{_port()}/devtools/page/{self.id}", max_size=32 * 1024 * 1024)
+        self.ws = await websockets.connect(f"ws://127.0.0.1:{_port()}/devtools/page/{self.id}", max_size=32 * 1024 * 1024, ping_interval=None)
         from app.services.browser_sandbox import BOOTSTRAP_SCRIPT
         await self.cmd("Page.enable")
         try:

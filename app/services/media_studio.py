@@ -303,9 +303,13 @@ class LocalMediaService:
         # Escaping it inline is fragile: quoted, escaped text silently rendered as nothing.
         text_file = out_path.with_suffix(".txt")
         text_file.write_text(text, encoding="utf-8")
-        font = next((f for f in ("/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Supplemental/Arial.ttf") if os.path.exists(f)), None)
-        font_opt = f"fontfile='{font}':" if font else ""
-        vf = (f"drawtext={font_opt}textfile='{text_file}':expansion=none:fontsize={font_size}:fontcolor=white:"
+        win_fonts = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")
+        font = next((f for f in ("/System/Library/Fonts/Helvetica.ttc", "/System/Library/Fonts/Supplemental/Arial.ttf",
+                                 os.path.join(win_fonts, "segoeui.ttf"), os.path.join(win_fonts, "arial.ttf")) if os.path.exists(f)), None)
+        # Paths inside ffmpeg's filter: "C\:/Windows/Fonts/arial.ttf" (forward slashes, the drive's colon escaped)
+        ff = lambda p: str(p).replace("\\", "/").replace(":", "\\:")
+        font_opt = f"fontfile='{ff(font)}':" if font else ""
+        vf = (f"drawtext={font_opt}textfile='{ff(text_file)}':expansion=none:fontsize={font_size}:fontcolor=white:"
               f"box=1:boxcolor=black@0.6:boxborderw=8:{pos_exp}")
 
         cmd = [

@@ -9343,7 +9343,7 @@ async function submitCfDelete() {
       cfSelectedFile = null;
     }
     await loadComputerDirectory(computerCurrentPath);
-    showToast(`Deleted ${cfTargetItem.name}`);
+    showToast(`Moved ${cfTargetItem.name} to the Trash`);
   } catch (err) {
     alert(err.message);
   }

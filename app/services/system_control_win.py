@@ -84,10 +84,19 @@ def inspect_port(port: int) -> Dict[str, Any]:
     return {"success": True, "port": port, "in_use": bool(procs), "processes": procs}
 
 
+_NOTIFY = ("Add-Type -AssemblyName System.Windows.Forms; $n = New-Object System.Windows.Forms.NotifyIcon; "
+           "$n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; "
+           "$n.ShowBalloonTip(6000, $env:XOD_ARG0, $env:XOD_ARG1, 'Info'); Start-Sleep -Seconds 6; $n.Dispose()")
+
+
+def notify_bg(title: str, message: str) -> None:
+    """A notification from code that isn't async (finished tasks, new mail); fire and forget."""
+    env = {**os.environ, "XOD_ARG0": str(title)[:200], "XOD_ARG1": str(message)[:500]}
+    subprocess.Popen([*POWERSHELL, _NOTIFY], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
+
+
 async def notify(title: str, message: str) -> Dict[str, Any]:
-    script = ("Add-Type -AssemblyName System.Windows.Forms; $n = New-Object System.Windows.Forms.NotifyIcon; "
-              "$n.Icon = [System.Drawing.SystemIcons]::Information; $n.Visible = $true; "
-              "$n.ShowBalloonTip(6000, $env:XOD_ARG0, $env:XOD_ARG1, 'Info'); Start-Sleep -Seconds 6; $n.Dispose()")
+    script = _NOTIFY
     try:
         asyncio.ensure_future(_ps(script, str(title)[:200], str(message)[:500], timeout=20))
         return {"success": True, "title": title, "message": message}

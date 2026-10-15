@@ -434,25 +434,35 @@ class MediaModelManager:
         if not target_dir:
             return {"success": False, "error": f"Model {model_id} isn't on disk."}
         try:
-            trash = Path.home() / ".Trash"
-            dest = trash / target_dir.name
-            if dest.exists():
-                dest = trash / f"{target_dir.name} {time.strftime('%H.%M.%S')}"
-            shutil.move(str(target_dir), str(dest))
+            import sys
+            if sys.platform == "win32":
+                from app.services.system_control_win import recycle
+                recycle(str(target_dir))
+            else:
+                trash = Path.home() / ".Trash"
+                dest = trash / target_dir.name
+                if dest.exists():
+                    dest = trash / f"{target_dir.name} {time.strftime('%H.%M.%S')}"
+                shutil.move(str(target_dir), str(dest))
             for kind in ("image", "video"):
                 if self.config.get(f"active_{kind}_model") == model_id:
                     self.config[f"active_{kind}_model"] = ""  # the engine falls back to the first usable model
             self._save_config()
-            return {"success": True, "message": f"Moved {model_id} to the Trash. Empty the Trash to free the disk space."}
+            bin_name = "Recycle Bin" if sys.platform == "win32" else "Trash"
+            return {"success": True, "message": f"Moved {model_id} to the {bin_name}. Empty the {bin_name} to free the disk space."}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
     def reveal_in_finder(self, model_id: str) -> Dict[str, Any]:
-        """Opens the model directory in macOS Finder."""
+        """Opens the model directory in Finder (File Explorer on Windows)."""
         target_dir = self._model_dir(model_id) or MODELS_DIR
         try:
             import subprocess
-            subprocess.run(["open", str(target_dir.resolve())], check=False)
+            import sys
+            if sys.platform == "win32":
+                os.startfile(str(target_dir.resolve()))
+            else:
+                subprocess.run(["open", str(target_dir.resolve())], check=False)
             return {"success": True, "target": str(target_dir.resolve())}
         except Exception as e:
             return {"success": False, "error": str(e)}
