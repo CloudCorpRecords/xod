@@ -20,6 +20,7 @@ import asyncio
 import logging
 import os
 import platform
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -315,6 +316,28 @@ async def check() -> Dict[str, Any]:
                         _event("fixed", "Getting a small model (274 MB) so Xod can search its memory by meaning.")
             except Exception as e:
                 logger.debug(f"embedding model: {e}")
+
+        # Eyes (services/vision.py): the chat model can't see and there's no vision model: fetch a small one, once,
+        # if the disk has room for it with plenty to spare. Otherwise say how to get one.
+        if provider == "ollama" and not problem and os.environ.get("XOD_AUTOCONNECT", "").lower() != "off" \
+                and not _last_try.get("vision") and any(s["provider"] == "ollama" for s in servers):
+            _last_try["vision"] = time.time()
+            try:
+                from app.services import vision
+                if await vision.needed() and not await vision.model():
+                    pick = await vision.pick_to_fetch(pc["ai_memory_gb"])
+                    free = shutil.disk_usage(str(ollama_hub._models_dir())).free / 1024 ** 3
+                    if pick and free >= pick["size_gb"] + 20:
+                        r = await ollama_hub.start_pull(pick["name"])
+                        if r.get("success"):
+                            vision.forget()
+                            _event("fixed", f"Getting a small vision model ({pick['name']}, {pick['size_gb']:g} GB) so Xod can see "
+                                            "web pages and pictures: your chat model reads text only.")
+                    elif pick:
+                        notes.append(f"Your chat model can't see images, and there isn't room for a vision model ({pick['size_gb']:g} GB, "
+                                     f"{free:.0f} GB free). With more space, Xod gets one by itself.")
+            except Exception as e:
+                logger.debug(f"vision model: {e}")
 
         # Another program filling the GPU: answers slow down, so say why.
         if pc["runs_on"] == "gpu" and provider == "ollama" and not problem:

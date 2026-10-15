@@ -38,6 +38,7 @@
       "updater.js",
       "preload.js",
       "splash.html",
+      "build/icon.png",
       "package.json"
     ],
     "extraResources": [

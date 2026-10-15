@@ -59,6 +59,9 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 | **Private by default** | Chats, files, voice and images stay on your computer. Use Xod's built-in engine (Mac), Ollama, LM Studio or any local model server. No account, no telemetry. |
 | **Sets itself up** | It finds the AI on your computer (Ollama, LM Studio, llama.cpp, Jan…), reads your graphics card and picks a model that fits, installs Ollama with one click if you need it, and keeps it running: it restarts a stopped model app and frees memory a crashed one left behind. |
 | **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. |
+| **Always there** | Close the window and Xod keeps working from the tray (the menu bar on a Mac), and it can start when you log in. |
+| **In your pocket** | Message Xod from your phone through a Telegram bot of your own: it does the job on your computer, asks before anything is sent or paid, and you approve with one tap. Nothing is opened to the internet. |
+| **It sees** | Screenshots in its browser and pictures you attach, even when your chat model reads text only: Xod adds a small local vision model that describes them. |
 | **It reads the web itself** | It searches in its own browser, reads the top pages side by side and answers from them with sources. No search API key. |
 | **You stay in charge** | It stops for your OK before anything is sent, paid, posted or deleted. Every action is logged, and file changes can be undone. |
 | **Builds what you ask for** | Apps and games written, run, tested and fixed on your computer, with a live preview beside the chat. |
@@ -174,12 +177,21 @@ Say **"Hey Xod, what's the weather tomorrow?"** in one breath, click the mic, or
 - **Spoken replies anywhere.** Have Xod read answers aloud when you talk, every time, or never, and press **Listen** on any reply.
 - **On your Mac.** Whisper turns speech into text on your Mac and Xod speaks with your Mac's own voices; nothing is recorded or sent. Listening for "Hey Xod" stays off until you turn it on under the speaker button, and voice commands that would move files go through the agent, where they can be undone.
 
+### From your phone
+
+Hand Xod a job from anywhere. In **Tools → Your phone**, paste the token of a Telegram bot you make in a minute with [@BotFather](https://t.me/BotFather), then send the bot the 6-digit code Xod shows. After that:
+
+- **Write to the bot** ("find me a cheap flight to Lisbon in May") and it becomes a task on your computer. The result comes back as a message.
+- **Approve with a tap.** When a task is ready to submit, pay or delete something, the bot asks with Approve / Cancel buttons. A question ("window or aisle?") is answered by replying to it.
+- **Private.** Only your Telegram account is listened to, the token is in the Keychain (Credential Manager on Windows), and nothing on your computer is opened to the internet: Xod fetches your messages from Telegram. Your messages do pass through Telegram, like any Telegram chat. Xod has to be running, so it keeps going in the tray when you close the window.
+
 Also inside: images and video (FLUX, AnimateDiff), long-term memory, projects, a health check that fixes common problems, and a gated way for Xod to improve its own code, with tests, your approval and one-click revert.
 
 ## Privacy and security
 
 - **Your data stays on your computer**: `~/Library/Application Support/Xod` on a Mac, `%APPDATA%\Xod` on Windows, readable only by your account. Set `XOD_DATA_DIR` to keep it elsewhere.
 - **Keys and logins live in the macOS Keychain** (Windows: Credential Manager), never in files, logs or prompts.
+- **The phone link is off until you connect it.** Then Xod asks Telegram for messages to your own bot; it answers only your account.
 - **One small network check:** once a day Xod asks GitHub whether a newer version exists (nothing else is sent). Switch it off in Tools → What's coming next, or with `XOD_NO_UPDATE_CHECK=1`.
 - **Local only.** The server listens on `127.0.0.1` and refuses requests from websites, so a page you visit can't drive Xod.
 - **Untrusted text stays text.** AI output is sanitized, the UI runs under a strict Content-Security-Policy, and every UI library is bundled at a pinned version.

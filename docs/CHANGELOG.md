@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.0
+
+**Always there**
+- Closing the window keeps Xod running in the tray (the menu bar on a Mac): tasks, routines and the phone link keep going. The tray shows what's waiting for you, and has "Keep running when the window is closed" and "Start Xod when I log in" (it starts quietly in the tray). Quit from the tray.
+
+**From your phone**
+- Tools → Your phone: connect a Telegram bot of your own and message Xod from anywhere. Each message becomes a task on your computer; the result comes back as a message; approvals arrive with Approve / Cancel buttons (connected apps' too); reply to a question to answer it. Only your Telegram account is listened to, the token is in the Keychain / Credential Manager, and nothing is opened to the internet (Xod fetches your messages). Choose whether the phone hears about every task or only the ones started from it.
+
+**It sees**
+- When your chat model reads text only (most good local models do), Xod uses a small local vision model to look: its browser gets a description of the page's screenshot, and a picture you attach is described before your question is planned and answered. "Who is this invoice from?" gets the answer from the invoice instead of a wrong guess (it used to try to open a browser).
+- With Ollama, Xod fetches one by itself when your chat model can't see and there's room on the disk: Qwen3-VL 4B (3.1 GB) on most PCs, the 8B with 20 GB or more of AI memory. One you already have is used instead. With no vision model and no room, Xod says so instead of guessing.
+- If the vision model doesn't fit next to the chat model on the GPU, Xod lets the chat model go for a moment and looks again.
+
+**Tests**
+- New: the phone link against a stand-in Telegram (22 checks: pairing, strangers ignored, tasks, approvals, answers, results, connected apps, the listening loop), and vision against a stand-in Ollama (8 checks). Both run on Windows in CI. Checked for real on this PC: a question from the "phone" answered by the local model in 18 s, an invoice image read correctly in 21 s, and the desktop app hiding to the tray, reopening and starting hidden.
+
 ## 0.5.2
 
 **Safer with your files**

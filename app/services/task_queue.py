@@ -96,6 +96,17 @@ def notify(title: str, message: str) -> None:
         pass
 
 
+def _phone(task: Optional[Dict[str, Any]], event: str) -> None:
+    """Tells the linked phone too (services/phone.py), if there is one. Never fails the task."""
+    if not task:
+        return
+    try:
+        from app.services import phone
+        phone.on_task(task, event)
+    except Exception as e:
+        logger.debug(f"phone: {e}")
+
+
 class TaskQueue:
     def __init__(self) -> None:
         _init()
@@ -423,12 +434,14 @@ class TaskQueue:
                                          "message": mission.get("final_answer")},
                          now="Waiting for your OK", **common)
             notify(self.get(task_id)["title"], f"Ready to press \"{pending.get('label', 'Submit')}\". Needs your OK.")
+            _phone(self.get(task_id), "approval")
         elif status in ("needs_input", "blocked"):
             kind = "question" if status == "needs_input" else "blocked"
             self._update(task_id, note="Waiting for you", status="waiting", waiting_kind=kind,
                          waiting_detail={"message": mission.get("final_answer")},
                          now="Needs your answer" if kind == "question" else "Stuck at a verification check", **common)
             notify(self.get(task_id)["title"], "Has a question for you." if kind == "question" else "Stuck at a verification check.")
+            _phone(self.get(task_id), kind)
         else:
             self._finish(task_id, "failed", report or mission.get("final_answer") or "It didn't finish.", note="Stopped", **common)
 
@@ -438,6 +451,7 @@ class TaskQueue:
                      waiting_kind=None, now="Done" if status == "done" else "Stopped", **fields)
         t = self.get(task_id)
         notify(t["title"], "Done." if status == "done" else "Couldn't finish. Open Tasks to see why.")
+        _phone(t, status)
         try:   # it becomes part of Xod's memory of what it has done (services/recall.py)
             from app.services import recall
             recall.schedule_index(2.0)

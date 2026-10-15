@@ -400,6 +400,13 @@ async def list_tasks():
     return {"tasks": task_queue.list(), "counts": task_queue.counts()}
 
 
+@app.get("/api/tasks/counts")
+async def task_counts():
+    """How many tasks are waiting, working, queued… (the desktop app's tray shows it)."""
+    from app.services.task_queue import task_queue
+    return task_queue.counts()
+
+
 @app.post("/api/tasks")
 async def create_task(req: NewTaskRequest):
     from app.services.task_queue import task_queue
@@ -479,6 +486,49 @@ async def _start_task_worker():
     recall.schedule_index(20)               # catch Xod's memory up on chats and tasks since it last ran
     from app.services import autoconnect
     asyncio.create_task(autoconnect.loop())  # keeps finding the AI on this computer and keeps it working
+    from app.services import phone
+    phone.start()                           # the linked phone (Telegram), if there is one
+
+
+class PhoneConnectRequest(BaseModel):
+    token: str
+
+
+class PhoneNotifyRequest(BaseModel):
+    all_tasks: bool
+
+
+@app.get("/api/phone")
+async def phone_status():
+    from app.services import phone
+    return phone.status()
+
+
+@app.post("/api/phone/connect")
+async def phone_connect(req: PhoneConnectRequest):
+    """A Telegram bot token from BotFather: checked, kept in the Keychain, and a pairing code made."""
+    from app.services import phone
+    return await phone.connect(req.token)
+
+
+@app.post("/api/phone/disconnect")
+async def phone_disconnect():
+    from app.services import phone
+    return phone.disconnect()
+
+
+@app.post("/api/phone/notify")
+async def phone_notify(req: PhoneNotifyRequest):
+    """Tell the phone about every task (on) or only the ones started from it (off)."""
+    from app.services import phone
+    return phone.set_notify_all(req.all_tasks)
+
+
+@app.post("/api/phone/test")
+async def phone_test():
+    from app.services import phone
+    ok = await phone.send("Hello from Xod on your computer. 👋")
+    return {"success": bool(ok), "error": None if ok else "Not linked yet, or Telegram couldn't be reached."}
 
 
 @app.get("/api/mcp")

@@ -3835,7 +3835,15 @@ class BrowserSandboxService:
         except Exception:
             vision_key = ""
         # A model that turned screenshots down once isn't sent them again (each mission used to start with that error).
-        use_vision = MISSION_USE_VISION and vision_key not in _NO_VISION
+        # When it can't see, a small vision model looks at the screenshot instead and says what's there (services/vision.py).
+        from app.services import vision
+        try:
+            if await vision.main_sees() is False:
+                _NO_VISION.add(vision_key)
+            helper_eyes = vision_key in _NO_VISION and bool(await vision.model())
+        except Exception:
+            helper_eyes = False
+        use_vision = MISSION_USE_VISION and (vision_key not in _NO_VISION or helper_eyes)
 
         last_mark = [time.time()]
 
@@ -3985,7 +3993,14 @@ class BrowserSandboxService:
                 f"PAGE TEXT{f' (part {page_offset // MISSION_PAGE_CHUNK + 1}; read_more for the rest)' if more_text or page_offset else ''}:\n{page_chunk}\n"
             )
             user_content: Any = user_prompt
-            if send_shot:
+            if send_shot and helper_eyes:
+                mission_record["now"] = f"Looking at {_page_name(self.current_title, self.current_url)}…"
+                seen = await vision.describe(shot["screenshot_uri"], f"A browser agent working on: {goal[:300]}. "
+                                             "Numbered boxes mark the elements it can use: name the numbers of the ones that matter.")
+                if seen:
+                    user_content = user_prompt + f"\nWHAT THE SCREENSHOT SHOWS (described by a vision model):\n{seen[:2500]}\n"
+                    mission_record["screenshots_sent"] = mission_record.get("screenshots_sent", 0) + 1
+            elif send_shot:
                 user_content = [
                     {"type": "text", "text": user_prompt},
                     {"type": "image_url", "image_url": {"url": shot["screenshot_uri"]}},
@@ -4029,10 +4044,12 @@ class BrowserSandboxService:
                 pass
             except Exception as e:
                 logger.warning(f"Browser mission LLM error: {e}")
-                if send_shot and re.search(r"image|vision|mtmd|multimodal|clip", str(e), re.I):
-                    use_vision = False  # model can't take images; carry on with text only
+                if send_shot and not helper_eyes and re.search(r"image|vision|mtmd|multimodal|clip", str(e), re.I):
+                    # The model can't take images: a vision model describes them from now on, or it's text only.
                     _NO_VISION.add(vision_key)
-                    logger.warning("Model rejected screenshots; continuing without vision.")
+                    helper_eyes = bool(await vision.model())
+                    use_vision = helper_eyes
+                    logger.warning("Model rejected screenshots; " + ("a vision model describes them instead." if helper_eyes else "continuing without vision."))
                     mission_record["now"] = ""
                     continue
             mission_record["now"] = ""

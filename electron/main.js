@@ -1,7 +1,8 @@
 // Xod desktop shell: starts the Python server on a free local port, shows a loading screen,
 // then opens the app. The window can only show Xod itself; links to other sites open in the
-// normal browser. The server is stopped when the app quits.
-const { app, BrowserWindow, Menu, shell, session, dialog, systemPreferences, globalShortcut, ipcMain } = require("electron");
+// normal browser. Closing the window leaves Xod running in the tray (the menu bar on a Mac), so tasks,
+// routines and the phone link keep working; the server is stopped when the app quits.
+const { app, BrowserWindow, Menu, Tray, Notification, nativeImage, shell, session, dialog, systemPreferences, globalShortcut, ipcMain } = require("electron");
 const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const http = require("http");
@@ -31,11 +32,34 @@ let appUrl = "";
 let splash = null;
 let mainWindow = null;
 let quitting = false;
+let tray = null;
+
+// The desktop app's own choices (not the AI settings): stay running when the window closes, and whether the
+// person has been told that it does.
+const PREFS_FILE = path.join(DATA_DIR, "desktop.json");
+function loadPrefs() {
+  try { return { background: true, ...JSON.parse(fs.readFileSync(PREFS_FILE, "utf8")) }; } catch (e) { return { background: true }; }
+}
+function savePrefs() {
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(PREFS_FILE, JSON.stringify(prefs, null, 1)); } catch (e) { /* not fatal */ }
+}
+let prefs = loadPrefs();
+// Started by "Start Xod when I log in": stay in the tray, don't open the window.
+const startedHidden = process.argv.includes("--hidden") ||
+  (process.platform === "darwin" && (() => { try { return app.getLoginItemSettings().wasOpenedAtLogin; } catch (e) { return false; } })());
+let hiddenStartPending = startedHidden;
 
 if (!app.requestSingleInstanceLock()) app.quit();
-app.on("second-instance", () => {
-  if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
-});
+app.on("second-instance", () => showWindow());
+
+function showWindow() {
+  if (!appUrl) return;
+  if (process.platform === "darwin" && app.dock) app.dock.show();
+  if (!mainWindow) { showMain(); return; }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
 
 // ------------------------------------------------------------------ helpers
 
@@ -229,10 +253,72 @@ function showMain() {
   });
   mainWindow.loadURL(appUrl);
   mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
+    if (hiddenStartPending) hiddenStartPending = false;     // opened at login: only the first window stays hidden
+    else mainWindow.show();
     if (splash && !splash.isDestroyed()) splash.close();
   });
+  // Closing the window keeps Xod running in the tray (tasks, routines and the phone link keep going), unless
+  // the person turned that off. "Quit Xod" in the tray, or the app menu, really quits.
+  mainWindow.on("close", (e) => {
+    if (quitting || !prefs.background || !tray) return;
+    e.preventDefault();
+    mainWindow.hide();
+    if (process.platform === "darwin" && app.dock) app.dock.hide();
+    if (!prefs.toldBackground) {
+      prefs.toldBackground = true;
+      savePrefs();
+      if (Notification.isSupported()) {
+        new Notification({ title: "Xod is still running",
+          body: `It keeps working on your tasks in the ${process.platform === "darwin" ? "menu bar" : "tray"}. Quit it from there.` }).show();
+      }
+    }
+  });
   mainWindow.on("closed", () => { mainWindow = null; });
+}
+
+// ------------------------------------------------------------------ tray (menu bar on a Mac)
+
+const loginItemsWork = () => PACKAGED;      // from source it would register Electron itself, not Xod
+function trayMenu(counts) {
+  const waiting = (counts && counts.waiting) || 0, working = ((counts && counts.working) || 0) + ((counts && counts.queued) || 0);
+  let atLogin = false;
+  try { atLogin = app.getLoginItemSettings().openAtLogin; } catch (e) { /* unsupported */ }
+  return Menu.buildFromTemplate([
+    { label: "Open Xod", click: showWindow },
+    ...(waiting ? [{ label: `${waiting} waiting for you`, click: showWindow }] : []),
+    ...(working ? [{ label: `${working} task${working === 1 ? "" : "s"} running`, enabled: false }] : []),
+    { type: "separator" },
+    { label: "Keep running when the window is closed", type: "checkbox", checked: !!prefs.background,
+      click: (item) => { prefs.background = item.checked; savePrefs(); } },
+    { label: "Start Xod when I log in", type: "checkbox", checked: atLogin, enabled: loginItemsWork(),
+      click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked, args: ["--hidden"] }) },
+    { type: "separator" },
+    { label: "Quit Xod", click: () => { quitting = true; app.quit(); } },
+  ]);
+}
+
+function createTray() {
+  try {
+    const file = path.join(__dirname, "build", "icon.png");
+    let img = nativeImage.createFromPath(file).resize({ width: process.platform === "darwin" ? 18 : 16 });
+    tray = new Tray(img);
+    tray.setToolTip("Xod");
+    tray.setContextMenu(trayMenu());
+    tray.on("click", () => { if (process.platform !== "darwin") showWindow(); });
+    // What's going on, at a glance: tasks waiting for an OK, or running.
+    const refresh = async () => {
+      const r = await get(`${appUrl}/api/tasks/counts`, 3000);
+      let counts = null;
+      try { counts = r && r.status === 200 ? JSON.parse(r.body) : null; } catch (e) { /* not answering: skip */ }
+      if (!tray || tray.isDestroyed()) return;
+      tray.setContextMenu(trayMenu(counts));
+      const waiting = (counts && counts.waiting) || 0;
+      tray.setToolTip(waiting ? `Xod: ${waiting} waiting for you` : "Xod");
+    };
+    setInterval(refresh, 20000).unref();
+  } catch (e) {
+    tray = null;     // no tray on this desktop: closing the window quits, as before
+  }
 }
 
 // ------------------------------------------------------------------ talking to Xod
@@ -329,7 +415,10 @@ app.whenReady().then(async () => {
   showSplash();
   try {
     appUrl = await startServer();
+    createTray();
     showMain();
+    if (startedHidden && splash && !splash.isDestroyed()) splash.close();
+    if (startedHidden && process.platform === "darwin" && app.dock) app.dock.hide();
     registerTalkShortcut();
     const updates = updater.start(() => mainWindow, () => appUrl);
     setMenu(() => updates.menuCheck());
@@ -345,7 +434,8 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on("activate", () => { if (!mainWindow && appUrl) showMain(); });
-app.on("window-all-closed", () => app.quit());
+app.on("activate", () => showWindow());
+// Hiding to the tray doesn't close the window, so this only happens with the tray off (or missing).
+app.on("window-all-closed", () => { if (!prefs.background || !tray) app.quit(); });
 app.on("before-quit", () => { quitting = true; stopServer(); });
 app.on("will-quit", () => globalShortcut.unregisterAll());

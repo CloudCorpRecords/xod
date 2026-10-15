@@ -37,6 +37,10 @@ jobs:
         run: python tests/smoke/run_local_models_test.py
       - name: Computer tools and spoken replies on Windows
         run: python tests/smoke/run_windows_tools_test.py
+      - name: Xod on your phone (stand-in Telegram)
+        run: python tests/smoke/run_phone_test.py
+      - name: Eyes for models that can't see (stand-in Ollama)
+        run: python tests/smoke/run_vision_test.py
 
   installer:
     name: Build, install and run Xod-setup.exe

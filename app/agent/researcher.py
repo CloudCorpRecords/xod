@@ -149,6 +149,27 @@ class AgenticResearcher:
         else:
             user_query = str(user_msg)
 
+        # A chat model that can't see: the picture becomes words before anything else (routing, planning, the answer),
+        # from a small vision model (services/vision.py). Planned blind, "who is this invoice from?" went to the browser.
+        if attached_image_urls:
+            try:
+                from app.services import vision
+                blind = await vision.needed()
+            except Exception:
+                blind = False
+            if blind:
+                yield {"type": "status", "content": "Looking at the image…"}
+                described = await vision.as_text(user_query, attached_image_urls)
+                if not described:
+                    yield {"type": "content", "content": (
+                        "Your chat model reads text only, so I can't look at images with it, and there's no vision model on "
+                        "this computer yet. Xod downloads a small one by itself when there's room on the disk; or pick a model "
+                        "that can see in Tools → Setup & AI model.")}
+                    yield {"type": "done"}
+                    return
+                user_query, attached_image_urls = described, []
+                messages = [*messages[:-1], {"role": "user", "content": described}]
+
         has_image = bool(attached_image_urls)
         has_document = bool(attached_document or "[Attached Document:" in user_query or "[Attached File from Computer:" in user_query)
 
@@ -1069,7 +1090,21 @@ CRITICAL INSTRUCTIONS:
         system_instruction_text = (
             "You are Xod, an articulate, expert AI assistant. Provide your complete, detailed analysis, walkthrough, and thoughts directly to the user in fluent Markdown. Do NOT output any tool calls or function tags."
         )
+        # A chat model that can't see gets the picture in words, from a small vision model (services/vision.py).
+        seen_as_text = None
         if has_image:
+            try:
+                from app.services import vision
+                if await vision.needed():
+                    seen_as_text = await vision.as_text(user_query, attached_image_urls)
+            except Exception as e:
+                logger.debug(f"vision: {e}")
+        if seen_as_text:
+            system_instruction_text = ("You are Xod. The user attached an image; you can't see it yourself, so a vision model described it "
+                                       "below. Answer from that description in Markdown, and say so plainly if a detail the user asks "
+                                       "about isn't in it. Do not emit any tool calls.")
+            synthesis_user_content = f"{seen_as_text}\n\n{task_instruction}\n\n{synthesis_content}"
+        elif has_image:
             system_instruction_text = "You are Xod, an articulate multimodal AI assistant with sharp visual perception. You can see the user's uploaded image in full fidelity. Directly and thoroughly examine the image to describe its subjects, composition, details, and environment, answering the user's request in structured Markdown. Do not emit any tool calls."
             multimodal_user_parts = [
                 {"type": "text", "text": f"{user_query}\n\n{task_instruction}\n\n{synthesis_content}"}
@@ -1182,7 +1217,11 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                 accumulated_text = fallback_msg
             else:
                 logger.info("Model leaked tool call during synthesis. Executing robust natural-language recovery stream...")
-            if has_image:
+            if seen_as_text:
+                recovery_messages = self._format_conversation_history_for_synthesis(
+                    messages=messages, current_user_content=seen_as_text,
+                    system_instruction="You are Xod. A vision model described the user's image below; answer from it. Do not call any tools.")
+            elif has_image:
                 recov_parts = [
                     {"type": "text", "text": f"{user_query}\n\nPlease share your detailed visual walkthrough of what you see in the image and your thoughts."}
                 ]
