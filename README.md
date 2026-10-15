@@ -51,6 +51,7 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 - **"Every weekday at 8, give me the five biggest tech stories with sources."** Save it once as a routine; the report is waiting for you.
 - **"Find the junior Python roles on these three job boards and fill in the applications."** Xod works through the sites in its own browser and stops for your OK before each submit.
 - **"Tidy my Downloads folder and tell me what's taking the space."** It sorts the files, shows exactly what it moved, and one click puts everything back.
+- **"Set up a Node project here, install what it needs and make sure it runs."** It checks what your computer has, does each step, fixes what fails, and shows the output that proves it works.
 
 ## Why Xod
 
@@ -58,7 +59,7 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 |---|---|
 | **Private by default** | Chats, files, voice and images stay on your computer. Use Xod's built-in engine (Mac), Ollama, LM Studio or any local model server. No account, no telemetry. |
 | **Sets itself up** | It finds the AI on your computer (Ollama, LM Studio, llama.cpp, Jan…), reads your graphics card and picks a model that fits, installs Ollama with one click if you need it, and keeps it running: it restarts a stopped model app and frees memory a crashed one left behind. |
-| **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. |
+| **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. Ask it to install something or set up a project and it does the work itself, step by step, and doesn't call it done until it has run something that proves it works. |
 | **Always there** | Close the window and Xod keeps working from the tray (the menu bar on a Mac), and it can start when you log in. |
 | **In your pocket** | Message Xod from your phone through a Telegram bot of your own: it does the job on your computer, asks before anything is sent or paid, and you approve with one tap. Nothing is opened to the internet. |
 | **Your models, your choice** | One list of every model on this computer, your network and the cloud, with what each can do and a score from a test on your computer. Swap the model for chat or for seeing with a click, and ask Xod what works right now and why not. |

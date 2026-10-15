@@ -2682,8 +2682,48 @@ def _real_newlines(filepath: str, text: Any) -> Any:
     if not isinstance(text, str) or "\n" in text or ("\\n" not in text and "\\t" not in text):
         return text
     if os.path.splitext(str(filepath or ""))[1].lower() not in _PLAIN_TEXT:
-        return text
+        return _code_newlines(text)
     return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+
+
+def _code_newlines(text: str) -> str:
+    """Code written all on one line with \\n between statements ("const chalk = require('chalk');\\n\\nconsole.log(…)"):
+    Node stopped at the first backslash. A \\n outside any string literal is never what was meant, so it becomes a line
+    break; inside quotes it stays (print("a\\nb"))."""
+    out, quote, i = [], "", 0
+    while i < len(text):
+        c = text[i]
+        if quote == "comment":            # "# don't" or "// it's": the apostrophe opens no string
+            if text.startswith("\\n", i):
+                quote = ""
+                continue
+            out.append(c)
+        elif quote:
+            out.append(c)
+            if c == "\\" and i + 1 < len(text):
+                out.append(text[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = ""
+        elif c in "'\"`":
+            quote = c
+            out.append(c)
+        elif c == "#" or text.startswith("//", i):
+            quote = "comment"
+            out.append(c)
+        elif text.startswith("\\r\\n", i):
+            out.append("\n")
+            i += 4
+            continue
+        elif text.startswith("\\n", i) or text.startswith("\\t", i):
+            out.append("\n" if text[i + 1] == "n" else "\t")
+            i += 2
+            continue
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
 
 
 def _expand_path_args(arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -3293,6 +3333,12 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
             cmd = arguments["command"]
             cwd = arguments.get("cwd") or active_workspace_path or None
             timeout = arguments.get("timeout_sec", 45)
+            try:
+                timeout = int(timeout)
+            except (TypeError, ValueError):
+                timeout = 45
+            if _SLOW_COMMAND_RE.search(cmd or ""):
+                timeout = max(timeout, 900)     # installs and builds: 45 s killed "winget install" halfway
             return await system_control_service.run_command(command=cmd, cwd=cwd, timeout_sec=timeout)
 
         elif name == "computer_inspect_system":
@@ -3686,6 +3732,12 @@ _CHANGE_RE = re.compile(r"\b(create|make|write|add|append|insert|edit|change|rep
                         r"close|run|start|stop|open|download|convert|merge|split|empty|undo|restore|turn|send|build|generate|draft)\b", re.I)
 CHANGE_TOOLS = {"computer_write_file", "computer_edit_file", "computer_manage_file", "computer_batch_organize", "computer_kill_process",
                 "fs_write_workspace_file", "fs_move_file", "fs_organize_files", "fs_create_folder"}
+
+
+_SLOW_COMMAND_RE = re.compile(r"\b(?:winget|choco|scoop|brew|apt(?:-get)?|pip3?|pipx|uv|npm|npx|pnpm|yarn|bun|cargo|go|"
+                              r"dotnet|gradle|mvn|docker|conda|gem|composer)\s+(?:install|add|update|upgrade|build|sync|"
+                              r"restore|pull|run build|ci|i)\b|\b-m\s+(?:pip|venv)\b|\bgit\s+clone\b|\bInstall-(?:Module|Package)\b",
+                              re.I)
 
 
 def only_asks(query: str) -> bool:

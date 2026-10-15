@@ -360,6 +360,17 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                 yield ev
             return
 
+        # "Install jq", "set up a Node project and run it", "continue": jobs on the computer run in one loop that sees
+        # every result, gets hints from what just failed, and keeps going until a separate check agrees it works
+        # (agent/worker.py). As a fixed plan, every step ran blind and a failed install ended in "you can run …".
+        if not has_image and not has_document:
+            from app.agent import worker
+            job = worker.route(user_query, messages)
+            if job:
+                async for ev in worker.stream(user_query, messages, job, execute_tool, spoken=spoken):
+                    yield ev
+                return
+
         # "Make me a game", "build a timer", then "make it harder": the builder writes real files, runs
         # them in headless Chrome, fixes what breaks, and opens the result in the preview pane.
         if not has_image:

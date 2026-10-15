@@ -55,8 +55,9 @@ async def test_chatty_job():
 
 async def test_server_ready():
     port = 8765
-    j = await sc.start_background_job("test server", f"sleep 2; echo 'server ready on {port}'; exec python3 -m http.server {port} --bind 127.0.0.1",
-                                      cwd=str(RUN))
+    serve = (f"python -m http.server {port} --bind 127.0.0.1" if sys.platform == "win32" else    # no exec, no python3 there
+             f"exec python3 -m http.server {port} --bind 127.0.0.1")
+    j = await sc.start_background_job("test server", f"sleep 2; echo 'server ready on {port}'; {serve}", cwd=str(RUN))
     r1 = await wait({"condition": "job_output", "job_id": j["job_id"], "text": "ready on \\d+", "timeout_sec": 30})
     r2 = await wait({"condition": "port_open", "port": port, "timeout_sec": 30})
     r3 = await wait({"condition": "url_ok", "url": f"http://127.0.0.1:{port}/", "timeout_sec": 30})

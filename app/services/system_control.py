@@ -990,6 +990,17 @@ class SystemControlService:
             return {"success": False, "error": f"Job not found: {job_id}"}
         proc = info.get("proc")
         if proc and proc.returncode is None:
+            # What the job started goes too: on Windows the job is PowerShell, and stopping only it left the server it
+            # ran ("python -m http.server 8765") holding the port, so the next one couldn't start.
+            try:
+                import psutil
+                for child in psutil.Process(proc.pid).children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.Error:
+                        pass
+            except Exception:
+                pass
             if force:
                 proc.kill()
             else:

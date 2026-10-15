@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.6.1
+
+**It does the job, and checks it's really done**
+- Installing something, setting up a project, building it, running it, fixing it: Xod now works in one loop that sees every result and decides the next step, instead of a plan written up front and run blind. Asked for jq, it checks it isn't there, searches winget for the right name when the first guess is wrong, installs it and prints its version. Asked for a Node project, it finds that the newest chalk can't be loaded with `require`, switches to one that can, and runs it.
+- Ready first: before starting, it checks what this computer has (package managers, Python, Node, Git…, admin rights, disk space, internet) and whether the chat model can call tools at all, shown as a step. A model that can't is named, with where to pick one that can.
+- It checks it's really done: when it says it's finished, a separate check reads the goal and the actual outputs and decides. Not proven yet ("the port is open, but nobody looked at the page"), it says what's missing and keeps going. The answer ends with what proved it ("**Checked:** jq-1.8.2").
+- Hints at the right moment: what just happened picks a short hint for the next step only: "not recognized" (it isn't installed), "No package found" (search for the exact Id), an unclosed quote, a permission error (install for this user), the same failure twice (change approach or look it up), and "you can run…" (you have a shell: do it yourself).
+- It asks you only for what it truly can't do (a password, an admin prompt, a sign-in, a choice that's yours) and says exactly what and why. Out of steps on a long job, it says where it got to; **continue** picks it up.
+- Never on its own: wiping a disk, the home folder or the system, shutting the computer down, switching off its protection.
+
+**Commands that work on Windows**
+- `a && b` and `a || b` (what models write) now run in Windows PowerShell 5.1, which refused the whole line. A venv's `Scripts\activate` works.
+- A program installed a minute ago is found by the next command (each one starts with the current PATH).
+- Installs and builds get up to 15 minutes instead of 45 seconds.
+- Code written on one line with `\n` between statements is saved as real lines (Node stopped at the first backslash).
+- `where jq` finds programs (in PowerShell it was Where-Object: no output, as if jq were there).
+- Stopping a background job stops what it started too: a server it ran kept holding its port.
+
 ## 0.6.0
 
 **Always there**

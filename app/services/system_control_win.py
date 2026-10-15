@@ -24,9 +24,58 @@ POWERSHELL = ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
+# Each command starts with the PATH as it is now (Machine + User), not as it was when Xod started: "install jq,
+# then jq --version" found nothing, because winget had added jq to a PATH this process never re-read.
+_FRESH_PATH = ("$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + "
+               "[Environment]::GetEnvironmentVariable('Path','User') + ';' + $env:Path; ")
+
+
+def ps_compat(command: str) -> str:
+    """What models write for a shell, as Windows PowerShell 5.1 runs it. `a && b` and `a || b` are bash and
+    PowerShell 7; 5.1 refuses the whole line ("'&&' is not a valid statement separator"), so every
+    "npm init -y && npm install chalk" failed before it ran. A venv's `Scripts\\activate` (the cmd.exe one) does
+    nothing in PowerShell: it becomes `. Scripts\\Activate.ps1`, so the pip after it is the venv's."""
+    out, i, quote, ops = [], 0, "", []
+    while i < len(command):
+        c = command[i]
+        if quote:
+            if c == quote:
+                quote = ""
+            out.append(c)
+        elif c in "'\"":
+            quote = c
+            out.append(c)
+        elif command.startswith("&&", i) or command.startswith("||", i):
+            ops.append(("".join(out).strip(), command[i:i + 2]))
+            out = []
+            i += 2
+            continue
+        else:
+            out.append(c)
+        i += 1
+    last = "".join(out).strip()
+    if not ops:
+        return _activate(command)
+    # a && b && c -> a; if ($?) { b; if ($?) { c } }: each one runs only if the one before it worked.
+    pieces = [p for p, _ in ops[1:]] + [last]
+    script, close = _activate(ops[0][0]), ""
+    for (_, op), piece in zip(ops, pieces):
+        script += f"; if ({'$?' if op == '&&' else '-not $?'}) {{ {_activate(piece)}"
+        close += " }"
+    return script + close
+
+
+def _activate(part: str) -> str:
+    import re
+    # `where jq` (cmd's "find this program") is Where-Object in PowerShell: no output, exit 0, as if jq were there.
+    part = re.sub(r"^(\s*)where(?=\s+[\w.-]+(?:\s|$))(?!\s+-)", r"\1where.exe", part, flags=re.I)
+    return re.sub(r"^(\s*)(?:\.\s+|&\s+)?((?:\"[^\"]*|[^\s\"]*)[\\/]Scripts[\\/])activate(?:\.bat)?(\"?)(?=\s|;|$)",
+                  r"\1. \2Activate.ps1\3", part, flags=re.I)
+
+
 def shell_argv(command: str) -> List[str]:
     """A shell command as PowerShell runs it. UTF-8 out, so output isn't mangled."""
-    return POWERSHELL + ["[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + command]
+    return POWERSHELL + ["[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + _FRESH_PATH + ps_compat(command)]
 
 
 def cd_suffix() -> str:
