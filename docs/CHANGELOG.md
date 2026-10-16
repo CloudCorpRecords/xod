@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2
+
+**Fixed on Mac**
+- Xod refused to write files in your Mac's own temporary folder (`/var/folders/…`), calling it part of the system, so a job that worked there stopped at its first file. That folder is yours, like `/tmp`, and it now works as it does on Windows.
+
+**Tests**
+- The checks that ran only on Windows (the worker, the safety check, goals, the team and Usage, MCP import, models, vision and the phone) now run on a Mac on every change too.
+
 ## 0.7.1
 
 **Usage: every token, everywhere (Xod's page → Usage)**
