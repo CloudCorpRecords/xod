@@ -27,6 +27,13 @@ APPLY_RE = re.compile(r"\bapply\b", re.I)
 NARROW_RE = re.compile(r"^\s*(and |ok(ay)? |now |just |please )*(only|just|show( me)?|filter|remote|hybrid|on-?site|in |near |at |not |except|excluding|without|no |more|all|reset|clear|"
                        r"hide|exclude|newest|latest|recent|senior|junior|entry|staff|top \d+|the best)\b", re.I)
 REQUIRED = ("full_name", "email", "resume_path")
+PROFILE_FIELDS = ("full_name", "email", "phone", "location", "linkedin", "github", "portfolio", "resume_path", "work_authorization",
+                  "needs_sponsorship", "years_of_experience", "desired_salary", "willing_to_relocate", "short_bio", "common_answers")
+# "just do all" / "fill it in for me": Xod fills the profile from your résumé and applies, instead of opening the form.
+DO_ALL_RE = re.compile(r"\b(do (it |them |this |that )?all|do (it )?(all|everything) for me|do everything|just do it|you do it|go ahead|"
+                       r"fill (it|them|this|everything|my (job )?profile|it all|the (form|profile))( (in|out))?( for me)?|"
+                       r"(handle|take care of) (it|everything|the rest)|use my (resume|résumé|cv))\b", re.I)
+_pending: List[str] = []           # the jobs waiting for a profile ("apply to 2 and 5" before it was filled in)
 
 
 def _last_jobs_turn(messages: List[Dict[str, Any]]) -> bool:
@@ -41,6 +48,8 @@ def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
     if not q or len(q) > 600 or re.search(r"https?://", q):
         return None                   # "apply to … <url>" is a browser task, not a search
     follow = _last_jobs_turn(messages) and job_hunt.last()
+    if follow and DO_ALL_RE.search(q) and not re.search(r"\b\d{1,3}\b", q):
+        return {"mode": "do_all"}
     if follow and APPLY_RE.search(q):
         return {"mode": "apply"}
     if follow and NARROW_RE.search(q) and not (JOB_RE.search(q) and INTENT_RE.search(q) and job_hunt.understand(q)["role"]):
@@ -59,6 +68,40 @@ def profile_status() -> Dict[str, Any]:
     if p.get("resume_path") and not os.path.isfile(os.path.expanduser(str(p["resume_path"]))):
         missing.append("resume_path")
     return {"ready": not missing, "missing": sorted(set(missing))}
+
+
+def save_profile(changes: Dict[str, Any]) -> None:
+    """Writes the job profile (a private file in Xod's data folder) with these fields changed."""
+    import os
+    from pathlib import Path
+    from app.services.browser_sandbox import PROFILE_PATH
+    p = Path(PROFILE_PATH)
+    try:
+        data = json.loads(p.read_text())
+    except Exception:
+        data = {"_note": "Your details for filling forms (job applications). Stays on this computer."}
+    for k in PROFILE_FIELDS:
+        if k in changes:
+            v = changes[k]
+            data[k] = v.strip()[:4000] if isinstance(v, str) else v
+    p.write_text(json.dumps(data, indent=2))
+    try:
+        os.chmod(p, 0o600)
+    except OSError:
+        pass
+
+
+async def fill_profile(save: bool) -> Dict[str, Any]:
+    """Your profile filled in from your résumé and what Xod knows (services/job_autofill.py); saved when save=True."""
+    from app.services import job_autofill
+    from app.services.browser_sandbox import load_user_profile
+    r = await job_autofill.autofill(load_user_profile())
+    if save and r["fields"]:
+        save_profile(r["fields"])
+    return r
+
+
+NEED = {"full_name": "your name", "email": "your email", "resume_path": "your résumé"}
 
 
 # ---------------------------------------------------------------- narrowing
@@ -110,6 +153,8 @@ def pick(result: Dict[str, Any], q: str) -> List[Dict[str, Any]]:
     m = re.search(r"\btop\s+(\d+)\b", low)
     if m:
         return jobs[: int(m.group(1))]
+    if re.search(r"\b(all|every(one| one)?|them all)\b", low) and not re.search(r"\ball (the )?\w+ ones\b", low):
+        return jobs[:10]
     nums = [int(n) for n in re.findall(r"(?:#|\b)(\d{1,3})\b", low)]
     if nums:
         return [jobs[n - 1] for n in nums if 0 < n <= len(jobs)]
@@ -193,6 +238,11 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             yield ev
         return
 
+    if mode == "do_all":
+        async for ev in _do_all(result):
+            yield ev
+        return
+
     # apply
     chosen = pick(result, query)
     if not chosen:
@@ -202,10 +252,20 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         return
     status = profile_status()
     if not status["ready"]:
-        yield {"type": "job_profile_needed", "missing": status["missing"], "ids": [j["id"] for j in chosen]}
-        need = {"full_name": "your name", "email": "your email", "resume_path": "your résumé"}
-        yield {"type": "content", "content": f"Before I apply I need {', '.join(need.get(m, m) for m in status['missing'])}. I opened **your job profile**: fill it in "
-                                             f"(it stays on this Mac) and I'll start the {len(chosen)} application{'s' if len(chosen) != 1 else ''} right after.\n\n" + MARK}
+        # Look for the résumé first, so the form opens filled in for a check instead of empty.
+        yield {"type": "status", "content": "Looking for your résumé to fill in your job profile…"}
+        r = await fill_profile(save=False)
+        _pending[:] = [j["id"] for j in chosen]
+        yield {"type": "job_profile_needed", "missing": status["missing"], "ids": _pending[:], "suggested": r["fields"],
+               "from": r["from"], "choices": r["choices"], "note": r.get("note")}
+        s = "s" if len(chosen) != 1 else ""
+        if r["fields"]:
+            msg = (f"{r['note']} I opened **your job profile** with it filled in: check it and press **Save and apply**, "
+                   f"or just say **\"do it all\"** and I'll save it and start the {len(chosen)} application{s}.")
+        else:
+            msg = (f"Before I apply I need {', '.join(NEED.get(m, m) for m in status['missing'])}. {r.get('note') or ''} I opened **your job profile**: "
+                   f"fill it in (it stays on this computer) and I'll start the {len(chosen)} application{s} right after.")
+        yield {"type": "content", "content": msg + "\n\n" + MARK}
         yield {"type": "done"}
         return
     tasks = apply(chosen)
@@ -213,6 +273,48 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     lines += [f"- {t['company']}: {t['title']}" for t in tasks]
     lines.append("\nFor each one, my browser opens the posting, fills the form from your profile and résumé, and **stops for your OK before submitting**. "
                  "Questions it can't answer from your profile come to you there too.")
+    yield {"type": "jobs_applied", "tasks": tasks}
+    yield {"type": "content", "content": "\n".join(lines) + "\n\n" + MARK}
+    yield {"type": "done"}
+
+
+async def _do_all(result: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
+    """"Just do all": fill in the profile from the résumé, save it, and apply to the jobs waiting for it (or the list shown)."""
+    jobs = result.get("jobs") or []
+    waiting = [j for j in jobs if j.get("id") in set(_pending)]
+    chosen = waiting or jobs[:10]
+    yield {"type": "plan", "title": "Doing it all", "steps": [
+        {"id": 1, "title": "Find your résumé and fill in your profile", "tools": ["job_profile"], "status": "in_progress"},
+        {"id": 2, "title": f"Start {len(chosen)} application{'s' if len(chosen) != 1 else ''}", "tools": [], "status": "pending"}]}
+    status = profile_status()
+    r: Dict[str, Any] = {"fields": {}, "from": {}, "choices": []}
+    if not status["ready"] or not waiting:
+        yield {"type": "tool_call", "name": "job_profile", "args": {"from": "your résumé"}, "id": "jobs_fill"}
+        r = await fill_profile(save=True)
+        yield {"type": "tool_result", "name": "job_profile", "id": "jobs_fill", "summary": r.get("note") or "",
+               "data": {"success": bool(r["fields"]), "filled": sorted(r["fields"])}}
+        status = profile_status()
+    yield {"type": "plan_step", "step_id": 1, "status": "completed" if status["ready"] else "failed"}
+    if not status["ready"]:
+        yield {"type": "job_profile_needed", "missing": status["missing"], "ids": [j["id"] for j in chosen], "suggested": {},
+               "from": r["from"], "choices": r["choices"], "note": r.get("note")}
+        yield {"type": "content", "content": f"{r.get('note') or ''} I still need {', '.join(NEED.get(m, m) for m in status['missing'])}, so I opened "
+                                             "**your job profile** for that part. Everything else is filled in.\n\n" + MARK}
+        yield {"type": "done"}
+        return
+    if not chosen:
+        yield {"type": "content", "content": f"{r.get('note') or 'Your job profile is ready.'} Search for jobs and I'll apply.\n\n" + MARK}
+        yield {"type": "done"}
+        return
+    _pending.clear()
+    tasks = apply(chosen)
+    yield {"type": "plan_step", "step_id": 2, "status": "completed"}
+    filled = ", ".join(NEED.get(k, k.replace("_", " ")) for k in r["fields"]) if r["fields"] else ""
+    lines = [(f"{r['note']} ({filled})." if filled else "Your job profile was ready.") + " You can change it any time in **your job profile**.",
+             f"\n**Started {len(tasks)} application{'s' if len(tasks) != 1 else ''}** in Tasks" + ("" if waiting else " (the top of the list)") + ":"]
+    lines += [f"- {t['company']}: {t['title']}" for t in tasks]
+    lines.append("\nEach one fills the form and **stops for your OK before submitting**. Questions your profile doesn't answer "
+                 "(like work authorization) come to you there.")
     yield {"type": "jobs_applied", "tasks": tasks}
     yield {"type": "content", "content": "\n".join(lines) + "\n\n" + MARK}
     yield {"type": "done"}

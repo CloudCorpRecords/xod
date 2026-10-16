@@ -4022,8 +4022,7 @@ async def soul_muse(request: Request):
 # ---------------------------------------------------------------------------------------------
 # Job hunting (services/job_hunt.py, agent/jobs.py): results, your job profile, applying.
 
-PROFILE_FIELDS = ("full_name", "email", "phone", "location", "linkedin", "github", "portfolio", "resume_path", "work_authorization",
-                  "needs_sponsorship", "years_of_experience", "desired_salary", "willing_to_relocate", "short_bio", "common_answers")
+from app.agent.jobs import PROFILE_FIELDS  # noqa: E402
 
 
 @app.get("/api/jobs/last")
@@ -4046,65 +4045,35 @@ async def jobs_profile():
 
 @app.post("/api/jobs/profile")
 async def jobs_profile_save(request: Request):
-    from app.services.browser_sandbox import PROFILE_PATH
-    from app.agent.jobs import profile_status
-    body = await request.json()
-    p = Path(PROFILE_PATH)
-    try:
-        data = json.loads(p.read_text())
-    except Exception:
-        data = {"_note": "Your details for filling forms (job applications). Stays on this Mac."}
-    for k in PROFILE_FIELDS:
-        if k in body:
-            v = body[k]
-            data[k] = v.strip()[:4000] if isinstance(v, str) else v
-    p.write_text(json.dumps(data, indent=2))
-    try:
-        os.chmod(p, 0o600)
-    except OSError:
-        pass
+    from app.agent.jobs import profile_status, save_profile
+    save_profile(await request.json())
     return {"ok": True, "status": profile_status()}
 
 
 @app.get("/api/jobs/resumes")
 async def jobs_resumes():
-    """Résumé / CV files on this computer (Spotlight on a Mac), so you can pick yours instead of typing a path."""
-    import subprocess as _sp
-    if sys.platform == "win32":     # no Spotlight: look through the usual folders by name
-        import time as _time
-        want = re.compile(r"(resume|résumé|\bcv\b|_cv|cv_|curriculum)", re.I)
-        found, t0 = [], _time.time()
-        for root in [Path.home() / d for d in ("Documents", "Desktop", "Downloads", "OneDrive")]:
-            for dirpath, dirnames, filenames in os.walk(root):
-                dirnames[:] = [d for d in dirnames if not d.startswith(".") and d.lower() not in ("node_modules", "appdata")]
-                for n in filenames:
-                    if n.lower().endswith((".pdf", ".docx", ".doc")) and want.search(n):
-                        p = os.path.join(dirpath, n)
-                        try:
-                            found.append({"path": p, "name": n, "modified": os.stat(p).st_mtime})
-                        except OSError:
-                            pass
-                if _time.time() - t0 > 6:
-                    break
-        found.sort(key=lambda f: -f["modified"])
-        return {"files": found[:12]}
-    q = ('(kMDItemFSName == "*resume*"cd || kMDItemFSName == "*résumé*"cd || kMDItemFSName == "*cv*"cd || kMDItemFSName == "*curriculum*"cd) && '
-         '(kMDItemContentTypeTree == "com.adobe.pdf" || kMDItemFSName == "*.docx"cd || kMDItemFSName == "*.doc"cd)')
-    try:
-        out = _sp.run(["mdfind", "-onlyin", str(Path.home()), q], capture_output=True, text=True, timeout=8).stdout
-    except Exception:
-        out = ""
-    files = []
-    for line in out.splitlines():
-        if "/Library/" in line or "/." in line:
-            continue
-        try:
-            st = os.stat(line)
-        except OSError:
-            continue
-        files.append({"path": line, "name": os.path.basename(line), "modified": st.st_mtime})
-    files.sort(key=lambda f: -f["modified"])
-    return {"files": files[:12]}
+    """Résumé / CV files on this computer and in the Google Drive for desktop folder, so you can pick yours."""
+    from app.services import job_autofill
+    return {"files": await asyncio.to_thread(job_autofill.local_files)}
+
+
+class JobsAutofillRequest(BaseModel):
+    current: Dict[str, Any] = {}            # what's in the form now (only empty boxes are filled)
+    pick: Optional[Dict[str, Any]] = None   # a résumé the person picked from "choices"
+    save: bool = False                      # "Do it all": save it too
+
+
+@app.post("/api/jobs/profile/autofill")
+async def jobs_profile_autofill(req: JobsAutofillRequest):
+    """Fills your job profile from your résumé (this computer, or Google Drive when connected) and what Xod knows about you."""
+    from app.services import job_autofill
+    from app.services.browser_sandbox import load_user_profile
+    from app.agent.jobs import profile_status, save_profile
+    current = {**load_user_profile(), **{k: v for k, v in (req.current or {}).items() if isinstance(v, str) and v.strip()}}
+    r = await job_autofill.autofill(current, files=[req.pick] if req.pick else None)
+    if req.save and r["fields"]:
+        save_profile({**{k: v for k, v in (req.current or {}).items() if isinstance(v, str)}, **r["fields"]})
+    return {**r, "status": profile_status()}
 
 
 class JobsApplyRequest(BaseModel):
@@ -4118,6 +4087,7 @@ async def jobs_apply(req: JobsApplyRequest):
     from app.agent import jobs as job_lane
     status = job_lane.profile_status()
     if not status["ready"]:
+        job_lane._pending[:] = list(req.ids)      # "do it all" in the chat afterwards applies to these
         return {"ok": False, "needs_profile": True, "missing": status["missing"]}
     last = job_hunt.last() or {}
     chosen = [j for j in last.get("jobs", []) if j.get("id") in set(req.ids)]

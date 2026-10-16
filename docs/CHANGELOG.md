@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.3
+
+**Your job profile fills itself in**
+- When you apply and your job profile is empty, Xod looks for your résumé first: on this computer, in the Google Drive for desktop folder, and in Google Drive itself when it's connected. The form opens already filled in for you to check: name, email, phone, LinkedIn, GitHub, website, city, years of experience (counted from the dates in your résumé) and a few lines about you. Only empty boxes are filled, and each one says it was filled in.
+- It makes sure the résumé is yours: one with your name or email wins, and one that names someone else (a friend's you reviewed, a candidate's) is never used. When it can't tell between a few, it asks which. A link or email the model reads is kept only if it's really in the résumé.
+- **Fill it in for me** in the form does this any time. **Do it all** fills it in, saves it and starts the applications. In the chat, after a job search, say "just do all" (or "do it all", "fill it in for me") and Xod does the same; "apply to all" applies to the whole list (up to 10). Every application still stops for your OK before it submits.
+- Work authorization, visa sponsorship, salary and relocating are yours to answer: Xod never guesses them.
+- A résumé in Google Drive is saved on this computer (a Google Doc as a PDF, readable only by you) so applications can upload it.
+
+**Google Drive (official)**
+- Tools → Connected apps → More: Google's own Drive server, read only. Like Gmail and Calendar, it needs your own Google Cloud OAuth client.
+
+**Fixed**
+- An empty "Answers to common questions" box showed `{}`.
+
 ## 0.7.2
 
 **Fixed on Mac**

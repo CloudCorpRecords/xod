@@ -83,6 +83,11 @@ CATALOG: List[Dict[str, Any]] = [
      "kind": "own", "url": "https://gmailmcp.googleapis.com/mcp/v1", "trust": "read_only", "advanced": True,
      "scope": "https://www.googleapis.com/auth/gmail.readonly",
      "setup_url": "https://developers.google.com/workspace/guides/configure-mcp-servers"},
+    {"id": "google-drive", "name": "Google Drive (official)", "icon": "hard-drive",
+     "blurb": "Google's own Drive server, read only: Xod can find your résumé and other files there to fill in forms. Needs your own Google Cloud OAuth client.",
+     "kind": "own", "url": "https://drivemcp.googleapis.com/mcp/v1", "trust": "read_only", "advanced": True,
+     "scope": "https://www.googleapis.com/auth/drive.readonly",
+     "setup_url": "https://developers.google.com/workspace/drive/api/guides/configure-mcp-server"},
 ]
 _BY_ID = {c["id"]: c for c in CATALOG}
 

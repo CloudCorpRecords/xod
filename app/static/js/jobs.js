@@ -94,7 +94,9 @@
     ["short_bio", "A few lines about you", "area"], ["common_answers", "Answers to common questions", "area", "Why this company? Notice period? Anything you'd always say…"],
   ];
   let modal = null;
-  async function openProfile(missing) {
+  const areaText = (v) => typeof v === "string" ? v : (v && typeof v === "object" && Object.keys(v).length) ? JSON.stringify(v) : "";
+  // opts: {suggested: {field: value}, from: {field: where}, choices: [files], note} from the chat (agent/jobs.py)
+  async function openProfile(missing, opts = {}) {
     const { profile } = await api("/api/jobs/profile");
     modal?.remove();
     modal = document.createElement("div");
@@ -102,19 +104,62 @@
     const need = new Set(missing || []);
     modal.innerHTML = `<form class="jp" autocomplete="on">
       <div class="jp-head"><p class="jp-title"><i data-lucide="user-pen" class="size-4"></i>Your job profile</p><button type="button" data-x aria-label="Close"><i data-lucide="x" class="size-4"></i></button></div>
-      <p class="jp-note">Xod fills applications with this. It stays in a private file on this Mac, and every application still stops for your OK before it's sent.</p>
+      <p class="jp-note">Xod fills applications with this. It stays in a private file on this computer, and every application still stops for your OK before it's sent.</p>
+      <div class="jp-auto"><button type="button" data-auto><i data-lucide="wand-sparkles" class="size-3.5"></i>Fill it in for me</button>
+        <span class="jp-auto-note">Finds your résumé on this computer or in Google Drive (when it's connected) and fills in the empty boxes for you to check.</span></div>
       <label class="jp-resume ${need.has("resume_path") ? "is-needed" : ""}"><span>Résumé (PDF or Word)</span>
         <div><input name="resume_path" value="${esc(profile.resume_path || "")}" placeholder="/Users/you/Documents/Resume.pdf"><button type="button" data-find>Find it</button></div>
         <div class="jp-found"></div></label>
       <div class="jp-grid">${FIELDS.map(([k, label, type, ph]) => `<label class="${need.has(k) ? "is-needed" : ""} ${type === "area" ? "jp-wide" : ""}"><span>${label}</span>${type === "area"
-        ? `<textarea name="${k}" rows="3" placeholder="${esc(ph || "")}">${esc(typeof profile[k] === "string" ? profile[k] : JSON.stringify(profile[k] || "") === '""' ? "" : JSON.stringify(profile[k]))}</textarea>`
+        ? `<textarea name="${k}" rows="3" placeholder="${esc(ph || "")}">${esc(areaText(profile[k]))}</textarea>`
         : `<input name="${k}" type="${type}" value="${esc(profile[k] || "")}" placeholder="${esc(ph || "")}">`}</label>`).join("")}</div>
-      <div class="jp-foot"><button type="button" data-x>Cancel</button><button type="submit" class="jp-save">${pendingApply ? "Save and apply" : "Save"}</button></div></form>`;
+      <div class="jp-foot"><button type="button" data-x>Cancel</button><button type="button" class="jp-all" data-all title="${pendingApply ? "Fill in what's missing from your résumé, save, and start the applications" : "Fill in what's missing from your résumé and save"}"><i data-lucide="sparkles" class="size-3.5"></i>Do it all</button><button type="submit" class="jp-save">${pendingApply ? "Save and apply" : "Save"}</button></div></form>`;
     document.body.appendChild(modal);
     if (window.lucide) lucide.createIcons();
     const form = modal.firstElementChild;
+    const note = modal.querySelector(".jp-auto-note");
+    const current = () => Object.fromEntries(new FormData(form).entries());
+    // Puts suggestions into the empty boxes only, and says where each came from.
+    const fill = (r) => {
+      Object.entries(r.fields || {}).forEach(([k, v]) => {
+        const el = form.querySelector(`[name=${k}]`);
+        if (!el || el.value.trim()) return;
+        el.value = v;
+        const lab = el.closest("label");
+        lab?.classList.remove("is-needed");
+        lab?.classList.add("is-filled");
+        if (lab && r.from && r.from[k]) lab.title = `From ${r.from[k]}`;
+      });
+      const box = modal.querySelector(".jp-found");
+      box.innerHTML = (r.choices || []).length ? `<p>Which one is yours?</p>` + r.choices.map((f, i) => `<button type="button" data-choice="${i}"><i data-lucide="${f.source === "drive" ? "hard-drive" : "file-text"}" class="size-3"></i>${esc(f.name)}<em>${esc(f.source === "drive" ? "Google Drive" : (f.path || "").replace(/^\/Users\/[^/]+|^C:\\Users\\[^\\]+/i, "~"))}</em></button>`).join("") : "";
+      box._choices = r.choices || [];
+      if (r.note) { note.textContent = r.note; note.classList.add("is-done"); }
+      if (window.lucide) lucide.createIcons();
+    };
+    const autofill = async (body = {}) => {
+      const b = modal.querySelector("[data-auto]");
+      b.disabled = true;
+      note.textContent = "Looking for your résumé…";
+      try { const r = await api("/api/jobs/profile/autofill", { current: current(), ...body }); fill(r); return r; }
+      catch (e) { note.textContent = "Couldn't look just now. Fill it in by hand, or try again."; return null; }
+      finally { b.disabled = false; }
+    };
+    if (opts.suggested && Object.keys(opts.suggested).length || (opts.choices || []).length) fill({ fields: opts.suggested, from: opts.from, choices: opts.choices, note: opts.note });
+    else if (opts.note) note.textContent = opts.note;
+    else if ((missing || []).length) autofill();     // opened because something's missing: look for it straight away
     modal.addEventListener("click", async (e) => {
       if (e.target === modal || e.target.closest("[data-x]")) { modal.remove(); pendingApply = null; return; }
+      if (e.target.closest("[data-auto]")) return autofill();
+      const ch = e.target.closest("[data-choice]");
+      if (ch) { const f = modal.querySelector(".jp-found")._choices[+ch.dataset.choice]; return autofill({ pick: f }); }
+      if (e.target.closest("[data-all]")) {
+        const b = e.target.closest("[data-all]");
+        b.disabled = true;
+        const r = await autofill();
+        b.disabled = false;
+        if (r) form.requestSubmit();       // saves what's in the form now and starts the applications (or says what's missing)
+        return;
+      }
       if (e.target.closest("[data-find]")) {
         const box = modal.querySelector(".jp-found");
         box.textContent = "Looking…";
@@ -150,7 +195,7 @@
   // From the chat: "apply to 2 and 5" but the profile isn't ready -> the form, then the same request again.
   function onProfileNeeded(ev) {
     pendingApply = { ids: ev.ids || [] };
-    openProfile(ev.missing);
+    openProfile(ev.missing, { suggested: ev.suggested, from: ev.from, choices: ev.choices, note: ev.note });
   }
 
   function fromHistory(m, wrapper) {

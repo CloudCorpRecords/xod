@@ -1054,7 +1054,16 @@ body.xod-previewing .action-footer > button { white-space: nowrap; }
 .jp-foot { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1rem; position: sticky; bottom: -1.2rem; padding: 0.8rem 0 1rem; background: linear-gradient(transparent, #0f1222 30%); }
 .jp-foot button { padding: 0.45rem 0.9rem; border-radius: 9px; font-size: 13px; color: #a1a1aa; }
 .jp-foot .jp-save { background: #f2b24a; color: #1a1305; font-weight: 600; }
-@media (max-width: 640px) { .jp-grid { grid-template-columns: 1fr; } .jc-row .jc-btn:not(.jc-apply) { display: none; } }
+.jp-foot .jp-all { display: inline-flex; align-items: center; gap: 0.35rem; background: rgba(242, 178, 74, 0.15); color: #f6c46e; font-weight: 600; }
+.jp-auto { display: flex; align-items: center; gap: 0.7rem; padding: 0.6rem 0.7rem; border-radius: 12px; background: rgba(242, 178, 74, 0.07); border: 1px solid rgba(242, 178, 74, 0.18); margin-bottom: 0.9rem; }
+.jp-auto button { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.75rem; border-radius: 9px; background: #f2b24a; color: #1a1305; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.jp-auto button:disabled { opacity: 0.6; cursor: progress; }
+.jp-auto-note { font-size: 12px; color: #a1a1aa; }
+.jp-auto-note.is-done { color: #c8e6b4; }
+.jp label.is-filled input, .jp label.is-filled textarea { border-color: rgba(147, 209, 127, 0.55); }
+.jp label.is-filled span::after { content: " · filled in"; color: #93d17f; }
+.jp-found p { color: #a1a1aa; margin-top: 0.2rem; }
+@media (max-width: 640px) { .jp-grid { grid-template-columns: 1fr; } .jp-auto { flex-direction: column; align-items: stretch; } .jc-row .jc-btn:not(.jc-apply) { display: none; } }
 
 /* ---- Xod's version and updates: the pill at the bottom of the sidebar (js/updates.js) ---- */
 .xv { display: flex; align-items: center; gap: 8px; margin: 6px 8px 8px; padding: 7px 10px; border-radius: 10px;
