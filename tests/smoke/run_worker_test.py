@@ -295,6 +295,19 @@ async def server_job():
     return up, listening(port)
 
 
+async def where_job():
+    py = "python" if WIN else "python3"
+    j = await sc.start_background_job("pwd", f"{py} -c \"import os; print('CWD=' + os.getcwd())\"")
+    for _ in range(40):
+        if sc.background_jobs[j["job_id"]]["status"] != "running":
+            break
+        await asyncio.sleep(0.25)
+    return " ".join(str(x) for x in sc.background_jobs[j["job_id"]]["logs"])
+
+
+out = asyncio.run(where_job())
+check("a job given no folder doesn't run in Xod's own folder", "CWD=" in out and str(ROOT) not in out, out[:200])
+
 up, still = asyncio.run(server_job())
 check("the server came up", up)
 check("…and stopping the job frees its port (the program it ran is gone too)", up and not still)

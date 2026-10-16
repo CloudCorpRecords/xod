@@ -19,6 +19,7 @@
 - The morning brief, once a day at the time you pick: your goals and their next steps, what's waiting for you, today's calendar if one is connected, and news on what you care about. "Turn on the morning brief at 7:30" in the chat works too.
 
 **A reliability score**
+- What the first runs found, now fixed: "delete the receipt in <folder>" trashed the whole folder (it asks which receipt now); a question about the end of a long file was answered from its start; files written by commands on Windows came out as UTF-16; tool calls a model wrote as text were never run; a background job given no folder ran in Xod's own folder.
 - `python scripts/benchmark.py` runs real requests through the chat with your model and checks what actually happened: the file is on disk, the program runs, the page answers. Results go to [docs/RELIABILITY.md](RELIABILITY.md), the latest run per model.
 
 ## 0.6.1

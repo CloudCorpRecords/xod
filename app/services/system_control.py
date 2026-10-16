@@ -316,9 +316,9 @@ class SystemControlService:
         Executes a shell command in the background asynchronously with timeout protection.
         Does not steal user screen, focus, or interrupt active tasks.
         """
-        target_cwd = cwd or self.current_working_directory or os.getcwd()
+        target_cwd = cwd or self.current_working_directory or os.path.expanduser("~")
         if not os.path.isdir(target_cwd):
-            target_cwd = os.getcwd()
+            target_cwd = os.path.expanduser("~")       # never Xod's own folder
         self.current_working_directory = target_cwd
 
         # Support directory persistence when user/agent calls cd
@@ -410,9 +410,9 @@ class SystemControlService:
         Asynchronously streams stdout and stderr chunks in real time as the process executes.
         Enables an interactive terminal experience with live log streaming and timeout guarantees.
         """
-        target_cwd = cwd or self.current_working_directory or os.getcwd()
+        target_cwd = cwd or self.current_working_directory or os.path.expanduser("~")
         if not os.path.isdir(target_cwd):
-            target_cwd = os.getcwd()
+            target_cwd = os.path.expanduser("~")       # never Xod's own folder
         self.current_working_directory = target_cwd
 
         effective_command = command
@@ -910,9 +910,10 @@ class SystemControlService:
         """
         import uuid
         job_id = f"job-{uuid.uuid4().hex[:8]}"
-        target_cwd = cwd or os.getcwd()
+        # Never Xod's own folder (where the server runs): an "npm init" with no folder given landed in Xod's code.
+        target_cwd = cwd or self.current_working_directory or os.path.expanduser("~")
         if not os.path.isdir(target_cwd):
-            target_cwd = os.getcwd()
+            target_cwd = os.path.expanduser("~")
 
         proc = await self._shell(command, target_cwd)
 
