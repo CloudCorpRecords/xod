@@ -36,6 +36,23 @@ jobs:
           cache: pip
       - name: Compile
         run: python -m compileall -q app tests
+      - name: Install Xod's packages
+        run: python -m pip install -r requirements.txt
+      - name: The same checks Windows runs, on a Mac (stand-in models and servers)
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python tests/smoke/run_platform_smoke.py
+          python tests/smoke/run_cloud_thinking_test.py
+          python tests/smoke/run_local_models_test.py
+          python tests/smoke/run_phone_test.py
+          python tests/smoke/run_vision_test.py
+          python tests/smoke/run_models_test.py
+          python tests/smoke/run_worker_test.py
+          python tests/smoke/run_mcp_import_test.py
+          python tests/smoke/run_sentinel_test.py
+          python tests/smoke/run_goals_test.py
+          python tests/smoke/run_team_test.py
       - name: Dependency audit
         run: |
           python -m pip install --upgrade pip pip-audit

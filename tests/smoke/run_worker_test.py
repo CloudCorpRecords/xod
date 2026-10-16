@@ -186,7 +186,7 @@ work.mkdir()
 script = work / "hello.py"
 fresh([("tool", "computer_write_file", {"filepath": str(script), "content": "print('hello from xod')"}),
        ("say", "Done: I wrote hello.py."),
-       ("tool", "computer_run_command", {"command": "python hello.py", "cwd": str(work)}),
+       ("tool", "computer_run_command", {"command": ("python" if WIN else "python3") + " hello.py", "cwd": str(work)}),
        ("say", "Done: it prints hello from xod.")],
       [{"done": False, "missing": "Run hello.py and show it works.", "needs_person": False},
        {"done": True, "proof": "hello from xod", "missing": ""}])

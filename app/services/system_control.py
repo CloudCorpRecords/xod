@@ -1106,6 +1106,12 @@ class SystemControlService:
                 return False
             if resolved.startswith(home_str) or resolved.startswith("/tmp") or resolved.startswith("/private/tmp"):
                 return False
+            # This account's own temp folder (/var/folders/…/T, really /private/var/folders/…), like /tmp. On Windows
+            # it's inside the user's folder, so this only matters on a Mac.
+            import tempfile
+            tmp = str(Path(tempfile.gettempdir()).resolve())
+            if tmp.startswith("/private/var/folders/") and (resolved == tmp or resolved.startswith(tmp + "/")):
+                return False
             if resolved == "/":
                 return True
             protected = ["/System", "/Library", "/usr", "/bin", "/sbin", "/opt", "/etc", "/var", "/private"]
