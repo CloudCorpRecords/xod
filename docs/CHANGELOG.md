@@ -18,6 +18,21 @@
 - "New goal: find a flat under $2k by November": Xod writes a short plan, starts on step 1 straight away, and checks in on its own (every day, or as the goal needs). Each check-in is a task that works on the next step and moves the plan on, and it never sends, buys or signs up without asking. Tools → Routines & goals shows the plan, progress and what each check-in found; pause, resume or check in now.
 - The morning brief, once a day at the time you pick: your goals and their next steps, what's waiting for you, today's calendar if one is connected, and news on what you care about. "Turn on the morning brief at 7:30" in the chat works too.
 
+**Xod's page (Tools → Xod's page)**
+- One place to see what Xod does, with a tab for each:
+  - Activity: every job (tasks, goal check-ins, routines, chats where it used tools) with a one-line result; open one for every step, grouped by who did it (MAIN, SUBAGENT 01, 02…), plus the result and the last screenshot.
+  - Approvals: every "waiting for your OK" (a connected app's change, the safety check, a task's submit) and what you decided: allowed, declined or still waiting.
+  - Browser: the jobs that used the browser, with their last screenshot and the site.
+  - Schedules: reminders (new: one-off reminders that arrive as a notification here and on your phone), daily and weekly routines, every-few-hours ones, goals' check-ins and the morning brief.
+  - Identity: Xod's soul (stage, mood, days together) and what it remembers about you.
+  - Team: which model works on each tier, and outside teammate agents.
+
+**A team of brains**
+- With more than one model that can do the work (another local model, a model server, a cloud key) or an outside agent connected over MCP, Xod can hand pieces of a job to subagents: small (a lighter model for quick, mechanical pieces), standard (the chat model) and large (a cloud model if you have a key, for hard reasoning). Picked automatically, or set per tier on the Team tab.
+- Pieces handed off together run at the same time (cloud ones truly in parallel; local ones share the GPU), each with its own steps shown live in the chat and on Xod's page, and the safety check looks at every subagent action too. A subagent whose model gives back nothing is handed to the standard model.
+- An outside agent you mark as a teammate (another Xod, a coding agent…) gets its piece through its own ask/run tool.
+- With only one capable model, Xod works alone and the Team tab says what would switch the team on.
+
 **A reliability score**
 - What the first runs found, now fixed: "delete the receipt in <folder>" trashed the whole folder (it asks which receipt now); a question about the end of a long file was answered from its start; files written by commands on Windows came out as UTF-16; tool calls a model wrote as text were never run; a background job given no folder ran in Xod's own folder.
 - `python scripts/benchmark.py` runs real requests through the chat with your model and checks what actually happened: the file is on disk, the program runs, the page answers. Results go to [docs/RELIABILITY.md](RELIABILITY.md), the latest run per model.

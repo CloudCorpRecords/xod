@@ -51,6 +51,8 @@ jobs:
         run: python tests/smoke/run_sentinel_test.py
       - name: Goals and the morning brief (scripted model)
         run: python tests/smoke/run_goals_test.py
+      - name: The team and Xod's page - tiers, subagents side by side, approvals history, reminders (scripted models)
+        run: python tests/smoke/run_team_test.py
 
   installer:
     name: Build, install and run Xod-setup.exe

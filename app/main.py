@@ -645,6 +645,49 @@ class MCPImport(BaseModel):
     only: Optional[List[str]] = None
 
 
+@app.get("/api/agent")
+async def agent_page_head():
+    """The Agent page's header: name and what it's doing now (services/agent_page.py)."""
+    from app.services import agent_page
+    return {"name": agent_page.identity().get("name") or "Xod", "status": agent_page.status_line()}
+
+
+@app.get("/api/agent/{tab}")
+async def agent_page_tab(tab: str, origin: Optional[str] = None):
+    """One tab of the Agent page: activity (or one job's steps with ?origin=), approvals, browser, schedules,
+    identity, team."""
+    from app.services import agent_page
+    if tab == "activity":
+        return {"detail": agent_page.detail(origin)} if origin else {"items": await asyncio.to_thread(agent_page.activity)}
+    if tab == "approvals":
+        return {"items": agent_page.approvals()}
+    if tab == "browser":
+        return {"items": agent_page.browser()}
+    if tab == "schedules":
+        return agent_page.schedules()
+    if tab == "identity":
+        return await asyncio.to_thread(agent_page.identity)
+    if tab == "team":
+        return await agent_page.team_view()
+    return {"error": "No such tab."}
+
+
+@app.post("/api/agent/reminders")
+async def agent_add_reminder(request: Request):
+    """{"text": "Follow up with Saphira", "at": "2026-10-28T09:00"}: a reminder here and on the phone."""
+    from app.services import agent_page
+    body = await request.json()
+    return agent_page.add_reminder(body.get("text", ""), body.get("at", ""))
+
+
+@app.post("/api/agent/team")
+async def agent_team_save(request: Request):
+    """{"tiers": {"large": {"provider": "anthropic", "model": "…"} | null}, "agents": ["xod2"], "enabled": true}"""
+    from app.services import team, agent_page
+    team.save(**(await request.json()))
+    return await agent_page.team_view()
+
+
 @app.get("/api/goals")
 async def goals_list():
     from app.services import goals

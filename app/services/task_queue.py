@@ -194,6 +194,8 @@ class TaskQueue:
             return {"success": False, "error": "This task isn't waiting for an approval."}
         self._update(task_id, note="You approved it", status="queued", next_action={"type": "approve"},
                      waiting_kind=None, now="Approved; continuing")
+        from app.services import agent_log
+        agent_log.approval_decided(f"task-{task_id}-{t.get('steps') or 0}", "allowed")
         self._kick()
         return {"success": True}
 
@@ -228,6 +230,9 @@ class TaskQueue:
             self._update(task_id, note="Stopping after the current step", now="Stopping…")
             return {"success": True, "stopping": True}
         self._update(task_id, note="Cancelled", status="cancelled", waiting_kind=None, finished_at=time.time(), next_action=None)
+        if t.get("waiting_kind") == "approval":
+            from app.services import agent_log
+            agent_log.approval_decided(f"task-{task_id}-{t.get('steps') or 0}", "declined")
         await self._close_tab(t.get("tab_id"))
         return {"success": True}
 
@@ -433,6 +438,11 @@ class TaskQueue:
                          waiting_detail={"label": pending.get("label"), "page": pending.get("title") or pending.get("url"),
                                          "message": mission.get("final_answer")},
                          now="Waiting for your OK", **common)
+            from app.services import agent_log
+            t_now = self.get(task_id)
+            agent_log.approval_opened(f"task-{task_id}-{t_now.get('steps') or 0}", "task",
+                                      str(pending.get("title") or pending.get("url") or "a web page"),
+                                      f"Press “{pending.get('label', 'Submit')}”", t_now.get("title") or "")
             notify(self.get(task_id)["title"], f"Ready to press \"{pending.get('label', 'Submit')}\". Needs your OK.")
             _phone(self.get(task_id), "approval")
         elif status in ("needs_input", "blocked"):

@@ -2760,7 +2760,10 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         if not hit:
             hit = await sentinel.review_message(name, arguments or {})
         if hit:
-            return sentinel.hold(name, arguments or {}, hit)
+            held = sentinel.hold(name, arguments or {}, hit)
+            from app.services import agent_log
+            agent_log.step(name, arguments or {}, held)
+            return held
     ctx = None
     try:
         ctx = await asyncio.to_thread(activity.before, name, arguments or {}, active_workspace_path)
@@ -2772,6 +2775,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     except Exception as e:
         logger.warning(f"activity log failed for {name}: {e}")
     sentinel.saw(name, result)
+    from app.services import agent_log
+    agent_log.step(name, arguments or {}, result)      # the Agent page's step list (by job and by agent)
     return result
 
 

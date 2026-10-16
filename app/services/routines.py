@@ -60,6 +60,12 @@ def next_run(schedule: Dict[str, Any], after: Optional[float] = None) -> Optiona
     """Next time (epoch seconds, local time) the schedule fires after `after`; None for manual."""
     kind = (schedule or {}).get("kind", "manual")
     now = dt.datetime.fromtimestamp(after or time.time())
+    if kind == "once":
+        try:
+            at = dt.datetime.fromisoformat(str(schedule.get("at")))
+        except ValueError:
+            return None
+        return at.timestamp() if at > now else None
     if kind == "every":
         hours = max(1, int(schedule.get("hours") or 24))
         return (now + dt.timedelta(hours=hours)).timestamp()
@@ -75,8 +81,19 @@ def next_run(schedule: Dict[str, Any], after: Optional[float] = None) -> Optiona
     return None
 
 
+def _after_run(schedule: Dict[str, Any], now: float) -> Optional[float]:
+    """The next time after a run: none for a one-off (run early by hand, it was still its one run)."""
+    return None if (schedule or {}).get("kind") == "once" else next_run(schedule, now)
+
+
 def describe_schedule(s: Dict[str, Any]) -> str:
     kind = (s or {}).get("kind", "manual")
+    if kind == "once":
+        try:
+            at = dt.datetime.fromisoformat(str(s.get("at")))
+            return "Once, " + at.strftime(nopad("%b %-d, %Y at %-I:%M %p"))
+        except ValueError:
+            return "Once"
     if kind == "every":
         n = int(s.get("hours") or 24)
         return f"Every {n} hour{'s' if n != 1 else ''}"
@@ -95,6 +112,11 @@ def describe_schedule(s: Dict[str, Any]) -> str:
 def _clean_schedule(s: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     s = s or {"kind": "manual"}
     kind = s.get("kind", "manual")
+    if kind == "once":
+        try:
+            return {"kind": "once", "at": dt.datetime.fromisoformat(str(s.get("at"))).strftime("%Y-%m-%dT%H:%M")}
+        except ValueError:
+            return {"kind": "manual"}
     if kind == "every":
         return {"kind": "every", "hours": max(1, min(168, int(s.get("hours") or 24)))}
     if kind == "daily":
@@ -192,11 +214,25 @@ def run_now(rid: str, reason: str = "you asked") -> Dict[str, Any]:
     r = get(rid)
     if not r:
         return {"success": False, "error": "No such routine."}
+    if r.get("source") == "reminder":
+        # A plain reminder: a notification here and on the phone, no agent run.
+        from app.services.task_queue import notify
+        notify("Reminder", r["instructions"][:200])
+        try:
+            from app.services import phone
+            phone._fire(phone.send(f"⏰ {r['instructions'][:500]}"))
+        except Exception:
+            pass
+        now = time.time()
+        with _conn() as c:
+            c.execute("UPDATE routines SET last_run_at = ?, last_status = 'done', runs = runs + 1, next_run_at = ? WHERE id = ?",
+                      (now, _after_run(r["schedule"], now), rid))
+        return {"success": True, "reminded": True}
     task = task_queue.create(compose_request(r), title=f"↻ {r['name']}")
     now = time.time()
     with _conn() as c:
         c.execute("UPDATE routines SET last_run_at = ?, last_task_id = ?, last_status = 'running', runs = runs + 1, next_run_at = ? WHERE id = ?",
-                  (now, task["id"], next_run(r["schedule"], now), rid))
+                  (now, task["id"], _after_run(r["schedule"], now), rid))
     logger.info(f"Routine {r['name']} started ({reason}) as {task['id']}")
     return {"success": True, "task": task}
 

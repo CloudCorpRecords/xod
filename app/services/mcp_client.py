@@ -363,6 +363,9 @@ class MCPHub:
             pid = uuid.uuid4().hex[:10]
             self.pending[pid] = {"id": pid, "tool": full_name, "server": c.name, "tool_name": t.name, "args": args,
                                  "description": (t.description or "")[:300], "created_at": time.time()}
+            from app.services import agent_log
+            agent_log.approval_opened(pid, "app", c.name, t.name.replace("_", " ").capitalize(),
+                                      ", ".join(f"{k}: {str(v)[:60]}" for k, v in list((args or {}).items())[:4]))
             return {"success": False, "needs_approval": True, "approval_id": pid, "tool": full_name, "destructive": destructive,
                     "message": (f"Waiting for your OK to {t.name.replace('_', ' ')} on {c.name}. Nothing has been deleted yet."
                                 if destructive else f"Waiting for your OK to run {t.name} on {c.name}. It hasn't run yet."),
@@ -387,6 +390,8 @@ class MCPHub:
         p = self.pending.pop(pid, None)
         if not p:
             return {"success": False, "error": "That request expired or was already handled."}
+        from app.services import agent_log
+        agent_log.approval_decided(pid, "allowed")
         if p.get("sentinel") and not p["tool"].startswith("mcp__"):
             # Held by the safety check (services/sentinel.py): the person said yes, so it runs as it was.
             from app.agent.tools import execute_tool
@@ -398,7 +403,11 @@ class MCPHub:
         return res
 
     def decline(self, pid: str) -> bool:
-        return self.pending.pop(pid, None) is not None
+        gone = self.pending.pop(pid, None) is not None
+        if gone:
+            from app.services import agent_log
+            agent_log.approval_decided(pid, "declined")
+        return gone
 
 
 mcp_hub = MCPHub()

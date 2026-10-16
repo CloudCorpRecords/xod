@@ -173,6 +173,10 @@
         <div id="toolsMenu" class="hidden absolute right-0 top-[calc(100%+6px)] w-[34rem] max-w-[calc(100vw-1.5rem)] rounded-2xl bg-surface-800 border border-white/[0.08] shadow-2xl p-1.5 z-50 text-[13px]">
           <p class="tools-group-label">Xod</p>
           <div class="tools-grid">
+            <button onclick="closeToolsMenu();openAgentPanel()" class="tools-menu-item">
+              <i data-lucide="user-round" class="size-4 text-amber-300 shrink-0"></i>
+              <div class="min-w-0"><p class="flex items-center gap-2">Xod's page</p><p>What it did, approvals, browser, schedules, team</p></div>
+            </button>
             <button onclick="closeToolsMenu();openMemoryVaultModal()" class="tools-menu-item">
               <i data-lucide="brain" class="size-4 text-cyan-400 shrink-0"></i>
               <div class="min-w-0"><p class="flex items-center gap-2">Memory</p><p>What Xod remembers</p></div>
@@ -4216,6 +4220,7 @@
   <script src="/static/js/mail.js?v=moonlit75"></script>
   <script src="/static/js/phone.js?v=moonlit75"></script>
   <script src="/static/js/models.js?v=moonlit75"></script>
+  <script src="/static/js/agent.js?v=moonlit75"></script>
   <script src="/static/js/updates.js?v=moonlit75"></script>
   <script src="/static/js/routing.js?v=moonlit75"></script>
   <script src="/static/js/reports.js?v=moonlit75"></script>

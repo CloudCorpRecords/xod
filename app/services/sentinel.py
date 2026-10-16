@@ -246,6 +246,8 @@ def hold(tool: str, args: Dict[str, Any], hit: Dict[str, Any]) -> Dict[str, Any]
     label = tool.split("__")[-1].replace("_", " ")
     mcp_hub.pending[pid] = {"id": pid, "tool": tool, "server": "Xod safety check", "tool_name": label, "args": args,
                             "description": hit["why"], "created_at": time.time(), "sentinel": True, "why": hit["why"]}
+    from app.services import agent_log
+    agent_log.approval_opened(pid, "safety", "Xod safety check", label.capitalize(), hit["why"])
     LOG.append({"at": time.time(), "tool": tool, "rule": hit["rule"], "why": hit["why"], "args": _flat(args)[:300]})
     del LOG[:-100]
     logger.warning(f"Sentinel held {tool}: {hit['rule']}: {hit['why']}")

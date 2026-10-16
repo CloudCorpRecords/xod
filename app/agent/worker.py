@@ -516,10 +516,25 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             tools = [t for t in tools if t["function"]["name"] != "web_search"]
     except Exception:
         pass
+    # The team (services/team.py): with more than one brain (or a teammate agent), pieces can be handed off.
+    team_note = ""
+    try:
+        from app.services import team
+        if await team.team_on():
+            tools = tools + [team.DELEGATE_TOOL]
+            t = await team.tiers()
+            mates = [a["server"] for a in team.outside_agents() if a["teammate"]]
+            team_note = ("\nYour team: team_delegate hands a self-contained piece to a subagent (small: "
+                         f"{t['small']['model']}, standard: {t['standard']['model']}, large: {t['large']['model']})"
+                         + (f"; outside teammates: {', '.join(mates)}" if mates else "")
+                         + ". Use it for independent pieces that can run side by side, or a hard piece for the large tier. "
+                           "Small jobs: just do them yourself.")
+    except Exception as e:
+        logger.debug(f"team off: {e}")
     allowed = {t["function"]["name"] for t in tools}
     from app import platform_info
     system = SYSTEM.format(now=time.strftime("%A %B %d, %Y, %I:%M %p"), ready=_ready_text(ready),
-                           shell=(SHELL_WIN + "\n" + platform_info.SHELL_NOTE) if WIN else SHELL_MAC)
+                           shell=(SHELL_WIN + "\n" + platform_info.SHELL_NOTE) if WIN else SHELL_MAC) + team_note
     if ready["notes"]:
         system += "\nKeep in mind: " + "; ".join(ready["notes"]) + "."
     if spoken:
@@ -542,6 +557,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     answer, verdict, stopped, left = "", None, "", ""
     nudged_empty = 0
     held: Optional[Dict[str, Any]] = None
+    subs = 0
     yield {"type": "status", "content": "Working on it…"}
 
     for step in range(MAX_STEPS):
@@ -604,6 +620,35 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             continue
 
         convo.append({"role": "assistant", "content": content or "", "tool_calls": calls})
+        # Pieces handed to subagents in this reply run at the same time (services/team.py).
+        handoffs = [(i, tc) for i, tc in enumerate(calls[:6]) if tc.get("function", {}).get("name") == "team_delegate"
+                    and "team_delegate" in allowed]
+        if handoffs:
+            from app.services import team
+            jobs = []
+            for i, tc in handoffs:
+                try:
+                    a = json.loads(tc["function"].get("arguments") or "{}")
+                except ValueError:
+                    a = {}
+                jobs.append(a if isinstance(a, dict) else {})
+            yield {"type": "status", "content": f"Handing {len(jobs)} piece{'s' if len(jobs) != 1 else ''} to the team…"}
+            results = []
+            async for ev in team.delegate_many(jobs, execute_tool, start_index=subs + 1):
+                if ev.get("type") == "_results":
+                    results = ev["results"]
+                else:
+                    yield ev
+            subs += len(jobs)
+            for (i, tc), a, r in zip(handoffs, jobs, results):
+                cid = tc.get("id") or f"work_{step}_{i}"
+                log.append({"name": "team_delegate", "args": a, "fp": _fp("team_delegate", a), "failed": not r.get("success"),
+                            "out": (r.get("summary") or r.get("error") or "")[-3000:], "exit": None, "new": True})
+                from app.services import agent_log
+                agent_log.step("team_delegate", a, {**r, "success": r.get("success")})
+                convo.append({"role": "tool", "tool_call_id": cid, "name": "team_delegate",
+                              "content": json.dumps({k: r.get(k) for k in ("agent", "brain", "success", "summary", "error")}, default=str)[:4000]})
+            calls = [tc for tc in calls if tc.get("function", {}).get("name") != "team_delegate"]
         for i, tc in enumerate(calls[:4]):
             name = tc.get("function", {}).get("name", "")
             raw = tc.get("function", {}).get("arguments") or "{}"
