@@ -129,9 +129,10 @@ async def main():
     check("someone else's Doc is skipped, yours is used", r["resume"] and r["resume"]["name"] == "Sam Rivera Resume" and r["skipped"] == ["Resume_AMedlin (1)"], str(r.get("resume")))
     saved = r["fields"].get("resume_path", "")
     check("your Google Doc is saved on this computer as a PDF, for uploading", saved.endswith("Sam Rivera Resume.pdf") and Path(saved).read_bytes() == pdf
-          and str(TMP / "data") in saved, saved)
+          and os.path.samefile(Path(saved).parent.parent, TMP / "data"), saved)     # samefile: Windows may spell TMP short (RUNNER~1)
     check("…asked for as a PDF", any(c[0].endswith("download_file_content") and c[1].get("exportMimeType") == "application/pdf" for c in calls))
-    check("…and only private to you", oct(os.stat(saved).st_mode & 0o777) == "0o600", oct(os.stat(saved).st_mode))
+    if sys.platform != "win32":     # on Windows the data folder is in the user's own AppData, which only they can read
+        check("…and only private to you", oct(os.stat(saved).st_mode & 0o777) == "0o600", oct(os.stat(saved).st_mode))
 
     print("J6 \"just do all\" in the chat")
 
