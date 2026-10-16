@@ -158,7 +158,7 @@ def remove_server(name: str) -> bool:
         keychain.delete_password(KEYCHAIN, f"{name}:bearer_token")
     except Exception:
         pass
-    for key in spec.get("secret_env") or []:
+    for key in [*(spec.get("secret_env") or []), *(f"header:{h}" for h in spec.get("secret_headers") or [])]:
         try:
             keychain.delete_password(KEYCHAIN, f"{name}:{key}")
         except Exception:
@@ -185,11 +185,16 @@ class ServerConn:
         self._task = asyncio.create_task(self._run())
 
     def _http_target(self) -> Any:
-        """A Streamable HTTP connection, signed in with OAuth or a bearer token from the Keychain."""
+        """A Streamable HTTP connection (or SSE for older servers), signed in with OAuth, a bearer token or the
+        server's own headers (an API key), from the Keychain."""
         from mcp.client.streamable_http import streamable_http_client
         from mcp.shared._httpx_utils import create_mcp_http_client
         url, auth_kind = self.spec["url"], self.spec.get("auth")
-        headers, auth = {}, None
+        headers, auth = dict(self.spec.get("headers") or {}), None
+        for k in self.spec.get("secret_headers") or []:
+            v = keychain.get_password(KEYCHAIN, f"{self.name}:header:{k}")
+            if v:
+                headers[k] = v
         if auth_kind == "bearer":
             token = keychain.get_password(KEYCHAIN, f"{self.name}:bearer_token")
             if not token:
@@ -199,6 +204,9 @@ class ServerConn:
             if not self.interactive and not mcp_oauth.has_tokens(self.name):
                 raise mcp_oauth.SignInNeeded(self.name)
             auth = mcp_oauth.provider(self.name, url, self.redirect_uri, self.interactive, self.spec.get("scope"))
+        if self.spec.get("type") == "sse":
+            from mcp.client.sse import sse_client
+            return sse_client(url, headers=headers or None, timeout=15, auth=auth)
         return streamable_http_client(url, http_client=create_mcp_http_client(headers=headers or None, auth=auth))
 
     async def _run(self) -> None:
@@ -208,7 +216,12 @@ class ServerConn:
             if self.spec.get("url"):
                 target: Any = self._http_target()
             else:
-                env = {**{k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "USER", "LANG", "TMPDIR", "SHELL")},
+                # What a program needs to start (on Windows: APPDATA, SYSTEMROOT, PATHEXT… or npx can't run), PATH as
+                # it is now (Node installed a minute ago counts), then the server's own settings.
+                from mcp.client.stdio import get_default_environment
+                from app.agent.worker import _fresh_path
+                env = {**get_default_environment(), "PATH": _fresh_path(),
+                       **{k: v for k, v in os.environ.items() if k in ("LANG", "TMPDIR", "SHELL", "TMP")},
                        **_env_for(self.name, self.spec)}
                 command = self.spec["command"]
                 if command == "{xod_python}":          # Xod's own built-in connectors
@@ -217,6 +230,9 @@ class ServerConn:
                     command = sys.executable
                     env.update({k: v for k, v in os.environ.items() if k.startswith("XOD_") or k == "PYTHONPATH"})
                     self.spec = {**self.spec, "cwd": str(APP_ROOT)}
+                else:
+                    import shutil
+                    command = shutil.which(command, path=env["PATH"]) or command      # npx → …\nodejs\npx.cmd
                 target = StdioServerParameters(command=command, args=self.spec.get("args") or [], env=env,
                                                 cwd=self.spec.get("cwd") or None)
             async with Client(target, read_timeout_seconds=120) as client:
@@ -371,6 +387,10 @@ class MCPHub:
         p = self.pending.pop(pid, None)
         if not p:
             return {"success": False, "error": "That request expired or was already handled."}
+        if p.get("sentinel") and not p["tool"].startswith("mcp__"):
+            # Held by the safety check (services/sentinel.py): the person said yes, so it runs as it was.
+            from app.agent.tools import execute_tool
+            return await execute_tool(p["tool"], p["args"], reviewed=True)
         from app.services import activity
         ctx = activity.before(p["tool"], p["args"])
         res = await self.call(p["tool"], p["args"], approved=True)

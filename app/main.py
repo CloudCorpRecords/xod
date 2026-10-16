@@ -639,6 +639,81 @@ async def mcp_add_endpoint(request: Request):
     return res
 
 
+class MCPImport(BaseModel):
+    text: str
+    values: Dict[str, Dict[str, str]] = {}
+    only: Optional[List[str]] = None
+
+
+@app.get("/api/goals")
+async def goals_list():
+    from app.services import goals
+    return {"goals": goals.list_all(), "brief": goals.brief_settings()}
+
+
+@app.post("/api/goals")
+async def goals_create(request: Request):
+    """{"text": "find a flat under $2k by November"}: a plan, and the first check-in starts."""
+    from app.services import goals
+    body = await request.json()
+    text = str(body.get("text") or "").strip()
+    if len(text) < 4:
+        return {"success": False, "error": "Say what the goal is."}
+    return {"success": True, "goal": await goals.create(text, start_now=body.get("start_now", True))}
+
+
+@app.patch("/api/goals/{gid}")
+async def goals_update(gid: str, request: Request):
+    from app.services import goals
+    g = goals.update(gid, **(await request.json()))
+    return {"success": bool(g), "goal": g}
+
+
+@app.post("/api/goals/{gid}/check")
+async def goals_check(gid: str):
+    from app.services import goals
+    return goals.check_in(gid)
+
+
+@app.delete("/api/goals/{gid}")
+async def goals_delete(gid: str):
+    from app.services import goals
+    return {"success": goals.delete(gid)}
+
+
+@app.post("/api/brief")
+async def brief_set(request: Request):
+    """{"enabled": true, "time": "07:30"} or {"run": true} for one now."""
+    from app.services import goals
+    body = await request.json()
+    if body.get("run"):
+        return goals.run_brief()
+    return {"success": True, "brief": goals.set_brief(body.get("enabled"), body.get("time"))}
+
+
+@app.get("/api/sentinel")
+async def sentinel_log():
+    """What the safety check held lately, and why (services/sentinel.py)."""
+    from app.services import sentinel
+    return {"held": list(reversed(sentinel.LOG[-50:]))}
+
+
+@app.post("/api/mcp/import/check")
+async def mcp_import_check(req: MCPImport):
+    """Anything a server's page says to paste (JSON, a command, an install link, an address): what's in it, what's
+    missing, and, for addresses, how to connect (asked from the server). Nothing is saved."""
+    from app.services import mcp_import
+    return await mcp_import.check(req.text)
+
+
+@app.post("/api/mcp/import/add")
+async def mcp_import_add(req: MCPImport, request: Request):
+    """Saves and connects what was pasted, with the answers filled in. A sign-in opens in the browser."""
+    from app.services import mcp_import
+    redirect_uri = f"http://{request.headers.get('host', '127.0.0.1:8000')}/oauth/callback"
+    return await mcp_import.add(req.text, req.values, redirect_uri, req.only)
+
+
 class MCPServerUpdate(BaseModel):
     enabled: Optional[bool] = None
     trust: Optional[str] = None
@@ -659,6 +734,23 @@ async def mcp_remove_endpoint(name: str):
     ok = mcp_client.remove_server(name)
     await mcp_client.mcp_hub.start()
     return {"success": ok}
+
+
+@app.post("/api/mcp/servers/{name}/connect")
+async def mcp_connect_one(name: str, request: Request):
+    """Tries one server again; {"interactive": true} may open its sign-in page (it finishes in the background)."""
+    import asyncio as _asyncio
+    from app.services.mcp_client import mcp_hub
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if body.get("interactive"):
+        redirect_uri = f"http://{request.headers.get('host', '127.0.0.1:8000')}/oauth/callback"
+        from app.services import mcp_import
+        mcp_import._tasks[name] = _asyncio.create_task(mcp_hub.connect(name, interactive=True, redirect_uri=redirect_uri))
+        return {"success": True, "started": True}
+    return await mcp_hub.connect(name)
 
 
 @app.post("/api/mcp/reconnect")

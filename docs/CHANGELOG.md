@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.7.0
+
+**Paste any MCP server**
+- Tools → Connected apps → Add any MCP server: paste whatever the server's page says to add, and Xod works out the rest. It reads Claude Desktop, Cursor, VS Code, Windsurf, Zed, Gemini, Codex (TOML) and Continue (YAML) configs, a fragment or JSON with comments, install commands (`claude mcp add …`, `codex mcp add …`, `gemini mcp add …`, `code --add-mcp …`, or just `npx -y …`, `uvx …`, `docker run …`), Cursor and VS Code install links, and a plain address.
+- Placeholders (`<YOUR_API_KEY>`, `${input:token}`, `/path/to/folder`) become boxes to fill in; keys go into the Keychain / Credential Manager, never the file. Docker's `-e NAME` keys are asked for too.
+- For an address, Xod asks the server how to connect: it answers as is, needs a one-click sign-in (opens your browser), needs a key (a box appears), or is an older SSE server. A retired `…/sse` address is swapped for the `…/mcp` next to it. `npx mcp-remote https://…` becomes a direct connection.
+- For a program, Xod checks that what starts it (npx, uvx, docker…) is on this computer, and if not offers "Install Node.js for me".
+- Paste it into the chat instead and Xod connects what it can and says what's missing.
+- On Windows, servers started with `npx` now start (they were given too little of the environment), and one installed a minute ago is found. Custom headers and SSE servers work.
+
+**A safety check on every action**
+- Before anything is sent, run or changed, Xod compares it with what you actually asked. It holds it, as an Approve / Decline card in the chat and on your phone, saying why, when: something it read tried to give it orders; an address, link or command came from a page or email rather than from you; it would send what looks like a password or key; it would download and run a program from an address you didn't give; or it would delete, stop or uninstall something you didn't ask about. A message about to be sent after reading untrusted content also gets a quick check by the model.
+- What you asked for goes straight through; approving runs the held step as it was. The worker stops at a held step and says so.
+
+**Goals and a morning brief**
+- "New goal: find a flat under $2k by November": Xod writes a short plan, starts on step 1 straight away, and checks in on its own (every day, or as the goal needs). Each check-in is a task that works on the next step and moves the plan on, and it never sends, buys or signs up without asking. Tools → Routines & goals shows the plan, progress and what each check-in found; pause, resume or check in now.
+- The morning brief, once a day at the time you pick: your goals and their next steps, what's waiting for you, today's calendar if one is connected, and news on what you care about. "Turn on the morning brief at 7:30" in the chat works too.
+
+**A reliability score**
+- `python scripts/benchmark.py` runs real requests through the chat with your model and checks what actually happened: the file is on disk, the program runs, the page answers. Results go to [docs/RELIABILITY.md](RELIABILITY.md), the latest run per model.
+
 ## 0.6.1
 
 **It does the job, and checks it's really done**

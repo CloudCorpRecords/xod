@@ -248,6 +248,21 @@ r = worker.route("continue", history)
 check("'continue' picks the same job up", r and r["goal"].startswith("set up a python virtual environment"), r)
 worker.MAX_STEPS = 30
 
+# ------------------------------------------------------------------ W14 calls written as text
+print("W14 tool calls written as text")
+txt = 'Let\'s install it.\n```json\n{"name": "computer_run_command", "arguments": {"command": "npm install chalk", "cwd": "C:/x"}}\n```\nThen {"not": "a call"}'
+got = worker.calls_in_text(txt, {"computer_run_command"})
+check("a call written in the reply is found", len(got) == 1 and json.loads(got[0]["function"]["arguments"])["command"] == "npm install chalk", got)
+got = worker.calls_in_text("Let's check the page.\n```powershell\n# fetch it\n(Invoke-WebRequest http://127.0.0.1:8765/).Content\n```", {"computer_run_command"})
+check("a command written as a code block it means to run is run", got and "Invoke-WebRequest" in got[0]["function"]["arguments"], got)
+check("an example block in an explanation isn't", worker.calls_in_text("For example:\n```bash\nls\n```", {"computer_run_command"}) == [])
+check("JSON that isn't a call is left alone", worker.calls_in_text('{"name": "rm_rf", "arguments": {}}', {"computer_run_command"}) == [])
+fresh([("say", '```json\n{"name": "computer_run_command", "arguments": {"command": "echo from-text"}}\n```'), ("say", "Done: it printed from-text.")],
+      [{"done": True, "proof": "from-text"}])
+evs, answer = asyncio.run(run("install the from-text tool"))
+r = results(evs, "computer_run_command")
+check("…and the worker runs it", r and "from-text" in (r[0]["data"].get("stdout") or ""), r)
+
 # ------------------------------------------------------------------ W13 stopping a job stops what it started
 print("W13 stopping a background job")
 import socket  # noqa: E402

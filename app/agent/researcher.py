@@ -132,6 +132,9 @@ class AgenticResearcher:
            - Stream definitive markdown synthesis report.
         """
         self.spoken = spoken
+        # What the person said in this conversation: the safety check compares every action with it (services/sentinel.py).
+        from app.services import sentinel
+        sentinel.begin(messages)
         attached_image_urls: List[str] = []
         text_parts: List[str] = []
         user_msg = messages[-1].get("content", "") if messages else "SaaS Market Intelligence"
@@ -363,6 +366,21 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         # "Install jq", "set up a Node project and run it", "continue": jobs on the computer run in one loop that sees
         # every result, gets hints from what just failed, and keeps going until a separate check agrees it works
         # (agent/worker.py). As a fixed plan, every step ran blind and a failed install ended in "you can run …".
+        # "New goal: find a flat under $2k by November" / "turn on the morning brief at 7:30" (services/goals.py)
+        from app.services import goals
+        goal_turn = goals.route(user_query) if not has_image and not has_document else None
+        if goal_turn:
+            async for ev in goals.stream_chat(goal_turn):
+                yield ev
+            return
+
+        # A server's "add this to your MCP config" pasted into the chat: read it, try it, connect it (mcp_import).
+        from app.services import mcp_import
+        if not has_image and not has_document and mcp_import.looks_like(user_query):
+            async for ev in mcp_import.stream_chat(user_query):
+                yield ev
+            return
+
         if not has_image and not has_document:
             from app.agent import worker
             job = worker.route(user_query, messages)
@@ -1899,8 +1917,32 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         Only for deleting, and only when the person didn't name the file (its name isn't in what they said)."""
         if fn_name != "computer_manage_file" or str(args.get("action", "")).lower() not in ("trash", "delete", "remove"):
             return None
-        target = os.path.basename(str(args.get("src") or args.get("path") or "").rstrip("\\/"))
+        src = str(args.get("src") or args.get("path") or "").rstrip("\\/")
+        target = os.path.basename(src)
+        q0 = user_query or ""
+        # "Delete the receipt in …\Receipts" trashed the whole Receipts folder: the folder they named is where the
+        # thing is, not the thing. Look inside it instead.
+        if target and os.path.isdir(os.path.expanduser(src)) and not re.search(r"\b(folder|directory|dir)\b", q0.split(target)[0], re.I) \
+                and re.search(rf"\b(in|inside|from|within)\s+(?:the\s+|my\s+)?[^\n]*?{re.escape(target)}\b", q0, re.I):
+            try:
+                inside = sorted(os.listdir(os.path.expanduser(src)))
+            except OSError:
+                inside = []
+            stems = {re.sub(r"(es|s)$", "", w) for w in re.findall(r"[a-z0-9]{3,}", q0.split(" in ")[0].lower())
+                     if w not in {"delete", "remove", "trash", "the", "please", "file", "get", "rid", "throw", "away"}}
+            alike = [n for n in inside if any(s and s in n.lower() for s in stems)] or inside
+            return {"success": False, "skipped": True, "needs_choice": len(alike) > 1, "candidates": alike[:10],
+                    "error": f"Not deleted: {target} is the folder the person said it's in, not the thing to delete. "
+                             + (f"Inside it: {', '.join(alike[:10])}. Ask them which one (or whether all of them)."
+                                if len(alike) > 1 else f"Delete {alike[0]} inside it instead." if alike else "It's empty.")}
         found = self._carried.get("_found") or []
+        if len(found) < 2:
+            # No search first ("delete the receipt in …\Receipts" went straight to receipt1.pdf): what's next to it.
+            try:
+                parent = os.path.dirname(os.path.expanduser(src))
+                found = sorted(os.listdir(parent))[:200] if parent and os.path.isdir(parent) else found
+            except OSError:
+                pass
         q = (user_query or "").lower()
         if not target or len(found) < 2 or re.search(r"\b(all|every|both|each|them|these|those)\b", q):
             return None

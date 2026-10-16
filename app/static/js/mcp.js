@@ -67,8 +67,16 @@
           <pre class="text-[11px] text-zinc-400 overflow-x-auto">${esc(JSON.stringify(p.args, null, 1)).slice(0, 600)}</pre>
           <div class="flex gap-2"><button class="task-btn" data-mcpp="approve" data-id="${esc(p.id)}">Approve</button><button class="task-btn task-btn-quiet" data-mcpp="decline" data-id="${esc(p.id)}">Decline</button></div></div>`).join("")}</section>` : ""}
 
-      <section class="space-y-2">
-        <h4 class="text-[13px] font-semibold text-white">Apps</h4>
+      <section class="space-y-2" id="mcpImport">
+        <h4 class="text-[13px] font-semibold text-white">Add any MCP server</h4>
+        <p class="text-[12px] text-zinc-400">Paste whatever the server's page says to add: a JSON block (Claude, Cursor, VS Code, Windsurf…), an install command (<span class="font-mono">claude mcp add …</span>, <span class="font-mono">npx …</span>), an install link or just its address. Xod works out the rest and tries it.</p>
+        <textarea id="mcpImportText" rows="4" spellcheck="false" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[12px] font-mono text-white focus:outline-none focus:border-brand-500" placeholder="https://mcp.example.com/mcp"></textarea>
+        <button data-mcpi="check" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 text-[12px] font-semibold hover:bg-brand-400">Check it</button>
+        <div id="mcpImportResult" class="space-y-2"></div>
+      </section>
+
+      <section class="space-y-2 pt-2 border-t border-white/[0.06]">
+        <h4 class="text-[13px] font-semibold text-white pt-3">Apps</h4>
         <p class="text-[12px] text-zinc-400">Connect once; Xod uses them when a request needs them. Reading is automatic, anything that changes something asks you first.</p>
         ${groups.map(groupHtml).join("")}
         ${extra.length ? `<details class="pt-1"><summary class="text-[12px] text-zinc-400 cursor-pointer">More (advanced)</summary>
@@ -84,7 +92,9 @@
               <label class="text-[11px] text-zinc-400 flex items-center gap-1.5"><input type="checkbox" data-mcps="enabled" ${s.enabled ? "checked" : ""} class="accent-amber-400"> On</label>
             </div>
             <p class="text-[11px] text-zinc-500 font-mono break-all">${esc(s.command)}</p>
-            ${s.error ? `<p class="text-[12px] text-red-300">${esc(s.error)}</p>` : ""}
+            ${s.signing_in ? `<p class="text-[12px] text-amber-200">Finish signing in in your browser…</p>` : ""}
+            ${s.needs_sign_in && !s.signing_in ? `<p class="text-[12px] text-amber-200">Sign in needed. <button class="underline" data-mcps="signin">Sign in</button></p>` : ""}
+            ${s.error ? `<p class="text-[12px] text-red-300">${esc(s.error)} <button class="underline text-zinc-300" data-mcps="retry">Try again</button></p>` : ""}
             ${s.secret_env.length ? `<p class="text-[11px] text-zinc-500">Secrets in Keychain: ${esc(s.secret_env.join(", "))}</p>` : ""}
             <select data-mcps="trust" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-2 py-1.5 text-[12px] text-white">
               ${Object.entries(TRUST).map(([k, v]) => `<option value="${k}" ${s.trust === k ? "selected" : ""}>${v}</option>`).join("")}
@@ -93,12 +103,6 @@
               <ul class="mt-1.5 space-y-1">${s.tools.map((t) => `<li class="text-[12px] text-zinc-300"><span class="font-mono">${esc(t.name)}</span>${t.read_only ? ` <span class="text-[10px] text-emerald-300">read-only</span>` : ""}<br><span class="text-zinc-500">${esc(t.description)}</span></li>`).join("")}</ul></details>` : ""}
             <button class="task-btn task-btn-quiet" data-mcps="remove">Remove</button>
           </div>`).join("") : `<p class="text-[12px] text-zinc-500">Any other MCP server works too: databases, Slack, Figma and more. Find them at modelcontextprotocol.io.</p>`}
-        <details class="pt-1">
-          <summary class="text-[13px] text-brand-300 cursor-pointer">Add a server</summary>
-          <p class="text-[12px] text-zinc-400 mt-2">Paste the server's config, in the same format as Claude Desktop's <code>mcpServers</code>. API keys in it go into your Keychain, not a file.</p>
-          <textarea id="mcpAddJson" rows="7" spellcheck="false" class="mt-2 w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[12px] font-mono text-white focus:outline-none focus:border-brand-500" placeholder='{"mcpServers": {"filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/Documents"]}}}'></textarea>
-          <button data-mcpa="add" class="mt-2 px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 text-[12px] font-semibold hover:bg-brand-400">Add and connect</button>
-        </details>
       </section>
 
       <section class="space-y-2 pt-2 border-t border-white/[0.06]">
@@ -107,9 +111,14 @@
         <pre id="mcpSelfCfg" class="text-[11px] text-zinc-200 bg-surface-900 rounded-lg p-3 overflow-x-auto">${esc(JSON.stringify(cfg.config, null, 2))}</pre>
         <button data-mcpa="copy" class="px-3 py-1.5 rounded-lg text-[12px] text-zinc-200 bg-surface-700 hover:bg-surface-600">Copy</button>
       </section>`;
+    if (lastImport) {                      // what was pasted and how it went survive a refresh
+      document.getElementById("mcpImportText").value = importText;
+      renderImport(lastImport.res, lastImport.results);
+    }
     if (window.lucide) lucide.createIcons();
     clearTimeout(pollTimer);
-    if (connectors.some((c) => c.state === "connecting" || c.state === "signing_in") && document.getElementById("mcpPanel")?.classList.contains("is-open")) {
+    if ((connectors.some((c) => c.state === "connecting" || c.state === "signing_in") || servers.some((s) => s.signing_in))
+        && document.getElementById("mcpPanel")?.classList.contains("is-open")) {
       pollTimer = setTimeout(render, 2000);
     }
   }
@@ -174,7 +183,78 @@
     }
   }
 
+  // ---------------------------------------------------------------- paste anything (services/mcp_import.py)
+  let importText = "", lastImport = null;
+  const KIND = { web: "Web address", program: "Program on this computer" };
+  function probeLine(s) {
+    const p = s.probe;
+    if (s.runtime) return `<p class="text-[12px] text-amber-200">It runs with <span class="font-mono">${esc(s.runtime.program)}</span>, which needs ${esc(s.runtime.what)} on this computer.
+      <button data-mcpi="install" data-ask="${esc(s.runtime.ask)}" class="underline">${esc(s.runtime.ask)} for me</button></p>`;
+    if (!p) return s.kind === "program" ? `<p class="text-[12px] text-zinc-400">Xod starts it when it connects (the first start can take a minute while it downloads).</p>` : "";
+    const color = p.ok ? (p.auth === "oauth" ? "text-amber-200" : "text-emerald-300") : "text-red-300";
+    return `<p class="text-[12px] ${color}">${esc(p.why)}</p>`;
+  }
+  function renderImport(res, results) {
+    const box = document.getElementById("mcpImportResult");
+    if (!box) return;
+    if (res.error) { box.innerHTML = `<p class="text-[12px] text-red-300">${esc(res.error)}</p>`; return; }
+    const done = Object.fromEntries((results || []).map((r) => [r.name, r]));
+    box.innerHTML = res.servers.map((s) => {
+      const r = done[s.name];
+      return `<div class="task-card space-y-2" data-imp="${esc(s.name)}">
+        <p class="task-title flex items-center gap-2">${esc(s.name)} <span class="text-[11px] font-normal text-zinc-400">${KIND[s.kind]}</span></p>
+        <p class="text-[11px] text-zinc-500 font-mono break-all">${esc(s.summary)}</p>
+        ${probeLine(s)}
+        ${s.needs.map((n) => `<label class="block text-[11px] text-zinc-400">${esc(n.label)}${n.hint ? ` <span class="text-zinc-500">· ${esc(n.hint)}</span>` : ""}
+          <input data-need="${esc(n.id)}" ${n.secret ? 'type="password"' : ""} autocomplete="off" class="mt-1 w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[12px] text-white focus:outline-none focus:border-brand-500"></label>`).join("")}
+        ${s.needs.some((n) => n.secret) ? `<p class="text-[11px] text-zinc-500">Keys go into your Keychain / Credential Manager, not a file.</p>` : ""}
+        ${r ? `<p class="text-[12px] ${r.success ? "text-emerald-300" : "text-red-300"}">${r.success
+          ? (r.signing_in ? esc(r.message) : `Connected · ${r.tools} tools${r.tool_names?.length ? `: ${esc(r.tool_names.slice(0, 6).join(", "))}${r.tools > 6 ? "…" : ""}` : ""}`)
+          : esc(r.error)}</p>` : ""}
+      </div>`;
+    }).join("") + (res.servers.length ? `<button data-mcpi="add" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 text-[12px] font-semibold hover:bg-brand-400">${(results || []).length ? "Try again" : `Connect${res.servers.length > 1 ? ` all ${res.servers.length}` : ""}`}</button>` : "");
+  }
+  async function onImport(el) {
+    const box = document.getElementById("mcpImportResult");
+    if (el.dataset.mcpi === "install") {
+      window.closeMcpPanel();
+      if (typeof usePrompt === "function") usePrompt(el.dataset.ask);
+      return;
+    }
+    if (el.dataset.mcpi === "check") {
+      importText = document.getElementById("mcpImportText").value;
+      if (!importText.trim()) return showToast("Paste something first");
+      el.disabled = true; el.textContent = "Checking…";
+      box.innerHTML = `<p class="text-[12px] text-zinc-400">Reading it and asking the server…</p>`;
+      const res = await api("/api/mcp/import/check", "POST", { text: importText });
+      el.disabled = false; el.textContent = "Check it";
+      lastImport = { res, results: null };
+      return renderImport(res);
+    }
+    if (el.dataset.mcpi === "add") {
+      const values = {};
+      box.querySelectorAll("[data-imp]").forEach((card) => {
+        values[card.dataset.imp] = Object.fromEntries([...card.querySelectorAll("[data-need]")].map((i) => [i.dataset.need, i.value]));
+      });
+      el.disabled = true; el.textContent = "Connecting…";
+      const res = await api("/api/mcp/import/check", "POST", { text: importText });
+      const out = await api("/api/mcp/import/add", "POST", { text: importText, values });
+      lastImport = { res, results: out.results || [] };
+      renderImport(res, out.results || []);
+      // Keep what was typed (a failed key can be fixed and tried again).
+      box.querySelectorAll("[data-imp]").forEach((card) => card.querySelectorAll("[data-need]").forEach((i) => {
+        i.value = (values[card.dataset.imp] || {})[i.dataset.need] || "";
+      }));
+      if (out.results?.some((r) => r.success)) {
+        showToast("Connected");
+        setTimeout(render, out.results.some((r) => r.signing_in) ? 2500 : 300);
+      }
+    }
+  }
+
   async function onClick(e) {
+    const imp = e.target.closest("[data-mcpi]");
+    if (imp && e.type === "click") return onImport(imp);
     const cn = e.target.closest("[data-cn]");
     if (cn) return onConnector(cn, e);
     const el = e.target.closest("[data-mcpp],[data-mcps],[data-mcpa],[data-close-mcp]");
@@ -191,12 +271,9 @@
     if (el.dataset.mcps === "remove" && e.type === "click" && confirm(`Remove ${name}? Its Keychain secrets are deleted too.`)) {
       await api(`/api/mcp/servers/${name}`, "DELETE"); return render();
     }
-    if (el.dataset.mcpa === "add" && e.type === "click") {
-      let block;
-      try { block = JSON.parse(document.getElementById("mcpAddJson").value); } catch (err) { return showToast("That isn't valid JSON."); }
-      el.textContent = "Connecting…"; el.disabled = true;
-      const r = await api("/api/mcp/servers", "POST", block);
-      showToast(r.success ? `Added ${r.added.join(", ")}` : r.error);
+    if ((el.dataset.mcps === "signin" || el.dataset.mcps === "retry") && e.type === "click") {
+      el.disabled = true;
+      await api(`/api/mcp/servers/${name}/connect`, "POST", { interactive: el.dataset.mcps === "signin" });
       return render();
     }
     if (el.dataset.mcpa === "copy" && e.type === "click") {

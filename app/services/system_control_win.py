@@ -69,13 +69,26 @@ def _activate(part: str) -> str:
     import re
     # `where jq` (cmd's "find this program") is Where-Object in PowerShell: no output, exit 0, as if jq were there.
     part = re.sub(r"^(\s*)where(?=\s+[\w.-]+(?:\s|$))(?!\s+-)", r"\1where.exe", part, flags=re.I)
+    # tail / head (bash) don't exist: "tail -n 1 big.log" failed and the answer was a guess.
+    m = re.match(r"^(\s*)(tail|head)\s+(?:-n\s*|-)(\d+)\s+(.+?)\s*$", part)
+    if m:
+        part = f"{m.group(1)}Get-Content {m.group(4)} {'-Tail' if m.group(2) == 'tail' else '-TotalCount'} {m.group(3)}"
+    elif re.match(r"^\s*(tail|head)\s+([^-\s|;][^|;]*?)\s*$", part):
+        m = re.match(r"^(\s*)(tail|head)\s+(.+?)\s*$", part)
+        part = f"{m.group(1)}Get-Content {m.group(3)} {'-Tail' if m.group(2) == 'tail' else '-TotalCount'} 10"
     return re.sub(r"^(\s*)(?:\.\s+|&\s+)?((?:\"[^\"]*|[^\s\"]*)[\\/]Scripts[\\/])activate(?:\.bat)?(\"?)(?=\s|;|$)",
                   r"\1. \2Activate.ps1\3", part, flags=re.I)
 
 
+# Files written by `>`, Out-File, Set-Content… in UTF-8: Windows PowerShell 5.1 writes `echo hi > index.html` as UTF-16,
+# which a web server then sends as garbage ("bench site up" never appeared on the page).
+_UTF8_FILES = ("$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'; $PSDefaultParameterValues['Set-Content:Encoding'] = 'utf8'; "
+               "$PSDefaultParameterValues['Add-Content:Encoding'] = 'utf8'; ")
+
+
 def shell_argv(command: str) -> List[str]:
     """A shell command as PowerShell runs it. UTF-8 out, so output isn't mangled."""
-    return POWERSHELL + ["[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + _FRESH_PATH + ps_compat(command)]
+    return POWERSHELL + ["[Console]::OutputEncoding = [Text.Encoding]::UTF8; " + _UTF8_FILES + _FRESH_PATH + ps_compat(command)]
 
 
 def cd_suffix() -> str:

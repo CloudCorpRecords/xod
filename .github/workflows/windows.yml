@@ -45,6 +45,12 @@ jobs:
         run: python tests/smoke/run_models_test.py
       - name: The worker - installs, the done-check, pause and continue (scripted model)
         run: python tests/smoke/run_worker_test.py
+      - name: Paste any MCP server - every format, asking the server, keys, connecting (stand-in servers)
+        run: python tests/smoke/run_mcp_import_test.py
+      - name: Sentinel - the safety check on every action
+        run: python tests/smoke/run_sentinel_test.py
+      - name: Goals and the morning brief (scripted model)
+        run: python tests/smoke/run_goals_test.py
 
   installer:
     name: Build, install and run Xod-setup.exe

@@ -8,18 +8,58 @@
     (await fetch(url, { method, headers: body ? { "Content-Type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined })).json();
 
   // ---------------------------------------------------------------- drawer
+  // Goals (services/goals.py): a plan, check-ins as tasks, progress; and the morning brief.
+  function goalsHtml(goals, brief) {
+    const active = goals.filter((g) => g.status !== "done"), done = goals.filter((g) => g.status === "done");
+    const card = (g) => {
+      const pct = g.progress.total ? Math.round((100 * g.progress.done) / g.progress.total) : 0;
+      const last = g.log.length ? g.log[g.log.length - 1] : null;
+      return `<div class="task-card space-y-2 ${g.status === "paused" ? "opacity-60" : ""}" data-goal="${esc(g.id)}">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0"><p class="task-title">◎ ${esc(g.title)}</p>
+            <p class="text-[12px] text-zinc-400">${g.progress.done}/${g.progress.total} steps${g.deadline ? ` · by ${esc(g.deadline)}` : ""}${g.checking ? " · checking in now" : g.status === "paused" ? " · paused" : g.next_check_at ? ` · next check-in ${esc(new Date(g.next_check_at * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }))}` : ""}</p></div>
+        </div>
+        <div class="h-1.5 rounded-full bg-surface-700 overflow-hidden"><div class="h-full bg-brand-400" style="width:${pct}%"></div></div>
+        <details><summary class="text-[12px] text-zinc-400 cursor-pointer">Plan${g.next_step ? `: next, ${esc(g.next_step.slice(0, 70))}` : ""}</summary>
+          <ol class="mt-1.5 space-y-1 text-[12px]">${g.plan.map((s) => `<li class="${s.status === "done" ? "text-zinc-500 line-through" : s.status === "blocked" ? "text-amber-200" : "text-zinc-300"}">${esc(s.text)}${s.note ? ` <span class="text-zinc-500 no-underline">(${esc(s.note)})</span>` : ""}</li>`).join("")}</ol>
+          ${last ? `<p class="mt-2 text-[12px] text-zinc-400"><span class="text-zinc-500">${esc(new Date(last.at * 1000).toLocaleDateString())}:</span> ${esc(last.text.slice(0, 280))}</p>` : ""}
+        </details>
+        <div class="flex flex-wrap gap-2">
+          ${g.status !== "done" ? `<button class="task-btn" data-gl="check" ${g.checking ? "disabled" : ""}>Check in now</button>
+          <button class="task-btn task-btn-quiet" data-gl="${g.status === "paused" ? "resume" : "pause"}">${g.status === "paused" ? "Resume" : "Pause"}</button>` : ""}
+          <button class="task-btn task-btn-quiet" data-gl="delete">Delete</button>
+        </div></div>`;
+    };
+    return `<section class="space-y-2">
+        <h4 class="text-[13px] font-semibold text-white">Goals</h4>
+        <p class="text-[12px] text-zinc-400">Something that takes days. Xod makes a plan, checks in on its own, and moves it on. It never sends, buys or signs up without asking.</p>
+        <div class="flex gap-2"><input id="goalNewText" placeholder="Find a flat under $2k by November" class="flex-1 bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[12px] text-white focus:outline-none focus:border-brand-500">
+          <button data-gl="new" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 text-[12px] font-semibold hover:bg-brand-400">Start</button></div>
+        ${active.map(card).join("")}
+        ${done.length ? `<details><summary class="text-[12px] text-zinc-500 cursor-pointer">Done (${done.length})</summary><div class="space-y-2 mt-2">${done.map(card).join("")}</div></details>` : ""}
+      </section>
+      <section class="task-card space-y-1.5">
+        <div class="flex items-center justify-between gap-3"><p class="task-title">☀ Morning brief</p>
+          <label class="flex items-center gap-1.5 text-[11px] text-zinc-400 cursor-pointer"><input type="checkbox" data-gl="brief" ${brief.enabled ? "checked" : ""} class="accent-amber-400"> On</label></div>
+        <p class="text-[12px] text-zinc-400">Every day at <input type="time" data-gl="brief-time" value="${esc(brief.time)}" class="bg-surface-900 border border-surface-700 rounded px-1.5 py-0.5 text-[12px] text-white">: your goals and next steps, what's waiting for you, today's calendar (if connected) and news on what you care about.</p>
+        <button class="task-btn task-btn-quiet" data-gl="brief-now">Make one now</button>
+      </section>
+      <h4 class="text-[13px] font-semibold text-white pt-2">Routines</h4>`;
+  }
+
   async function renderList() {
     const body = document.getElementById("routinesBody");
     if (!body) return;
-    const { routines } = await api("/api/routines");
+    const [{ routines }, { goals, brief }] = await Promise.all([api("/api/routines"), api("/api/goals")]);
+    const top = goalsHtml(goals, brief);
     if (!routines.length) {
-      body.innerHTML = `<div class="text-center py-10 space-y-2">
+      body.innerHTML = top + `<div class="text-center py-6 space-y-2">
         <p class="text-[13px] text-zinc-300">No routines yet.</p>
         <p class="text-[12px] text-zinc-500">Do something once (in a chat or as a task), then press <b class="text-zinc-300">Save as routine</b> under the answer. Xod remembers the steps and can repeat them on a schedule.</p>
         <button data-rt="new" class="mt-2 px-3 py-1.5 rounded-lg text-[12px] bg-surface-700 text-white hover:bg-surface-600">Write one from scratch</button></div>`;
       return;
     }
-    body.innerHTML = routines.map((r) => {
+    body.innerHTML = top + routines.map((r) => {
       const next = r.enabled && r.next_run_at ? new Date(r.next_run_at * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" }) : null;
       const last = r.last_run_at ? `Last run ${new Date(r.last_run_at * 1000).toLocaleDateString()}${r.last_status && r.last_status !== "running" ? ` · ${r.last_status === "done" ? "worked" : r.last_status}` : r.last_status === "running" ? " · running now" : ""}` : "Never run";
       return `<div class="task-card space-y-2 ${r.enabled ? "" : "opacity-60"}" data-id="${esc(r.id)}">
@@ -53,8 +93,8 @@
         <aside class="tasks-drawer" role="dialog" aria-label="Routines">
           <header class="px-5 pt-5 pb-3 flex items-start justify-between gap-3 border-b border-white/[0.06]">
             <div>
-              <h3 class="font-bold text-lg text-white">Routines</h3>
-              <p class="text-[12px] text-zinc-400 mt-0.5">Jobs Xod repeats for you. Each run shows up in Tasks and still asks before sending or paying.</p>
+              <h3 class="font-bold text-lg text-white">Routines & goals</h3>
+              <p class="text-[12px] text-zinc-400 mt-0.5">Goals Xod works toward and jobs it repeats for you. Each run shows up in Tasks and still asks before sending or paying.</p>
             </div>
             <div class="flex items-center gap-1">
               <button data-rt="new" class="px-2.5 py-1 rounded-lg text-[12px] text-zinc-300 hover:text-white hover:bg-surface-700">New</button>
@@ -79,7 +119,27 @@
     setTimeout(() => root.classList.add("hidden"), 250);
   };
 
+  async function onGoal(el, e) {
+    const act = el.dataset.gl, id = el.closest("[data-goal]")?.dataset.goal;
+    if (act === "new" && e.type === "click") {
+      const input = document.getElementById("goalNewText");
+      if (!input.value.trim()) return input.focus();
+      el.disabled = true; el.textContent = "Planning…";
+      const r = await api("/api/goals", "POST", { text: input.value.trim() });
+      showToast(r.success ? "Goal made: the first check-in is in Tasks" : r.error);
+      return renderList();
+    }
+    if (act === "check" && e.type === "click") { const r = await api(`/api/goals/${id}/check`, "POST"); showToast(r.success ? "Checking in: follow it in Tasks" : r.error); return renderList(); }
+    if ((act === "pause" || act === "resume") && e.type === "click") { await api(`/api/goals/${id}`, "PATCH", { status: act === "pause" ? "paused" : "active" }); return renderList(); }
+    if (act === "delete" && e.type === "click" && confirm("Delete this goal and its plan?")) { await api(`/api/goals/${id}`, "DELETE"); return renderList(); }
+    if (act === "brief" && e.type === "change") { await api("/api/brief", "POST", { enabled: el.checked }); return showToast(el.checked ? "Morning brief on" : "Morning brief off"); }
+    if (act === "brief-time" && e.type === "change") { await api("/api/brief", "POST", { time: el.value }); return showToast("Saved"); }
+    if (act === "brief-now" && e.type === "click") { const r = await api("/api/brief", "POST", { run: true }); showToast(r.success ? "Making it: it's in Tasks" : r.error); }
+  }
+
   async function onDrawerClick(e) {
+    const gl = e.target.closest("[data-gl]");
+    if (gl) return onGoal(gl, e);
     const el = e.target.closest("[data-rt]");
     if (!el) return;
     const act = el.dataset.rt, card = el.closest("[data-id]"), id = card?.dataset.id;

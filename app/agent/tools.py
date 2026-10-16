@@ -2740,10 +2740,27 @@ def _expand_path_args(arguments: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None) -> Dict[str, Any]:
-    """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first."""
-    from app.services import activity
+async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None,
+                       reviewed: bool = False) -> Dict[str, Any]:
+    """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first.
+    Sentinel (services/sentinel.py) looks at it first, against what the person asked; a hit waits for their OK
+    (reviewed=True is that OK). What comes back from tools that read others' content is remembered for the next look."""
+    from app.services import activity, sentinel
     arguments = _expand_path_args(arguments)
+    if not reviewed:
+        read_only = None
+        if name.startswith("mcp__"):
+            try:
+                from app.services.mcp_client import mcp_hub, _read_only
+                _, t = mcp_hub._find(name)
+                read_only = _read_only(t) if t else None
+            except Exception:
+                pass
+        hit = sentinel.review(name, arguments or {}, read_only)
+        if not hit:
+            hit = await sentinel.review_message(name, arguments or {})
+        if hit:
+            return sentinel.hold(name, arguments or {}, hit)
     ctx = None
     try:
         ctx = await asyncio.to_thread(activity.before, name, arguments or {}, active_workspace_path)
@@ -2754,6 +2771,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         await asyncio.to_thread(activity.after, ctx, result)
     except Exception as e:
         logger.warning(f"activity log failed for {name}: {e}")
+    sentinel.saw(name, result)
     return result
 
 
@@ -3451,7 +3469,20 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                     return int(v) if v not in (None, "") else None
                 except (TypeError, ValueError):
                     return None
-            return system_control_service.read_file(filepath=filepath, start_line=num(start), end_line=num(end), tail=num(tail))
+            res = system_control_service.read_file(filepath=filepath, start_line=num(start), end_line=num(end), tail=num(tail))
+            if isinstance(res, dict) and res.get("success") and (res.get("lines_count") or 0) > 200 and start is None and end is None and not tail:
+                # A long file read whole: the model's copy is cut short, so it only ever saw the start ("the last line is
+                # 'ok'"). The end goes first, said plainly, where the cut can't reach it.
+                lines = str(res.get("content") or "").rstrip("\n").splitlines()
+                # A read cut off by size already carries the file's real end (system_control.read_file); the content's
+                # end would be wherever the cut fell.
+                end = res.get("last_lines") or "\n".join(f"{len(lines) - 9 + i}: {l}" for i, l in enumerate(lines[-10:]))
+                res = {"success": True, "filepath": res.get("filepath"), "lines_count": res.get("lines_count"),
+                       "note": f"Long file ({res.get('lines_count')} lines). first_lines is the start, last_lines the end; "
+                               "for another part pass start_line/end_line.",
+                       "last_lines": end if isinstance(end, str) else "\n".join(map(str, end)),
+                       "first_lines": "\n".join(lines[:60]), "size_bytes": res.get("size_bytes")}
+            return res
 
         elif name == "computer_write_file":
             filepath = arguments.get("filepath") or arguments.get("file_path") or arguments.get("path") or ""

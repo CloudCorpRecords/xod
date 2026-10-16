@@ -309,6 +309,11 @@ def guidance(log: List[Dict[str, Any]], content: str = "", told: Optional[Dict[s
         for e in log:
             if e["failed"]:
                 fails[e["fp"]] = fails.get(e["fp"], 0) + 1
+        starts = [e for e in log if e["name"] == "computer_start_job"]
+        if len(starts) >= 2 and log[-1]["name"] == "computer_start_job" and log[-1].get("new"):
+            add("restart", "That background job was already started; starting it again just fights over the same port. "
+                           "Check it with computer_check_job, stop the extra one, and prove it works by fetching the page: "
+                           + ("`(Invoke-WebRequest http://127.0.0.1:<port>/ -UseBasicParsing).Content`" if WIN else "`curl -s http://127.0.0.1:<port>/`") + ".")
         if len(log) >= 2 and log[-1]["fp"] == log[-2]["fp"] and not log[-1]["failed"] and log[-1].get("new"):
             add("again", "You just ran exactly that and got the same result; running it again won't change anything. "
                          "Use what it showed and take the next step.")
@@ -355,6 +360,8 @@ def refused(name: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 CHECK = """You check whether a job on a computer is really finished. Judge only from the outputs below, not from what the
 worker says. Finished means: everything the person asked for is done, AND something was run whose output proves it works
 (a version printed, an import that worked, the program's own output, a page that answered).
+For a server or web page, proof is the page's content fetched and shown in an output; "the port is open" or "it's
+listening" is not proof. A claim in the worker's message is never proof.
 
 The person asked: {goal}
 
@@ -410,6 +417,41 @@ async def done_check(goal: str, log: List[Dict[str, Any]], final: str) -> Dict[s
 
 
 # ------------------------------------------------------------------ the loop
+def calls_in_text(content: str, allowed: set) -> List[Dict[str, Any]]:
+    """Tool calls the model wrote out as text (```json {"name": "computer_run_command", "arguments": {…}}```) instead of
+    making them: Qwen does this now and then, and the job stalled with every step "not done yet"."""
+    out, dec, i = [], json.JSONDecoder(), 0
+    text = content or ""
+    while True:
+        i = text.find("{", i)
+        if i < 0:
+            break
+        try:
+            obj, end = dec.raw_decode(text, i)
+        except ValueError:
+            i += 1
+            continue
+        i = end
+        if isinstance(obj, dict) and obj.get("name") in allowed:
+            args = obj.get("arguments", obj.get("parameters", obj.get("args", {})))
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {}
+            out.append({"id": f"text_{len(out)}", "type": "function",
+                        "function": {"name": obj["name"], "arguments": json.dumps(args if isinstance(args, dict) else {})}})
+    if not out and "computer_run_command" in allowed:
+        # "Let's create the file… ```powershell\nSet-Content …\n```": a command it means to run, written as a code block.
+        m = re.search(r"```(?:powershell|pwsh|ps1|bash|sh|zsh|shell|cmd|console)\s*\n(.+?)```", text, re.S | re.I)
+        if m and re.search(r"\b(?:let'?s|we'll|we will|i'll|i will|next|first|now)\b", text[:m.start()], re.I):
+            cmd = "\n".join(l for l in m.group(1).strip().splitlines() if l.strip() and not l.lstrip().startswith("#"))
+            if cmd and len(cmd) < 2000:
+                out.append({"id": "text_cmd", "type": "function",
+                            "function": {"name": "computer_run_command", "arguments": json.dumps({"command": cmd.replace("\n", "; ")})}})
+    return out[:4]
+
+
 def _shrink(convo: List[Dict[str, Any]]) -> None:
     """Older tool results get short, so thirty steps still fit a local model's context."""
     tool_msgs = [m for m in convo if m.get("role") == "tool"]
@@ -499,6 +541,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     checks = 0
     answer, verdict, stopped, left = "", None, "", ""
     nudged_empty = 0
+    held: Optional[Dict[str, Any]] = None
     yield {"type": "status", "content": "Working on it…"}
 
     for step in range(MAX_STEPS):
@@ -517,6 +560,10 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 break
         if stopped:
             break
+        if not calls:
+            calls = calls_in_text(content, allowed)
+            if calls:
+                content = ""          # the text was the calls; nothing to say yet
 
         if not calls:
             # It says it's done (or that the person should do something). Is it, really?
@@ -578,7 +625,16 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                         "exit": res.get("exit_code") if isinstance(res, dict) else None, "new": True})
             body = json.dumps(res, default=str) if not isinstance(res, str) else res
             convo.append({"role": "tool", "tool_call_id": cid, "name": name, "content": body[:4000]})
+            if isinstance(res, dict) and res.get("needs_approval"):
+                held = res
+                break
         _shrink(convo)
+        if held:
+            # The safety check (or a connected app) wants the person's OK: stop here, with the card showing.
+            answer = (f"**Waiting for your OK** on the card above: {held.get('message') or 'this step needs your approval.'} "
+                      "After you approve it, say **continue** and I'll carry on.")
+            left = f"waited for approval of {held.get('tool')}"
+            break
 
     if not answer and not stopped:
         # Out of steps or time while still working.

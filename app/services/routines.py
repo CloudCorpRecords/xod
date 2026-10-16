@@ -249,5 +249,10 @@ def start() -> None:
                 await asyncio.to_thread(tick)
             except Exception as e:
                 logger.warning(f"routine scheduler: {e}")
+            try:      # goals' check-ins and the morning brief (services/goals.py) run on the same clock
+                from app.services import goals
+                await asyncio.to_thread(goals.tick)
+            except Exception as e:
+                logger.warning(f"goals: {e}")
             await asyncio.sleep(TICK_SEC)
     _loop_task = asyncio.get_event_loop().create_task(loop())

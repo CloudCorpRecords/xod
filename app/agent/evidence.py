@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from typing import Dict, Any, List, Optional
 
@@ -579,10 +580,15 @@ class EvidenceBoard:
                         tree_prev = "\n".join(res["tree"].splitlines()[:15])
                         lines.append(f"    Tree Preview:\n{tree_prev}")
                 elif t_name == "computer_read_file":
-                    lines.append(f"  - Read File '{res.get('name', '')}' ({res.get('lines_returned') or res.get('lines_count', 0)} lines)")
+                    lines.append(f"  - Read File '{res.get('name') or os.path.basename(str(res.get('filepath') or ''))}' "
+                                 f"({res.get('lines_returned') or res.get('lines_count', 0)} lines)")
                     if res.get("content"):
                         snippet = "\n".join(res["content"].splitlines()[:10])
                         lines.append(f"    Content Preview:\n{snippet}")
+                    if res.get("first_lines"):       # a long file: its start and its end (tools.py), not just the start
+                        lines.append("    Start of the file:\n" + "\n".join(res["first_lines"].splitlines()[:8]))
+                    if res.get("last_lines"):
+                        lines.append(f"    END of the file (the last lines, numbered):\n{res['last_lines']}")
                 elif t_name == "computer_edit_file":
                     lines.append(f"  - Surgically Edited '{res.get('name', '')}': line {res.get('line_number', 1)} ({res.get('occurrences_replaced', 1)} replaced, {res.get('lines_delta', 0):+d} lines delta)")
                 elif t_name == "computer_write_file":
