@@ -65,14 +65,22 @@ def events(since: int = 0) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------- finding servers and apps
 
 async def _models(c: httpx.AsyncClient, base: str, key: str = "") -> Optional[List[Dict[str, Any]]]:
-    """An OpenAI-compatible server's models, or None if nothing answers there."""
-    try:
-        r = await c.get(f"{base}/v1/models", headers={"Authorization": f"Bearer {key}"} if key else None)
-        if r.status_code != 200:
+    """An OpenAI-compatible server's models, or None if nothing answers there. A connection that's reset once (it
+    happens on Windows) is tried again before the server counts as not running."""
+    for attempt in range(2):
+        try:
+            r = await c.get(f"{base}/v1/models", headers={"Authorization": f"Bearer {key}"} if key else None)
+            if r.status_code != 200:
+                return None
+            return [m for m in r.json().get("data", []) if isinstance(m, dict) and m.get("id")]
+        except (httpx.ReadError, httpx.RemoteProtocolError, httpx.WriteError):
+            if attempt == 0:
+                await asyncio.sleep(0.3)
+                continue
             return None
-        return [m for m in r.json().get("data", []) if isinstance(m, dict) and m.get("id")]
-    except Exception:
-        return None
+        except Exception:
+            return None
+    return None
 
 
 async def discover() -> List[Dict[str, Any]]:

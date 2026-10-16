@@ -243,8 +243,6 @@ check("a program that isn't here: says what's missing", not r["success"] and r.g
 check("imported servers start as 'read-only runs, the rest asks'", json.loads(cfg_text)["servers"]["keyed"]["trust"] == "read_only")
 check("pasted into the chat: connected, with its tools", "connected" in out["chat"] and "shout" in out["chat"], out["chat"])
 
-for s in servers:
-    s.should_exit = True
 for n in ("keyed:DEMO_API_KEY", "kserver:header:X-Api-Key"):
     try:
         keychain.delete_password(mcp_client.KEYCHAIN, n)
@@ -254,4 +252,13 @@ for n in ("keyed:DEMO_API_KEY", "kserver:header:X-Api-Key"):
 print(f"\n{passed} passed, {len(failures)} failed")
 if failures:
     print("FAILED: " + "; ".join(failures))
-    sys.exit(1)
+# The stand-in servers run in daemon threads: stop them and leave without the interpreter's shutdown, where a
+# server still logging crashed the exit ("Fatal Python error: _enter_buffered_busy") after every check had passed.
+import logging  # noqa: E402
+logging.disable(logging.CRITICAL)
+for s in servers:
+    s.should_exit = True
+time.sleep(1.0)
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(1 if failures else 0)
