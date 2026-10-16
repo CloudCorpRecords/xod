@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1
+
+**Usage: every token, everywhere (Xod's page → Usage)**
+- Every model call is recorded, on this computer and in the cloud: which model, what it was for (the chat, the worker, subagents, done-checks, the safety check, goal plans…), which job and which agent, tokens in and out (the server's own count, or an estimate marked as one), how long it took, and the cost for cloud models.
+- The Usage tab shows today / 7 / 30 / 90 days: total tokens, calls, model time, cloud cost against your budget, writing speed, how much ran locally (free and private) vs in the cloud, a chart by day (or by hour today), every model with its calls, tokens, speed and cost, what the tokens went on, the biggest jobs (open one for its steps) and the latest calls. Each job's sheet on Activity says what it used.
+- Local model servers are asked for real token counts on streamed answers too, not just cloud ones.
+
+**Fixed**
+- "Make the folder", written as an empty file write to a path with no file name, made an empty file instead, and then nothing could go inside it; the worker retried for minutes (115k tokens, found on the new Usage tab). It now makes the folder; a file sitting where a folder should be is named in the error, with a hint to remove it.
+
 ## 0.7.0
 
 **Paste any MCP server**

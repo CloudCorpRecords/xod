@@ -133,8 +133,9 @@ class AgenticResearcher:
         """
         self.spoken = spoken
         # What the person said in this conversation: the safety check compares every action with it (services/sentinel.py).
-        from app.services import sentinel
+        from app.services import sentinel, usage as usage_log
         sentinel.begin(messages)
+        usage_log.purpose.set("")                 # each turn starts unlabelled; the worker and team label their own calls
         attached_image_urls: List[str] = []
         text_parts: List[str] = []
         user_msg = messages[-1].get("content", "") if messages else "SaaS Market Intelligence"

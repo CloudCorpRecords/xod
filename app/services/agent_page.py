@@ -75,6 +75,11 @@ def activity(limit: int = 80) -> List[Dict[str, Any]]:
 def detail(origin: str) -> Dict[str, Any]:
     steps = agent_log.steps_for(origin)
     out: Dict[str, Any] = {"id": origin, "steps": steps, "order": sorted(steps, key=lambda a: (a != "main", a))}
+    try:
+        from app.services import usage
+        out["usage"] = usage.for_origin(origin)
+    except Exception:
+        out["usage"] = None
     if origin.startswith("task:"):
         from app.services.task_queue import task_queue
         t = task_queue.get(origin[5:]) or {}

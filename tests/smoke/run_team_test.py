@@ -225,6 +225,41 @@ routines.run_now(r["reminder"]["id"])
 check("when it's due: a notification, not an agent run", notes and "Saphira" in notes[0][1] and len(tq.task_queue.list()) == before, notes)
 check("…and it's done (no next time)", not routines.get(r["reminder"]["id"])["next_run_at"])
 
+print("T8 token usage across everything")
+from app.services import usage, llm_routing  # noqa: E402
+
+
+async def calls():
+    activity.origin.set("task:usage1")
+    agent_log.agent.set("main")
+    usage.purpose.set("worker")
+    llm_routing.record("ollama", "big:14b", {"prompt_tokens": 1000, "completion_tokens": 200}, kind="deliberate", started=time.time() - 4)
+    llm_routing.record("ollama", "big:14b", None, prompt_chars=4000, completion_chars=400, kind="deliberate", started=time.time() - 2)
+    agent_log.agent.set("sub1")
+    usage.purpose.set("subagent")
+    llm_routing.record("anthropic", "claude-opus-5-5", {"input_tokens": 3000, "output_tokens": 500}, kind="deliberate", started=time.time() - 5)
+    activity.origin.set("chat:other")
+    agent_log.agent.set("main")
+    usage.purpose.set("")
+    llm_routing.record("ollama", "big:14b", {"prompt_tokens": 50, "completion_tokens": 4}, kind="stream", task="chat", started=time.time() - 3)
+asyncio.run(calls())
+o = usage.overview("today")
+t = o["totals"]
+check("every call is counted, local and cloud", t["calls"] >= 4 and t["local_tokens"] >= 1000 + 200 + 1000 + 100 + 54 and t["cloud_tokens"] >= 3500, t)
+check("a server that gives no counts is estimated (~4 characters a token) and marked", t["estimated"] >= 1, t)
+check("cloud calls have a cost; local ones are free", t["cost"] > 0 and all(m["cost"] == 0 for m in o["by_model"] if m["local"]), o["by_model"])
+check("anthropic's input/output token names are understood", any(m["model"] == "claude-opus-5-5" and m["prompt"] == 3000 and m["completion"] == 500 for m in o["by_model"]), o["by_model"])
+labels = {p["purpose"]: p["label"] for p in o["by_purpose"]}
+check("what each call was for: worker, subagent, chat", {"worker", "subagent", "chat"} <= set(labels) and labels["subagent"] == "Subagents", labels)
+job = next((j for j in o["by_job"] if j["origin"] == "task:usage1"), None)
+check("by job: tokens and how many agents", job and job["tokens"] == 1200 + 1100 + 3500 and job["agents"] == 2, job)
+mine = usage.for_origin("task:usage1")
+check("a job's own total for its sheet", mine["calls"] == 3 and set(mine["models"]) == {"big:14b", "claude-opus-5-5"}, mine)
+tiny = next(r for r in o["recent"] if r["origin"] == "chat:other")
+check("speed ignores tiny replies (4 tokens after a 3 s wait isn't a speed)", tiny["tokens_per_sec"] is None, tiny)
+check("the daily series covers the range with no gaps", len(o["daily"]) == 14 and o["daily"][-1]["local"] > 0, o["daily"][-2:])
+check("and the cloud budget line still counts cloud only", llm_routing.month_spend() > 0)
+
 print(f"\n{passed} passed, {len(failures)} failed")
 if failures:
     print("FAILED: " + "; ".join(failures))

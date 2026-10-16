@@ -3492,6 +3492,23 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         elif name == "computer_write_file":
             filepath = arguments.get("filepath") or arguments.get("file_path") or arguments.get("path") or ""
             content = _real_newlines(filepath, arguments.get("content", ""))
+            target = os.path.expanduser(str(filepath))
+            leaf = os.path.basename(target.rstrip("\\/"))
+            if not str(content or "").strip() and filepath and not os.path.splitext(leaf)[1] and not os.path.exists(target) \
+                    and not leaf.startswith(".") and leaf.lower() not in _NO_EXT_FILES:
+                # "Write" nothing to C:\work\project: it meant the folder. Writing it made an empty FILE called
+                # project, and then nothing could ever go inside it.
+                os.makedirs(target, exist_ok=True)
+                return {"success": True, "made_folder": True, "path": target,
+                        "message": f"Made the folder {target} (an empty write to a path with no file name means a folder)."}
+            parent = os.path.dirname(target)
+            while parent and not os.path.exists(parent) and os.path.dirname(parent) != parent:
+                parent = os.path.dirname(parent)
+            if parent and os.path.isfile(parent):
+                size = os.path.getsize(parent)
+                return {"success": False, "error": f"{parent} is a file, not a folder, so nothing can go inside it"
+                        + (" (it's empty: probably made by mistake; delete it or pick another folder name)." if size == 0 else
+                           ". Pick another folder.")}
             return system_control_service.write_file(filepath=filepath, content=content)
 
         elif name == "computer_edit_file":
@@ -3768,6 +3785,11 @@ _CHANGE_RE = re.compile(r"\b(create|make|write|add|append|insert|edit|change|rep
                         r"close|run|start|stop|open|download|convert|merge|split|empty|undo|restore|turn|send|build|generate|draft)\b", re.I)
 CHANGE_TOOLS = {"computer_write_file", "computer_edit_file", "computer_manage_file", "computer_batch_organize", "computer_kill_process",
                 "fs_write_workspace_file", "fs_move_file", "fs_organize_files", "fs_create_folder"}
+
+
+# Real files with no extension: an empty one is still a file, not a folder.
+_NO_EXT_FILES = {"makefile", "dockerfile", "license", "licence", "readme", "procfile", "codeowners", "gemfile", "rakefile",
+                 "vagrantfile", "jenkinsfile", "brewfile", "pipfile", "notice", "authors", "changelog", "todo", "caddyfile"}
 
 
 _SLOW_COMMAND_RE = re.compile(r"\b(?:winget|choco|scoop|brew|apt(?:-get)?|pip3?|pipx|uv|npm|npx|pnpm|yarn|bun|cargo|go|"

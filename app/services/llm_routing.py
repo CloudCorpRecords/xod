@@ -153,8 +153,18 @@ def cost(model: str, prompt_tokens: int, completion_tokens: int) -> Optional[flo
     return None if p is None else round(prompt_tokens / 1e6 * p[0] + completion_tokens / 1e6 * p[1], 6)
 
 
-def record(provider: str, model: str, usage: Optional[Dict[str, Any]], prompt_chars: int = 0, completion_chars: int = 0) -> None:
-    """Records a cloud call. Uses the provider's token counts, or estimates (~4 characters a token)."""
+def record(provider: str, model: str, usage: Optional[Dict[str, Any]], prompt_chars: int = 0, completion_chars: int = 0,
+           kind: str = "", task: Optional[str] = None, started: Optional[float] = None) -> None:
+    """Records a call: every one (local too) into the Usage tab's log (services/usage.py); cloud ones here as well,
+    for the monthly budget. Uses the provider's token counts, or estimates (~4 characters a token)."""
+    try:
+        from app.services import usage as usage_log
+        u = dict(usage or {})
+        if "prompt_tokens" not in u and "input_tokens" in u:
+            u["prompt_tokens"], u["completion_tokens"] = u.get("input_tokens"), u.get("output_tokens")
+        usage_log.record(provider, model, u or None, prompt_chars, completion_chars, kind=kind, task=task, started=started)
+    except Exception as e:
+        logger.debug(f"usage log skipped: {e}")
     if provider in LOCAL_PROVIDERS:
         return
     estimated = not usage

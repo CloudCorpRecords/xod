@@ -746,6 +746,35 @@ button.xa-row:hover, label.xa-row:hover { background: rgba(255, 250, 240, 0.04);
 .xa-step { display: flex; gap: 0.75rem; padding: 0.4rem 0; }
 .xa-tick { color: #6fd08c; font-weight: 700; width: 1rem; flex-shrink: 0; } .xa-cross { color: #f0786a; font-weight: 700; width: 1rem; flex-shrink: 0; }
 .xa-step-title { display: block; font-size: 13.5px; font-weight: 600; color: #e9e6e1; }
+.xa-seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; background: rgba(255, 250, 240, 0.05); margin: 0.4rem 0 0.8rem; }
+.xa-seg button { padding: 0.3rem 0.75rem; border-radius: 8px; font-size: 12px; color: #a39e97; }
+.xa-seg button.is-on { background: rgba(255, 250, 240, 0.12); color: #fff; }
+.xa-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; }
+@media (max-width: 560px) { .xa-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.xa-stat { display: flex; flex-direction: column; padding: 0.7rem 0.75rem; border-radius: 14px; background: rgba(255, 250, 240, 0.045); border: 1px solid rgba(255, 250, 240, 0.07); min-width: 0; }
+.xa-stat-k { font-size: 11px; color: #a39e97; text-transform: uppercase; letter-spacing: 0.04em; }
+.xa-stat-v { font-size: 22px; font-weight: 700; color: #fff; margin-top: 2px; }
+.xa-stat-s { font-size: 11px; color: #7d7b85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xa-split { display: flex; height: 8px; border-radius: 9999px; overflow: hidden; margin: 0.8rem 0 0.35rem; background: rgba(255, 250, 240, 0.06); }
+.xa-split-local { background: #7fd49b; } .xa-split-cloud { background: #8fa8ff; }
+.xa-chart { display: flex; align-items: flex-end; gap: 3px; height: 110px; padding: 0.4rem 0; border-bottom: 1px solid rgba(255, 250, 240, 0.1); }
+.xa-bar { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; min-width: 3px; }
+.xa-bar span { display: block; width: 100%; border-radius: 3px 3px 0 0; }
+.xa-bar-local { background: #7fd49b; } .xa-bar-cloud { background: #8fa8ff; }
+.xa-bar:hover span { filter: brightness(1.25); }
+.xa-chart-x { display: flex; justify-content: space-between; font-size: 10.5px; color: #7d7b85; margin-top: 3px; }
+.xa-table { display: flex; flex-direction: column; }
+.xa-tr { display: grid; grid-template-columns: minmax(0, 2.4fr) repeat(4, minmax(0, 1fr)); gap: 0.5rem; align-items: center; padding: 0.45rem 0;
+  border-bottom: 1px solid rgba(255, 250, 240, 0.05); font-size: 12px; color: #c9c5bf; }
+.xa-calls .xa-tr { grid-template-columns: minmax(0, 2.4fr) 1.2fr 0.7fr 0.7fr 0.6fr 0.8fr; }
+.xa-td-main { display: flex; flex-direction: column; min-width: 0; }
+.xa-td-main b { color: #fff; font-weight: 600; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xa-td-main small { color: #7d7b85; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xa-hbar { display: grid; grid-template-columns: 11rem 1fr 3.5rem; gap: 0.6rem; align-items: center; font-size: 12px; color: #c9c5bf; padding: 0.22rem 0; }
+.xa-hbar-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.xa-hbar-track { height: 8px; border-radius: 9999px; background: rgba(255, 250, 240, 0.06); overflow: hidden; }
+.xa-hbar-track span { display: block; height: 100%; background: linear-gradient(90deg, #a196ec, #8fa8ff); border-radius: 9999px; }
+.xa-hbar-n { text-align: right; color: #a39e97; }
 .xa-step-detail { display: block; font-size: 12.5px; color: #a39e97; margin-top: 1px; word-break: break-word; }
 .xm-h { font-size: 12px; font-weight: 600; color: #a39e97; text-transform: uppercase; letter-spacing: 0.04em; }
 .xm-role { display: flex; gap: 0.75rem; align-items: baseline; font-size: 13px; color: #e4e1dc; padding: 0.45rem 0.7rem; border-radius: 10px; background: rgba(255, 250, 240, 0.035); }

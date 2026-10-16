@@ -10,7 +10,7 @@
   const api = async (url, method = "GET", body) =>
     (await fetch(url, { method, headers: body !== undefined ? { "Content-Type": "application/json" } : {}, body: body !== undefined ? JSON.stringify(body) : undefined })).json();
   const TABS = [
-    ["activity", "list", "Activity"], ["approvals", "shield-check", "Approvals"], ["browser", "monitor", "Browser"],
+    ["activity", "list", "Activity"], ["usage", "gauge", "Usage"], ["approvals", "shield-check", "Approvals"], ["browser", "monitor", "Browser"],
     ["schedules", "clock", "Schedules"], ["identity", "fingerprint", "Identity"], ["team", "users", "Team"],
   ];
   let tab = "activity", timer = null;
@@ -67,12 +67,67 @@
         <span class="xa-time">${esc(when(d.at || 0))}</span></div>
       <h3 class="xa-sheet-title">${esc(d.title || "")}</h3>
       ${d.now && d.status !== "done" ? `<p class="xa-sub">${esc(d.now)}</p>` : ""}
+      ${d.usage && d.usage.calls ? `<p class="xa-faint mt-1">${d.usage.calls} model call${d.usage.calls !== 1 ? "s" : ""} · ${num(d.usage.prompt + d.usage.completion)} tokens (${num(d.usage.prompt)} in, ${num(d.usage.completion)} out) · ${Math.round(d.usage.ms / 1000)} s of model time${d.usage.cost ? ` · ${usd(d.usage.cost)}` : ""} · ${esc((d.usage.models || []).join(", "))}</p>` : ""}
       ${d.result ? `<div class="xa-result">${window.marked ? marked.parse(d.result.replace(/<!--[\s\S]*?-->/g, "").slice(0, 4000)) : esc(d.result)}</div>` : ""}
       ${d.has_screenshot ? `<img class="xa-shot-big" src="/api/tasks/${esc(d.id.slice(5))}/screenshot" alt="The page at the end">` : ""}
       ${sections || `<p class="xa-sub mt-3">No steps recorded for this one.</p>`}
       <button class="xa-btn mt-4" data-close-sheet>Close</button>`;
     sheet.parentElement.classList.add("is-open");
     if (window.lucide) lucide.createIcons();
+  }
+
+  // ---------------------------------------------------------------- usage (services/usage.py)
+  let range = "7d";
+  const num = (n) => { n = Number(n || 0); return n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(n >= 1e4 ? 0 : 1)}k` : String(Math.round(n)); };
+  const usd = (v) => !v ? "$0" : v < 0.01 ? "<$0.01" : `$${v.toFixed(v < 1 ? 3 : 2)}`;
+  async function usage(body) {
+    const d = await api(`/api/agent/usage?origin=${range}`);
+    const t = d.totals;
+    const RANGES = [["today", "Today"], ["7d", "7 days"], ["30d", "30 days"], ["90d", "90 days"]];
+    const localPct = t.total ? Math.round((100 * t.local_tokens) / t.total) : 0;
+    const bars = d.hourly.length && range === "today"
+      ? Array.from({ length: 24 }, (_, h) => ({ label: `${h}:00`, local: (d.hourly.find((x) => x.hour === h) || {}).tokens || 0, cloud: 0 }))
+      : d.daily.map((x) => ({ label: x.day.slice(5), local: x.local, cloud: x.cloud, cost: x.cost }));
+    const peak = Math.max(1, ...bars.map((b) => b.local + b.cloud));
+    const maxPurpose = Math.max(1, ...d.by_purpose.map((p) => p.tokens || 0));
+    body.innerHTML = `
+      <div class="xa-seg">${RANGES.map(([k, l]) => `<button data-range="${k}" class="${range === k ? "is-on" : ""}">${l}</button>`).join("")}</div>
+      ${!t.calls ? `<p class="xa-faint py-6">No model calls ${range === "today" ? "today" : "in this time"} yet.</p>` : `
+      <div class="xa-stats">
+        <div class="xa-stat"><span class="xa-stat-k">Tokens</span><span class="xa-stat-v">${num(t.total)}</span><span class="xa-stat-s">${num(t.prompt)} in · ${num(t.completion)} out</span></div>
+        <div class="xa-stat"><span class="xa-stat-k">Model calls</span><span class="xa-stat-v">${num(t.calls)}</span><span class="xa-stat-s">${Math.round(t.ms / 1000 / 60)} min of model time</span></div>
+        <div class="xa-stat"><span class="xa-stat-k">Cloud cost</span><span class="xa-stat-v">${usd(t.cost)}</span><span class="xa-stat-s">${t.cloud_tokens ? `${num(t.cloud_tokens)} cloud tokens` : "all on this computer"}</span></div>
+        <div class="xa-stat"><span class="xa-stat-k">Speed</span><span class="xa-stat-v">${t.tokens_per_sec ?? "–"}</span><span class="xa-stat-s">tokens a second, written</span></div>
+      </div>
+      <div class="xa-split"><span style="width:${localPct}%" class="xa-split-local"></span><span style="width:${100 - localPct}%" class="xa-split-cloud"></span></div>
+      <p class="xa-faint">${localPct}% on this computer (free, private) · ${100 - localPct}% cloud${t.estimated ? ` · ${t.estimated} call${t.estimated !== 1 ? "s" : ""} estimated (~4 characters a token: the server gave no count)` : ""}</p>
+      ${d.budget && d.budget.monthly_usd ? `<p class="xa-sub">This month: ${usd(d.budget.month_spend)} of your ${usd(d.budget.monthly_usd)} cloud budget</p>` : ""}
+
+      <p class="xa-day">${range === "today" ? "Today, by hour" : "By day"}</p>
+      <div class="xa-chart">${bars.map((b) => `<div class="xa-bar" title="${esc(b.label)}: ${num(b.local + b.cloud)} tokens${b.cost ? ` · ${usd(b.cost)}` : ""}">
+          <span class="xa-bar-cloud" style="height:${(100 * b.cloud) / peak}%"></span><span class="xa-bar-local" style="height:${(100 * b.local) / peak}%"></span></div>`).join("")}</div>
+      <div class="xa-chart-x"><span>${esc(bars[0]?.label || "")}</span><span>${esc(bars[bars.length - 1]?.label || "")}</span></div>
+
+      <p class="xa-day">By model</p>
+      <div class="xa-table">${d.by_model.map((m) => `<div class="xa-tr"><span class="xa-td-main"><b>${esc(m.model)}</b><small>${m.local ? "this computer" : esc(m.provider)}</small></span>
+        <span>${num(m.calls)} calls</span><span>${num((m.prompt || 0) + (m.completion || 0))} tok</span><span>${m.tokens_per_sec ? `${m.tokens_per_sec} t/s` : "–"}</span><span>${m.local ? "free" : usd(m.cost)}</span></div>`).join("")}</div>
+
+      <p class="xa-day">What it was for</p>
+      ${d.by_purpose.map((p) => `<div class="xa-hbar"><span class="xa-hbar-label">${esc(p.label)}</span>
+        <span class="xa-hbar-track"><span style="width:${(100 * (p.tokens || 0)) / maxPurpose}%"></span></span><span class="xa-hbar-n">${num(p.tokens)}</span></div>`).join("")}
+      ${d.by_agent.length > 1 ? `<p class="xa-faint mt-1">${d.by_agent.map((a) => `${a.who === "main" ? "Main agent" : "Subagents"}: ${num(a.tokens)} tokens`).join(" · ")}</p>` : ""}
+
+      ${d.by_job.length ? `<p class="xa-day">Biggest jobs</p>${d.by_job.map((j) => `<button class="xa-row" data-open="${esc(j.origin)}">
+          <span class="xa-ico"><i data-lucide="${j.origin.startsWith("task:") ? "check" : j.origin.startsWith("chat:") ? "message-square" : "sparkles"}" class="size-4"></i></span>
+          <span class="min-w-0 flex-1 text-left"><span class="xa-title">${esc(j.job || j.origin)}</span>
+          <span class="xa-sub">${num(j.tokens)} tokens · ${num(j.calls)} calls${j.agents > 1 ? ` · ${j.agents} agents` : ""}${j.cost ? ` · ${usd(j.cost)}` : ""}</span>
+          <span class="xa-time">${esc(ago(j.at))}</span></span></button>`).join("")}` : ""}
+
+      <p class="xa-day">Recent calls</p>
+      <div class="xa-table xa-calls">${d.recent.map((r) => `<div class="xa-tr" title="${esc(r.job || "")}">
+        <span class="xa-td-main"><b>${esc(r.label)}</b><small>${esc(r.model)}${r.agent && r.agent !== "main" ? ` · ${esc(agentName(r.agent))}` : ""}${r.job ? ` · ${esc(r.job.slice(0, 40))}` : ""}</small></span>
+        <span>${num(r.prompt_tokens)} → ${num(r.completion_tokens)}${r.estimated ? "*" : ""}</span><span>${r.ms != null ? `${(r.ms / 1000).toFixed(1)} s` : "–"}</span>
+        <span>${r.tokens_per_sec ? `${r.tokens_per_sec} t/s` : ""}</span><span>${r.local ? "" : usd(r.cost_usd)}</span><span class="xa-faint">${esc(ago(r.ts))}</span></div>`).join("")}</div>`}`;
   }
 
   async function approvals(body) {
@@ -170,7 +225,7 @@
     if (!body) return;
     document.querySelectorAll("[data-xa-tab]").forEach((b) => b.classList.toggle("is-on", b.dataset.xaTab === tab));
     try {
-      await ({ activity, approvals, browser, schedules, identity, team }[tab])(body);
+      await ({ activity, usage, approvals, browser, schedules, identity, team }[tab])(body);
     } catch (e) {
       body.innerHTML = `<p class="text-[12px] text-red-300 py-6">Couldn't load this: ${esc(e.message)}</p>`;
     }
@@ -178,12 +233,15 @@
     if (head) document.getElementById("xaStatus").textContent = head.status;
     if (window.lucide) lucide.createIcons();
     clearTimeout(timer);
-    if (tab === "activity" && document.getElementById("agentPanel")?.classList.contains("is-open")) timer = setTimeout(render, 5000);
+    if ((tab === "activity" || tab === "usage") && document.getElementById("agentPanel")?.classList.contains("is-open")
+        && !document.querySelector(".xa-sheet-wrap.is-open")) timer = setTimeout(render, tab === "usage" ? 10000 : 5000);
   }
 
   async function onClick(e) {
     const t = e.target.closest("[data-xa-tab]");
     if (t) { tab = t.dataset.xaTab; return render(); }
+    const rg = e.target.closest("[data-range]");
+    if (rg) { range = rg.dataset.range; return render(); }
     if (e.target.closest("[data-close-agent]")) return window.closeAgentPanel();
     if (e.target.closest("[data-close-sheet]") || e.target.matches(".xa-sheet-wrap")) return document.querySelector(".xa-sheet-wrap").classList.remove("is-open");
     const open = e.target.closest("[data-open]");

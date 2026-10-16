@@ -248,6 +248,23 @@ r = worker.route("continue", history)
 check("'continue' picks the same job up", r and r["goal"].startswith("set up a python virtual environment"), r)
 worker.MAX_STEPS = 30
 
+# ------------------------------------------------------------------ W15 an empty write to a folder path
+print("W15 'make the folder' written as an empty file")
+proj = Path(TMP) / "usage-demo"
+r = asyncio.run(agent_tools.execute_tool("computer_write_file", {"filepath": str(proj), "content": ""}))
+check("an empty write to a path with no file name makes the folder", r.get("made_folder") and proj.is_dir(), r)
+r = asyncio.run(agent_tools.execute_tool("computer_write_file", {"filepath": str(proj / "hello.py"), "content": "print('hi')"}))
+check("…and the file then goes inside it", r.get("success") and (proj / "hello.py").exists(), r)
+for name in (".gitkeep", "Makefile"):
+    r = asyncio.run(agent_tools.execute_tool("computer_write_file", {"filepath": str(proj / name), "content": ""}))
+    check(f"an empty {name} is still a file", (proj / name).is_file(), r)
+stray = Path(TMP) / "stray"
+stray.write_text("")
+r = asyncio.run(agent_tools.execute_tool("computer_write_file", {"filepath": str(stray / "a.py"), "content": "x"}))
+check("a file where a folder should be: says so plainly", not r.get("success") and "is a file, not a folder" in r.get("error", ""), r)
+h = worker.guidance([entry("write", r["error"])])
+check("…and the worker gets the hint to delete it or pick another name", any("FILE where a folder should be" in x for x in h), h)
+
 # ------------------------------------------------------------------ W14 calls written as text
 print("W14 tool calls written as text")
 txt = 'Let\'s install it.\n```json\n{"name": "computer_run_command", "arguments": {"command": "npm install chalk", "cwd": "C:/x"}}\n```\nThen {"not": "a call"}'

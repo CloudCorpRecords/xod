@@ -669,6 +669,9 @@ async def agent_page_tab(tab: str, origin: Optional[str] = None):
         return await asyncio.to_thread(agent_page.identity)
     if tab == "team":
         return await agent_page.team_view()
+    if tab == "usage":
+        from app.services import usage
+        return await asyncio.to_thread(usage.overview, origin if origin in usage.RANGES else "7d")
     return {"error": "No such tab."}
 
 

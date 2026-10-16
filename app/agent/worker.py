@@ -258,6 +258,9 @@ _HINTS = [
      "winget doesn't know that Id. Run `winget search <name>` and install with the exact Id from its list."),
     ("winget_scope", re.compile(r"No applicable installer found", re.I),
      "That package has no per-user installer: run the same winget install again without --scope user."),
+    ("file_not_folder", re.compile(r"is a file, not a folder|WinError 183|Not a directory|NotADirectoryError|Path is not a directory", re.I),
+     "Something in that path is a FILE where a folder should be (often an empty file made by mistake). List the parent "
+     "folder, delete that file (or use another folder name), then make the folder with computer_manage_file action mkdir."),
     ("rights", re.compile(r"Access is denied|requires elevation|run as administrator|administrator privileges|EACCES|"
                           r"Permission denied|UnauthorizedAccess|0x80070005", re.I),
      "That needs more rights. Try a per-user install (winget --scope user, pip install --user, npm without -g) or a folder this "
@@ -558,6 +561,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     nudged_empty = 0
     held: Optional[Dict[str, Any]] = None
     subs = 0
+    from app.services import usage as usage_log
+    usage_log.purpose.set("worker")          # the Usage tab: these calls are the worker's
     yield {"type": "status", "content": "Working on it…"}
 
     for step in range(MAX_STEPS):

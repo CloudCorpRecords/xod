@@ -180,6 +180,8 @@ async def run_subagent(label: str, task: str, tier: str, execute_tool: Callable,
     """One subagent's whole run. emit() gets its live events (tool calls and results) for the chat."""
     from app.services import agent_log
     agent_log.agent.set(label)               # this task's own context: its steps are logged as this subagent's
+    from app.services import usage as usage_log
+    usage_log.purpose.set("subagent")
     started = time.time()
     if agent_name:
         return await _ask_outside(label, agent_name, task, execute_tool, emit, started)

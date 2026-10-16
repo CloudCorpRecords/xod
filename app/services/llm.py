@@ -619,7 +619,8 @@ class LLMService:
                     data = res.json()
                     from app.services import llm_routing
                     llm_routing.record(info["provider"], info["model"], data.get("usage"),
-                                       prompt_chars=len(json.dumps(messages)), completion_chars=len(str(data)))
+                                       prompt_chars=len(json.dumps(messages)), completion_chars=len(str(data)),
+                                       kind="answer", task=task, started=started)
                     choice = data["choices"][0]
                     msg = choice.get("message", {})
                     answered = bool(msg.get("content"))
@@ -745,8 +746,8 @@ class LLMService:
         }
         if info["provider"] == "ollama":
             payload["model"] = await ollama_context.long_context_model(info["base_url"], info["model"])
-        if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini"):
-            payload["stream_options"] = {"include_usage": True}   # token counts for cost tracking
+        if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini", "ollama", "lm_studio", "local", "custom"):
+            payload["stream_options"] = {"include_usage": True}   # token counts (cost, and the Usage tab for local models too)
         _usage: Optional[Dict[str, Any]] = None
         _quiet_thinking(payload, info, think)
 
@@ -810,7 +811,8 @@ class LLMService:
                                 raise httpx.RemoteProtocolError("the stream ended without [DONE]")
                     from app.services import llm_routing
                     llm_routing.record(info["provider"], info["model"], _usage,
-                                       prompt_chars=len(json.dumps(messages)), completion_chars=sum(len(x) for x in streamed))
+                                       prompt_chars=len(json.dumps(messages)), completion_chars=sum(len(x) for x in streamed) + reasoned,
+                                       kind="stream", task=task, started=started)
                     if task and streamed:
                         from app.services import dataset_recorder
                         ex_id = dataset_recorder.capture(
@@ -862,6 +864,7 @@ class LLMService:
         Streams reasoning tokens live, detects whether tool calls or conversational answers
         are being formulated, and yields live tokens + final deliberation structure.
         """
+        _started = time.time()
         if not endpoint_override and not tier:
             from app.services import llm_routing
             route = llm_routing.current()
@@ -892,8 +895,8 @@ class LLMService:
         }
         if info["provider"] == "ollama":
             payload["model"] = await ollama_context.long_context_model(info["base_url"], info["model"])
-        if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini"):
-            payload["stream_options"] = {"include_usage": True}   # token counts for cost tracking
+        if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini", "ollama", "lm_studio", "local", "custom"):
+            payload["stream_options"] = {"include_usage": True}   # token counts (cost, and the Usage tab for local models too)
         _usage: Optional[Dict[str, Any]] = None
         if tools:
             payload["tools"] = tools
@@ -1030,7 +1033,8 @@ class LLMService:
 
         from app.services import llm_routing
         llm_routing.record(info["provider"], info["model"], _usage,
-                           prompt_chars=len(json.dumps(messages)), completion_chars=len(full_content) + len(full_reasoning))
+                           prompt_chars=len(json.dumps(messages)), completion_chars=len(full_content) + len(full_reasoning),
+                           kind="deliberate", started=_started)
         yield {
             "type": "deliberation_complete",
             "tool_calls": formatted_tool_calls,
