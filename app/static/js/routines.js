@@ -173,6 +173,7 @@
           <h3 class="text-white text-lg font-semibold">${routine ? "Edit routine" : "Save as routine"}</h3>
           <button data-ed="cancel" class="p-1.5 rounded-lg text-zinc-500 hover:text-white hover:bg-surface-700"><i data-lucide="x" class="size-4"></i></button>
         </div>
+        ${!routine && !source ? `<div id="rtTemplates"><p class="text-[12px] text-zinc-400 mb-1.5">Start from a template</p><div class="flex flex-wrap gap-2" id="rtTemplateRow"></div></div>` : ""}
         <label class="block"><span class="text-[12px] text-zinc-400">Name</span>
           <input id="rtName" value="${esc(data.name)}" placeholder="e.g. Morning news brief" class="mt-1 w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[13px] text-white focus:outline-none focus:border-brand-500"></label>
         <label class="block"><span class="text-[12px] text-zinc-400">What should Xod do?</span>
@@ -209,6 +210,26 @@
     };
     modal.querySelector("#rtKind").addEventListener("change", sync);
     sync();
+    if (!routine && !source) {
+      api("/api/routines/templates").then(({ templates }) => {
+        const row = modal.querySelector("#rtTemplateRow");
+        if (!row || !templates?.length) return modal.querySelector("#rtTemplates")?.remove();
+        row.innerHTML = templates.map((t) => `<button data-tpl="${esc(t.id)}" title="${esc(t.description)}" class="px-2.5 py-1.5 rounded-lg text-[12px] bg-surface-900 border border-surface-700 text-zinc-200 hover:border-brand-500 text-left">☀ ${esc(t.name)}<span class="block text-[11px] text-zinc-500">${esc(t.schedule_text)}</span></button>`).join("");
+        row.addEventListener("click", (e) => {
+          const b = e.target.closest("[data-tpl]");
+          if (!b) return;
+          const t = templates.find((x) => x.id === b.dataset.tpl);
+          if (!t) return;
+          modal.querySelector("#rtName").value = t.name;
+          modal.querySelector("#rtInstr").value = t.instructions;
+          const s = t.schedule || { kind: "manual" };
+          modal.querySelector("#rtKind").value = s.kind === "weekly" && (s.days || []).join() === DAYS.slice(0, 5).join() ? "weekdays" : s.kind;
+          if (s.time) modal.querySelector("#rtTime").value = s.time;
+          modal.querySelectorAll("#rtDays input").forEach((i) => { i.checked = (s.days || []).includes(i.value); });
+          sync();
+        });
+      }).catch(() => modal.querySelector("#rtTemplates")?.remove());
+    }
     modal.addEventListener("click", async (e) => {
       const b = e.target.closest("[data-ed]");
       if (!b) return;

@@ -2,7 +2,7 @@
 The launch features, end to end, in a throwaway data folder (never your real data or Keychain).
 
   A  activity log + undo for every kind of file change, and the "changed since" guard
-  R  routines: schedules, learning steps from a chat, the request a run sends
+  R  routines: schedules, learning steps from a chat, the request a run sends, templates
   M  model routing: ask/auto escalation, cost tracking, budget stop
   P  add-on packs: tools of a pack that's off are hidden and refused
   D  reports: page with sources, hostile HTML stripped, PDF printed
@@ -66,6 +66,18 @@ def test_routines():
     r = routines.create("Notes", "Write the notes file", {"kind": "daily", "time": "09:00"}, "chat:test")
     report("R2 steps learned from the chat", len(r["steps"]) >= 1 and "Wrote new.md" in r["steps"][0], r["steps"][:2])
     report("R3 run request carries the steps", "Steps that worked last time" in routines.compose_request(r))
+    tpl = [t for t in routines.list_templates() if t["id"] == "morning-brief"]
+    report("R4 morning-brief template listed", len(tpl) == 1 and tpl[0]["schedule_text"] == "Weekdays at 8:00 AM"
+           and tpl[0]["schedule"]["days"] == ["mon", "tue", "wed", "thu", "fri"],
+           tpl[0]["schedule_text"] if tpl else "missing")
+    r2 = routines.create_from_template("morning-brief")
+    report("R5 routine from template", r2["name"] == "Morning brief" and len(r2["steps"]) >= 1
+           and r2["schedule"]["kind"] == "weekly" and r2["next_run_at"] is not None, r2["schedule_text"])
+    try:
+        routines.create_from_template("no-such-template")
+        report("R6 unknown template refused", False)
+    except ValueError:
+        report("R6 unknown template refused", True)
 
 
 def test_routing():

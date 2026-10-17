@@ -92,6 +92,8 @@ def _tidy(pipe):
 
 
 def _load_mflux(model_dir, meta):
+    from app.services.local_engine import require_apple_silicon
+    require_apple_silicon("On-device image generation")
     import mlx.core as mx
     if os.environ.get("XOD_MEDIA_MLX_LIMIT_GB"):
         mx.set_memory_limit(int(float(os.environ["XOD_MEDIA_MLX_LIMIT_GB"]) * 1e9))

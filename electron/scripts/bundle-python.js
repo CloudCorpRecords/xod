@@ -26,7 +26,7 @@ function findSource() {
   }
   const managed = path.join(process.env.HOME || "", ".local", "share", "uv", "python");
   if (fs.existsSync(managed)) {
-    const hit = fs.readdirSync(managed).filter((d) => /^cpython-3\.12\.\d+-macos-aarch64/.test(d)).sort().pop();
+    const hit = fs.readdirSync(managed).filter((d) => /^cpython-3\.12\.\d+-macos-(aarch64|x86_64)/.test(d)).sort().pop();
     if (hit) return path.join(managed, hit);
   }
   throw new Error("No standalone Python 3.12 found. Install one with: uv python install 3.12 (or set XOD_BUNDLE_PYTHON).");

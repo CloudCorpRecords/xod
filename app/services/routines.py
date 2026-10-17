@@ -150,6 +150,47 @@ def compose_request(r: Dict[str, Any]) -> str:
     return text
 
 
+# ---------------------------------------------------------------- templates
+
+# Ready-made routines anyone can start from. A template is a name, a description, the
+# instructions, and a schedule; the steps are a first guide for the model and are
+# refreshed from the first successful run, like any routine's steps.
+TEMPLATES = [
+    {
+        "id": "morning-brief",
+        "name": "Morning brief",
+        "description": "Every weekday at 8: the five biggest tech stories with sources.",
+        "instructions": ("Find the five biggest tech stories from the last 24 hours. For each one, "
+                         "write a short paragraph on what happened and why it matters, with the source link. "
+                         "Skip rumors and prefer primary sources."),
+        "schedule": {"kind": "weekly", "time": "08:00", "days": ["mon", "tue", "wed", "thu", "fri"]},
+        "steps": [
+            "Searched for the day's top tech stories",
+            "Opened each story and noted what happened, with its source link",
+            "Wrote the five-story brief",
+        ],
+    },
+]
+
+
+def list_templates() -> List[Dict[str, Any]]:
+    out = []
+    for t in TEMPLATES:
+        sched = _clean_schedule(t.get("schedule"))
+        out.append({**t, "schedule": sched, "schedule_text": describe_schedule(sched)})
+    return out
+
+
+def create_from_template(template_id: str) -> Dict[str, Any]:
+    t = next((x for x in TEMPLATES if x["id"] == template_id), None)
+    if not t:
+        raise ValueError("No such template.")
+    r = create(t["name"], t["instructions"], t.get("schedule"))
+    if t.get("steps"):
+        r = update(r["id"], steps=t["steps"]) or r
+    return r
+
+
 # ---------------------------------------------------------------- CRUD
 
 def list_all() -> List[Dict[str, Any]]:

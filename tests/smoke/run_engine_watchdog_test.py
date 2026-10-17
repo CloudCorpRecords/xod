@@ -1,7 +1,8 @@
 """
 The built-in engine stops answering (services/local_engine.py, the watchdog in services/llm.py): Xod notices within
 seconds, restarts it once, retries, says so in plain words, and fails cleanly if the restart doesn't help. A stand-in
-engine plays the part of mlx_lm.server; no model, no network.
+engine plays the part of mlx_lm.server; no model, no network. T0 checks the Apple-silicon-only pieces (built-in
+engine, voice, MLX images) refuse plainly on Intel.
   .venv/bin/python tests/smoke/run_engine_watchdog_test.py
 """
 import asyncio
@@ -139,7 +140,41 @@ async def stream(fn="stream"):
     return out
 
 
+async def intel_guards():
+    """Apple-silicon-only pieces refuse plainly on Intel (pretend to be an Intel Mac)."""
+    import platform as _plat
+    from unittest import mock
+    check("apple-silicon detection matches this Mac",
+          le.is_apple_silicon() == (_plat.system() == "Darwin" and _plat.machine() == "arm64"))
+    with mock.patch.object(_plat, "machine", return_value="x86_64"), \
+            mock.patch.object(_plat, "system", return_value="Darwin"):
+        check("not Apple silicon under the patch", not le.is_apple_silicon())
+        r = le.start_download("mlx-community/Qwen2.5-1.5B-Instruct-4bit")
+        check("built-in downloads refused on Intel", not r["success"] and "Apple silicon" in r["error"], r.get("error", "")[:80])
+        try:
+            await le.LocalEngine().ensure_running("mlx-community/Qwen2.5-1.5B-Instruct-4bit")
+            check("built-in engine won't start on Intel", False)
+        except RuntimeError as e:
+            check("built-in engine won't start on Intel", "Apple silicon" in str(e), str(e)[:80])
+        from app.services import setup_wizard
+        r = setup_wizard.choose("xod", "mlx-community/Qwen2.5-1.5B-Instruct-4bit")
+        check("setup won't switch to built-in on Intel", not r["success"] and "Apple silicon" in r["error"],
+              r.get("error", "")[:80])
+        from app.services import speech_to_text
+        r = await speech_to_text.transcribe(b"x" * 32000)
+        check("voice says plainly it needs Apple silicon", not r["success"] and "Apple silicon" in r["error"],
+              r.get("error", ""))
+        from app.services import media_worker
+        try:
+            media_worker._load_mflux("/nonexistent", {})
+            check("MLX images refused on Intel", False)
+        except RuntimeError as e:
+            check("MLX images refused on Intel", "Apple silicon" in str(e), str(e)[:80])
+
+
 async def main():
+    print("T0 Apple-silicon-only pieces refuse plainly on Intel")
+    await intel_guards()
     print("T1 an engine that stops answering is restarted, and the answer still comes")
     await fresh("hang,ok")
     notes, before, t0 = [], engine.restarts, time.time()

@@ -46,6 +46,20 @@ Thank you for your interest in contributing to **Xod**! We welcome contributions
    .venv/bin/python tests/self_edit/run_self_edit_test.py   # needs a local model in LM Studio
    ```
 
+   **Which tests to run.** Every runner is a plain script (`.venv/bin/python tests/<suite>/run_*.py`); times are rough and grow with model speed. `tests/support/` holds shared fakes (model picker, keyring, connectors), not suites, and `tests/fixtures/` holds pretend sites and data.
+
+   | Suite | What it checks | Start with | Needs a model? |
+   |---|---|---|---|
+   | `smoke` | One script per area: endpoints and panels, companion chat, speech, "Hey Xod" conversations, memory, goals, updater, voice/vision, keychain. Minutes each; most need Chrome. | `run_smoke_test.py` | Some (conversation, voice) |
+   | `features` | Cross-cutting behaviour: undo, routines, routing, add-ons, reports, MCP, connectors/sign-in (needs internet), Agent Mail relay, job applications, operator approvals. Minutes each. | `run_features_test.py` | Yes, the loaded model |
+   | `browser_missions` | End-to-end browser errands against a fake local job board. ~10–15 min per scenario. | `run_suite.py` | Yes, LM Studio model |
+   | `task_inbox` | Queued tasks sharing one browser: approvals send exactly once, price comparisons finish. Minutes. | `run_task_test.py` | Yes |
+   | `self_heal` | Recovery: fake-success detectors, error classification, file repair, model reloads, background-job watching. Minutes. | `run_heal_test.py` | Partly (repair paths) |
+   | `self_edit` | The self-editing gate: model tiers, protected files, staged checks. `smoke_test.py` is the fast no-model no-browser subset (seconds). | `smoke_test.py`, then `run_self_edit_test.py` | Yes, except `smoke_test.py` |
+   | `model_lab` | Training pipeline on sandbox data: student training, DPO from mistakes, live specialist routing. Tens of minutes; run in order (`train_` → `practice_` → `try_specialist_live`). | `train_from_test_runs.py` | Yes, teacher + student |
+   | `media` | Media runtime: memory broker with chat loaded, LoRA hot-swap, base-model swapping across MLX/diffusers, real video output. Tens of minutes, needs GPU memory. | `run_media_test.py` | Yes, chat + image models |
+   | `perf` | Research-pipeline speed benchmark on your model, timed per call and phase. Minutes. | `run_speed_bench.py --warm` | Yes, your model |
+
 6. **Build the Mac installer** (optional). Needs Node and a standalone Python 3.12 (`uv python install 3.12`):
    ```bash
    cd electron && npm install && npm run dist   # → electron/dist/Xod-<version>-arm64.dmg

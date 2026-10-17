@@ -19,10 +19,10 @@ SETUP_KEY = "setup_complete"
 
 
 def _mac() -> Dict[str, Any]:
-    from app.services.local_engine import total_ram_gb
+    from app.services.local_engine import is_apple_silicon, total_ram_gb
     ram = total_ram_gb()
     free = shutil.disk_usage(DATA_DIR).free / 1024 ** 3
-    apple = platform.system() == "Darwin" and platform.machine() == "arm64"
+    apple = is_apple_silicon()
     issues: List[str] = []
     windows = platform.system() == "Windows"
     if windows:
@@ -102,11 +102,16 @@ async def status() -> Dict[str, Any]:
 def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> Dict[str, Any]:
     """Switches Xod's model. base_url: where a "local" server is (autoconnect found it). how: "you" when the person
     picked it, "auto" when Xod did; Xod only changes a model on its own while the choice is still its own."""
-    from app.config import update_env_variable
-    from app.services.local_engine import catalog_entry, is_downloaded
     allowed = {"xod", "lm_studio", "ollama", "local", "custom", "anthropic", "openai", "gemini", "groq", "openrouter", "fireworks"}
     if provider not in allowed:
         return {"success": False, "error": f"Unknown provider {provider}"}
+    if provider == "xod":
+        # Before anything else: the built-in engine is Apple-silicon-only.
+        from app.services.local_engine import INTEL_MESSAGE, is_apple_silicon
+        if not is_apple_silicon():
+            return {"success": False, "error": INTEL_MESSAGE}
+    from app.config import update_env_variable
+    from app.services.local_engine import catalog_entry, is_downloaded
     # Checked before anything is saved (a refused address used to leave the provider switched anyway).
     from app.services import model_sources
     if provider == "local" and not (base_url.startswith(("http://localhost", "http://127.0.0.1")) or model_sources.is_mine(base_url)):

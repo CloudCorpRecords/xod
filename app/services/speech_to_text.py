@@ -158,6 +158,9 @@ def clean(out: Dict[str, Any]):
 async def transcribe(audio: bytes, partial: bool = False) -> Dict[str, Any]:
     if not audio:
         return {"success": False, "error": "No audio received."}
+    from app.services.local_engine import is_apple_silicon
+    if not is_apple_silicon():
+        return {"success": False, "error": "Voice transcription needs a Mac with Apple silicon (M1 or newer)."}
     if len(audio) > MAX_BYTES:
         return {"success": False, "error": "Recording is too long."}
     if partial and _lock.locked():

@@ -14,6 +14,7 @@ recommends, by how much memory the Mac has.
 import asyncio
 import logging
 import os
+import platform
 import socket
 import subprocess
 import sys
@@ -27,6 +28,20 @@ import httpx
 from app.paths import APP_ROOT, DATA_DIR
 
 logger = logging.getLogger("xod.engine")
+
+INTEL_MESSAGE = ("The built-in engine needs a Mac with Apple silicon (M1 or newer). "
+                 "On this Mac, use Ollama or LM Studio with a local model, or a cloud model — "
+                 "pick one under Settings → AI model.")
+
+
+def is_apple_silicon() -> bool:
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def require_apple_silicon(what: str = "This") -> None:
+    if not is_apple_silicon():
+        raise RuntimeError(f"{what} needs a Mac with Apple silicon (M1 or newer). "
+                           "Use Ollama or LM Studio with a local model, or a cloud model instead.")
 
 # Recommended models, smallest first. need_gb: memory while running (weights + working space).
 CATALOG: List[Dict[str, Any]] = [
@@ -100,6 +115,8 @@ _downloads: Dict[str, Dict[str, Any]] = {}
 
 def start_download(repo: str) -> Dict[str, Any]:
     """Downloads a model in the background; poll download_status() for progress."""
+    if not is_apple_silicon():
+        return {"success": False, "error": INTEL_MESSAGE}
     entry = catalog_entry(repo)
     if not entry:
         return {"success": False, "error": "Only models from Xod's list can be downloaded here."}
@@ -190,6 +207,8 @@ class LocalEngine:
         """Starts the engine with this model (or switches to it). Raises with a clear message if it can't.
         Ready means started *and* answering (started_at is set then): a request that arrives while
         another is still starting the engine waits for it instead of being refused."""
+        if not is_apple_silicon():
+            raise RuntimeError(INTEL_MESSAGE)
         if self.running() and self.repo == repo and self.started_at:
             return
         async with self._lk():

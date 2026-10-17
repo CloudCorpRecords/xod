@@ -1164,6 +1164,10 @@ class RoutineUpdate(BaseModel):
     steps: Optional[List[str]] = None
 
 
+class RoutineFromTemplate(BaseModel):
+    template_id: str
+
+
 @app.get("/api/routines")
 async def routines_list_endpoint():
     from app.services import routines
@@ -1196,6 +1200,22 @@ async def routines_run_endpoint(rid: str):
 async def routines_delete_endpoint(rid: str):
     from app.services import routines
     return {"success": routines.delete(rid)}
+
+
+@app.get("/api/routines/templates")
+async def routines_templates_endpoint():
+    """Ready-made routines to start from (services/routines.py TEMPLATES)."""
+    from app.services import routines
+    return {"templates": routines.list_templates()}
+
+
+@app.post("/api/routines/from-template")
+async def routines_from_template_endpoint(req: RoutineFromTemplate):
+    from app.services import routines
+    try:
+        return {"success": True, "routine": routines.create_from_template(req.template_id)}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
 
 
 @app.get("/api/routines/suggest")
