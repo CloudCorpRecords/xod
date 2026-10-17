@@ -7,6 +7,8 @@
   const age = (d) => d == null ? "" : d < 1 ? "today" : d < 2 ? "yesterday" : d < 60 ? `${Math.floor(d)}d ago` : `${Math.floor(d / 30)}mo ago`;
   const isRemote = (j) => j.remote || /remote/i.test(j.location || "");
   let pendingApply = null;           // what to apply to once the profile is filled in
+  // Starting applications writes answers for each job first (services/job_tailor.py): say so while it does.
+  const startApplying = (ids) => { if (typeof showToast === "function") showToast(`Writing answers for ${ids.length === 1 ? "this job" : `${ids.length} jobs`} from your résumé…`); return api("/api/jobs/apply", { ids }); };
 
   // ------------------------------------------------------------------ the card
   function card(ev) {
@@ -20,7 +22,7 @@
       el.innerHTML = `
         <div class="jc-head">
           <div><p class="jc-title"><i data-lucide="briefcase" class="size-4"></i>${esc(ev.role)}${ev.acronym ? ` <span>(${esc(ev.acronym)})</span>` : ""} · ${jobs.length} open</p>
-            <p class="jc-sub">Checked live on ${ev.boards_checked || 0} company job boards${(ev.narrowed || []).length ? ` · ${esc(ev.narrowed.join(", "))}` : ""}</p></div>
+            <p class="jc-sub">${ev.boards_checked ? `Checked live on ${ev.boards_checked} company job boards` : "From the practice careers site"}${(ev.narrowed || []).length ? ` · ${esc(ev.narrowed.join(", "))}` : ""}</p></div>
           <button class="jc-profile" data-j="profile"><i data-lucide="${ev.profile && ev.profile.ready ? "user-check" : "user-pen"}" class="size-3.5"></i>${ev.profile && ev.profile.ready ? "Your job profile" : "Add your details to apply"}</button>
         </div>
         <div class="jc-filters">
@@ -32,7 +34,7 @@
           <div class="jc-row ${S.applied.has(j.id) ? "is-applied" : ""}">
             <input type="checkbox" data-pick="${esc(j.id)}" ${S.picked.has(j.id) ? "checked" : ""} ${S.applied.has(j.id) ? "disabled" : ""} aria-label="Select">
             <span class="jc-logo">${esc((j.company || "?").slice(0, 1).toUpperCase())}</span>
-            <div class="jc-main"><p class="jc-role">${esc(j.title)}</p>
+            <div class="jc-main"><p class="jc-role">${esc(j.title)}${j.practice ? ` <span class="jc-practice" title="A made-up job on the practice careers site (demo/careers): nothing is sent to a real company">Practice</span>` : ""}</p>
               <p class="jc-meta"><b>${esc(j.company)}</b> · ${esc((j.location || "").slice(0, 60))}${j.workplace && !new RegExp(j.workplace, "i").test(j.location || "") ? ` · ${esc(j.workplace.toLowerCase())}` : isRemote(j) && !/remote/i.test(j.location || "") ? " · remote" : ""}${j.age_days != null ? ` · ${age(j.age_days)}` : ""}${j.pay ? ` · <span class="jc-pay">${esc(j.pay.slice(0, 44))}</span>` : ""}${j.fit ? ` · fit ${j.fit}%` : ""}</p></div>
             <a class="jc-btn" href="${esc(j.url)}" target="_blank" rel="noopener noreferrer">Open</a>
             <button class="jc-btn jc-apply" data-apply="${esc(j.id)}" ${S.applied.has(j.id) ? "disabled" : ""}>${S.applied.has(j.id) ? "In Tasks" : "Apply"}</button>
@@ -65,7 +67,8 @@
       if (b.dataset.j === "more") { S.shown += 12; return draw(); }
       const ids = b.dataset.apply ? [b.dataset.apply] : [...S.picked];
       if (!ids.length) return;
-      const r = await api("/api/jobs/apply", { ids });
+      b.disabled = true;
+      const r = await api("/api/jobs/profile").then((p) => p.status.ready ? startApplying(ids) : api("/api/jobs/apply", { ids })).finally(() => { b.disabled = false; });
       if (r.needs_profile) { pendingApply = { ids, after: (tasks) => { tasks.forEach((t) => S.applied.add(ids[tasks.indexOf(t)])); S.picked.clear(); draw(); } }; return openProfile(r.missing); }
       if (!r.ok) { if (typeof showToast === "function") showToast(r.error || "Couldn't start that."); return; }
       ids.forEach((id) => S.applied.add(id));
@@ -185,7 +188,7 @@
       if (pendingApply) {
         const p = pendingApply;
         pendingApply = null;
-        const res = p.ids ? await api("/api/jobs/apply", { ids: p.ids }) : null;
+        const res = p.ids ? await startApplying(p.ids) : null;
         if (res && res.ok) { p.after && p.after(res.tasks); if (typeof showToast === "function") showToast(`Started ${res.tasks.length} application${res.tasks.length === 1 ? "" : "s"} in Tasks`); }
         else if (p.prompt && typeof quickSendPrompt === "function") quickSendPrompt(p.prompt);
       } else if (typeof showToast === "function") showToast("Saved your job profile");
@@ -198,10 +201,17 @@
     openProfile(ev.missing, { suggested: ev.suggested, from: ev.from, choices: ev.choices, note: ev.note });
   }
 
+  // "do it all" in the chat saved the profile and started them: the form (if it's open) is done.
+  function onApplied(ev) {
+    pendingApply = null;
+    modal?.remove();
+    window.dispatchEvent(new CustomEvent("xod:build", { detail: { phase: "launch", title: "applications" } }));
+  }
+
   function fromHistory(m, wrapper) {
     const ev = (m.tool_events || []).filter((t) => t.type === "jobs").pop();
     if (ev) attach(ev, wrapper);
   }
 
-  window.XodJobs = { attach, fromHistory, openProfile, onProfileNeeded };
+  window.XodJobs = { attach, fromHistory, openProfile, onProfileNeeded, onApplied };
 })();

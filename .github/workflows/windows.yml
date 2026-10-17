@@ -55,6 +55,8 @@ jobs:
         run: python tests/smoke/run_team_test.py
       - name: Your job profile from your résumé - whose it is, Google Drive, 'just do all' (stand-in Drive)
         run: python tests/smoke/run_job_autofill_test.py
+      - name: Answers for each job, and pages that give AI orders (practice careers site, scripted model)
+        run: python tests/smoke/run_tailor_test.py
 
   installer:
     name: Build, install and run Xod-setup.exe

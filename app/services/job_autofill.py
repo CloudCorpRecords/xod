@@ -37,6 +37,8 @@ GDOC = "application/vnd.google-apps.document"
 
 def identity() -> Dict[str, List[str]]:
     """Names and emails Xod already knows are yours: your profile, what you told it, this computer's account."""
+    if os.environ.get("XOD_DEMO_NAME"):           # filming with a made-up résumé (demo/run.py --sample): that person
+        return {"names": [os.environ["XOD_DEMO_NAME"]], "emails": []}
     names, emails = [], []
     try:
         from app.services.browser_sandbox import load_user_profile
@@ -103,6 +105,9 @@ def _name_line(top: str) -> str:
 def local_files(limit: int = 12) -> List[Dict[str, Any]]:
     """Résumé / CV files on this computer, newest first."""
     found: List[Dict[str, Any]] = []
+    if os.environ.get("XOD_DEMO_RESUME_DIR"):      # filming with a made-up résumé (demo/run.py --sample): only that folder
+        _walk(found, [Path(os.environ["XOD_DEMO_RESUME_DIR"])], "Documents", 2)
+        return found
     if sys.platform == "darwin":
         import subprocess
         q = ('(kMDItemFSName == "*resume*"cd || kMDItemFSName == "*résumé*"cd || kMDItemFSName == "*cv*"cd || kMDItemFSName == "*curriculum*"cd) && '
@@ -202,7 +207,7 @@ async def drive_files(server: str, limit: int = 10) -> List[Dict[str, Any]]:
 async def find() -> List[Dict[str, Any]]:
     import asyncio
     files = await asyncio.to_thread(local_files)
-    server = drive_server()
+    server = None if os.environ.get("XOD_DEMO_RESUME_DIR") else drive_server()
     if server:
         files += await drive_files(server)
     files.sort(key=lambda f: -f["modified"])

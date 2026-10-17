@@ -4360,6 +4360,8 @@ function handleResearchEvent(event, assistantBubble) {
     if (window.XodJobs) XodJobs.attach(event, assistantBubble.wrapper);
   } else if (event.type === "job_profile_needed") {
     if (window.XodJobs) XodJobs.onProfileNeeded(event);
+  } else if (event.type === "jobs_applied") {
+    if (window.XodJobs) XodJobs.onApplied(event);
   } else if (event.type === "soul") {
     if (window.XodSoul) XodSoul.onEvent(event);
   } else if (event.type === "launch_app") {

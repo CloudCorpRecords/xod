@@ -187,7 +187,7 @@ def _table(jobs: List[Dict[str, Any]], n: int = 12) -> str:
 
 
 def _card(result: Dict[str, Any]) -> Dict[str, Any]:
-    keep = ("id", "company", "title", "location", "remote", "workplace", "age_days", "pay", "url", "apply_url", "department", "provider", "fit", "score")
+    keep = ("id", "company", "title", "location", "remote", "workplace", "age_days", "pay", "url", "apply_url", "department", "provider", "fit", "score", "practice")
     return {"type": "jobs", "role": result["spec"]["role"], "acronym": result["spec"].get("acronym"), "spec": result["spec"],
             "boards_checked": result.get("boards_checked"), "companies": result.get("companies"), "narrowed": result.get("narrowed") or [],
             "jobs": [{k: j.get(k) for k in keep} for j in (result.get("jobs") or [])[:60]], "others": result.get("others") or [],
@@ -268,14 +268,21 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         yield {"type": "content", "content": msg + "\n\n" + MARK}
         yield {"type": "done"}
         return
-    tasks = apply(chosen)
+    yield {"type": "status", "content": f"Writing answers for {'each job' if len(chosen) > 1 else 'this job'} from your résumé…"}
+    tasks = await apply(chosen)
     lines = [f"**Started {len(tasks)} application{'s' if len(tasks) != 1 else ''}** in Tasks:"]
-    lines += [f"- {t['company']}: {t['title']}" for t in tasks]
+    lines += [_line(t) for t in tasks]
     lines.append("\nFor each one, my browser opens the posting, fills the form from your profile and résumé, and **stops for your OK before submitting**. "
                  "Questions it can't answer from your profile come to you there too.")
     yield {"type": "jobs_applied", "tasks": tasks}
     yield {"type": "content", "content": "\n".join(lines) + "\n\n" + MARK}
     yield {"type": "done"}
+
+
+def _line(t: Dict[str, Any]) -> str:
+    """A started application, with the first words of the answer written for it."""
+    why = (t.get("answers") or {}).get("why_company") or ""
+    return f"- **{t['company']}**: {t['title']}" + (f"  \n  _\"{why[:150].rsplit(' ', 1)[0]}…\"_" if why else "")
 
 
 async def _do_all(result: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None]:
@@ -307,12 +314,12 @@ async def _do_all(result: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None
         yield {"type": "done"}
         return
     _pending.clear()
-    tasks = apply(chosen)
+    yield {"type": "status", "content": f"Writing answers for each job from your résumé…"}
+    tasks = await apply(chosen)
     yield {"type": "plan_step", "step_id": 2, "status": "completed"}
-    filled = ", ".join(NEED.get(k, k.replace("_", " ")) for k in r["fields"]) if r["fields"] else ""
-    lines = [(f"{r['note']} ({filled})." if filled else "Your job profile was ready.") + " You can change it any time in **your job profile**.",
+    lines = [(r["note"] if r["fields"] else "Your job profile was ready.") + " You can change it any time in **your job profile**.",
              f"\n**Started {len(tasks)} application{'s' if len(tasks) != 1 else ''}** in Tasks" + ("" if waiting else " (the top of the list)") + ":"]
-    lines += [f"- {t['company']}: {t['title']}" for t in tasks]
+    lines += [_line(t) for t in tasks]
     lines.append("\nEach one fills the form and **stops for your OK before submitting**. Questions your profile doesn't answer "
                  "(like work authorization) come to you there.")
     yield {"type": "jobs_applied", "tasks": tasks}
@@ -320,15 +327,21 @@ async def _do_all(result: Dict[str, Any]) -> AsyncGenerator[Dict[str, Any], None
     yield {"type": "done"}
 
 
-def apply(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+async def apply(jobs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One task per job (up to 10), each with answers written for that job first (services/job_tailor.py)."""
+    from app.services import job_tailor
+    from app.services.browser_sandbox import load_user_profile
     from app.services.task_queue import task_queue
+    jobs = jobs[:10]
+    answers = await job_tailor.kits(jobs, load_user_profile())
     out = []
-    for j in jobs[:10]:
+    for j, a in zip(jobs, answers):
         url = j.get("apply_url") or j.get("url")
         t = task_queue.create(f"Apply to the {j['title']} role at {j['company']}: {url} . Fill the application with my profile and upload my "
-                              f"résumé, answer questions from my profile, and stop for my OK before submitting.",
+                              f"résumé, answer questions from my profile, and stop for my OK before submitting." + job_tailor.for_request(j, a),
                               title=f"Apply: {j['title'][:50]} at {j['company']}")
-        out.append({"task_id": t["id"], "title": j["title"], "company": j["company"], "url": url})
+        out.append({"task_id": t["id"], "title": j["title"], "company": j["company"], "url": url,
+                    "answers": a, "answers_file": job_tailor.save(j, a)})
     return out
 
 

@@ -4093,4 +4093,4 @@ async def jobs_apply(req: JobsApplyRequest):
     chosen = [j for j in last.get("jobs", []) if j.get("id") in set(req.ids)]
     if not chosen:
         return {"ok": False, "error": "Those jobs aren't in the last search any more. Search again."}
-    return {"ok": True, "tasks": job_lane.apply(chosen)}
+    return {"ok": True, "tasks": await job_lane.apply(chosen)}

@@ -21,6 +21,7 @@ your OK before submitting (see agent/jobs.py).
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -326,13 +327,29 @@ def rank(jobs: List[Dict[str, Any]], spec: Dict[str, Any], resume_words: Optiona
 
 # ------------------------------------------------------------------ all together
 
+def practice_jobs(score) -> List[Dict[str, Any]]:
+    """Filming: the practice careers site's matching jobs (demo/careers, XOD_DEMO_BOARD=its address), first and marked."""
+    base = os.environ.get("XOD_DEMO_BOARD", "").rstrip("/")
+    if not base:
+        return []
+    try:
+        posts = httpx.get(base + "/api/jobs", timeout=5).json()
+    except Exception as e:
+        logger.warning(f"practice careers site didn't answer at {base}: {e}")
+        return []
+    return [{**p, "match": score(p["title"]), "practice": True} for p in posts if score(p["title"]) >= 0.6]
+
+
 async def hunt(query: str, search, on_progress=None, max_boards: int = 40) -> Dict[str, Any]:
     spec = understand(query)
     if not spec["role"]:
         return {"spec": spec, "jobs": [], "others": [], "boards_checked": 0, "error": "no_role"}
     if on_progress:
         await on_progress(f"Looking for companies hiring {spec['role']}s…")
-    boards, others = await discover(spec, search)
+    if os.environ.get("XOD_DEMO_ONLY"):        # filming without the internet: just the practice site
+        boards, others = set(), []
+    else:
+        boards, others = await discover(spec, search)
     boards = sorted(boards)[:max_boards]
     if on_progress:
         await on_progress(f"Checking {len(boards)} live job boards…")
@@ -361,7 +378,7 @@ async def hunt(query: str, search, on_progress=None, max_boards: int = 40) -> Di
             seen.add(k)
             unique.append(j)
     resume_words = _resume_words()
-    ranked = rank(unique, spec, resume_words)
+    ranked = practice_jobs(score) + rank(unique, spec, resume_words)
     for i, j in enumerate(ranked):
         j["id"] = f"j{i + 1}"
     result = {"spec": spec, "jobs": ranked, "others": others[:8], "boards_checked": len(boards),

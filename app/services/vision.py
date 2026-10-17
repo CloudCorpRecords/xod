@@ -39,6 +39,8 @@ async def main_sees() -> Optional[bool]:
     provider, model = info.get("provider"), info.get("model") or ""
     if provider in ("openai", "anthropic", "gemini", "openrouter", "fireworks", "groq"):
         return None
+    if provider == "xod":           # the built-in engine is mlx_lm.server, which reads text only
+        return False
     try:
         async with httpx.AsyncClient(timeout=4) as c:
             if provider == "ollama":

@@ -150,7 +150,9 @@ async def main():
     check("'apply to all' picks them all (up to 10)", len(jobs.pick(found, "apply to all")) == 5)
 
     started = []
-    jobs.apply = lambda chosen: [started.append(j["id"]) or {"task_id": "t" + j["id"], "title": j["title"], "company": j["company"], "url": j["url"]} for j in chosen]
+    async def fake_apply(chosen):
+        return [started.append(j["id"]) or {"task_id": "t" + j["id"], "title": j["title"], "company": j["company"], "url": j["url"]} for j in chosen]
+    jobs.apply = fake_apply
     jobs._pending[:] = ["j2", "j4"]
     mine2 = local(word(TMP / "Sam_Rivera_CV.docx", MINE), 1_950_000_000)
 

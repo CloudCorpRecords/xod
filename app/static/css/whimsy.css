@@ -1034,6 +1034,7 @@ body.xod-previewing .action-footer > button { white-space: nowrap; }
 .jc-foot .jc-main-btn { padding: 0.4rem 0.8rem; border-radius: 9px; background: #f2b24a; color: #1a1305; font-weight: 600; }
 .jc-foot .jc-main-btn:disabled { opacity: 0.35; }
 .jc-note { padding: 0 1rem 0.8rem; font-size: 11px; color: #71717a; }
+.jc-practice { display: inline-block; margin-left: 0.35rem; padding: 1px 7px; border-radius: 99px; font-size: 10.5px; font-weight: 600; color: #c9b8ff; background: rgba(161, 150, 236, 0.16); vertical-align: 2px; }
 .jp-wrap { position: fixed; inset: 0; z-index: 85; display: grid; place-items: center; background: rgba(5, 6, 14, 0.65); backdrop-filter: blur(4px); padding: 1rem; }
 .jp { width: min(640px, 100%); max-height: 90vh; overflow-y: auto; background: #0f1222; border: 1px solid rgba(255, 250, 240, 0.1); border-radius: 18px; padding: 1.2rem 1.3rem; color: #e4e4e7; }
 .jp-head { display: flex; justify-content: space-between; align-items: center; }

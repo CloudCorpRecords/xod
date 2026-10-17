@@ -112,3 +112,7 @@ test_runs/
 
 # Marketing videos (made by scripts/media/make_use_case_videos.py; too big for the repo)
 marketing/
+
+# --- Demo filming (demo/run.py): its own data folder and what the practice site received ---
+demo/.data/
+demo/careers/received/

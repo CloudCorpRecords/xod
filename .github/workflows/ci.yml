@@ -55,6 +55,7 @@ jobs:
           python tests/smoke/run_goals_test.py
           python tests/smoke/run_team_test.py
           python tests/smoke/run_job_autofill_test.py
+          python tests/smoke/run_tailor_test.py
       - name: Dependency audit
         run: |
           python -m pip install --upgrade pip pip-audit
