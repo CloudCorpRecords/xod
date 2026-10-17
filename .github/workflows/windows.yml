@@ -57,8 +57,7 @@ jobs:
         run: python tests/smoke/run_job_autofill_test.py
       - name: Answers for each job, and pages that give AI orders (practice careers site, scripted model)
         run: python tests/smoke/run_tailor_test.py
-      - name: The built-in model stops answering - restarted once, then a clean failure (stand-in engine)
-        run: python tests/smoke/run_engine_watchdog_test.py
+      # Not run_engine_watchdog_test: the built-in engine (MLX) is Mac only, so its watchdog never runs here. The Mac job runs it.
 
   installer:
     name: Build, install and run Xod-setup.exe
