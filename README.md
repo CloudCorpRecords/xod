@@ -44,7 +44,12 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 [Research with sources](docs/media/shorts/xod-research.mp4) ·
 [Tidy a messy Downloads folder](docs/media/shorts/xod-tidy.mp4) ·
 [A chore that asks before it acts](docs/media/shorts/xod-chores.mp4) ·
-[An app from one sentence](docs/media/shorts/xod-build.mp4)
+[An app from one sentence](docs/media/shorts/xod-build.mp4) ·
+[Applied to 3 jobs before my coffee was ready](docs/media/shorts/xod-hired.mp4) ·
+[This job post tries to hack your AI](docs/media/shorts/xod-trap.mp4) ·
+[Never fill out a job application again](docs/media/shorts/xod-forms.mp4)
+
+The three job videos were recorded on a Mac with the built-in Qwen 3.5 4B, on a practice careers site with made-up companies (`demo/careers`) and a made-up résumé; waits are sped up and say so.
 
 ## Hand it a job
 

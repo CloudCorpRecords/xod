@@ -1831,6 +1831,15 @@ async def get_lmstudio_status():
     elif info.get("provider") == "local":
         from app.services.autoconnect import local_status
         status = {**status, "active": await local_status(info["base_url"], info["model"])}
+    elif info.get("provider") == "xod":
+        # The built-in engine: ready when its model is on this computer (it starts on the first chat). LM Studio's state
+        # isn't this one's, so it doesn't decide what the header says.
+        from app.services import local_engine as le
+        repo = str(info.get("model") or "")
+        entry = le.catalog_entry(repo) or {}
+        ready = le.is_downloaded(repo)
+        status = {**status, "active": {"provider": "local", "server": "Built-in", "model": entry.get("label") or repo.split("/")[-1],
+                                       "ready": ready, "problem": None if ready else "The built-in model isn't downloaded yet (Settings → Models)."}}
     return status
 
 class ModelActionRequest(BaseModel):

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.5
+
+**Fixed on Mac**
+- With the built-in engine, the header said "No AI model loaded" whenever LM Studio was installed with nothing loaded in it, even though Xod was answering. It now shows the built-in model ("Ready · Built-in").
+- An application could stop at the résumé upload with "I don't know your answer" when the model tried to type into the file box instead of uploading. A résumé file box now always gets your résumé.
+- The safety note for a page with hidden instructions names the email address they wanted your data sent to.
+
+**Three new videos** (`docs/media/shorts`): a job post that tries to hack your AI, three applications before the coffee's ready, and a job application that fills itself in. All recorded from the real app on the practice careers site; `scripts/media/make_use_case_videos.py --only hired,trap,forms` makes them again.
+
 ## 0.7.4
 
 **Answers written for each job**

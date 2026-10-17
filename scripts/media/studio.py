@@ -205,6 +205,8 @@ class Studio:
         self.recording = False
         await self.cmd("Page.stopScreencast")
         frames, self.frames = self.frames, []
+        if frames:      # a page that stopped changing sends no more frames: its last one stays up until now
+            frames.append((time.monotonic(), frames[-1][1]))
         return frames
 
 

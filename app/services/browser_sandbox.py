@@ -3942,7 +3942,8 @@ class BrowserSandboxService:
             if found and found["key"] not in page_traps:
                 page_traps[found["key"]] = found
                 where = _page_name(self.current_title, self.current_url)
-                said = ("🛡 This page hides instructions for AI" + (f" (send your data to {found['targets'][0]})" if found["targets"] else
+                worst = sorted(found["targets"], key=lambda t: "@" not in t)      # an email address says it best
+                said = ("🛡 This page hides instructions for AI" + (f" (send your data to {worst[0]})" if worst else
                         f" (“{found['quote'][:70]}”)") + ". Ignored: I only follow you.")
                 mission_record.setdefault("shield", []).append({"at": time.time(), "url": self.current_url, "quote": found["quote"],
                                                                 "targets": found["targets"], "said": said})
@@ -4195,6 +4196,11 @@ class BrowserSandboxService:
                     + _describe_consequence(label)
                     + " Reply **\"go ahead\"** to continue, or tell me what to change."
                 )
+
+            # --- A file box takes a file: "type" into the résumé upload means upload the résumé -------------
+            if action in ("type", "select", "choose") and element and (element.get("type") or "").lower() == "file" \
+                    and re.search(r"resume|résumé|\bcv\b|curriculum", _label(element) + " " + str(element.get("label") or "") + " " + str(plan.get("text", "")) + " " + goal[:300], re.I):
+                action = plan["action"] = "upload_resume"
 
             # --- Never act on a page's hidden orders: no address or link from them, whatever the model says ---
             if trap_targets and action not in ("done", "ask_user", "wait", "scroll", "read_more"):
