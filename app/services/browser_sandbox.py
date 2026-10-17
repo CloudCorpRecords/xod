@@ -3800,7 +3800,7 @@ class BrowserSandboxService:
           failed              - the LLM or browser could not continue
         The final answer only states things that happened in the browser or were noted from pages.
         """
-        from app.services.llm import llm_service, parse_llm_json
+        from app.services.llm import llm_service, parse_llm_json, engine_notice, EngineUnresponsive, ENGINE_RESTARTED
 
         max_steps = max(3, min(int(max_steps or MISSION_DEFAULT_STEPS), MISSION_MAX_STEPS))
         start_time = time.time()
@@ -3886,6 +3886,12 @@ class BrowserSandboxService:
             nav = await self.navigate(target_nav_url)
             await self._wait_for_page_ready()
             record("navigate", bool(nav.get("success")), f"Opened starting page {target_nav_url}", target_nav_url)
+
+        def engine_note(text: str) -> None:
+            # The built-in model stopped answering and is being restarted (llm.py): say so on the task.
+            mission_record["now"] = text
+            if text == ENGINE_RESTARTED:
+                history.append(f"(note) {text}")
 
         llm_failures = 0
         retry_ok: Optional[Tuple[str, str]] = None
@@ -4047,14 +4053,18 @@ class BrowserSandboxService:
             try:
                 if plan:
                     raise _Chained()
-                llm_reply = await llm_service.chat_completion(
-                    messages=messages,
-                    temperature=0.1,
-                    max_tokens=MISSION_STEP_TOKENS if think else MISSION_FAST_STEP_TOKENS,
-                    think=None if think else False,
-                    task="browser_step",
-                    group_id=mission_record["mission_id"],
-                )
+                notice = engine_notice.set(engine_note)
+                try:
+                    llm_reply = await llm_service.chat_completion(
+                        messages=messages,
+                        temperature=0.1,
+                        max_tokens=MISSION_STEP_TOKENS if think else MISSION_FAST_STEP_TOKENS,
+                        think=None if think else False,
+                        task="browser_step",
+                        group_id=mission_record["mission_id"],
+                    )
+                finally:
+                    engine_notice.reset(notice)
                 plan = parse_llm_json(llm_reply.get("content", ""))
                 step_example = llm_reply.get("_example_id", "")
                 mission_record["specialist_steps"] = mission_record.get("specialist_steps", 0) + (llm_reply.get("_provider") == "specialist")
@@ -4062,6 +4072,16 @@ class BrowserSandboxService:
                     mission_record["thinking_steps"] += 1
             except _Chained:
                 pass
+            except EngineUnresponsive as e:
+                logger.warning(f"Browser mission: {e}")
+                pressed = [f"**\"{lbl}\"**" for (lbl, _p) in done_gated]
+                return await finish(
+                    "failed",
+                    f"{e} I stopped on {_page_name(self.current_title, self.current_url)}. "
+                    + (f"Before that I pressed {', '.join(pressed)} as you approved, and the page confirmed it. " if pressed
+                       else "Nothing was submitted. ")
+                    + "Ask me to continue to retry from here."
+                )
             except Exception as e:
                 logger.warning(f"Browser mission LLM error: {e}")
                 if send_shot and not helper_eyes and re.search(r"image|vision|mtmd|multimodal|clip|only '?text'? content|content type is not supported|text content type", str(e), re.I):

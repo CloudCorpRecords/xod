@@ -1,10 +1,12 @@
 import re
 import time
 import asyncio
+import contextlib
+import contextvars
 import json
 import httpx
 import logging
-from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple
+from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple, Callable
 from app.config import settings
 from app.services import ollama_context
 
@@ -105,6 +107,108 @@ PROVIDER_NAMES = {"ollama": "Ollama", "lm_studio": "LM Studio", "xod": "The buil
                   "custom": "Your model server"}
 CLOUD_THINK_HEADROOM = 2048      # tokens a cloud reasoning model may spend thinking before the answer even starts
 _no_effort: set = set()          # (provider, model) that rejected reasoning_effort
+
+
+# The built-in engine (mlx_lm.server) is never quiet for long while it works: it sends a keep-alive line every few
+# seconds while it reads the prompt, then the answer as it writes it. After this long with nothing at all, Xod checks
+# whether it's still at work (local_engine.responsive) and restarts it if not, instead of waiting out LLM_TIMEOUT.
+XOD_QUIET = 45.0
+XOD_TIMEOUT = httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0)   # waits are timed by _watched instead
+ENGINE_RESTARTING = "The built-in model stopped answering, so I'm restarting it…"
+ENGINE_RESTARTED = "The built-in model stopped answering, so I restarted it."
+# Whoever runs a task can listen for those (the browser mission shows them): a function taking the text.
+engine_notice: contextvars.ContextVar[Optional[Callable[[str], None]]] = contextvars.ContextVar("engine_notice", default=None)
+
+
+class EngineStuck(Exception):
+    """The built-in engine went quiet and isn't working on anything (internal: the caller restarts it)."""
+
+
+class EngineUnresponsive(Exception):
+    """The built-in engine stopped answering and a restart didn't help."""
+
+
+def _notice(text: str) -> None:
+    cb = engine_notice.get()
+    if cb:
+        try:
+            cb(text)
+        except Exception:
+            pass
+
+
+async def _watched(aw: Any, info: Dict[str, Any]) -> Any:
+    """Awaits one wait of a request: the whole answer, a stream's first reply, or its next line. For the built-in
+    engine, a quiet stretch of XOD_QUIET seconds raises EngineStuck unless the engine is visibly still at work
+    (a long tool call, which it sends all at once, or another request it's serving first)."""
+    if info["provider"] != "xod":
+        return await aw
+    from app.services.local_engine import local_engine
+    task = asyncio.ensure_future(aw)
+    quiet = 0.0
+    try:
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=XOD_QUIET)
+            if done:
+                return task.result()
+            quiet += XOD_QUIET
+            if quiet >= LLM_TIMEOUT.read or not await local_engine.responsive():
+                raise EngineStuck(f"no output for {quiet:.0f}s")
+            logger.info(f"Built-in engine quiet for {quiet:.0f}s but still working; waiting")
+    finally:
+        if not task.done():
+            task.cancel()
+
+
+@contextlib.asynccontextmanager
+async def _open_stream(client: httpx.AsyncClient, url: str, payload: Dict[str, Any], headers: Dict[str, str], info: Dict[str, Any]):
+    """client.stream("POST", ...), with the wait for the first reply watched (see _watched)."""
+    response = await _watched(client.send(client.build_request("POST", url, json=payload, headers=headers), stream=True), info)
+    try:
+        yield response
+    finally:
+        await response.aclose()
+
+
+async def _lines(response: httpx.Response, info: Dict[str, Any]) -> AsyncGenerator[str, None]:
+    """response.aiter_lines(), with each wait watched (see _watched)."""
+    it = response.aiter_lines()
+    while True:
+        try:
+            line = await _watched(it.__anext__(), info)
+        except StopAsyncIteration:
+            return
+        yield line
+
+
+async def _restart_engine(info: Dict[str, Any], why: str, seen_start: Optional[float]) -> None:
+    """Restarts the built-in engine after it stopped answering; EngineUnresponsive if it won't come back."""
+    from app.services.local_engine import local_engine
+    _notice(ENGINE_RESTARTING)
+    try:
+        await local_engine.restart(info["model"], why, seen_start)
+    except Exception as e:
+        raise EngineUnresponsive(f"The built-in model stopped answering, and restarting it didn't work ({e}).")
+    _notice(ENGINE_RESTARTED)
+
+
+def _gave_up() -> EngineUnresponsive:
+    return EngineUnresponsive("The built-in model stopped answering, and it still didn't answer after I restarted it. "
+                              "Quitting other apps to free memory, or picking a smaller model in Settings, may help.")
+
+
+async def _after_stall(info: Dict[str, Any], e: Exception, engine_start: Optional[float], restarted: bool, said: bool) -> Optional[str]:
+    """A stream from the built-in engine stalled. Returns None after restarting it (retry the request), or the error
+    to show: it was already restarted once, it won't restart, or half an answer is out (a retry would repeat it)."""
+    if restarted:
+        return str(_gave_up())
+    try:
+        await _restart_engine(info, str(e), engine_start)
+    except EngineUnresponsive as gone:
+        return str(gone)
+    if said:
+        return "The built-in model stopped answering in the middle of the answer, so I restarted it. Ask again for the rest."
+    return None
 
 
 def _quiet_thinking(payload: Dict[str, Any], info: Dict[str, Any], think: Optional[bool]) -> None:
@@ -572,12 +676,14 @@ class LLMService:
         if info["provider"] in ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic") and info["api_key"] == "missing":
             raise Exception(f"No API key configured for {info['provider'].upper()}. Please configure your {info['provider'].replace('_', ' ').title()} API key in Settings!")
 
+        engine_start: Optional[float] = None
         if info["provider"] in ("lm_studio", "xod"):
             from app.services.memory_broker import memory_broker
             await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
         if info["provider"] == "xod":
             from app.services.local_engine import local_engine
             await local_engine.ensure_running(info["model"])   # built-in engine starts on first use
+            engine_start = local_engine.started_at
         url = f"{info['base_url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {info['api_key']}",
@@ -600,11 +706,13 @@ class LLMService:
         grown = False
         started = time.time()
         is_specialist = info["provider"] == "specialist"
-        timeout = httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0) if is_specialist else LLM_TIMEOUT
+        timeout = (httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0) if is_specialist
+                   else XOD_TIMEOUT if info["provider"] == "xod" else LLM_TIMEOUT)
+        restarted = False
         async with httpx.AsyncClient(timeout=timeout) as client:
             for attempt in range(1, (1 if is_specialist else MAX_ATTEMPTS) + 1):
                 try:
-                    res = await client.post(url, json=payload, headers=headers)
+                    res = await _watched(client.post(url, json=payload, headers=headers), info)
                     if res.status_code in RETRYABLE_STATUS and attempt < MAX_ATTEMPTS and not is_specialist:
                         logger.warning(f"LLM HTTP {res.status_code}, retrying ({attempt}/{MAX_ATTEMPTS})")
                         await asyncio.sleep(1.5 * attempt)
@@ -647,12 +755,22 @@ class LLMService:
                             latency_ms=int((time.time() - started) * 1000), group_id=group_id, meta=meta,
                         )
                     return msg
+                except EngineStuck as e:
+                    last_err = e
+                    if restarted:
+                        raise _gave_up()
+                    restarted = True
+                    await _restart_engine(info, str(e), engine_start)
+                    engine_start = local_engine.started_at
+                    continue
                 except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ReadError) as e:
                     last_err = e
                     if attempt < MAX_ATTEMPTS and not is_specialist:
                         logger.warning(f"LLM {type(e).__name__}, retrying ({attempt}/{MAX_ATTEMPTS})")
                         await asyncio.sleep(1.5 * attempt)
                         continue
+            if isinstance(last_err, EngineStuck):
+                raise _gave_up()
             if isinstance(last_err, httpx.ConnectError) and ollama_context.friendly_error(info):
                 raise Exception(ollama_context.friendly_error(info))
             raise Exception(
@@ -726,12 +844,14 @@ class LLMService:
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}
             return
 
+        engine_start: Optional[float] = None
         if info["provider"] in ("lm_studio", "xod"):
             from app.services.memory_broker import memory_broker
             await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
         if info["provider"] == "xod":
             from app.services.local_engine import local_engine
             await local_engine.ensure_running(info["model"])   # built-in engine starts on first use
+            engine_start = local_engine.started_at
         url = f"{info['base_url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {info['api_key']}",
@@ -751,10 +871,11 @@ class LLMService:
         _usage: Optional[Dict[str, Any]] = None
         _quiet_thinking(payload, info, think)
 
-        async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
+        restarted = False
+        async with httpx.AsyncClient(timeout=XOD_TIMEOUT if info["provider"] == "xod" else LLM_TIMEOUT) as client:
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 try:
-                    async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    async with _open_stream(client, url, payload, headers, info) as response:
                         if response.status_code != 200:
                             err_body = await response.aread()
                             if _effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
@@ -769,7 +890,7 @@ class LLMService:
                                    or f"LLM error {response.status_code}: {err_body.decode('utf-8')}"}
                             return
 
-                        async for line in response.aiter_lines():
+                        async for line in _lines(response, info):
                             if not line:
                                 continue
                             if line.startswith("data: "):
@@ -841,6 +962,13 @@ class LLMService:
                     yield {"type": "error", "content": ollama_context.friendly_error(info)
                            or f"Could not connect to {info['provider']} at {info['base_url']}. Is your local LLM running?"}
                     return
+                except EngineStuck as e:
+                    err = await _after_stall(info, e, engine_start, restarted, said=bool(streamed or reasoned))
+                    if err:
+                        yield {"type": "error", "content": err}
+                        return
+                    restarted, engine_start = True, local_engine.started_at
+                    continue
                 except httpx.ReadTimeout:
                     yield {"type": "error", "content": f"{info['provider']} stopped responding (no output for {LLM_TIMEOUT.read:.0f}s)."}
                     return
@@ -875,12 +1003,14 @@ class LLMService:
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}
             return
 
+        engine_start: Optional[float] = None
         if info["provider"] in ("lm_studio", "xod"):
             from app.services.memory_broker import memory_broker
             await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
         if info["provider"] == "xod":
             from app.services.local_engine import local_engine
             await local_engine.ensure_running(info["model"])   # built-in engine starts on first use
+            engine_start = local_engine.started_at
         url = f"{info['base_url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {info['api_key']}",
@@ -906,10 +1036,11 @@ class LLMService:
         full_reasoning = ""
         full_content = ""
 
-        async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
+        restarted = False
+        async with httpx.AsyncClient(timeout=XOD_TIMEOUT if info["provider"] == "xod" else LLM_TIMEOUT) as client:
             for attempt in range(1, MAX_ATTEMPTS + 1):
                 try:
-                    async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    async with _open_stream(client, url, payload, headers, info) as response:
                         if response.status_code != 200:
                             err_body = await response.aread()
                             if await ollama_context.retry_after_error(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
@@ -922,7 +1053,7 @@ class LLMService:
                                    or f"LLM error {response.status_code}: {err_body.decode('utf-8')}"}
                             return
 
-                        async for line in response.aiter_lines():
+                        async for line in _lines(response, info):
                             if not line:
                                 continue
                             if line.startswith("event: error"):
@@ -995,6 +1126,13 @@ class LLMService:
                     yield {"type": "error", "content": ollama_context.friendly_error(info)
                            or f"Could not connect to {info['provider']} at {info['base_url']}. Is your local LLM running?"}
                     return
+                except EngineStuck as e:
+                    err = await _after_stall(info, e, engine_start, restarted, said=bool(full_content or full_reasoning))
+                    if err:
+                        yield {"type": "error", "content": err}
+                        return
+                    restarted, engine_start = True, local_engine.started_at
+                    continue
                 except httpx.ReadTimeout:
                     yield {"type": "error", "content": f"{info['provider']} stopped responding (no output for {LLM_TIMEOUT.read:.0f}s)."}
                     return

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.6
+
+**Fixed on Mac: the built-in model could freeze in the middle of a job**
+- The likely cause: the built-in engine's log went into a pipe nothing read, and once about 64 KB of log had piled up it froze on its next line, mid-task. It now writes its log to a file (`engine.log` in Xod's data folder).
+- If it stops answering anyway, Xod notices within about a minute (not 20), restarts it once and carries on, and the task says so ("The built-in model stopped answering, so I restarted it"). If the restart doesn't help, the task stops cleanly and says nothing was submitted, instead of waiting out every retry. A long answer that's still being written isn't mistaken for a freeze.
+
 ## 0.7.5
 
 **Fixed on Mac**

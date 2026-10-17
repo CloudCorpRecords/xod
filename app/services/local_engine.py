@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from app.paths import APP_ROOT
+from app.paths import APP_ROOT, DATA_DIR
 
 logger = logging.getLogger("xod.engine")
 
@@ -137,6 +137,27 @@ def download_status(repo: str) -> Dict[str, Any]:
 
 # ---------------------------------------------------------------- the server process
 
+def _command(repo: str, port: int) -> List[str]:
+    """The engine's command line (the smoke tests swap in a stand-in engine here)."""
+    return [sys.executable, "-m", "app.services.engine_child", "--model", repo, "--host", "127.0.0.1",
+            "--port", str(port), "--max-tokens", "8192"]
+
+
+# The engine's own log (mlx_lm.server logs every request). It goes to a file, not a pipe: nothing reads a pipe
+# while the engine runs, and once ~64 KB of log piled up in it the engine froze on its next log line, mid-task.
+ENGINE_LOG = DATA_DIR / "engine.log"
+
+
+def _log_tail(chars: int = 600) -> str:
+    try:
+        with open(ENGINE_LOG, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - chars))
+            return f.read().decode(errors="replace").strip()
+    except OSError:
+        return ""
+
+
 def _free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -151,6 +172,7 @@ class LocalEngine:
         self._lock: Optional[asyncio.Lock] = None
         self.last_error: Optional[str] = None
         self.started_at: Optional[float] = None
+        self.restarts = 0                      # times it was restarted because it stopped answering
 
     @property
     def base_url(self) -> str:
@@ -180,18 +202,16 @@ class LocalEngine:
             from app.services.memory_broker import memory_broker
             await memory_broker.make_room(entry["need_gb"], f"chat model {repo.split('/')[-1]}")
             env = dict(os.environ, HF_HUB_OFFLINE="1", TOKENIZERS_PARALLELISM="false")
-            self.proc = subprocess.Popen(
-                [sys.executable, "-m", "app.services.engine_child", "--model", repo, "--host", "127.0.0.1",
-                 "--port", str(self.port), "--max-tokens", "8192"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env, cwd=str(APP_ROOT),
-            )
+            ENGINE_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with open(ENGINE_LOG, "wb") as log:     # the child keeps its own handle; a fresh log each start
+                self.proc = subprocess.Popen(_command(repo, self.port), stdout=subprocess.DEVNULL, stderr=log,
+                                             env=env, cwd=str(APP_ROOT))
             self.repo = repo
             deadline = time.time() + 240
             async with httpx.AsyncClient(timeout=3) as client:
                 while time.time() < deadline:
                     if self.proc.poll() is not None:
-                        err = (self.proc.stderr.read() or b"").decode(errors="replace")[-600:]
-                        self.last_error = err.strip() or f"exit code {self.proc.returncode}"
+                        self.last_error = _log_tail() or f"exit code {self.proc.returncode}"
                         self.proc = None
                         raise RuntimeError(f"The built-in model didn't start: {self.last_error}")
                     try:
@@ -222,9 +242,38 @@ class LocalEngine:
                 p.kill()
         self.started_at = None
 
+    async def restart(self, repo: str, why: str, seen_start: Optional[float]) -> None:
+        """Stops the engine and starts it again: for one that is running but stopped answering. seen_start is the
+        started_at the caller's request went to; if it changed, another request already restarted it."""
+        async with self._lk():
+            if self.started_at == seen_start:
+                logger.warning(f"Restarting the built-in engine: {why}")
+                self.restarts += 1
+                await self.stop()
+        await self.ensure_running(repo)
+
+    async def responsive(self) -> bool:
+        """Called after a long quiet stretch on a request: is the engine still at work, or stuck? A working engine
+        answers a quick question and keeps the processor busy (it may be writing a long tool call, which it sends
+        all at once, or serving another request first). A stuck one fails to answer, or sits idle."""
+        if not self.running():
+            return False
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                if (await client.get(f"{self.base_url}/models")).status_code != 200:
+                    return False
+        except httpx.HTTPError:
+            return False
+        try:
+            import psutil
+            proc = psutil.Process(self.proc.pid)
+            return await asyncio.to_thread(proc.cpu_percent, 1.5) >= 2.0
+        except Exception:
+            return True                        # can't tell: don't restart an engine that answers
+
     def status(self) -> Dict[str, Any]:
         return {"running": self.running(), "model": self.repo, "port": self.port,
-                "since": self.started_at, "last_error": self.last_error}
+                "since": self.started_at, "last_error": self.last_error, "restarts": self.restarts}
 
 
 local_engine = LocalEngine()
