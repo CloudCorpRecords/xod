@@ -257,19 +257,32 @@ class LocalEngine:
         answers a quick question and keeps the processor busy (it may be writing a long tool call, which it sends
         all at once, or serving another request first). A stuck one fails to answer, or sits idle."""
         if not self.running():
+            logger.warning("Engine check: the process isn't running")
             return False
         try:
             async with httpx.AsyncClient(timeout=5) as client:
-                if (await client.get(f"{self.base_url}/models")).status_code != 200:
-                    return False
-        except httpx.HTTPError:
+                code = (await client.get(f"{self.base_url}/models")).status_code
+            if code != 200:
+                logger.warning(f"Engine check: /models answered {code}")
+                return False
+        except httpx.HTTPError as e:
+            logger.warning(f"Engine check: /models didn't answer ({type(e).__name__})")
             return False
         try:
             import psutil
             proc = psutil.Process(self.proc.pid)
-            return await asyncio.to_thread(proc.cpu_percent, 1.5) >= 2.0
-        except Exception:
+            # The engine may run in a child of the process Xod started (a launcher): count the whole family.
+            family = [proc] + proc.children(recursive=True)
+            for p in family:
+                p.cpu_percent(None)
+            await asyncio.sleep(1.5)
+            busy = sum(p.cpu_percent(None) for p in family if p.is_running())
+        except Exception as e:
+            logger.warning(f"Engine check: couldn't read its processor use ({type(e).__name__}); assuming it's working")
             return True                        # can't tell: don't restart an engine that answers
+        if busy < 2.0:
+            logger.warning(f"Engine check: answers but sits idle ({busy:.1f}% processor across {len(family)} process(es))")
+        return busy >= 2.0
 
     def status(self) -> Dict[str, Any]:
         return {"running": self.running(), "model": self.repo, "port": self.port,
