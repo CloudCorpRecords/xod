@@ -29,7 +29,7 @@ server = MCPServer(
     name="mac", title="This Mac",
     instructions="Calendar, Reminders, Notes and Mail on this Mac. Read freely; creating or changing asks the user first; "
                  "deleting always asks. To change or delete something, list or search first to get its id.",
-    version="0.7.3",
+    version="0.7.4",
 )
 
 SEP, END = "\x1f", "\x1e"   # field and record separators that never appear in normal text
