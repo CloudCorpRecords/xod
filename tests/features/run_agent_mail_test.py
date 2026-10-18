@@ -12,6 +12,14 @@ with its own data folder and a throwaway keychain file. Nothing touches your rea
   M7  a forged message (someone else's keys claiming to be alice) is held, not shown as hers
   M8  if the relay swaps alice's keys, bob refuses to send to her until he checks
   M9  a task request becomes a Xod task only when bob approves it
+  M10 auto-reply fires for a known contact with the toggle on, and is activity-logged
+  M11 auto-reply can't be switched on for a stranger, and never fires for one
+  M12 no auto-reply with the toggle off
+  S1  a self-host registers a challenge-verified directory record on the public relay
+  S2  a forged directory registration (and a key-stealing one) is rejected
+  S3  a directory record goes stale after missed heartbeats; stale falls back to the public relay
+  S4  direct delivery: mail goes straight to the self-host endpoint, not the public relay
+  S5  fallback: with the self-host down, mail lands at the public relay and is picked up on poll
   .venv/bin/python tests/features/run_agent_mail_test.py
   XOD_TEST_RELAY=127.0.0.1:8787 .venv/bin/python tests/features/run_agent_mail_test.py   # any running relay,
       e.g. the Cloudflare Worker under `wrangler dev` (M3 and M8 look inside the Python relay's database, so they're skipped)
@@ -28,6 +36,7 @@ import tempfile
 import time
 import urllib.request
 from pathlib import Path
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -71,20 +80,32 @@ EXTERNAL = os.environ.get("XOD_TEST_RELAY")
 RELAY = EXTERNAL or f"127.0.0.1:{port()}"
 if not EXTERNAL:
     procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", RELAY.split(":")[1]],
-                                  cwd=ROOT / "relay", env={**os.environ, "XOD_RELAY_DOMAIN": RELAY, "XOD_RELAY_DB": str(TMP / "relay.db")},
+                                  cwd=ROOT / "relay", env={**os.environ, "XOD_RELAY_DOMAIN": RELAY, "XOD_RELAY_DB": str(TMP / "relay.db"),
+                                                           "XOD_RELAY_DIR_STALE": "4"},
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+# A second relay that plays the self-host endpoint (carol's own post office) in S1-S5.
+SELF = None
+self_proc = None
+if not EXTERNAL:
+    SELF = f"127.0.0.1:{port()}"
+    self_proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", SELF.split(":")[1]],
+                                 cwd=ROOT / "relay", env={**os.environ, "XOD_RELAY_DOMAIN": SELF, "XOD_RELAY_DB": str(TMP / "self.db")},
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    procs.append(self_proc)
 RUN = uuid.uuid4().hex[:5]          # fresh names each run, so a long-lived relay can be reused
 X = {}
 for who in ("alice", "bob", "carol"):
     p = port()
     env = {**os.environ, "XOD_DATA_DIR": str(TMP / who), "XOD_TEST_KEYRING_FILE": str(TMP / f"{who}-keys.json"),
            "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring", "XOD_SECRETS_SERVICE": "Xod test keys",
-           "PYTHONPATH": str(ROOT)}
+           "PYTHONPATH": str(ROOT), "XOD_DEFAULT_RELAY": RELAY, "XOD_TEST_AUTO_REPLY": "1", "XOD_DIR_STALE_AFTER": "4"}
     procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(p)],
                                   cwd=ROOT, env=env, stdout=open(TMP / f"{who}.log", "w"), stderr=subprocess.STDOUT))
     X[who] = f"http://127.0.0.1:{p}"
 try:
     wait(f"http://{RELAY}/.well-known/xod-relay")
+    if SELF:
+        wait(f"http://{SELF}/.well-known/xod-relay")
     for b in X.values():
         wait(b + "/api/mail/status")
 
@@ -209,6 +230,119 @@ try:
           tasks[0]["title"] if tasks else str(r)[:100])
     if tasks:
         call(X["bob"], "POST", f"/api/tasks/{tasks[0]['id']}/cancel")
+
+    # M10-M12: auto-reply. Bob's Xod runs with XOD_TEST_AUTO_REPLY=1, so the reply text is
+    # canned instead of calling the LLM; everything else (toggle, gating, send path, logging)
+    # is the real code.
+    def auto_replies(who):
+        return [t for box in ("inbox", "requests")
+                for t in call(X[who], "GET", f"/api/mail/threads?box={box}")["threads"]
+                if "Auto reply to:" in t["last"]["text"]]
+    r = call(X["bob"], "PATCH", f"/api/mail/contacts/{addrs['alice']}", {"auto_reply": True})
+    check("M10 auto-reply switches on for a known contact", r.get("success") is True, str(r))
+    sends_before = len([a for a in call(X["bob"], "GET", "/api/activity?limit=50").get("items", [])
+                        if a["tool"] == "agent_mail_send"])
+    call(X["alice"], "POST", "/api/mail/send", {"to": addrs["bob"], "subject": "Hello?", "text": "Are you there, bob?"})
+    call(X["bob"], "POST", "/api/mail/check")
+    time.sleep(1)
+    call(X["alice"], "POST", "/api/mail/check")
+    check("M10 bob auto-replies to a known contact", len(auto_replies("alice")) == 1,
+          f"{len(auto_replies('alice'))} auto-replies")
+    sends_after = len([a for a in call(X["bob"], "GET", "/api/activity?limit=50").get("items", [])
+                       if a["tool"] == "agent_mail_send"])
+    check("M10 the auto-reply is in bob's Activity log", sends_after == sends_before + 1,
+          f"{sends_before} -> {sends_after}")
+    marked = sqlite3.connect(TMP / "bob" / "xod.db").execute(
+        "SELECT COUNT(*) FROM mail_messages WHERE direction='out' AND origin='auto-reply'").fetchone()[0]
+    check("M10 the auto-reply is marked as automatic", marked == 1, f"{marked} marked")
+
+    # M11: carol back to a stranger; the toggle must refuse her, and her mail gets no reply
+    call(X["bob"], "PATCH", f"/api/mail/contacts/{addrs['carol']}", {"trust": "unknown"})
+    r = call(X["bob"], "PATCH", f"/api/mail/contacts/{addrs['carol']}", {"auto_reply": True})
+    check("M11 auto-reply can't switch on for a stranger", r.get("success") is False, str(r))
+    n_before = len(auto_replies("carol"))
+    call(X["carol"], "POST", "/api/mail/send", {"to": addrs["bob"], "text": "Hi bob, stranger here."})
+    call(X["bob"], "POST", "/api/mail/check")
+    time.sleep(1)
+    call(X["carol"], "POST", "/api/mail/check")
+    check("M11 no auto-reply to a stranger", len(auto_replies("carol")) == n_before,
+          f"{len(auto_replies('carol'))} auto-replies")
+
+    # M12: toggle off for alice again
+    call(X["bob"], "PATCH", f"/api/mail/contacts/{addrs['alice']}", {"auto_reply": False})
+    n_before = len(auto_replies("alice"))
+    call(X["alice"], "POST", "/api/mail/send", {"to": addrs["bob"], "text": "Still there?"})
+    call(X["bob"], "POST", "/api/mail/check")
+    time.sleep(1)
+    call(X["alice"], "POST", "/api/mail/check")
+    check("M12 no auto-reply with the toggle off", len(auto_replies("alice")) == n_before,
+          f"{len(auto_replies('alice'))} auto-replies")
+
+    if not EXTERNAL:
+        PUB = f"http://{RELAY}"
+        # S1: carol becomes a self-host: a fresh address on her own endpoint, directory on the public relay
+        self_addr = call(X["carol"], "POST", "/api/mail/setup", {"name": f"carol{RUN}", "relay": SELF}).get("address")
+        check("S1 carol claims an address on her own endpoint", self_addr == f"carol{RUN}@{SELF}", str(self_addr))
+        r = call(X["carol"], "POST", "/api/mail/self-host", {"endpoint": f"http://{SELF}", "public_domain": RELAY})
+        check("S1 self-host mode enables with a challenge-verified record", r.get("success"), str(r)[:200])
+        d = call(PUB, "GET", "/v1/directory/" + quote(self_addr, safe=""))
+        check("S1 the public directory lists her record, fresh",
+              d.get("endpoint") == f"http://{SELF}" and d.get("stale") is False, str(d)[:200])
+
+        # S2: forgeries
+        evil = mc.Identity.new()
+        tampered = mc.directory_registration(evil, self_addr, "https://evil.example.com")
+        tampered["sig"] = tampered["sig"][:-4] + "AAAA"
+        r = call(PUB, "POST", "/v1/directory/register", tampered)
+        check("S2 a forged directory registration is rejected", r.get("http_error") == 400, str(r)[:120])
+        steal = mc.directory_registration(evil, self_addr, "https://evil.example.com")
+        r = call(PUB, "POST", "/v1/directory/register", steal)
+        check("S2 a different key can't take her address", r.get("http_error") == 409, str(r)[:120])
+
+        # S4 before S3's sleep: direct delivery while her record is fresh
+        r = call(X["bob"], "POST", "/api/mail/send", {"to": self_addr, "subject": "Direct", "text": "Straight to your endpoint."})
+        check("S4 bob sends to the self-host", r.get("success"), str(r)[:200])
+        time.sleep(0.5)
+        pub_waiting = sqlite3.connect(TMP / "relay.db").execute("SELECT COUNT(*) FROM mail").fetchone()[0]
+        self_waiting = sqlite3.connect(TMP / "self.db").execute("SELECT COUNT(*) FROM mail").fetchone()[0]
+        check("S4 it went straight to her endpoint, not the public relay",
+              pub_waiting == 0 and self_waiting == 1, f"public={pub_waiting} self={self_waiting}")
+        call(X["carol"], "POST", "/api/mail/check")
+        got = [t for box in ("inbox", "requests") for t in call(X["carol"], "GET", f"/api/mail/threads?box={box}")["threads"]
+               if t["last"]["subject"] == "Direct"]
+        check("S4 carol picks it up from her own endpoint",
+              len(got) == 1 and got[0]["last"]["text"] == "Straight to your endpoint.", str(len(got)))
+
+        # S3: staleness. The probe's name is registered on the self endpoint, so a wrongly-fresh
+        # record would deliver directly (202); correct stale handling falls back to the public
+        # relay, which has no such name (404).
+        probe, probe_addr = mc.Identity.new(), f"probe{RUN}@nowhere.example"
+        call(f"http://{SELF}", "POST", "/v1/names", mc.registration(probe, f"probe{RUN}"))
+        reg = mc.directory_registration(probe, probe_addr, f"http://{SELF}")
+        r = call(PUB, "POST", "/v1/directory/register", reg)
+        ans = mc.directory_challenge_answer(probe, probe_addr, r["challenge_id"], r["challenge"])
+        r = call(PUB, "POST", "/v1/directory/challenge", ans)
+        check("S3 answering the challenge activates the record", r.get("registered") is True, str(r)[:120])
+        time.sleep(5)   # XOD_RELAY_DIR_STALE=4 on the public relay, XOD_DIR_STALE_AFTER=4 on the clients
+        d = call(PUB, "GET", "/v1/directory/" + quote(probe_addr, safe=""))
+        check("S3 the record goes stale after missed heartbeats", d.get("stale") is True, str(d)[:160])
+        r = call(X["bob"], "POST", "/api/mail/send", {"to": probe_addr, "text": "Hello probe."})
+        check("S3b a stale record falls back to the public relay",
+              r.get("success") is False and "There's no" in (r.get("error") or ""), (r.get("error") or "")[:120])
+
+        # S5: the self-host endpoint goes down; mail must still land at the public relay
+        call(X["carol"], "POST", "/api/mail/self-host/beat")   # the S3 sleep made her record stale too
+        self_proc.terminate()
+        self_proc.wait(10)
+        time.sleep(0.5)
+        r = call(X["bob"], "POST", "/api/mail/send", {"to": self_addr, "subject": "Fallback", "text": "Your endpoint was down."})
+        check("S5 send still succeeds when the self-host is down", r.get("success"), str(r)[:200])
+        pub_waiting = sqlite3.connect(TMP / "relay.db").execute("SELECT COUNT(*) FROM mail").fetchone()[0]
+        check("S5 the envelope landed at the public relay", pub_waiting == 1, f"{pub_waiting} waiting")
+        call(X["carol"], "POST", "/api/mail/check")
+        got = [t for box in ("inbox", "requests") for t in call(X["carol"], "GET", f"/api/mail/threads?box={box}")["threads"]
+               if t["last"]["subject"] == "Fallback"]
+        check("S5 carol picks the fallback mail up on her next poll", len(got) == 1, str(len(got)))
 finally:
     for p in procs:
         p.terminate()

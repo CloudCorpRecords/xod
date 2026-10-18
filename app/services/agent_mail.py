@@ -336,9 +336,10 @@ async def _directory_lookup(addr: str) -> Optional[Dict[str, Any]]:
     if r.status_code != 200:
         return None
     try:
-        return r.json()
+        data = r.json()
     except Exception:
         return None
+    return data if isinstance(data, dict) else None
 
 
 def _pin_directory_contact(addr: str, rec: Dict[str, Any]) -> None:
@@ -366,7 +367,7 @@ async def _route_envelope(ident: mc.Identity, cfg: Dict[str, Any], addr: str,
     base = _directory_base()
     if base:
         rec = await _directory_lookup(addr)
-        if rec and rec.get("endpoint"):
+        if rec and rec.get("endpoint") and rec.get("sign_pub") and rec.get("box_pub"):
             _pin_directory_contact(addr, rec)   # pins on first use, raises if their keys changed
             env = mc.seal(ident, cfg["address"], addr, rec["box_pub"], message)
             direct = None if _record_stale(rec) else rec["endpoint"].rstrip("/")
