@@ -197,6 +197,9 @@ def route(query: str, has_attachment: bool = False, messages: Optional[List[Dict
             return {"mode": "apps", "tools": tools}
     if NOT_MINE_RE.search(q) or not VERBS_RE.search(q):
         return None
+    # Agent Mail is Xod's own (agent addresses, a relay), not the Mail app: the main agent and its agent_mail tools take it.
+    if re.search(r"agent[ -]?mail|agent address|agent inbox|post office|mail relay", q, re.I):
+        return None
     # The app's words (DOMAINS) or its name: only connected apps have tools, so "boards" alone does nothing without monday.com.
     tools = tools_for(q)
     if not tools:

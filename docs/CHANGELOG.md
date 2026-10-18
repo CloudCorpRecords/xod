@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.7
+
+**Agent Mail works from the chat**
+- "Set up agent mail" went to the Mail app on your Mac and searched your email instead. Requests about Agent Mail (your agent address, the post office) now go to Agent Mail.
+- Xod can set it up from the chat: it turns the add-on on and claims your address (your first name by default) on the post office you name. Without a post office it says so plainly and how to get one. Asked again, it says you're already set up.
+
+**Run your own post office in more places** (`relay/`)
+- A JavaScript version of the relay (`relay.mjs`, the same protocol and tests as the Python and Cloudflare ones), ready for Deno Deploy with its built-in database (`relay/deno/deploy.sh`, sign in with GitHub) or Vercel with Redis. Big messages are stored in pieces where the database limits value size.
+
 ## 0.7.6
 
 **Fixed on Mac: the built-in model could freeze in the middle of a job**

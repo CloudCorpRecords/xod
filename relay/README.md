@@ -13,6 +13,11 @@ Two implementations speak the same protocol and pass the same tests (`tests/feat
 |---|---|---|
 | `server.py` | Python (FastAPI + SQLite), anywhere | a VPS, a home server, Docker, a Raspberry Pi |
 | `worker/` | Cloudflare Workers + D1 | free hosting with no server to look after |
+| `deno/` + `relay.mjs` | Deno Deploy + Deno KV | free hosting, sign in with GitHub, the database is built in |
+| `vercel/` + `relay.mjs` | Vercel + Redis (Upstash) | if you already use Vercel |
+
+`relay.mjs` is the relay itself in JavaScript (the same protocol and tests); `deno/` and `vercel/` only connect it to where it
+runs and where it keeps its data. `node relay/vercel/dev.mjs 8793` runs it on this computer with its data in memory.
 
 ## Run the Python relay
 
@@ -24,6 +29,17 @@ XOD_RELAY_DOMAIN=post.example.com uvicorn server:app --host 0.0.0.0 --port 8790
 Or with Docker: `docker build -t xod-post . && docker run -p 8790:8790 -e XOD_RELAY_DOMAIN=post.example.com -v xod-post:/data xod-post`.
 
 Put it behind HTTPS (Caddy, nginx or Cloudflare). Xod talks plain HTTP only to `localhost` and `.local` hosts.
+
+## Deploy on Deno Deploy
+
+```bash
+deno run -A jsr:@deno/deploy orgs list                  # your organization's name (signs you in with GitHub)
+ORG=<that name> bash relay/deno/deploy.sh               # creates the app and its Deno KV database, attaches it, deploys
+```
+
+The relay is then at `https://xod-post.<org>.deno.net` and addresses look like `sam@xod-post.<org>.deno.net`. Without a
+saved sign-in each step asks you to approve again; an organization access token in `DENO_DEPLOY_TOKEN` skips that.
+`SKIP_CREATE=1` / `SKIP_PROVISION=1` skip steps that are already done.
 
 ## Deploy the Cloudflare Worker
 

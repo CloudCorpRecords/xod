@@ -1,0 +1,8 @@
+{
+  "name": "xod-post-vercel",
+  "private": true,
+  "type": "module",
+  "description": "Xod Post Office (Agent Mail relay) on Vercel, with Redis (Upstash) for its data.",
+  "engines": { "node": ">=20" },
+  "scripts": { "dev": "node dev.mjs" }
+}
