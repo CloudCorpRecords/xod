@@ -33,7 +33,7 @@ websockets==17.2
 # Documents
 pypdf==6.20.0
 python-docx==1.2.0
-markdown==3.10.3             # shareable reports from the agent
+markdown==3.11.1             # shareable reports from the agent
 
 # Media downloads (uses the ffmpeg bundled with imageio-ffmpeg)
 yt-dlp==2026.8.19
