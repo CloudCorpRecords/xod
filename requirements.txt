@@ -5,7 +5,7 @@
 # ==============================================================================
 
 # Web framework & server
-fastapi==0.143.0
+fastapi==0.143.2
 mcp==2.3.0                   # connected apps (MCP client and Xod's MCP server)
 starlette==1.8.0
 uvicorn==0.54.0
