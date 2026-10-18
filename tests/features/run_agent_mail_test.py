@@ -55,6 +55,14 @@ def port():
         return s.getsockname()[1]
 
 
+def _no_proxy_env():
+    """Spawned servers only ever talk to 127.0.0.1, so drop proxy variables: some sandboxes
+    set NO_PROXY entries (like a bare and a bracketed ::1) that httpx 0.28 fails to parse
+    when it builds a client, even though no request would use a proxy."""
+    return {k: v for k, v in os.environ.items()
+            if k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "no_proxy")}
+
+
 def wait(url):
     for _ in range(120):
         try:
@@ -80,7 +88,7 @@ EXTERNAL = os.environ.get("XOD_TEST_RELAY")
 RELAY = EXTERNAL or f"127.0.0.1:{port()}"
 if not EXTERNAL:
     procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", RELAY.split(":")[1]],
-                                  cwd=ROOT / "relay", env={**os.environ, "XOD_RELAY_DOMAIN": RELAY, "XOD_RELAY_DB": str(TMP / "relay.db"),
+                                  cwd=ROOT / "relay", env={**_no_proxy_env(), "XOD_RELAY_DOMAIN": RELAY, "XOD_RELAY_DB": str(TMP / "relay.db"),
                                                            "XOD_RELAY_DIR_STALE": "4"},
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
 # A second relay that plays the self-host endpoint (carol's own post office) in S1-S5.
@@ -89,14 +97,14 @@ self_proc = None
 if not EXTERNAL:
     SELF = f"127.0.0.1:{port()}"
     self_proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", SELF.split(":")[1]],
-                                 cwd=ROOT / "relay", env={**os.environ, "XOD_RELAY_DOMAIN": SELF, "XOD_RELAY_DB": str(TMP / "self.db")},
+                                 cwd=ROOT / "relay", env={**_no_proxy_env(), "XOD_RELAY_DOMAIN": SELF, "XOD_RELAY_DB": str(TMP / "self.db")},
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     procs.append(self_proc)
 RUN = uuid.uuid4().hex[:5]          # fresh names each run, so a long-lived relay can be reused
 X = {}
 for who in ("alice", "bob", "carol"):
     p = port()
-    env = {**os.environ, "XOD_DATA_DIR": str(TMP / who), "XOD_TEST_KEYRING_FILE": str(TMP / f"{who}-keys.json"),
+    env = {**_no_proxy_env(), "XOD_DATA_DIR": str(TMP / who), "XOD_TEST_KEYRING_FILE": str(TMP / f"{who}-keys.json"),
            "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring", "XOD_SECRETS_SERVICE": "Xod test keys",
            "PYTHONPATH": str(ROOT), "XOD_DEFAULT_RELAY": RELAY, "XOD_TEST_AUTO_REPLY": "1", "XOD_DIR_STALE_AFTER": "4"}
     procs.append(subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(p)],
@@ -159,7 +167,7 @@ try:
     py = ("import asyncio,json\nfrom app.agent.tools import execute_tool\n"
           f"r=asyncio.run(execute_tool('agent_mail_send', {{'to': '{addrs['bob']}', 'text': 'Drafted by Xod for alice.'}}))\n"
           "print(json.dumps(r))")
-    env = {**os.environ, "XOD_DATA_DIR": str(TMP / "alice"), "XOD_TEST_KEYRING_FILE": str(TMP / "alice-keys.json"),
+    env = {**_no_proxy_env(), "XOD_DATA_DIR": str(TMP / "alice"), "XOD_TEST_KEYRING_FILE": str(TMP / "alice-keys.json"),
            "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring", "PYTHONPATH": str(ROOT)}
     try:
         out = subprocess.run([sys.executable, "-c", py], cwd=ROOT, env={**env, "PYTHONUNBUFFERED": "1"}, capture_output=True,
@@ -215,6 +223,12 @@ try:
         db.commit()
         r = call(X["bob"], "POST", "/api/mail/send", {"to": addrs["alice"], "text": "Are you still there?"})
         check("M8 bob won't send to swapped keys", not r.get("success") and "changed" in (r.get("error") or ""), (r.get("error") or "")[:90])
+        # put alice's real keys back: later scenarios need her mail to verify again
+        pinned = sqlite3.connect(TMP / "bob" / "xod.db").execute(
+            "SELECT sign_pub, box_pub FROM mail_contacts WHERE address=?", (addrs["alice"],)).fetchone()
+        db.execute(f"UPDATE names SET sign_pub=?, box_pub=? WHERE name='alice{RUN}'", (pinned[0], pinned[1]))
+        db.commit()
+        db.close()
 
     # M9
     r = call(X["carol"], "POST", "/api/mail/send", {"to": addrs["bob"], "kind": "task_request", "subject": "Quick favor",
