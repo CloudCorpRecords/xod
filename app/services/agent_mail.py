@@ -44,6 +44,14 @@ class MailError(Exception):
     pass
 
 
+class Unreachable(MailError):
+    """The other side's post office didn't answer (their computer is off or asleep, or the network is down): try later."""
+
+
+OUTBOX_DAYS = 7             # how long the outbox keeps retrying a message nobody could take
+HOME_WORDS = {"", "home", "here", "this computer", "this mac", "this pc", "self", "local", "mine", "my own", "own"}
+
+
 # ---------------------------------------------------------------- storage
 
 def _db() -> sqlite3.Connection:
@@ -58,6 +66,9 @@ def _db() -> sqlite3.Connection:
         kind TEXT, subject TEXT, text TEXT, status TEXT, verified INTEGER DEFAULT 0, problem TEXT,
         in_reply_to TEXT, origin TEXT, task_id TEXT, replied INTEGER DEFAULT 0, read INTEGER DEFAULT 0,
         created_at REAL);
+    CREATE TABLE IF NOT EXISTS mail_outbox (
+        id TEXT PRIMARY KEY, msg_id TEXT, addr TEXT, message TEXT, tries INTEGER DEFAULT 0, next_at REAL,
+        created_at REAL, last_error TEXT);
     CREATE INDEX IF NOT EXISTS mail_thread ON mail_messages(thread, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS mail_msgid ON mail_messages(msg_id, direction, peer);
     """)
@@ -103,9 +114,14 @@ def _identity(create: bool = False) -> Optional[mc.Identity]:
 
 
 def relay_base(domain: str) -> str:
+    """Where a domain's post office answers. This Xod's own is asked directly; private networks (the same network,
+    Tailscale) use plain HTTP, since the mail is end-to-end encrypted anyway; everything else HTTPS."""
+    from app.services import home_post
+    own = home_post.base_for(domain)
+    if own:
+        return own
     host = domain.split(":")[0]
-    local = host in ("localhost", "127.0.0.1", "::1") or host.endswith(".local") or host.endswith(".localhost")
-    return f"{'http' if local else 'https'}://{domain}"
+    return f"{'http' if host in ('127.0.0.1', '::1') or home_post.is_private_host(host) else 'https'}://{domain}"
 
 
 def parse_address(address: str) -> tuple:
@@ -142,12 +158,28 @@ def status() -> Dict[str, Any]:
             WHERE m.direction='in' AND COALESCE(k.trust,'unknown')='unknown' AND m.status!='blocked'""").fetchone()[0]
         out["drafts"] = c.execute("SELECT COUNT(*) FROM mail_messages WHERE status='draft'").fetchone()[0]
         out["held"] = c.execute("SELECT COUNT(*) FROM mail_messages WHERE status='held'").fetchone()[0]
+        out["outbox"] = c.execute("SELECT COUNT(*) FROM mail_outbox").fetchone()[0]
+    from app.services import home_post
+    out["self_hosted"] = bool(cfg.get("home"))
+    out["home"] = {"running": home_post.running(), "domain": home_post.domain(), "port": home_post.PORT} if cfg.get("home") else None
     return out
 
 
-async def setup(name: str, relay_domain: str) -> Dict[str, Any]:
-    """Claims name@relay with this Mac's keys (made now if needed)."""
-    name, domain = (name or "").strip().lower(), (relay_domain or DEFAULT_RELAY).strip().lower()
+async def setup(name: str, relay_domain: str, network: str = "") -> Dict[str, Any]:
+    """Claims name@relay with this computer's keys (made now if needed). With no shared post office (none given, none
+    set as the default, or "this computer"), this Xod hosts its own (services/home_post.py) and the address is
+    name@<how others reach this computer>; network picks "network" (same Wi-Fi) or "tailscale"."""
+    name = (name or "").strip().lower()
+    wanted = (relay_domain or "").strip().lower()
+    home = wanted in HOME_WORDS and (wanted != "" or not DEFAULT_RELAY)
+    if home:
+        from app.services import home_post
+        domain = home_post.pick(network)
+        started = await home_post.start(domain)
+        if not started.get("success"):
+            return started
+    else:
+        domain = wanted or DEFAULT_RELAY.strip().lower()
     domain = re.sub(r"^https?://", "", domain).strip("/")
     if not domain:
         return {"success": False, "error": "Choose a relay (post office) first."}
@@ -164,9 +196,15 @@ async def setup(name: str, relay_domain: str) -> Dict[str, Any]:
         return {"success": False, "error": _detail(r)}
     address = r.json().get("address") or f"{name}@{domain}"
     cfg = _config()
-    cfg.update(name=name, domain=domain, address=address, registered_at=time.time(), last_error=None)
+    cfg.update(name=name, domain=domain, address=address, registered_at=time.time(), last_error=None,
+               home={"domain": domain} if home else None)
     _save_config(cfg)
-    return {"success": True, "address": address, "safety_number": mc.safety_number(ident.sign_pub, ident.box_pub)}
+    out = {"success": True, "address": address, "safety_number": mc.safety_number(ident.sign_pub, ident.box_pub)}
+    if home:
+        out["self_hosted"] = True
+        out["reach"] = ("anyone on your Tailscale network" if domain.split(":")[0].endswith(".ts.net")
+                        else "agents on the same network as this computer")
+    return out
 
 
 async def lookup(address: str) -> Dict[str, Any]:
@@ -174,7 +212,9 @@ async def lookup(address: str) -> Dict[str, Any]:
     try:
         r = await _http("GET", f"{relay_base(domain)}/v1/names/{name}")
     except httpx.HTTPError as e:
-        raise MailError(f"Couldn't reach {domain} ({type(e).__name__}).")
+        raise Unreachable(f"Couldn't reach {domain} ({type(e).__name__}).")
+    if r.status_code >= 500 or r.status_code == 429:
+        raise Unreachable(f"{domain} is busy or down ({r.status_code}).")
     if r.status_code == 404:
         raise MailError(f"There's no {address}.")
     if r.status_code != 200:
@@ -294,27 +334,96 @@ async def send(to: Any, text: str, subject: str = "", kind: str = "message", thr
     msg_id = msg_id or uuid.uuid4().hex
     message = {"id": msg_id, "thread": thread, "kind": kind, "subject": (subject or "")[:200], "text": text[:20000],
                "in_reply_to": in_reply_to, "recipients": recips, "sent_at": int(time.time())}
-    sent, errors = [], []
+    sent, errors, queued = [], [], []
     for addr in recips:
         try:
-            who = await resolve(addr, trust_if_new="known")    # writing to someone makes them a contact
-            env = mc.seal(ident, cfg["address"], addr, who["box_pub"], message)
-            _, domain = parse_address(addr)
-            r = await _http("POST", f"{relay_base(domain)}/v1/mail", json={"to": addr, "envelope": env})
-            if r.status_code != 202:
-                raise MailError(_detail(r))
+            await _deliver(ident, cfg, addr, message)
             sent.append(addr)
-        except (MailError, httpx.HTTPError) as e:
+        except Unreachable as e:
+            _enqueue(msg_id, addr, message, str(e))       # their computer is off or away: the outbox keeps trying
+            queued.append(addr)
+        except MailError as e:
             errors.append(f"{addr}: {e}")
     with _db() as c:
         c.execute("""INSERT OR REPLACE INTO mail_messages (id, msg_id, thread, direction, peer, recipients, kind, subject,
                      text, status, verified, problem, in_reply_to, origin, created_at, read)
                      VALUES (?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,1)""",
                   (f"out-{msg_id[:12]}", msg_id, thread, "out", recips[0], json.dumps(recips), kind, message["subject"],
-                   message["text"], "sent" if sent else "failed", "; ".join(errors) or None, in_reply_to, origin, time.time()))
-    if not sent:
+                   message["text"], "sent" if sent and not queued else "queued" if queued else "failed",
+                   "; ".join(errors) or None, in_reply_to, origin, time.time()))
+    if not sent and not queued:
         return {"success": False, "error": "; ".join(errors)}
-    return {"success": True, "sent_to": sent, "errors": errors, "thread": thread}
+    out = {"success": True, "sent_to": sent, "errors": errors, "thread": thread}
+    if queued:
+        out["queued"] = queued
+        out["note"] = (f"{', '.join(queued)} can't be reached right now (their computer may be off or away), so it's in your "
+                       f"outbox: Xod keeps trying for {OUTBOX_DAYS} days.")
+    return out
+
+
+async def _deliver(ident: mc.Identity, cfg: Dict[str, Any], addr: str, message: Dict[str, Any]) -> None:
+    """Seals one message for one address and hands it to their post office. Unreachable when nobody answered."""
+    who = await resolve(addr, trust_if_new="known")    # writing to someone makes them a contact
+    env = mc.seal(ident, cfg["address"], addr, who["box_pub"], message)
+    _, domain = parse_address(addr)
+    try:
+        r = await _http("POST", f"{relay_base(domain)}/v1/mail", json={"to": addr, "envelope": env})
+    except httpx.HTTPError as e:
+        raise Unreachable(f"Couldn't reach {domain} ({type(e).__name__}).")
+    if r.status_code >= 500 or r.status_code == 429:
+        raise Unreachable(f"{domain} is busy or down ({r.status_code}).")
+    if r.status_code != 202:
+        raise MailError(_detail(r))
+
+
+def _enqueue(msg_id: str, addr: str, message: Dict[str, Any], why: str) -> None:
+    now = time.time()
+    with _db() as c:
+        c.execute("INSERT OR REPLACE INTO mail_outbox VALUES (?,?,?,?,?,?,?,?)",
+                  (f"{msg_id}:{addr}", msg_id, addr, json.dumps(message), 0, now + POLL_SECONDS, now, why))
+
+
+def outbox() -> List[Dict[str, Any]]:
+    with _db() as c:
+        return [{"addr": r["addr"], "msg_id": r["msg_id"], "tries": r["tries"], "next_at": r["next_at"], "since": r["created_at"],
+                 "last_error": r["last_error"]} for r in c.execute("SELECT * FROM mail_outbox ORDER BY created_at")]
+
+
+async def retry_outbox(force: bool = False) -> Dict[str, int]:
+    """Tries the outbox again: what arrives is marked sent; after OUTBOX_DAYS a message is given up on and says so."""
+    cfg, ident = _config(), _identity()
+    if not (cfg.get("address") and ident):
+        return {"sent": 0, "waiting": 0, "gave_up": 0}
+    now = time.time()
+    with _db() as c:
+        due = c.execute("SELECT * FROM mail_outbox" + ("" if force else " WHERE next_at <= ?"), () if force else (now,)).fetchall()
+    sent = gave_up = 0
+    for row in due:
+        try:
+            await _deliver(ident, cfg, row["addr"], json.loads(row["message"]))
+            with _db() as c:
+                c.execute("DELETE FROM mail_outbox WHERE id=?", (row["id"],))
+            sent += 1
+        except Unreachable as e:
+            with _db() as c:
+                if now - row["created_at"] > OUTBOX_DAYS * 86400:
+                    c.execute("DELETE FROM mail_outbox WHERE id=?", (row["id"],))
+                    c.execute("UPDATE mail_messages SET status='failed', problem=? WHERE msg_id=? AND direction='out'",
+                              (f"Couldn't reach {row['addr']} for {OUTBOX_DAYS} days, so it wasn't delivered.", row["msg_id"]))
+                    gave_up += 1
+                else:
+                    wait = min(1800, POLL_SECONDS * 2 ** min(row["tries"], 6))
+                    c.execute("UPDATE mail_outbox SET tries=tries+1, next_at=?, last_error=? WHERE id=?", (now + wait, str(e), row["id"]))
+        except MailError as e:
+            with _db() as c:
+                c.execute("DELETE FROM mail_outbox WHERE id=?", (row["id"],))
+                c.execute("UPDATE mail_messages SET status='failed', problem=? WHERE msg_id=? AND direction='out'",
+                          (f"{row['addr']}: {e}", row["msg_id"]))
+    with _db() as c:     # a message whose every recipient got it is sent
+        c.execute("""UPDATE mail_messages SET status='sent' WHERE direction='out' AND status='queued'
+                     AND msg_id NOT IN (SELECT msg_id FROM mail_outbox)""")
+        waiting = c.execute("SELECT COUNT(*) FROM mail_outbox").fetchone()[0]
+    return {"sent": sent, "waiting": waiting, "gave_up": gave_up}
 
 
 async def approve_draft(draft_id: str) -> Dict[str, Any]:
@@ -566,10 +675,17 @@ _task: Optional[asyncio.Task] = None
 
 
 async def _loop() -> None:
+    cfg = _config()
+    if cfg.get("home") and cfg.get("address"):     # this Xod hosts its own post office: open it again
+        from app.services import home_post
+        r = await home_post.start(cfg["home"]["domain"])
+        if not r.get("success"):
+            logger.warning(f"Agent Mail: this computer's post office didn't start: {r.get('error')}")
     while True:
         try:
             if status()["set_up"]:
                 await check()
+                await retry_outbox()
                 _reply_with_task_results()
         except Exception as e:
             logger.warning(f"Agent Mail check failed: {e}")

@@ -2475,10 +2475,11 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "agent_mail_setup",
-            "description": "Sets up Agent Mail (the user's own agent address for messaging other AI agents, like sam@post.example.com; not normal email): turns the add-on on and claims name@relay with this computer's keys. Use when the user asks to set up, turn on or get an agent mail address. Without a relay it says how to get one.",
+            "description": "Sets up Agent Mail (the user's own agent address for messaging other AI agents; not normal email): turns the add-on on and claims an address with this computer's keys. With no shared post office, this computer hosts its own (no server needed): the address is name@<this computer on the network or Tailscale>. Use when the user asks to set up, turn on or get an agent mail address.",
             "parameters": {"type": "object", "properties": {
                 "name": {"type": "string", "description": "The name before the @ (2-32 letters, numbers, dots, dashes); default the user's first name"},
-                "relay": {"type": "string", "description": "The relay (post office) domain, if the user gave one"}}}
+                "relay": {"type": "string", "description": "A shared post office's domain, only if the user named one; leave empty to host on this computer"},
+                "network": {"type": "string", "enum": ["", "network", "tailscale"], "description": "For this computer's own post office: 'network' (same Wi-Fi) or 'tailscale' (default: Tailscale if it's on, else the network)"}}}
         }
     },
     {
@@ -3762,12 +3763,7 @@ async def _agent_mail_setup(args: Dict[str, Any]) -> Dict[str, Any]:
     if st.get("set_up"):
         return {"success": True, "already": True, "address": st.get("address"),
                 "note": "Agent Mail was already set up; the add-on is on. Open Tools → Agent Mail to see the inbox."}
-    relay = (args.get("relay") or st.get("relay") or agent_mail.DEFAULT_RELAY or "").strip()
-    if not relay:
-        return {"success": False, "needs_relay": True,
-                "error": ("Agent Mail is on, but there's no post office (relay) to claim an address on yet. Agent Mail needs one "
-                          "running somewhere: a free Cloudflare Worker or any server (see relay/README.md in the Xod repo). "
-                          "Tell me its address (like post.yourdomain.com), or set it in Tools → Agent Mail.")}
+    relay = (args.get("relay") or agent_mail.DEFAULT_RELAY or "").strip()     # none: this computer hosts its own
     name = (args.get("name") or "").strip()
     if not name:
         try:
@@ -3777,10 +3773,17 @@ async def _agent_mail_setup(args: Dict[str, Any]) -> Dict[str, Any]:
             name = ""
     if not name:
         return {"success": False, "needs_name": True, "error": "What name should the address use (the part before the @)?"}
-    r = await agent_mail.setup(name, relay)
+    r = await agent_mail.setup(name, relay, args.get("network") or "")
     if r.get("success"):
-        r["note"] = (f"Your agent address is {r['address']}. Other agents can write to it; nothing is sent from it without your OK. "
-                     "Share it with people whose agents you want to hear from. Safety number (to check with contacts): "
+        where = (f" It's hosted on this computer (no server needed), so {r.get('reach')} can write to it while this computer is on; "
+                 "mail sent to you while it's off waits in the sender's outbox." if r.get("self_hosted") else "")
+        tip = ""
+        if r.get("self_hosted") and "tailscale" not in (r.get("reach") or "").lower():
+            from app.services import home_post
+            if not home_post.tailscale():
+                tip = " To reach agents beyond this network, install Tailscale (free, tailscale.com) and set it up again."
+        r["note"] = (f"Your agent address is {r['address']}.{where} Nothing is sent from it without your OK. "
+                     f"Share it with people whose agents you want to hear from.{tip} Safety number (to check with contacts): "
                      f"{r.get('safety_number')}.")
     return r
 

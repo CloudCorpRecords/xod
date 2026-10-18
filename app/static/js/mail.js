@@ -38,16 +38,22 @@
           <p class="task-title">Give this Xod an address</p>
           <p class="text-[12px] text-zinc-400">Like email, but for AI agents. Other Xods can message yours, ask it for help, and you can connect several agents (yours or friends') together.</p>
           <ul class="text-[12px] text-zinc-400 space-y-1 list-disc pl-4">
-            <li>Messages are end-to-end encrypted. The post office (relay) can't read them or see who sent them, and deletes each one once it's delivered.</li>
-            <li>Messages, contacts and your keys stay on this Mac (keys in your Keychain).</li>
+            <li>Messages are end-to-end encrypted. Whatever carries them can't read them or see who sent them.</li>
+            <li>No server needed: this computer can be its own post office. Messages, contacts and your keys stay here (keys in your Keychain).</li>
             <li>Xod never sends or runs anything from mail without your OK.</li>
           </ul>
         </div>
         <label class="block text-[12px] text-zinc-400">Your name
           <input id="mlName" class="${field} mt-1" placeholder="e.g. sam" autocomplete="off" spellcheck="false"></label>
-        <label class="block text-[12px] text-zinc-400">Post office (relay)
-          <input id="mlRelay" class="${field} mt-1" value="${esc(st?.default_relay || "")}" placeholder="post.example.com" autocomplete="off" spellcheck="false"></label>
-        <p class="text-[11px] text-zinc-500">Your address will be <span class="font-mono" id="mlPreview">name@relay</span>. Anyone can run a relay; see relay/README.md in Xod's repository.</p>
+        <fieldset class="space-y-1.5 text-[12px] text-zinc-300">
+          <label class="flex items-start gap-2"><input type="radio" name="mlWhere" value="home" ${st?.default_relay ? "" : "checked"} class="mt-0.5">
+            <span>Host it on this computer <span class="text-zinc-500">(no server: other agents reach this computer directly)</span></span></label>
+          <div id="mlNets" class="pl-6 space-y-1 text-[12px] text-zinc-400">Looking at this computer's networks…</div>
+          <label class="flex items-start gap-2"><input type="radio" name="mlWhere" value="relay" ${st?.default_relay ? "checked" : ""} class="mt-0.5">
+            <span>Use a shared post office <span class="text-zinc-500">(a relay someone runs: works when this computer is off)</span></span></label>
+          <input id="mlRelay" class="${field} ml-6" value="${esc(st?.default_relay || "")}" placeholder="post.example.com" autocomplete="off" spellcheck="false">
+        </fieldset>
+        <p class="text-[11px] text-zinc-500">Your address will be <span class="font-mono" id="mlPreview">name@relay</span>. Anyone can run a shared post office too: see relay/README.md in Xod's repository.</p>
         <button data-ml="setup" class="${primary}">Create my address</button>
         <p id="mlSetupErr" class="text-[12px] text-red-300"></p>
       </section>`;
@@ -64,6 +70,10 @@
           <p class="text-[11px] text-zinc-400 mt-1">Compare this with someone (in person or on a call) to be sure your messages reach the real you.</p>
           <p class="font-mono text-[12px] text-zinc-200 mt-1">${esc(st.safety_number)}</p></details>
         ${st.last_error ? `<p class="text-[11px] text-amber-300">${esc(st.last_error)}</p>` : `<p class="text-[11px] text-zinc-500">Checked ${esc(when(st.last_check)) || "never"} · checks every 30 seconds</p>`}
+        ${st.self_hosted ? `<p class="text-[11px] ${st.home && st.home.running ? "text-emerald-300" : "text-amber-300"}">${st.home && st.home.running
+          ? `Hosted on this computer (port ${esc(st.home.port)}): ${/\.ts\.net/.test(st.address) ? "reachable on your Tailscale network" : "reachable on this network"} while it's on.`
+          : "This computer's post office isn't running. Restart Xod, or check that nothing else uses its port."}</p>` : ""}
+        ${st.outbox ? `<p class="text-[11px] text-zinc-400">${st.outbox} waiting in your outbox (the other side wasn't reachable): Xod keeps trying. <button data-ml="retry" class="underline">Try now</button></p>` : ""}
       </div>`;
   }
 
@@ -179,7 +189,23 @@
 
   function wireSetup() {
     const name = document.getElementById("mlName"), relay = document.getElementById("mlRelay"), prev = document.getElementById("mlPreview");
-    const upd = () => { prev.textContent = `${(name.value || "name").toLowerCase()}@${(relay.value || "relay").replace(/^https?:\/\//, "")}`; };
+    const nets = document.getElementById("mlNets");
+    const where = () => (document.querySelector("input[name=mlWhere]:checked") || {}).value;
+    const net = () => (document.querySelector("input[name=mlNet]:checked") || {}).value || "";
+    const upd = () => {
+      const dom = where() === "home" ? net() : (relay.value || "relay").replace(/^https?:\/\//, "");
+      prev.textContent = `${(name.value || "name").toLowerCase()}@${dom || "this-computer"}`;
+      relay.disabled = where() === "home";
+    };
+    api("/api/mail/networks").then((r) => {
+      const opts = (r.networks || []);
+      nets.innerHTML = opts.map((n, i) => n.domain
+        ? `<label class="flex items-start gap-2"><input type="radio" name="mlNet" value="${esc(n.domain)}" data-kind="${esc(n.kind)}" ${i === 0 ? "checked" : ""} class="mt-0.5"><span><span class="font-mono text-zinc-200">${esc(n.domain)}</span><br>${esc(n.label)}</span></label>`
+        : `<p class="text-zinc-500">${esc(n.label)}</p>`).join("") || "<p>Couldn't find this computer's network name.</p>";
+      nets.addEventListener("change", upd);
+      upd();
+    }).catch(() => { nets.textContent = "Couldn't read this computer's networks."; });
+    document.querySelectorAll("input[name=mlWhere]").forEach((r) => r.addEventListener("change", upd));
     name.addEventListener("input", upd); relay.addEventListener("input", upd); upd();
   }
 
@@ -198,12 +224,16 @@
     if (e.type !== "click") return;
     if (a === "setup") {
       el.disabled = true; el.textContent = "Creating…";
-      const r = await api("/api/mail/setup", "POST", { name: document.getElementById("mlName").value, relay: document.getElementById("mlRelay").value });
+      const home = (document.querySelector("input[name=mlWhere]:checked") || {}).value === "home";
+      const net = document.querySelector("input[name=mlNet]:checked");
+      const r = await api("/api/mail/setup", "POST", { name: document.getElementById("mlName").value,
+        relay: home ? "this computer" : document.getElementById("mlRelay").value, network: home && net ? net.value : "" });
       if (!r.success) { document.getElementById("mlSetupErr").textContent = r.error; el.disabled = false; el.textContent = "Create my address"; return; }
       showToast(`You're ${r.address}`);
       return render();
     }
     if (a === "copy") { await navigator.clipboard.writeText(st.address); return showToast("Address copied"); }
+    if (a === "retry") { const r = await api("/api/mail/outbox/retry", "POST", {}); showToast(r.sent ? `Delivered ${r.sent}` : "Still not reachable; Xod keeps trying"); return render(); }
     if (a === "compose") { view.compose = {}; return render(); }
     if (a === "message") { view = { box: "inbox", compose: { to: el.closest("[data-ml-contact]").dataset.mlContact } }; return render(); }
     if (a === "cancel-compose") { view.compose = null; return render(); }

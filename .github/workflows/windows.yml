@@ -59,6 +59,8 @@ jobs:
         run: python tests/smoke/run_tailor_test.py
       - name: Setting up Agent Mail from the chat, and mail between two Xods (a relay of its own)
         run: python tests/smoke/run_agent_mail_chat_test.py
+      - name: Agent Mail with no shared post office - two Xods hosting their own, the outbox while one is off
+        run: python tests/smoke/run_home_post_test.py
       # Not run_engine_watchdog_test: the built-in engine (MLX) is Mac only, so its watchdog never runs here. The Mac job runs it.
 
   installer:

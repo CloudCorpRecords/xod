@@ -961,6 +961,7 @@ async def companion_set(req: CompanionSettings):
 class MailSetup(BaseModel):
     name: str
     relay: Optional[str] = None
+    network: Optional[str] = None            # this computer's own post office: "network" or "tailscale"
 
 
 class MailSend(BaseModel):
@@ -1003,7 +1004,26 @@ async def mail_status():
 @app.post("/api/mail/setup")
 async def mail_setup(req: MailSetup):
     from app.services import agent_mail
-    return await agent_mail.setup(req.name, req.relay or "")
+    return await agent_mail.setup(req.name, req.relay or "", req.network or "")
+
+
+@app.get("/api/mail/networks")
+async def mail_networks():
+    """How other agents could reach this computer, for hosting your own post office."""
+    from app.services import home_post
+    return {"networks": await asyncio.to_thread(home_post.networks), "port": home_post.PORT}
+
+
+@app.get("/api/mail/outbox")
+async def mail_outbox():
+    from app.services import agent_mail
+    return {"outbox": agent_mail.outbox()}
+
+
+@app.post("/api/mail/outbox/retry")
+async def mail_outbox_retry():
+    from app.services import agent_mail
+    return await agent_mail.retry_outbox(force=True)
 
 
 @app.post("/api/mail/check")
