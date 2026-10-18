@@ -33,6 +33,12 @@ MAX_ENVELOPE = int(os.environ.get("XOD_RELAY_MAX_BYTES", 256 * 1024))
 MAILBOX_LIMIT = 500                 # undelivered messages held per name
 EXPIRE_DAYS = 30
 CLOCK_SKEW = 300
+# Self-host directory liveness: self-hosts heartbeat every 5 minutes; a record with no
+# heartbeat for 3 intervals (15 minutes) is served as stale, and records unseen for a day
+# are dropped. DIRECTORY_STALE_AFTER is overridable for tests.
+DIRECTORY_HEARTBEAT = 300
+DIRECTORY_STALE_AFTER = int(os.environ.get("XOD_RELAY_DIR_STALE", 3 * DIRECTORY_HEARTBEAT))
+DIRECTORY_EXPIRE_AFTER = 24 * 3600
 NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,30}[a-z0-9])?$")
 RESERVED = {"admin", "administrator", "root", "postmaster", "abuse", "support", "help", "security", "xod",
             "relay", "system", "noreply", "no-reply", "mail", "www", "api", "official", "team", "staff"}
@@ -54,6 +60,10 @@ with db() as _c:
     CREATE TABLE IF NOT EXISTS mail (id TEXT PRIMARY KEY, name TEXT NOT NULL, envelope TEXT NOT NULL,
                                      received_at REAL NOT NULL);
     CREATE INDEX IF NOT EXISTS mail_name ON mail(name, received_at);
+    CREATE TABLE IF NOT EXISTS directory (address TEXT PRIMARY KEY, endpoint TEXT NOT NULL,
+                                          sign_pub TEXT NOT NULL, box_pub TEXT NOT NULL, status TEXT NOT NULL,
+                                          challenge_id TEXT, challenge TEXT,
+                                          registered_at REAL NOT NULL, last_seen REAL NOT NULL);
     """)
 
 
@@ -116,7 +126,8 @@ def expire() -> None:
 @app.get("/.well-known/xod-relay")
 def about() -> Dict[str, Any]:
     return {"service": "xod-relay", "version": 1, "domain": DOMAIN, "max_envelope_bytes": MAX_ENVELOPE,
-            "expire_days": EXPIRE_DAYS}
+            "expire_days": EXPIRE_DAYS, "directory": True,
+            "directory_heartbeat_seconds": DIRECTORY_HEARTBEAT, "directory_stale_after_seconds": DIRECTORY_STALE_AFTER}
 
 
 class Registration(BaseModel):
@@ -223,3 +234,139 @@ def ack(body: Ack, request: Request) -> Dict[str, int]:
         for mid in body.ids[:200]:
             n += c.execute("DELETE FROM mail WHERE id=? AND name=?", (mid, who)).rowcount
     return {"deleted": n}
+
+
+# ---------------------------------------------------------------- self-host directory
+# Public data only: address -> reachable endpoint URL + public keys. No message content ever
+# lives here. Registration is challenge-verified: the relay only lists a record after the
+# address's Ed25519 key signs a relay-issued challenge, so records can't be forged or replayed.
+
+def _dir_address(address: str) -> str:
+    address = (address or "").strip().lower()
+    name, _, domain = address.partition("@")
+    if not (name and domain and NAME_RE.match(name)):
+        raise HTTPException(400, "The address must look like name@domain.")
+    return address
+
+
+def _dir_endpoint_ok(url: str) -> bool:
+    m = re.match(r"^(https?)://([^/:]+)(?::(\d+))?(/.*)?$", url or "", re.I)
+    if not m:
+        return False
+    if m.group(1).lower() == "https":
+        return True
+    host = m.group(2).lower()   # plain http only for local endpoints, like the client's relay_base
+    return host in ("localhost", "127.0.0.1", "::1") or host.endswith(".local") or host.endswith(".localhost")
+
+
+def _dir_keys_ok(sign_pub: str, box_pub: str) -> bool:
+    try:
+        return len(b64d(sign_pub)) == 32 and len(b64d(box_pub)) == 32
+    except Exception:
+        return False
+
+
+class DirectoryRegistration(BaseModel):
+    address: str
+    endpoint: str
+    sign_pub: str
+    box_pub: str
+    ts: int
+    sig: str
+
+
+@app.post("/v1/directory/register")
+def directory_register(reg: DirectoryRegistration, request: Request) -> Dict[str, Any]:
+    rate_limit(f"dirreg:{client_ip(request)}", 10, 3600)
+    address = _dir_address(reg.address)
+    if not _dir_endpoint_ok(reg.endpoint):
+        raise HTTPException(400, "The endpoint must be an https:// URL (http:// is only for local hosts).")
+    if abs(time.time() - reg.ts) > CLOCK_SKEW:
+        raise HTTPException(400, "Your clock is off.")
+    if not _dir_keys_ok(reg.sign_pub, reg.box_pub):
+        raise HTTPException(400, "Bad keys.")
+    msg = f"xod-dir-register|{address}|{reg.endpoint}|{reg.sign_pub}|{reg.box_pub}|{reg.ts}".encode()
+    if not verify(reg.sign_pub, msg, reg.sig):
+        raise HTTPException(400, "The registration isn't signed by that key.")
+    now = time.time()
+    with _lock, db() as c:
+        row = c.execute("SELECT sign_pub, status FROM directory WHERE address=?", (address,)).fetchone()
+        if row and row["sign_pub"] != reg.sign_pub:
+            raise HTTPException(409, f"{address} is already registered with a different key.")
+        if row and row["status"] == "live":
+            c.execute("""UPDATE directory SET endpoint=?, box_pub=?, last_seen=? WHERE address=?""",
+                      (reg.endpoint, reg.box_pub, now, address))
+            return {"registered": True, "address": address, "endpoint": reg.endpoint}
+        challenge_id, challenge = uuid.uuid4().hex, uuid.uuid4().hex
+        c.execute("""INSERT INTO directory (address, endpoint, sign_pub, box_pub, status, challenge_id, challenge,
+                                            registered_at, last_seen)
+                     VALUES (?,?,?,?, 'pending',?,?,?,?)
+                     ON CONFLICT(address) DO UPDATE SET endpoint=excluded.endpoint, sign_pub=excluded.sign_pub,
+                       box_pub=excluded.box_pub, status='pending', challenge_id=excluded.challenge_id,
+                       challenge=excluded.challenge, last_seen=excluded.last_seen""",
+                  (address, reg.endpoint, reg.sign_pub, reg.box_pub, challenge_id, challenge, now, now))
+    return {"status": "challenge", "challenge_id": challenge_id, "challenge": challenge}
+
+
+class DirectoryChallenge(BaseModel):
+    challenge_id: str
+    address: str
+    sig: str
+
+
+@app.post("/v1/directory/challenge")
+def directory_challenge(body: DirectoryChallenge, request: Request) -> Dict[str, Any]:
+    rate_limit(f"dircha:{client_ip(request)}", 30, 3600)
+    address = _dir_address(body.address)
+    now = time.time()
+    with _lock, db() as c:
+        row = c.execute("SELECT * FROM directory WHERE challenge_id=? AND address=? AND status='pending'",
+                        (body.challenge_id, address)).fetchone()
+        if not row:
+            raise HTTPException(400, "No such pending registration.")
+        msg = f"xod-dir-challenge|{row['challenge_id']}|{row['challenge']}|{address}".encode()
+        if not verify(row["sign_pub"], msg, body.sig):
+            raise HTTPException(400, "The challenge answer isn't signed by that key.")
+        c.execute("UPDATE directory SET status='live', challenge_id=NULL, challenge=NULL, last_seen=? WHERE address=?",
+                  (now, address))
+    return {"registered": True, "address": address, "endpoint": row["endpoint"]}
+
+
+class DirectoryHeartbeat(BaseModel):
+    address: str
+    ts: int
+    sig: str
+
+
+@app.post("/v1/directory/heartbeat")
+def directory_heartbeat(body: DirectoryHeartbeat, request: Request) -> Dict[str, Any]:
+    address = _dir_address(body.address)
+    rate_limit(f"dirbeat:{address}", 120, 3600)
+    if abs(time.time() - body.ts) > CLOCK_SKEW:
+        raise HTTPException(400, "Your clock is off.")
+    now = time.time()
+    with _lock, db() as c:
+        row = c.execute("SELECT sign_pub, status FROM directory WHERE address=?", (address,)).fetchone()
+        if not row or row["status"] != "live":
+            raise HTTPException(404, f"{address} isn't registered.")
+        if not verify(row["sign_pub"], f"xod-dir-heartbeat|{address}|{body.ts}".encode(), body.sig):
+            raise HTTPException(400, "The heartbeat isn't signed by that key.")
+        c.execute("UPDATE directory SET last_seen=? WHERE address=?", (now, address))
+    return {"ok": True, "address": address, "last_seen": now}
+
+
+@app.get("/v1/directory/{address}")
+def directory_lookup(address: str, request: Request) -> Dict[str, Any]:
+    rate_limit(f"dirlook:{client_ip(request)}", 240, 60)
+    address = _dir_address(address)
+    now = time.time()
+    with _lock, db() as c:
+        row = c.execute("SELECT * FROM directory WHERE address=?", (address,)).fetchone()
+        if row and row["status"] == "live" and now - row["last_seen"] > DIRECTORY_EXPIRE_AFTER:
+            c.execute("DELETE FROM directory WHERE address=?", (address,))
+            row = None
+    if not row or row["status"] != "live":
+        raise HTTPException(404, f"{address} isn't registered.")
+    return {"address": row["address"], "endpoint": row["endpoint"], "sign_pub": row["sign_pub"],
+            "box_pub": row["box_pub"], "registered_at": row["registered_at"], "last_seen": row["last_seen"],
+            "stale": (now - row["last_seen"]) > DIRECTORY_STALE_AFTER}

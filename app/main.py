@@ -981,6 +981,12 @@ class MailContactEdit(BaseModel):
     trust: Optional[str] = None
     nickname: Optional[str] = None
     verified: Optional[bool] = None
+    auto_reply: Optional[bool] = None
+
+
+class MailSelfHost(BaseModel):
+    endpoint: str
+    public_domain: Optional[str] = ""
 
 
 def _mail_call(fn):
@@ -1080,7 +1086,25 @@ async def mail_lookup(address: str):
 @app.patch("/api/mail/contacts/{address}")
 async def mail_contact_edit(address: str, req: MailContactEdit):
     from app.services import agent_mail
-    return {"success": agent_mail.set_contact(address, req.trust, req.nickname, req.verified)}
+    return {"success": agent_mail.set_contact(address, req.trust, req.nickname, req.verified, req.auto_reply)}
+
+
+@app.post("/api/mail/self-host")
+async def mail_self_host_enable(req: MailSelfHost):
+    from app.services import agent_mail
+    return await _mail_call(agent_mail.self_host_enable)(req.endpoint, req.public_domain or "")
+
+
+@app.delete("/api/mail/self-host")
+async def mail_self_host_disable():
+    from app.services import agent_mail
+    return {"success": agent_mail.self_host_disable()}
+
+
+@app.post("/api/mail/self-host/beat")
+async def mail_self_host_beat():
+    from app.services import agent_mail
+    return await _mail_call(agent_mail.self_host_beat)()
 
 
 @app.post("/api/mail/contacts/{address}/accept-keys")

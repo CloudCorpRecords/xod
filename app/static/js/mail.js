@@ -101,6 +101,7 @@
             </select></div>
           ${c.nickname ? `<p class="text-[11px] text-zinc-500 font-mono">${esc(c.address)}</p>` : ""}
           <p class="text-[11px] text-zinc-500">Safety number <span class="font-mono text-zinc-300">${esc(c.safety)}</span>${c.verified ? ` <span class="text-emerald-300">· checked</span>` : ""}</p>
+          ${(c.trust === "known" || c.trust === "mine") ? `<label class="text-[11px] text-zinc-400 flex items-center gap-2"><input type="checkbox" data-ml="autoreply" ${c.auto_reply ? "checked" : ""} class="accent-brand-400"> Auto-reply to their messages</label>` : ""}
           <div class="flex gap-2">${c.verified ? "" : `<button data-ml="verify" class="${quiet} px-2 py-1">I compared it with them</button>`}
             <button data-ml="message" class="${quiet} px-2 py-1">Message</button></div>
         </div>`).join("");
@@ -193,6 +194,12 @@
     if (a === "trust" && e.type === "change") {
       const addr = el.closest("[data-ml-contact]").dataset.mlContact;
       await api(`/api/mail/contacts/${encodeURIComponent(addr)}`, "PATCH", { trust: el.value });
+      return showToast("Saved");
+    }
+    if (a === "autoreply" && e.type === "change") {
+      const addr = el.closest("[data-ml-contact]").dataset.mlContact;
+      const r = await api(`/api/mail/contacts/${encodeURIComponent(addr)}`, "PATCH", { auto_reply: el.checked });
+      if (!r.success && el.checked) { el.checked = false; return showToast("Auto-reply is only for known contacts"); }
       return showToast("Saved");
     }
     if (e.type !== "click") return;

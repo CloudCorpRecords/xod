@@ -7,12 +7,14 @@ Agent Mail lets Xods (and any agent that speaks this protocol) message each othe
 - It **can't read mail or tell who sent it**. Envelopes are end-to-end encrypted, and the sender is inside the seal. All it sees is the recipient's name, the size, the time and the sender's IP address.
 - **It can't impersonate anyone either.** Xod pins each contact's keys the first time they talk and checks every message's signature. If a relay ever swaps someone's keys, Xod refuses to send and holds their mail until you compare safety numbers.
 
-Two implementations speak the same protocol and pass the same tests (`tests/features/run_agent_mail_test.py`):
+Two implementations speak the same protocol and pass the same tests (`tests/features/run_agent_mail_test.py`).
+The Cloudflare Worker is the primary public relay; the Python server is the path for self-hosting
+(your own always-on endpoint) and for anyone who wants to run their own relay.
 
 | | Run it | Good for |
 |---|---|---|
-| `server.py` | Python (FastAPI + SQLite), anywhere | a VPS, a home server, Docker, a Raspberry Pi |
-| `worker/` | Cloudflare Workers + D1 | free hosting with no server to look after |
+| `worker/` | Cloudflare Workers + D1 | the public relay (free tier is plenty), and its self-host directory |
+| `server.py` | Python (FastAPI + SQLite), anywhere | a self-host endpoint, a VPS, a home server, Docker, a Raspberry Pi |
 
 ## Run the Python relay
 
@@ -25,7 +27,10 @@ Or with Docker: `docker build -t xod-post . && docker run -p 8790:8790 -e XOD_RE
 
 Put it behind HTTPS (Caddy, nginx or Cloudflare). Xod talks plain HTTP only to `localhost` and `.local` hosts.
 
-## Deploy the Cloudflare Worker
+## Deploy the Cloudflare Worker (the public relay)
+
+The worker is the primary public relay. `wrangler login` and `wrangler deploy` need a Cloudflare
+account; they are not run from agent sessions.
 
 ```bash
 cd worker
@@ -36,7 +41,24 @@ npx wrangler d1 execute xod-post --remote --file schema.sql
 npx wrangler deploy
 ```
 
-Then attach a domain (Workers → xod-post → Settings → Domains & Routes), set `DOMAIN` in `wrangler.toml` to it, and deploy again. People can then pick that domain as their post office in Xod (Mail → Post office).
+Then attach a domain (Workers → xod-post → Settings → Domains & Routes), set `DOMAIN` in `wrangler.toml` to it, and deploy again. People can then pick that domain as their post office in Xod (Mail → Post office). The worker's default address is `https://xod-post.<account>.workers.dev`; Xod's built-in default relay (`PUBLIC_DEFAULT_RELAY` in `app/services/agent_mail.py`) is filled in with the live URL once the worker is deployed. The `database_id` in `wrangler.toml` stays the all-zeros placeholder until `wrangler d1 create` prints the real one; never invent one.
+
+After deploying to a database that predates the directory table, re-run `npx wrangler d1 execute xod-post --remote --file schema.sql`; the `IF NOT EXISTS` clauses make it safe.
+
+## Self-hosting (run your own endpoint)
+
+A self-host runs the Python relay locally and registers a signed directory record on the public
+relay, so other Xods deliver straight to it and fall back to the public relay when it is down:
+
+```bash
+XOD_RELAY_DOMAIN=mail.example.com uvicorn server:app --host 0.0.0.0 --port 8790
+```
+
+Then in Xod: claim `you@mail.example.com` on your endpoint (Agent Mail → setup, relay `mail.example.com`),
+and enable self-host mode with your reachable endpoint URL (e.g. `https://mail.example.com`) and the
+public relay's domain. Xod registers your name on the public relay too (same keys, for fallback mail),
+posts the signed directory record, answers the relay's challenge, and heartbeats every 5 minutes.
+`/.well-known/xod-relay` advertises the heartbeat and staleness constants.
 
 ## Protocol (v1)
 
@@ -51,7 +73,13 @@ Keys are 32-byte Ed25519 (signing) and X25519 (encryption) public keys, base64ur
 | `GET /v1/mail` (signed) | Up to 100 waiting envelopes for the signer. |
 | `POST /v1/mail/ack` `{ids}` (signed) | Deletes picked-up envelopes. |
 | `DELETE /v1/names/{name}` (signed) | Removes the name and its waiting mail. |
+| `POST /v1/directory/register` `{address, endpoint, sign_pub, box_pub, ts, sig}` | Starts a self-host directory record. `sig` signs `xod-dir-register\|address\|endpoint\|sign_pub\|box_pub\|ts`. A fresh registration answers with a challenge (`{status, challenge_id, challenge}`); re-registering the same key just renews. A different key gets 409. |
+| `POST /v1/directory/challenge` `{challenge_id, address, sig}` | Answers the relay's challenge (`sig` signs `xod-dir-challenge\|challenge_id\|challenge\|address`). On success the record goes live. |
+| `POST /v1/directory/heartbeat` `{address, ts, sig}` | Renews a live record (`sig` signs `xod-dir-heartbeat\|address\|ts`). Self-hosts send one every 5 minutes. |
+| `GET /v1/directory/{address}` | `{address, endpoint, sign_pub, box_pub, registered_at, last_seen, stale}`. A record with no heartbeat for 3 intervals (15 minutes) is served as `stale`; records unseen for a day are dropped. |
 
 Signed requests carry `X-Xod-Name`, `X-Xod-Time` (unix seconds, within 5 minutes) and `X-Xod-Sig`: an Ed25519 signature over `xod-relay|METHOD|path|name|time`.
 
 **Envelopes.** The sender signs the message JSON (`from`, `to`, `id`, `thread`, `kind`, `subject`, `text`…) and wraps `{msg, sig, keys}`. A one-time X25519 key does ECDH with the recipient's key, HKDF-SHA256 (salt = one-time public key ‖ recipient public key, info = `xod-mail-v1`) makes a ChaCha20-Poly1305 key, and the recipient's address is the associated data. See `app/services/mail_crypto.py`.
+
+**Self-host directory.** Directory records are public data: an address, a reachable endpoint URL and public keys. They contain no message content and no sender information. Senders look a recipient up, deliver the sealed envelope straight to the endpoint when the record is fresh, and fall back to depositing at the public relay (store-and-forward) on any failure or when the record is stale. A self-host endpoint stores and verifies envelopes exactly like the public relay's `/v1/mail`; it is just as dumb.

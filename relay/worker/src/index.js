@@ -6,6 +6,12 @@ const MAX_ENVELOPE = 256 * 1024;
 const MAILBOX_LIMIT = 500;
 const EXPIRE_DAYS = 30;
 const CLOCK_SKEW = 300;
+// Self-host directory liveness: self-hosts heartbeat every 5 minutes; a record with no
+// heartbeat for 3 intervals (15 minutes) is served as stale, and records unseen for a day
+// are dropped.
+const DIRECTORY_HEARTBEAT = 300;
+const DIRECTORY_STALE_AFTER = 3 * DIRECTORY_HEARTBEAT;
+const DIRECTORY_EXPIRE_AFTER = 24 * 3600;
 const NAME_RE = /^[a-z0-9](?:[a-z0-9._-]{0,30}[a-z0-9])?$/;
 const RESERVED = new Set(["admin", "administrator", "root", "postmaster", "abuse", "support", "help", "security", "xod",
   "relay", "system", "noreply", "no-reply", "mail", "www", "api", "official", "team", "staff"]);
@@ -62,7 +68,10 @@ export default {
     const DOMAIN = env.DOMAIN || url.host;
     try {
       if (req.method === "GET" && path === "/.well-known/xod-relay") {
-        return json({ service: "xod-relay", version: 1, domain: DOMAIN, max_envelope_bytes: MAX_ENVELOPE, expire_days: EXPIRE_DAYS });
+        return json({ service: "xod-relay", version: 1, domain: DOMAIN, max_envelope_bytes: MAX_ENVELOPE,
+                      expire_days: EXPIRE_DAYS, directory: true,
+                      directory_heartbeat_seconds: DIRECTORY_HEARTBEAT,
+                      directory_stale_after_seconds: DIRECTORY_STALE_AFTER });
       }
 
       if (req.method === "POST" && path === "/v1/names") {
@@ -131,6 +140,99 @@ export default {
         const ids = (body.ids || []).slice(0, 200);
         if (ids.length) await env.DB.batch(ids.map((id) => env.DB.prepare("DELETE FROM mail WHERE id=? AND name=?").bind(String(id), who)));
         return json({ deleted: ids.length });
+      }
+
+      // Self-host directory: public data only (address -> reachable endpoint URL + public keys).
+      // Registration is challenge-verified, so records can't be forged or replayed.
+      const dirAddr = (a) => {
+        const s = String(a || "").trim().toLowerCase();
+        const at = s.indexOf("@");
+        const name = at > 0 ? s.slice(0, at) : "";
+        if (at < 0 || !NAME_RE.test(name) || !s.slice(at + 1)) return null;
+        return s;
+      };
+      const dirEndpointOk = (url) => {
+        const mm = /^(https?):\/\/([^/:]+)(?::(\d+))?(\/.*)?$/i.exec(String(url || ""));
+        if (!mm) return false;
+        if (mm[1].toLowerCase() === "https") return true;
+        const host = mm[2].toLowerCase();
+        return host === "localhost" || host === "127.0.0.1" || host === "::1" ||
+               host.endsWith(".local") || host.endsWith(".localhost");
+      };
+      const dirKeysOk = (s, b) => { try { return b64d(s).length === 32 && b64d(b).length === 32; } catch (e) { return false; } };
+
+      if (path === "/v1/directory/register" && req.method === "POST") {
+        if (limited(`dirreg:${ip}`, 10, 3600)) return fail(429, "Too many requests. Try again in a little while.");
+        const r = await req.json();
+        const address = dirAddr(r.address);
+        if (!address) return fail(400, "The address must look like name@domain.");
+        if (!dirEndpointOk(r.endpoint)) return fail(400, "The endpoint must be an https:// URL (http:// is only for local hosts).");
+        if (Math.abs(Date.now() / 1000 - Number(r.ts)) > CLOCK_SKEW) return fail(400, "Your clock is off.");
+        if (!dirKeysOk(r.sign_pub, r.box_pub)) return fail(400, "Bad keys.");
+        if (!(await verify(r.sign_pub, `xod-dir-register|${address}|${r.endpoint}|${r.sign_pub}|${r.box_pub}|${r.ts}`, r.sig))) {
+          return fail(400, "The registration isn't signed by that key.");
+        }
+        const now = Date.now() / 1000;
+        const row = await env.DB.prepare("SELECT sign_pub, status FROM directory WHERE address=?").bind(address).first();
+        if (row && row.sign_pub !== r.sign_pub) return fail(409, `${address} is already registered with a different key.`);
+        if (row && row.status === "live") {
+          await env.DB.prepare("UPDATE directory SET endpoint=?, box_pub=?, last_seen=? WHERE address=?")
+            .bind(r.endpoint, r.box_pub, now, address).run();
+          return json({ registered: true, address, endpoint: r.endpoint });
+        }
+        const challengeId = crypto.randomUUID().replace(/-/g, ""), challenge = crypto.randomUUID().replace(/-/g, "");
+        await env.DB.prepare(`INSERT INTO directory (address, endpoint, sign_pub, box_pub, status, challenge_id, challenge,
+                                                     registered_at, last_seen) VALUES (?,?,?,?, 'pending',?,?,?,?)
+                              ON CONFLICT(address) DO UPDATE SET endpoint=excluded.endpoint, sign_pub=excluded.sign_pub,
+                                box_pub=excluded.box_pub, status='pending', challenge_id=excluded.challenge_id,
+                                challenge=excluded.challenge, last_seen=excluded.last_seen`)
+          .bind(address, r.endpoint, r.sign_pub, r.box_pub, challengeId, challenge, now, now).run();
+        return json({ status: "challenge", challenge_id: challengeId, challenge });
+      }
+      if (path === "/v1/directory/challenge" && req.method === "POST") {
+        if (limited(`dircha:${ip}`, 30, 3600)) return fail(429, "Too many requests. Try again in a little while.");
+        const body = await req.json();
+        const address = dirAddr(body.address);
+        const row = await env.DB.prepare("SELECT * FROM directory WHERE challenge_id=? AND address=? AND status='pending'")
+          .bind(String(body.challenge_id || ""), address).first();
+        if (!row) return fail(400, "No such pending registration.");
+        if (!(await verify(row.sign_pub, `xod-dir-challenge|${row.challenge_id}|${row.challenge}|${address}`, body.sig))) {
+          return fail(400, "The challenge answer isn't signed by that key.");
+        }
+        const now = Date.now() / 1000;
+        await env.DB.prepare("UPDATE directory SET status='live', challenge_id=NULL, challenge=NULL, last_seen=? WHERE address=?")
+          .bind(now, address).run();
+        return json({ registered: true, address, endpoint: row.endpoint });
+      }
+      if (path === "/v1/directory/heartbeat" && req.method === "POST") {
+        const body = await req.json();
+        const address = dirAddr(body.address);
+        if (limited(`dirbeat:${address}`, 120, 3600)) return fail(429, "Too many requests. Try again in a little while.");
+        if (Math.abs(Date.now() / 1000 - Number(body.ts)) > CLOCK_SKEW) return fail(400, "Your clock is off.");
+        const row = await env.DB.prepare("SELECT sign_pub, status FROM directory WHERE address=?").bind(address).first();
+        if (!row || row.status !== "live") return fail(404, `${address} isn't registered.`);
+        if (!(await verify(row.sign_pub, `xod-dir-heartbeat|${address}|${body.ts}`, body.sig))) {
+          return fail(400, "The heartbeat isn't signed by that key.");
+        }
+        const now = Date.now() / 1000;
+        await env.DB.prepare("UPDATE directory SET last_seen=? WHERE address=?").bind(now, address).run();
+        return json({ ok: true, address, last_seen: now });
+      }
+      let dm = path.match(/^\/v1\/directory\/([^/]+)$/);
+      if (dm && req.method === "GET") {
+        if (limited(`dirlook:${ip}`, 240, 60)) return fail(429, "Too many requests.");
+        const address = dirAddr(decodeURIComponent(dm[1]));
+        if (!address) return fail(400, "The address must look like name@domain.");
+        const now = Date.now() / 1000;
+        let row = await env.DB.prepare("SELECT * FROM directory WHERE address=?").bind(address).first();
+        if (row && row.status === "live" && now - row.last_seen > DIRECTORY_EXPIRE_AFTER) {
+          await env.DB.prepare("DELETE FROM directory WHERE address=?").bind(address).run();
+          row = null;
+        }
+        if (!row || row.status !== "live") return fail(404, `${address} isn't registered.`);
+        return json({ address: row.address, endpoint: row.endpoint, sign_pub: row.sign_pub, box_pub: row.box_pub,
+                      registered_at: row.registered_at, last_seen: row.last_seen,
+                      stale: (now - row.last_seen) > DIRECTORY_STALE_AFTER });
       }
       return fail(404, "Not found.");
     } catch (e) {

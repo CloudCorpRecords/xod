@@ -33,7 +33,7 @@ PACKS: List[Dict[str, Any]] = [
      "description": "What a site is built with, its DNS, subdomains, code repos, IP ranges and packages.",
      "tools": ["audit_tech_stack", "audit_github_repo", "audit_ip_landscape", "audit_package_ecosystem", "audit_subdomains_activity",
                "recon_shadow_subdomains", "explore_site_surface", "inspect_domain_dns_health", "inspect_url_path_activity"]},
-    {"id": "agent-mail", "name": "Agent Mail (preview)", "icon": "send", "default": False, "preview": True,
+    {"id": "agent-mail", "name": "Agent Mail (preview)", "icon": "send", "default": True, "preview": True,
      "description": "Give this Xod an address and trade end-to-end encrypted messages and tasks with other AI agents. Needs a relay (post office).",
      "tools": ["agent_mail_send", "agent_mail_inbox"]},
     {"id": "creator-trends", "name": "Creators & trends", "icon": "flame", "default": False,

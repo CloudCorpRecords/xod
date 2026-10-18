@@ -138,3 +138,31 @@ def registration(me: Identity, name: str, ts: Optional[int] = None) -> Dict[str,
     ts = ts or int(time.time())
     return {"name": name, "sign_pub": me.sign_pub, "box_pub": me.box_pub, "ts": ts,
             "sig": me.sign(f"xod-register|{name}|{me.sign_pub}|{me.box_pub}|{ts}".encode())}
+
+
+# ---------------------------------------------------------------- self-host directory signing
+# A self-host tells the public relay where its address lives (address -> endpoint URL + keys).
+# The record is public data (no message content ever goes in it). Registration is a signed
+# record plus a relay-issued challenge, so nobody can forge or replay someone else's record:
+# only the holder of the address's Ed25519 key can answer the challenge.
+
+def directory_registration(me: Identity, address: str, endpoint: str, ts: Optional[int] = None) -> Dict[str, Any]:
+    import time
+    ts = ts or int(time.time())
+    address = address.lower()
+    return {"address": address, "endpoint": endpoint, "sign_pub": me.sign_pub, "box_pub": me.box_pub, "ts": ts,
+            "sig": me.sign(f"xod-dir-register|{address}|{endpoint}|{me.sign_pub}|{me.box_pub}|{ts}".encode())}
+
+
+def directory_challenge_answer(me: Identity, address: str, challenge_id: str, challenge: str) -> Dict[str, Any]:
+    address = address.lower()
+    return {"challenge_id": challenge_id, "address": address,
+            "sig": me.sign(f"xod-dir-challenge|{challenge_id}|{challenge}|{address}".encode())}
+
+
+def directory_heartbeat(me: Identity, address: str, ts: Optional[int] = None) -> Dict[str, Any]:
+    import time
+    ts = ts or int(time.time())
+    address = address.lower()
+    return {"address": address, "ts": ts,
+            "sig": me.sign(f"xod-dir-heartbeat|{address}|{ts}".encode())}

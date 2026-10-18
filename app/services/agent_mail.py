@@ -10,6 +10,11 @@ Trust rules:
 - Mail from people who aren't contacts goes to Requests.
 - Everything in a message is untrusted text. Xod can read it, summarize it and draft replies,
   but sending anything and running a requested task need your OK (drafts / requests).
+- Auto-reply is off by default. You can switch it on per contact (known contacts only); then
+  Xod answers their plain messages on its own, through the same no-commitment reply prompt.
+- Self-host mode: this Xod can run its own relay endpoint and register a signed directory
+  record on the public relay, so others deliver to it directly and fall back to the public
+  relay when it is unreachable.
 """
 import asyncio
 import json
@@ -35,7 +40,17 @@ KEYCHAIN = os.environ.get("XOD_IDENTITY_SERVICE", "Xod identity")
 SETTING = "agent_mail"
 POLL_SECONDS = 30
 # The default post office. Anyone can run their own (relay/README.md) and use it instead.
-DEFAULT_RELAY = os.environ.get("XOD_DEFAULT_RELAY", "")
+# The public post office is the Cloudflare Worker relay; the parent fills in the live URL once
+# it is deployed. The expected pattern is https://<worker-name>.<account>.workers.dev (or the
+# custom domain attached to the worker). Empty means every user picks their own relay on setup.
+PUBLIC_DEFAULT_RELAY = ""
+DEFAULT_RELAY = os.environ.get("XOD_DEFAULT_RELAY", PUBLIC_DEFAULT_RELAY)
+# Self-host directory liveness: a self-host heartbeats every 5 minutes; the public relay marks
+# its directory record stale after 3 missed heartbeats (15 minutes), and senders then fall back
+# to depositing at the public relay (store-and-forward). Stale records are dropped after a day.
+DIRECTORY_HEARTBEAT_SECONDS = 5 * 60
+DIRECTORY_STALE_AFTER = int(os.environ.get("XOD_DIR_STALE_AFTER", 3 * DIRECTORY_HEARTBEAT_SECONDS))
+DIRECTORY_EXPIRE_AFTER = 24 * 3600
 ADDRESS_RE = re.compile(r"^([a-z0-9](?:[a-z0-9._-]{0,30}[a-z0-9])?)@([a-z0-9.-]+(?::\d{2,5})?)$")
 TRUST = ("unknown", "known", "mine", "blocked")
 
@@ -61,6 +76,9 @@ def _db() -> sqlite3.Connection:
     CREATE INDEX IF NOT EXISTS mail_thread ON mail_messages(thread, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS mail_msgid ON mail_messages(msg_id, direction, peer);
     """)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(mail_contacts)")}
+    if "auto_reply" not in cols:   # added for the per-contact auto-reply toggle; default off
+        c.execute("ALTER TABLE mail_contacts ADD COLUMN auto_reply INTEGER DEFAULT 0")
     return c
 
 
@@ -132,7 +150,7 @@ def status() -> Dict[str, Any]:
     ident = _identity()
     out = {"set_up": bool(cfg.get("address") and ident), "address": cfg.get("address"),
            "relay": cfg.get("domain") or DEFAULT_RELAY, "default_relay": DEFAULT_RELAY, "last_check": cfg.get("last_check"),
-           "last_error": cfg.get("last_error")}
+           "last_error": cfg.get("last_error"), "self_host": cfg.get("self_host")}
     if ident:
         out["safety_number"] = mc.safety_number(ident.sign_pub, ident.box_pub)
     with _db() as c:
@@ -221,12 +239,16 @@ async def resolve(address: str, trust_if_new: str = "unknown") -> Dict[str, Any]
 
 
 def set_contact(address: str, trust: Optional[str] = None, nickname: Optional[str] = None,
-                verified: Optional[bool] = None) -> bool:
+                verified: Optional[bool] = None, auto_reply: Optional[bool] = None) -> bool:
     if trust is not None and trust not in TRUST:
         return False
     with _db() as c:
-        if not c.execute("SELECT 1 FROM mail_contacts WHERE address=?", (address.lower(),)).fetchone():
+        row = c.execute("SELECT trust FROM mail_contacts WHERE address=?", (address.lower(),)).fetchone()
+        if not row:
             return False
+        effective_trust = trust if trust is not None else row["trust"]
+        if auto_reply and effective_trust not in ("known", "mine"):
+            return False   # auto-reply is for contacts you know, never strangers or blocked senders
         if trust is not None:
             c.execute("UPDATE mail_contacts SET trust=?, updated_at=? WHERE address=?", (trust, time.time(), address.lower()))
             if trust != "blocked":   # mail held only because they were unknown is now fine to read
@@ -235,6 +257,10 @@ def set_contact(address: str, trust: Optional[str] = None, nickname: Optional[st
             c.execute("UPDATE mail_contacts SET nickname=? WHERE address=?", (nickname.strip()[:60] or None, address.lower()))
         if verified is not None:
             c.execute("UPDATE mail_contacts SET verified=? WHERE address=?", (1 if verified else 0, address.lower()))
+        if auto_reply is not None:
+            c.execute("UPDATE mail_contacts SET auto_reply=? WHERE address=?", (1 if auto_reply else 0, address.lower()))
+        if effective_trust in ("unknown", "blocked"):
+            c.execute("UPDATE mail_contacts SET auto_reply=0 WHERE address=?", (address.lower(),))
     return True
 
 
@@ -283,6 +309,74 @@ def draft(to: Any, text: str, subject: str = "", kind: str = "message", thread: 
             "message": f"Drafted a message to {', '.join(recips)}. It hasn't been sent: it waits for your OK in Agent Mail."}
 
 
+# ---------------------------------------------------------------- self-host directory & routing
+
+def _directory_base() -> Optional[str]:
+    """The public relay hosting the self-host directory, if one is configured."""
+    return relay_base(DEFAULT_RELAY) if DEFAULT_RELAY else None
+
+
+def _record_stale(rec: Dict[str, Any]) -> bool:
+    if rec.get("stale"):
+        return True
+    return (time.time() - (rec.get("last_seen") or 0)) > DIRECTORY_STALE_AFTER
+
+
+async def _directory_lookup(addr: str) -> Optional[Dict[str, Any]]:
+    """The self-host directory record for an address, or None. Never raises: when the public
+    relay can't be reached, sending just falls back to the recipient's own relay."""
+    base = _directory_base()
+    if not base:
+        return None
+    try:
+        from urllib.parse import quote
+        r = await _http("GET", f"{base}/v1/directory/{quote(addr.lower(), safe='')}")
+    except httpx.HTTPError:
+        return None
+    if r.status_code != 200:
+        return None
+    try:
+        return r.json()
+    except Exception:
+        return None
+
+
+def _pin_directory_contact(addr: str, rec: Dict[str, Any]) -> None:
+    """Pin (or check) a contact from a signed directory record. Raises if their keys changed."""
+    known = contact(addr)
+    if known and known["trust"] == "blocked":
+        raise MailError(f"You've blocked {addr}.")
+    if known and known.get("sign_pub"):
+        if (known["sign_pub"], known["box_pub"]) != (rec["sign_pub"], rec["box_pub"]):
+            raise MailError(f"{addr}'s keys have changed since you last talked. Check their safety number with them "
+                            f"before sending (Agent Mail → Contacts).")
+    else:
+        _pin(addr, rec["sign_pub"], rec["box_pub"], "known")
+
+
+async def _route_envelope(ident: mc.Identity, cfg: Dict[str, Any], addr: str,
+                          message: Dict[str, Any]) -> tuple:
+    """Seals one envelope and decides where it goes.
+
+    Returns (envelope, direct_url_or_None, deposit_base). When the recipient is a live self-host
+    (fresh directory record at the public relay), direct_url is their endpoint and deposit_base
+    is the public relay, which takes the envelope if direct delivery fails or the record is
+    stale. Otherwise direct_url is None and deposit_base is the recipient's own relay: the
+    store-and-forward path, exactly as before."""
+    base = _directory_base()
+    if base:
+        rec = await _directory_lookup(addr)
+        if rec and rec.get("endpoint"):
+            _pin_directory_contact(addr, rec)   # pins on first use, raises if their keys changed
+            env = mc.seal(ident, cfg["address"], addr, rec["box_pub"], message)
+            direct = None if _record_stale(rec) else rec["endpoint"].rstrip("/")
+            return env, direct, base
+    who = await resolve(addr, trust_if_new="known")    # writing to someone makes them a contact
+    env = mc.seal(ident, cfg["address"], addr, who["box_pub"], message)
+    _, domain = parse_address(addr)
+    return env, None, relay_base(domain)
+
+
 async def send(to: Any, text: str, subject: str = "", kind: str = "message", thread: Optional[str] = None,
                in_reply_to: Optional[str] = None, msg_id: Optional[str] = None, origin: str = "you") -> Dict[str, Any]:
     """Seals and sends a message now (you pressed Send, or approved a draft)."""
@@ -297,10 +391,16 @@ async def send(to: Any, text: str, subject: str = "", kind: str = "message", thr
     sent, errors = [], []
     for addr in recips:
         try:
-            who = await resolve(addr, trust_if_new="known")    # writing to someone makes them a contact
-            env = mc.seal(ident, cfg["address"], addr, who["box_pub"], message)
-            _, domain = parse_address(addr)
-            r = await _http("POST", f"{relay_base(domain)}/v1/mail", json={"to": addr, "envelope": env})
+            env, direct_url, deposit_base = await _route_envelope(ident, cfg, addr, message)
+            if direct_url:
+                try:
+                    r = await _http("POST", f"{direct_url}/v1/mail", json={"to": addr, "envelope": env})
+                    if r.status_code == 202:
+                        sent.append(addr)
+                        continue
+                except httpx.HTTPError:
+                    pass   # any direct-delivery failure falls back to the public relay below
+            r = await _http("POST", f"{deposit_base}/v1/mail", json={"to": addr, "envelope": env})
             if r.status_code != 202:
                 raise MailError(_detail(r))
             sent.append(addr)
@@ -324,7 +424,8 @@ async def approve_draft(draft_id: str) -> Dict[str, Any]:
         return {"success": False, "error": "That draft was already sent or discarded."}
     d = _row(d)
     from app.services import activity
-    ctx = activity.before("agent_mail_send", {"to": ", ".join(d["recipients"]), "subject": d["subject"]})
+    ctx = activity.before("agent_mail_send", {"to": ", ".join(d["recipients"]), "subject": d["subject"],
+                                              "origin": d["origin"] or "xod"})
     try:
         res = await send(d["recipients"], d["text"], d["subject"], d["kind"], d["thread"], d["in_reply_to"],
                          msg_id=d["msg_id"], origin=d["origin"] or "xod")
@@ -352,24 +453,15 @@ def edit_draft(draft_id: str, text: str, subject: Optional[str] = None) -> bool:
 
 # ---------------------------------------------------------------- receiving
 
-async def check(notify: bool = True) -> Dict[str, Any]:
-    """Picks up new mail from the relay, opens and verifies it, stores it here, then deletes it there."""
-    cfg, ident = _config(), _identity()
-    if not (cfg.get("address") and ident):
-        return {"success": False, "error": "Not set up."}
-    base = relay_base(cfg["domain"])
-    try:
-        r = await _http("GET", f"{base}/v1/mail", headers=mc.signed_headers(ident, cfg["name"], "GET", "/v1/mail"))
-        if r.status_code != 200:
-            raise MailError(_detail(r))
-    except (httpx.HTTPError, MailError) as e:
-        cfg.update(last_error=f"Couldn't check mail: {e}", last_check=time.time())
-        _save_config(cfg)
-        return {"success": False, "error": cfg["last_error"]}
+async def _poll(base: str, ident: mc.Identity, name: str, my_address: str) -> List[Dict[str, Any]]:
+    """Fetches, opens and acks one relay's waiting envelopes. Raises on transport/auth failure."""
+    r = await _http("GET", f"{base}/v1/mail", headers=mc.signed_headers(ident, name, "GET", "/v1/mail"))
+    if r.status_code != 200:
+        raise MailError(_detail(r))
     got, done = [], []
     for item in r.json().get("messages", []):
         try:
-            stored = await _receive(ident, cfg["address"], item["envelope"])
+            stored = await _receive(ident, my_address, item["envelope"])
             if stored:
                 got.append(stored)
         except Exception as e:
@@ -377,8 +469,33 @@ async def check(notify: bool = True) -> Dict[str, Any]:
         done.append(item["id"])
     if done:
         await _http("POST", f"{base}/v1/mail/ack", json={"ids": done},
-                    headers=mc.signed_headers(ident, cfg["name"], "POST", "/v1/mail/ack"))
-    cfg.update(last_check=time.time(), last_error=None)
+                    headers=mc.signed_headers(ident, name, "POST", "/v1/mail/ack"))
+    return got
+
+
+async def check(notify: bool = True) -> Dict[str, Any]:
+    """Picks up new mail, opens and verifies it, stores it here, then deletes it there.
+
+    A self-host polls both its own endpoint (direct deliveries) and the public relay
+    (fallback mail deposited while it was unreachable)."""
+    cfg, ident = _config(), _identity()
+    if not (cfg.get("address") and ident):
+        return {"success": False, "error": "Not set up."}
+    sh = cfg.get("self_host") or {}
+    bases = [sh["endpoint"], relay_base(sh["public_domain"])] if sh.get("endpoint") else [relay_base(cfg["domain"])]
+    got, errors = [], []
+    for base in bases:
+        try:
+            got += await _poll(base, ident, cfg["name"], cfg["address"])
+        except (httpx.HTTPError, MailError) as e:
+            errors.append(f"{base}: {e}")
+    for m in got:
+        await _maybe_auto_reply(m)
+    if errors and not got:
+        cfg.update(last_error=f"Couldn't check mail: {'; '.join(errors)}", last_check=time.time())
+        _save_config(cfg)
+        return {"success": False, "error": cfg["last_error"]}
+    cfg.update(last_check=time.time(), last_error="; ".join(errors) or None)
     _save_config(cfg)
     known = [m for m in got if m["status"] == "new" and m["trust"] != "unknown"]
     if notify and got:
@@ -387,6 +504,128 @@ async def check(notify: bool = True) -> Dict[str, Any]:
         elif any(m["trust"] == "unknown" for m in got):
             _notify("New agent asking to talk", "A message request is waiting in Agent Mail.")
     return {"success": True, "new": len(got)}
+
+
+# ---------------------------------------------------------------- self-host mode
+
+async def self_host_enable(endpoint: str, public_domain: str = "") -> Dict[str, Any]:
+    """Turns this Xod into a self-host: it runs its own relay endpoint and registers a signed
+    directory record on the public relay, so other Xods can deliver to it directly.
+
+    The same name is also claimed on the public relay with the same keys, so mail still lands
+    (store-and-forward) when the self-host is unreachable. Registration is challenge-verified:
+    the public relay only lists the record after this Xod signs its challenge."""
+    cfg, ident = _config(), _identity()
+    if not (cfg.get("address") and ident):
+        return {"success": False, "error": "Set up your agent address first (Agent Mail)."}
+    endpoint = (endpoint or "").strip().rstrip("/")
+    public = re.sub(r"^https?://", "", (public_domain or DEFAULT_RELAY).strip().lower()).strip("/")
+    if not endpoint.startswith(("http://", "https://")):
+        return {"success": False, "error": "The endpoint must be a full URL, like https://mail.example.com."}
+    if not public:
+        return {"success": False, "error": "Self-host mode needs a public relay for the directory. Pass its domain."}
+    public_base = relay_base(public)
+    try:
+        r = await _http("POST", f"{public_base}/v1/names", json=mc.registration(ident, cfg["name"]))
+        if r.status_code != 200:
+            return {"success": False, "error": f"Couldn't register on the public relay: {_detail(r)}"}
+        r = await _http("POST", f"{public_base}/v1/directory/register",
+                        json=mc.directory_registration(ident, cfg["address"], endpoint))
+        if r.status_code != 200:
+            return {"success": False, "error": f"Directory registration failed: {_detail(r)}"}
+        body = r.json()
+        if body.get("status") == "challenge":
+            ans = mc.directory_challenge_answer(ident, cfg["address"], body["challenge_id"], body["challenge"])
+            r = await _http("POST", f"{public_base}/v1/directory/challenge", json=ans)
+            if r.status_code != 200:
+                return {"success": False, "error": f"Directory challenge failed: {_detail(r)}"}
+    except httpx.HTTPError as e:
+        return {"success": False, "error": f"Couldn't reach the public relay {public}: {type(e).__name__}"}
+    cfg["self_host"] = {"endpoint": endpoint, "public_domain": public, "last_beat": time.time()}
+    _save_config(cfg)
+    return {"success": True, "address": cfg["address"], "endpoint": endpoint, "public_relay": public}
+
+
+def self_host_disable() -> bool:
+    cfg = _config()
+    if not cfg.pop("self_host", None):
+        return False
+    _save_config(cfg)
+    return True
+
+
+async def self_host_beat() -> Dict[str, Any]:
+    """Renews this self-host's directory record (the background loop calls this every 5 minutes)."""
+    cfg, ident = _config(), _identity()
+    sh = cfg.get("self_host") or {}
+    if not (sh.get("endpoint") and sh.get("public_domain") and ident and cfg.get("address")):
+        return {"success": False, "error": "Self-host mode isn't on."}
+    try:
+        r = await _http("POST", f"{relay_base(sh['public_domain'])}/v1/directory/heartbeat",
+                        json=mc.directory_heartbeat(ident, cfg["address"]))
+    except httpx.HTTPError as e:
+        return {"success": False, "error": f"Couldn't reach the public relay: {type(e).__name__}"}
+    if r.status_code != 200:
+        return {"success": False, "error": _detail(r)}
+    sh["last_beat"] = time.time()
+    cfg["self_host"] = sh
+    _save_config(cfg)
+    return {"success": True}
+
+
+async def _maybe_self_host_beat() -> None:
+    try:
+        cfg = _config()
+        sh = cfg.get("self_host") or {}
+        if not sh.get("endpoint"):
+            return
+        if time.time() - sh.get("last_beat", 0) < DIRECTORY_HEARTBEAT_SECONDS:
+            return
+        res = await self_host_beat()
+        if not res.get("success"):
+            logger.warning(f"Agent Mail: directory heartbeat failed: {res.get('error')}")
+    except Exception as e:
+        logger.warning(f"Agent Mail: directory heartbeat failed: {e}")
+
+
+# ---------------------------------------------------------------- auto-reply
+
+async def _maybe_auto_reply(stored: Dict[str, Any]) -> None:
+    """Auto-reply hook, run for each newly arrived message.
+
+    Fires only for a plain message from a contact with trust known/mine and the per-contact
+    auto-reply toggle on. Never for strangers, never for task requests (those still need your
+    approval to run), never for replies (so two auto-replying Xods can't ping-pong). The reply
+    goes through draft_reply's no-commitment prompt and approve_draft's activity logging,
+    exactly like a send you approved."""
+    if stored.get("status") != "new" or stored.get("kind") != "message":
+        return
+    c = contact(stored["peer"])
+    if not c or not c.get("auto_reply") or c.get("trust") not in ("known", "mine"):
+        return
+    with _db() as db:
+        claimed = db.execute("UPDATE mail_messages SET replied=1 WHERE id=? AND replied=0",
+                             (stored["id"],)).rowcount
+    if not claimed:
+        return   # the background loop already answered this one
+    try:
+        m = message(stored["id"])
+        if not m:
+            return
+        if os.environ.get("XOD_TEST_AUTO_REPLY"):
+            subject = m["subject"] if (m["subject"] or "").lower().startswith("re:") else (f"Re: {m['subject']}" if m["subject"] else "")
+            r = draft(m["peer"], f"Auto reply to: {(m['text'] or '')[:500]}", subject, "reply",
+                      m["thread"], m["msg_id"], origin="auto-reply")
+        else:
+            r = await draft_reply(stored["id"], origin="auto-reply")
+        if r.get("success"):
+            res = await approve_draft(r["draft_id"])
+            if not res.get("success"):
+                logger.warning(f"Agent Mail: auto-reply send failed: {res.get('error')}")
+        else:
+            logger.warning(f"Agent Mail: auto-reply draft failed: {r.get('error')}")
+    except Exception as e:
+        logger.warning(f"Agent Mail: auto-reply failed: {e}")
 
 
 async def _receive(ident: mc.Identity, my_address: str, envelope: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -497,7 +736,7 @@ async def run_request(mid: str) -> Dict[str, Any]:
     return {"success": True, "task": t}
 
 
-async def draft_reply(mid: str) -> Dict[str, Any]:
+async def draft_reply(mid: str, origin: str = "xod") -> Dict[str, Any]:
     """Xod writes a reply for you to check. Nothing is sent."""
     m = message(mid)
     if not m:
@@ -518,7 +757,7 @@ async def draft_reply(mid: str) -> Dict[str, Any]:
     if not text:
         return {"success": False, "error": "Couldn't write a reply just now."}
     subject = m["subject"] if (m["subject"] or "").lower().startswith("re:") else (f"Re: {m['subject']}" if m["subject"] else "")
-    return draft(m["peer"], text, subject, "reply", m["thread"], m["msg_id"], origin="xod")
+    return draft(m["peer"], text, subject, "reply", m["thread"], m["msg_id"], origin=origin)
 
 
 def _reply_with_task_results() -> None:
@@ -571,6 +810,7 @@ async def _loop() -> None:
             if status()["set_up"]:
                 await check()
                 _reply_with_task_results()
+                await _maybe_self_host_beat()
         except Exception as e:
             logger.warning(f"Agent Mail check failed: {e}")
         await asyncio.sleep(POLL_SECONDS)
