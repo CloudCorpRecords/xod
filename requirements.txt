@@ -7,7 +7,7 @@
 # Web framework & server
 fastapi==0.143.0
 mcp==2.3.0                   # connected apps (MCP client and Xod's MCP server)
-starlette==1.7.0
+starlette==1.8.0
 uvicorn==0.54.0
 httpx==0.28.1
 pydantic==2.14.0
