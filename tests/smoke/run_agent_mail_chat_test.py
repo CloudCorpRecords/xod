@@ -66,10 +66,8 @@ print(json.dumps({'routed': operator.route(q), 'tools': names}))""")
         check("…and the chat gets the setup tool", "agent_mail_setup" in r.get("tools", []), str(r.get("tools")))
 
         print("M2 setting it up")
-        r = as_xod("rene", """
-before = 'agent-mail' in packs.enabled()
-print(json.dumps({'before': before, 'after': (packs.set_enabled('agent-mail', True) or True) and 'agent-mail' in packs.enabled()}))""")
-        check("the add-on turns on", r.get("before") is False and r.get("after") is True, str(r))
+        r = as_xod("rene", "print(json.dumps({'on': 'agent-mail' in packs.enabled()}))")
+        check("Agent Mail is on for a new install", r.get("on") is True, str(r))
         # (with no post office named, the setup hosts on this computer: tests/smoke/run_home_post_test.py)
         r = as_xod("rene", f"""
 r = asyncio.run(tools.execute_tool('agent_mail_setup', {{'name': 'rene', 'relay': '{relay}'}}))

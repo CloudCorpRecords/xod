@@ -8,6 +8,7 @@ each hosting its own post office on its own port, set up from the chat's tool an
   - nobody but this computer can claim names on its post office
   - a message nobody can take is given up on after the outbox's time, and says why
   - the networks it offers: this network (<name>.local), Tailscale when it's on
+  - auto-reply, per contact: only for contacts you know, never task requests, never a reply (no endless loop)
 Throwaway data folders and keyrings; addresses on 127.0.0.1 (as two computers on a network would be).
   .venv/bin/python tests/smoke/run_home_post_test.py
 """
@@ -18,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -42,7 +44,8 @@ class Xod:
         self.who, self.port, self.post = who, free_port(), free_port()
         self.env = {**os.environ, "XOD_DATA_DIR": str(TMP / who), "XOD_HOME_POST_PORT": str(self.post), "PYTHONUTF8": "1",
                     "XOD_NO_UPDATE_CHECK": "1", "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring",
-                    "XOD_TEST_KEYRING_FILE": str(TMP / f"{who}-keys.json"), "PYTHONPATH": str(ROOT)}
+                    "XOD_TEST_KEYRING_FILE": str(TMP / f"{who}-keys.json"), "PYTHONPATH": str(ROOT),
+                    "XOD_TEST_AUTO_REPLY": "1"}     # auto-replies written without a model
         (TMP / who).mkdir(exist_ok=True)
         self.proc = None
 
@@ -175,6 +178,32 @@ with agent_mail._db() as c:
     r = c.execute("SELECT status, problem FROM mail_messages WHERE direction='out' ORDER BY created_at DESC").fetchone()
 print(json.dumps({'status': r[0], 'problem': r[1]}))""")
         check("…and the message says it wasn't delivered and why", why.get("status") == "failed" and "7 days" in (why.get("problem") or ""), str(why))
+
+        print("H7 auto-reply")
+        rene.start()
+        R, D = f"rene@127.0.0.1:{rene.post}", f"dana@127.0.0.1:{dana.post}"
+        rene.api("PATCH", f"/api/mail/contacts/{urllib.parse.quote(D)}", {"trust": "unknown"})    # (writing to dana made her known)
+        r = rene.api("PATCH", f"/api/mail/contacts/{urllib.parse.quote(D)}", {"auto_reply": True})
+        check("auto-reply can't be turned on for someone who isn't a known contact", r.get("success") is False, str(r))
+        rene.api("PATCH", f"/api/mail/contacts/{urllib.parse.quote(D)}", {"trust": "known"})
+        r = rene.api("PATCH", f"/api/mail/contacts/{urllib.parse.quote(D)}", {"auto_reply": True})
+        check("…and can for a known contact", r.get("success") is True, str(r))
+        dana.api("PATCH", f"/api/mail/contacts/{urllib.parse.quote(R)}", {"trust": "known"})
+        dana.api("PATCH", f"/api/mail/contacts/{urllib.parse.quote(R)}", {"auto_reply": True})     # both auto-reply: no loop allowed
+        inbox(dana)
+        dana.api("POST", "/api/mail/send", {"to": R, "text": "Are you around Friday?"})
+        inbox(rene)                                        # rene's Xod receives it and answers by itself
+        got = inbox(dana)
+        check("rene's Xod answers a known contact by itself", any(m["text"].startswith("Auto reply to: Are you around Friday") for m in got), str([m['text'][:50] for m in got]))
+        inbox(dana)
+        rene_got = inbox(rene)
+        check("…and dana's Xod doesn't auto-answer that reply (no endless loop)",
+              not any(m["text"].startswith("Auto reply to: Auto reply") for m in rene_got), str([m['text'][:50] for m in rene_got]))
+        dana.api("POST", "/api/mail/send", {"to": R, "text": "Please run my report.", "kind": "task_request"})
+        before = len([m for m in inbox(dana) if m["text"].startswith("Auto reply to: Please run")])
+        inbox(rene)
+        after = len([m for m in inbox(dana) if m["text"].startswith("Auto reply to: Please run")])
+        check("…and never to a task request (those still wait for your OK)", before == after == 0)
 
         print("H6 how others reach this computer")
         nets = dana.api("GET", "/api/mail/networks")

@@ -72,6 +72,9 @@ def _db() -> sqlite3.Connection:
     CREATE INDEX IF NOT EXISTS mail_thread ON mail_messages(thread, created_at);
     CREATE UNIQUE INDEX IF NOT EXISTS mail_msgid ON mail_messages(msg_id, direction, peer);
     """)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(mail_contacts)")}
+    if "auto_reply" not in cols:   # added for the per-contact auto-reply toggle; default off
+        c.execute("ALTER TABLE mail_contacts ADD COLUMN auto_reply INTEGER DEFAULT 0")
     return c
 
 
@@ -261,12 +264,16 @@ async def resolve(address: str, trust_if_new: str = "unknown") -> Dict[str, Any]
 
 
 def set_contact(address: str, trust: Optional[str] = None, nickname: Optional[str] = None,
-                verified: Optional[bool] = None) -> bool:
+                verified: Optional[bool] = None, auto_reply: Optional[bool] = None) -> bool:
     if trust is not None and trust not in TRUST:
         return False
     with _db() as c:
-        if not c.execute("SELECT 1 FROM mail_contacts WHERE address=?", (address.lower(),)).fetchone():
+        row = c.execute("SELECT trust FROM mail_contacts WHERE address=?", (address.lower(),)).fetchone()
+        if not row:
             return False
+        effective_trust = trust if trust is not None else row["trust"]
+        if auto_reply and effective_trust not in ("known", "mine"):
+            return False   # auto-reply is for contacts you know, never strangers or blocked senders
         if trust is not None:
             c.execute("UPDATE mail_contacts SET trust=?, updated_at=? WHERE address=?", (trust, time.time(), address.lower()))
             if trust != "blocked":   # mail held only because they were unknown is now fine to read
@@ -275,6 +282,10 @@ def set_contact(address: str, trust: Optional[str] = None, nickname: Optional[st
             c.execute("UPDATE mail_contacts SET nickname=? WHERE address=?", (nickname.strip()[:60] or None, address.lower()))
         if verified is not None:
             c.execute("UPDATE mail_contacts SET verified=? WHERE address=?", (1 if verified else 0, address.lower()))
+        if auto_reply is not None:
+            c.execute("UPDATE mail_contacts SET auto_reply=? WHERE address=?", (1 if auto_reply else 0, address.lower()))
+        if effective_trust in ("unknown", "blocked"):
+            c.execute("UPDATE mail_contacts SET auto_reply=0 WHERE address=?", (address.lower(),))
     return True
 
 
@@ -433,7 +444,8 @@ async def approve_draft(draft_id: str) -> Dict[str, Any]:
         return {"success": False, "error": "That draft was already sent or discarded."}
     d = _row(d)
     from app.services import activity
-    ctx = activity.before("agent_mail_send", {"to": ", ".join(d["recipients"]), "subject": d["subject"]})
+    ctx = activity.before("agent_mail_send", {"to": ", ".join(d["recipients"]), "subject": d["subject"],
+                                              "origin": d["origin"] or "xod"})
     try:
         res = await send(d["recipients"], d["text"], d["subject"], d["kind"], d["thread"], d["in_reply_to"],
                          msg_id=d["msg_id"], origin=d["origin"] or "xod")
@@ -489,6 +501,8 @@ async def check(notify: bool = True) -> Dict[str, Any]:
                     headers=mc.signed_headers(ident, cfg["name"], "POST", "/v1/mail/ack"))
     cfg.update(last_check=time.time(), last_error=None)
     _save_config(cfg)
+    for m in got:
+        await _maybe_auto_reply(m)
     known = [m for m in got if m["status"] == "new" and m["trust"] != "unknown"]
     if notify and got:
         if known:
@@ -496,6 +510,46 @@ async def check(notify: bool = True) -> Dict[str, Any]:
         elif any(m["trust"] == "unknown" for m in got):
             _notify("New agent asking to talk", "A message request is waiting in Agent Mail.")
     return {"success": True, "new": len(got)}
+
+
+# ---------------------------------------------------------------- auto-reply
+
+async def _maybe_auto_reply(stored: Dict[str, Any]) -> None:
+    """Auto-reply hook, run for each newly arrived message.
+
+    Fires only for a plain message from a contact with trust known/mine and the per-contact
+    auto-reply toggle on. Never for strangers, never for task requests (those still need your
+    approval to run), never for replies (so two auto-replying Xods can't ping-pong). The reply
+    goes through draft_reply's no-commitment prompt and approve_draft's activity logging,
+    exactly like a send you approved."""
+    if stored.get("status") != "new" or stored.get("kind") != "message":
+        return
+    c = contact(stored["peer"])
+    if not c or not c.get("auto_reply") or c.get("trust") not in ("known", "mine"):
+        return
+    with _db() as db:
+        claimed = db.execute("UPDATE mail_messages SET replied=1 WHERE id=? AND replied=0",
+                             (stored["id"],)).rowcount
+    if not claimed:
+        return   # the background loop already answered this one
+    try:
+        m = message(stored["id"])
+        if not m:
+            return
+        if os.environ.get("XOD_TEST_AUTO_REPLY"):
+            subject = m["subject"] if (m["subject"] or "").lower().startswith("re:") else (f"Re: {m['subject']}" if m["subject"] else "")
+            r = draft(m["peer"], f"Auto reply to: {(m['text'] or '')[:500]}", subject, "reply",
+                      m["thread"], m["msg_id"], origin="auto-reply")
+        else:
+            r = await draft_reply(stored["id"], origin="auto-reply")
+        if r.get("success"):
+            res = await approve_draft(r["draft_id"])
+            if not res.get("success"):
+                logger.warning(f"Agent Mail: auto-reply send failed: {res.get('error')}")
+        else:
+            logger.warning(f"Agent Mail: auto-reply draft failed: {r.get('error')}")
+    except Exception as e:
+        logger.warning(f"Agent Mail: auto-reply failed: {e}")
 
 
 async def _receive(ident: mc.Identity, my_address: str, envelope: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -606,7 +660,7 @@ async def run_request(mid: str) -> Dict[str, Any]:
     return {"success": True, "task": t}
 
 
-async def draft_reply(mid: str) -> Dict[str, Any]:
+async def draft_reply(mid: str, origin: str = "xod") -> Dict[str, Any]:
     """Xod writes a reply for you to check. Nothing is sent."""
     m = message(mid)
     if not m:
@@ -627,7 +681,7 @@ async def draft_reply(mid: str) -> Dict[str, Any]:
     if not text:
         return {"success": False, "error": "Couldn't write a reply just now."}
     subject = m["subject"] if (m["subject"] or "").lower().startswith("re:") else (f"Re: {m['subject']}" if m["subject"] else "")
-    return draft(m["peer"], text, subject, "reply", m["thread"], m["msg_id"], origin="xod")
+    return draft(m["peer"], text, subject, "reply", m["thread"], m["msg_id"], origin=origin)
 
 
 def _reply_with_task_results() -> None:

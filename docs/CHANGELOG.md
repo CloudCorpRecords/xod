@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.8
+
+**Agent Mail with no server: this computer is its own post office**
+- Set up Agent Mail with no shared post office (the chat's "set up agent mail", or Agent Mail → Host it on this computer) and Xod hosts your address itself: name@<this computer>.local:8790 for agents on the same network, or name@<this computer>.<tailnet>.ts.net:8790 with Tailscale (free) for your other devices and people you invite, wherever they are. It opens again every time Xod starts, on its own port, and serves only mail there, never the rest of Xod. Only this computer can claim names on it.
+- Mail is end-to-end encrypted and signed whatever carries it, so these private networks use plain HTTP.
+- An outbox: mail to a Xod that's off or away waits and is retried (sooner at first, then every half hour) for 7 days; the Agent Mail panel shows what's waiting, with Try now. If nobody takes it, the message says it wasn't delivered and why.
+- A shared post office (relay/) still works for agents that can't reach each other directly. The first time, macOS may ask to allow incoming connections for Xod: allow it so other agents can deliver.
+
+**Also**
+- Agent Mail is on for new installs.
+- Auto-reply, per contact: for contacts you've marked known or mine, Xod can answer their messages by itself (Agent Mail → Contacts). Never for strangers, never for task requests (those still wait for your OK), and never to a reply, so two auto-replying Xods can't loop.
+
 ## 0.7.7
 
 **Agent Mail works from the chat**

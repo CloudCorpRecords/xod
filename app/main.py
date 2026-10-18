@@ -982,6 +982,7 @@ class MailContactEdit(BaseModel):
     trust: Optional[str] = None
     nickname: Optional[str] = None
     verified: Optional[bool] = None
+    auto_reply: Optional[bool] = None
 
 
 def _mail_call(fn):
@@ -1100,7 +1101,7 @@ async def mail_lookup(address: str):
 @app.patch("/api/mail/contacts/{address}")
 async def mail_contact_edit(address: str, req: MailContactEdit):
     from app.services import agent_mail
-    return {"success": agent_mail.set_contact(address, req.trust, req.nickname, req.verified)}
+    return {"success": agent_mail.set_contact(address, req.trust, req.nickname, req.verified, req.auto_reply)}
 
 
 @app.post("/api/mail/contacts/{address}/accept-keys")
