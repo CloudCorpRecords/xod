@@ -59,6 +59,13 @@
     const s = state;
     const opts = [];
     const lm = s.lm_studio, ol = s.ollama;
+    // An API key you already saved comes first: nothing to download and no local model running.
+    for (const [i, c] of (s.cloud || []).entries()) {
+      opts.push({ provider: c.provider, model: c.model, label: c.label, icon: "cloud", title: `${c.label} (your API key)`,
+                  sub: "Uses the API key you saved. Nothing to download, and no local model has to run on this computer.",
+                  recommended: i === 0 });
+    }
+    const keyFirst = opts.length > 0;
     if (lm.online && (lm.loaded || lm.models.length)) {
       const m = lm.loaded || lm.models[0];
       // A model over ~6 GB on a 16 GB Mac pushes it into swap, and every answer waits on the disk.
@@ -67,7 +74,7 @@
       opts.push({ provider: "lm_studio", model: m, label: m, icon: "server", title: `LM Studio: ${m}`,
                   sub: (lm.loaded ? "Already running. Nothing to download." : "Installed in LM Studio. Xod loads it when needed.")
                        + (heavy ? ` At ${gb.toFixed(1)} GB it's large for a ${s.mac.ram_gb} GB Mac, so answers will be slow; the built-in ${(s.builtin.find((x) => x.recommended) || {}).label || "model"} is about three times faster.` : ""),
-                  recommended: !!lm.loaded && !heavy });
+                  recommended: !!lm.loaded && !heavy && !keyFirst });
     }
     // Ollama models are listed in their own section (ollamaSection) on a PC; on a Mac, alongside the built-in ones.
     if (s.mac.apple_silicon && ol.online && ol.models.length) {
@@ -97,7 +104,7 @@
       ${s.mac.issues.map((i) => `<p class="text-[12px] text-amber-300 mt-2">${esc(i)}</p>`).join("")}
 
       <h2 class="text-white text-lg font-semibold mt-6">Pick Xod's brain</h2>
-      <p class="text-[13px] text-zinc-400 mt-1">${opts.length || (hub && hub.models.length) ? `Everything below runs on your ${s.mac.windows ? "PC" : "Mac"} and stays private. ` : "No model found on this computer yet. "}You can change it any time in Settings.</p>
+      <p class="text-[13px] text-zinc-400 mt-1">${keyFirst ? "Your API key works right away. The local options below run on your " + (s.mac.windows ? "PC" : "Mac") + " and stay private. " : opts.length || (hub && hub.models.length) ? `Everything below runs on your ${s.mac.windows ? "PC" : "Mac"} and stays private. ` : "No model found on this computer yet. "}You can change it any time in Settings.</p>
       <div class="space-y-2.5 mt-3">${opts.map(option).join("")}</div>
       ${otherServers()}
       ${s.mac.apple_silicon ? "" : ollamaSection()}

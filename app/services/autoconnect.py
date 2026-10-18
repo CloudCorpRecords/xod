@@ -11,6 +11,7 @@ Every CHECK_EVERY seconds (and whenever the model picker opens) it looks at:
 and then fixes what it safely can:
   - the chosen server is installed but not running: start it (at most once every RESTART_EVERY seconds)
   - a crashed Ollama left its model processes behind, holding GPU memory: end them
+  - an API key saved and the model still Xod's own pick: use the key (no local model needed)
   - no model chosen yet (a new install), or the one Xod chose for itself stopped working: connect to the best
     model it can find. A model the person picked is never replaced; if it stops working Xod says what else there is.
 
@@ -284,6 +285,11 @@ async def check() -> Dict[str, Any]:
         freed = await asyncio.to_thread(free_ollama_orphans)
         if freed:
             _event("fixed", f"Freed {freed} that a crashed Ollama had left in use.")
+
+        # An API key you saved beats a local model while the choice is still Xod's (setup_wizard.prefer_key).
+        pk = setup_wizard.prefer_key()
+        if pk["switched"]:
+            _event("connected", f"Using your {pk['label']} (your saved API key), so no local model needs to run.")
 
         provider, model = settings.llm_provider, settings.llm_model
         servers = await discover()

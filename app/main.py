@@ -486,6 +486,8 @@ async def _start_task_worker():
     recall.schedule_index(20)               # catch Xod's memory up on chats and tasks since it last ran
     from app.services import autoconnect
     asyncio.create_task(autoconnect.loop())  # keeps finding the AI on this computer and keeps it working
+    from app.services import local_servers
+    asyncio.create_task(local_servers.idle_loop())   # stops the built-in engine after a while unused
     from app.services import phone
     phone.start()                           # the linked phone (Telegram), if there is one
 
@@ -1667,7 +1669,12 @@ async def update_config(req: ConfigUpdateRequest):
         update_env_variable("HF_TOKEN", hf_val)
         media_model_manager.set_hf_token(hf_val)
 
-    return {"status": "success", "message": "Settings updated successfully."}
+    from app.services import local_servers, setup_wizard
+    if req.llm_provider is not None:
+        local_servers.after_switch(req.llm_provider)     # not the built-in engine any more: free its memory now
+    switched = setup_wizard.prefer_key()                  # a key just saved wins while the model is still Xod's pick
+    msg = f"Settings updated. Xod now answers with {switched['label']} (your API key)." if switched["switched"] else "Settings updated successfully."
+    return {"status": "success", "message": msg, "switched_to": switched.get("provider") if switched["switched"] else None}
 
 class TavilyTestRequest(BaseModel):
     tavily_api_key: Optional[str] = None
@@ -1882,6 +1889,36 @@ async def get_lmstudio_status():
         status = {**status, "active": {"provider": "local", "server": "Built-in", "model": entry.get("label") or repo.split("/")[-1],
                                        "ready": ready, "problem": None if ready else "The built-in model isn't downloaded yet (Settings → Models)."}}
     return status
+
+@app.get("/api/local-servers")
+async def local_servers_endpoint():
+    """What answers chats, and which model servers on this computer are running and hold memory (services/local_servers.py)."""
+    from app.services import local_servers
+    return await local_servers.report()
+
+
+class LocalServerStop(BaseModel):
+    server: str
+
+
+@app.post("/api/local-servers/stop")
+async def local_servers_stop(req: LocalServerStop):
+    from app.services import local_servers
+    return await local_servers.stop(req.server)
+
+
+class EngineIdle(BaseModel):
+    minutes: int
+
+
+@app.post("/api/local-servers/idle")
+async def local_servers_idle(req: EngineIdle):
+    """Minutes unused before the built-in engine stops itself (0 = never)."""
+    from app.services.storage import set_setting
+    set_setting("engine_idle_minutes", str(max(0, min(req.minutes, 1440))))
+    from app.services import local_servers
+    return {"success": True, "idle_minutes": local_servers.idle_minutes()}
+
 
 class ModelActionRequest(BaseModel):
     model_key: Optional[str] = None

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.9
+
+**Use your API key, no local model needed**
+- With an API key saved (Claude, OpenAI, Gemini, OpenRouter, Groq or Fireworks), Xod answers with it: setup lists it first, and saving a key switches Xod to it right away. A model you picked yourself is never replaced, and neither is local-first routing (a cloud model only for hard steps).
+- Switching to another model stops the built-in engine at once, freeing the 3–16 GB it holds.
+- The built-in engine stops itself after 15 minutes unused (change it, or set never, in the header's Local panel), unless it's in the middle of an answer. The next chat that needs it starts it again.
+
+**Know what's running**
+- A new "Local" indicator in the header: off, or on with the memory it holds, and "unused" in amber when a local model is loaded but chats go to your API key. Click it to see what answers your chats, every model server on this computer (built-in, LM Studio, Ollama) with its loaded models, and Stop / Unload buttons. Xod never unloads LM Studio's or Ollama's models by itself, since other apps may use them.
+
 ## 0.7.8
 
 **Agent Mail with no server: this computer is its own post office**

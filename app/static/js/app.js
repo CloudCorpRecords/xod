@@ -605,6 +605,83 @@ async function updateLMStudioUI() {
     llmText.textContent = "AI model: local";
     setHeaderStatus("idle", "Local");
   }
+  updateLocalServersUI();
+}
+
+// Model servers on this computer (services/local_servers.py): the header says whether a local model is running and
+// what it holds in memory, and whether chats even use it (with an API key they don't). The panel stops it.
+let localServers = null;
+async function updateLocalServersUI() {
+  const txt = document.getElementById("localServersText");
+  const icon = document.getElementById("localServersIcon");
+  if (!txt) return;
+  try {
+    localServers = await (await fetch("/api/local-servers")).json();
+  } catch (e) { return; }
+  const r = localServers;
+  // Chat models only: a small embedding model (memory search) loaded in LM Studio or Ollama doesn't make it "on".
+  const on = r.servers.filter((s) => s.id === "builtin" ? s.running : s.models.some((m) => !m.embedding));
+  const gb = on.reduce((n, s) => n + (s.memory_gb || 0), 0);
+  const color = r.unused.length ? "text-amber-400" : on.length ? "text-emerald-400" : "text-zinc-500";
+  if (!on.length) txt.textContent = "Local: off";
+  else txt.textContent = `Local: on${gb ? ` · ${gb.toFixed(1)} GB` : ""}${r.unused.length ? " · unused" : ""}`;
+  if (icon) icon.setAttribute("class", `size-3.5 ${color}`);
+  document.getElementById("localServersBtn").title = r.unused.length
+    ? `A local model is loaded (${r.unused_gb} GB) but chats use ${r.answering.name}. Click to stop it.`
+    : on.length ? "A local model is running and answers your chats." : `No local model running. Chats use ${r.answering.name}.`;
+  if (!document.getElementById("localServersPanel").classList.contains("hidden")) renderLocalServers();
+}
+
+function renderLocalServers() {
+  const p = document.getElementById("localServersPanel");
+  const r = localServers;
+  if (!p || !r) return;
+  const a = r.answering;
+  const row = (s) => {
+    const models = s.models.map((m) => escapeHtml(m.label || m.id)).join(", ");
+    const state = s.id === "builtin" ? (s.running ? "Running" : "Off") : !s.running ? "Not running" : s.models.length ? "Model loaded" : "Running, nothing loaded";
+    const dot = !s.running || (!s.models.length && s.id !== "builtin") ? "bg-zinc-600" : s.in_use ? "bg-emerald-400" : "bg-amber-400";
+    const idle = s.idle_seconds != null ? ` · unused ${Math.round(s.idle_seconds / 60)} min` : "";
+    return `<div class="flex items-start gap-2 py-2 border-t border-white/[0.05] first:border-0">
+      <span class="size-2 mt-1.5 rounded-full shrink-0 ${dot}"></span>
+      <div class="flex-1 min-w-0">
+        <div class="text-zinc-200">${escapeHtml(s.name)} <span class="text-zinc-500">· ${state}${s.memory_gb ? ` · ${s.memory_gb} GB` : ""}${idle}</span></div>
+        ${models ? `<div class="text-zinc-500 truncate" title="${models}">${models}${s.in_use ? " · answers chats" : ""}</div>` : ""}
+      </div>
+      ${s.can_stop ? `<button onclick="stopLocalServer('${s.id}')" class="px-2 py-1 rounded-md text-[11px] text-red-300 bg-red-500/10 hover:bg-red-500/20 shrink-0">${s.id === "builtin" ? "Stop" : "Unload"}</button>` : ""}
+    </div>`;
+  };
+  const idleOpts = [0, 5, 15, 30, 60].map((m) => `<option value="${m}" ${m === r.idle_minutes ? "selected" : ""}>${m ? `after ${m} min` : "never"}</option>`).join("");
+  p.innerHTML = `
+    <div class="text-zinc-400">Chats are answered by</div>
+    <div class="text-white font-medium mb-2">${escapeHtml(a.name)}: ${escapeHtml(a.model)} <span class="text-zinc-500 font-normal">(${a.where === "online" ? "online, API key" : "on this computer"})</span></div>
+    ${r.unused.length ? `<div class="mb-2 p-2 rounded-lg bg-amber-500/10 text-amber-200">A local model is holding ${r.unused_gb} GB of memory that chats don't use.</div>` : ""}
+    <div>${r.servers.map(row).join("")}</div>
+    <label class="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-white/[0.05] text-zinc-400">Stop the built-in engine when unused
+      <select onchange="setEngineIdle(this.value)" class="bg-surface-700 text-zinc-200 rounded-md px-1.5 py-0.5">${idleOpts}</select></label>`;
+}
+
+function toggleLocalServers() {
+  const p = document.getElementById("localServersPanel");
+  p.classList.toggle("hidden");
+  if (!p.classList.contains("hidden")) { renderLocalServers(); updateLocalServersUI(); }
+}
+document.addEventListener("click", (e) => {
+  const p = document.getElementById("localServersPanel");
+  if (p && !p.classList.contains("hidden") && !e.target.closest("#localServersPanel, #localServersBtn")) p.classList.add("hidden");
+});
+
+async function stopLocalServer(id) {
+  try {
+    const res = await (await fetch("/api/local-servers/stop", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ server: id }) })).json();
+    showToast(res.message || res.error || "Done");
+  } catch (e) { showToast("Couldn't stop it."); }
+  await updateLocalServersUI();
+}
+
+async function setEngineIdle(minutes) {
+  await fetch("/api/local-servers/idle", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ minutes: Number(minutes) }) });
+  await updateLocalServersUI();
 }
 
 // Xod keeps its AI connected by itself (services/autoconnect.py): every 30 s, refresh the header and show what it

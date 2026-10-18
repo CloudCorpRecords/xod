@@ -190,6 +190,7 @@ class LocalEngine:
         self.last_error: Optional[str] = None
         self.started_at: Optional[float] = None
         self.restarts = 0                      # times it was restarted because it stopped answering
+        self.last_used: Optional[float] = None  # the last request that needed it (services/local_servers.py stops it when idle)
 
     @property
     def base_url(self) -> str:
@@ -209,6 +210,7 @@ class LocalEngine:
         another is still starting the engine waits for it instead of being refused."""
         if not is_apple_silicon():
             raise RuntimeError(INTEL_MESSAGE)
+        self.last_used = time.time()
         if self.running() and self.repo == repo and self.started_at:
             return
         async with self._lk():
@@ -305,7 +307,7 @@ class LocalEngine:
 
     def status(self) -> Dict[str, Any]:
         return {"running": self.running(), "model": self.repo, "port": self.port,
-                "since": self.started_at, "last_error": self.last_error, "restarts": self.restarts}
+                "since": self.started_at, "last_error": self.last_error, "restarts": self.restarts, "last_used": self.last_used}
 
 
 local_engine = LocalEngine()

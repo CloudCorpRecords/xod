@@ -137,6 +137,15 @@
         <span id="headerStatusText">Connecting…</span>
       </button>
 
+      <!-- Local model servers: running or not, memory, Stop (services/local_servers.py) -->
+      <div class="relative hidden sm:block">
+        <button id="localServersBtn" onclick="toggleLocalServers()" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] text-zinc-400 hover:text-white hover:bg-surface-700 transition-colors" title="Model servers on this computer">
+          <i data-lucide="cpu" class="size-3.5" id="localServersIcon"></i>
+          <span id="localServersText">Local: …</span>
+        </button>
+        <div id="localServersPanel" class="hidden absolute right-0 top-full mt-1.5 w-80 z-50 p-3 rounded-xl bg-surface-850 border border-white/[0.08] shadow-2xl text-[12px]"></div>
+      </div>
+
       <!-- AI Cockpit -->
       <button onclick="openAutonomousCockpitModal()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Watch Xod browse and use your Mac, or take over">
         <i data-lucide="compass" class="size-3.5 text-emerald-400"></i>

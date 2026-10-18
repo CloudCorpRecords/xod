@@ -2,9 +2,10 @@
 First-run setup: checks the Mac, finds an AI model Xod can use, and gets one if there isn't any.
 
 Order of preference shown to the user:
-  1. A model already running in LM Studio or Ollama (nothing to download)
-  2. Xod's built-in engine with the model recommended for this Mac's memory (one download)
-  3. A cloud provider with an API key (optional, can be added any time in Settings)
+  1. An API key you already saved (a cloud model: nothing to download, no local model running)
+  2. A model already running in LM Studio or Ollama (nothing to download)
+  3. Xod's built-in engine with the model recommended for this Mac's memory (one download)
+A cloud key can be added any time in Settings; while Xod still picks the model itself, a saved key wins (prefer_key()).
 """
 import os
 import platform
@@ -87,7 +88,7 @@ async def status() -> Dict[str, Any]:
     builtin = [{**m, "downloaded": is_downloaded(m["repo"]), "recommended": m["id"] == rec["id"],
                 "fits": m["min_ram_gb"] <= mac["ram_gb"], "download": download_status(m["repo"])} for m in CATALOG] if mac["apple_silicon"] else []
     lm, ol = await _lm_studio(), await _ollama()
-    cloud = [p for p in ("anthropic", "openai", "gemini", "groq", "openrouter", "fireworks") if getattr(settings, f"{p}_api_key", "")]
+    cloud = saved_keys()
     return {
         "complete": is_complete(),
         "show_on_start": not is_complete() and not _has_chats(),
@@ -96,7 +97,43 @@ async def status() -> Dict[str, Any]:
         "lm_studio": lm, "ollama": ol,
         "builtin": builtin, "recommended": rec["repo"],
         "cloud_keys": cloud,
+        "cloud": [key_choice(p) for p in cloud],
     }
+
+
+KEY_ORDER = ("anthropic", "openai", "gemini", "openrouter", "groq", "fireworks")
+
+
+def saved_keys() -> List[str]:
+    """Cloud providers with an API key saved, best first."""
+    from app.config import settings
+    return [p for p in KEY_ORDER if (getattr(settings, f"{p}_api_key", "") or "").strip()]
+
+
+def key_choice(provider: str) -> Dict[str, str]:
+    from app.services.llm import PROVIDER_NAMES
+    from app.services.model_hub import CLOUD_DEFAULTS
+    model = CLOUD_DEFAULTS[provider]
+    return {"provider": provider, "model": model, "label": f"{PROVIDER_NAMES.get(provider, provider)}: {model.split('/')[-1]}"}
+
+
+def prefer_key() -> Dict[str, Any]:
+    """With an API key saved, use it instead of a local model, as long as the model is still Xod's own pick (a new
+    install, or one autoconnect chose) and you haven't set local-first routing (cloud only for hard steps). A model
+    you picked yourself is never changed."""
+    from app.config import settings
+    from app.services.llm import CLOUD_PROVIDERS
+    from app.services.storage import get_setting
+    from app.services import llm_routing
+    keys = saved_keys()
+    if not keys or settings.llm_provider in CLOUD_PROVIDERS:
+        return {"switched": False}
+    never_chosen = not get_setting("llm_provider", "")
+    if not (never_chosen or chosen_by() == "auto") or llm_routing.settings()["mode"] != "off":
+        return {"switched": False}
+    c = key_choice(keys[0])
+    res = choose(c["provider"], c["model"], how="auto")
+    return {"switched": bool(res.get("success")), **c}
 
 
 def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> Dict[str, Any]:
@@ -136,6 +173,8 @@ def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> D
         update_env_variable("LLM_BASE_URL", base_url)
     from app.services.storage import set_setting
     set_setting(CHOSEN_BY_KEY, how)
+    from app.services.local_servers import after_switch
+    after_switch(provider)        # not the built-in engine any more: free its memory now
     return {"success": True, "provider": provider, "model": model}
 
 
