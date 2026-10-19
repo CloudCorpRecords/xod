@@ -2,10 +2,18 @@
 
 ## 0.7.10
 
+**Xod uses the AI agents in your terminal**
+- Muse, Claude Code, Codex, Gemini CLI, Aider, opencode, Goose, Cursor and Amp: Xod finds them (also where the app's short PATH doesn't look, like ~/.local/bin), knows whether you're signed in, and hands them a job headless ("use muse to …") in the folder you name, or keeps a session going for a back-and-forth, in the background or in a Terminal window you can watch. Full-screen agents read as you'd see them (a terminal emulator, pyte).
+- Signing in: Xod starts the agent's own sign-in, shows you its link and code, and opens the page (only on the agent's own site); you approve in the browser and Xod notices. It never types a password.
+- It never passes the flags that switch an agent's safety prompts off (--dangerously-skip-permissions, --yolo …), what it asks them gets the same safety check as its own commands, a job that runs too long is stopped with everything it started, and it keeps at most 4 sessions, reusing the one already running for the same agent and folder. Add-ons → Terminal AI agents (on by default).
+
 **Xod can use this Mac's screen (preview)**
 - Turn on "Use this computer's screen" in Add-ons, allow Xod under Screen Recording and Accessibility (the card has an Allow button and names the exact app macOS counts), and Xod sees your screen and uses the real mouse and keyboard: apps with no other tool, and Terminal or iTerm windows you have open (it reads and types into those as text, exactly). Ask for a whole job ("check my build in the terminal and fix what failed") and it works a step at a time, looking after each step, with a chip showing what it's doing and Stop.
 - Safety: it asks the first time it uses each app; it never uses System Settings, Keychain Access, Passwords or password managers; it never types into a password field; shortcuts that quit or delete only when you ask; a command typed into a terminal gets the same refusals and safety check as Xod's own commands; text on the screen is never taken as orders; and if you move the mouse while it works, it stops.
-- Mac only for now.
+- Permissions without hunting: turning the add-on on (or asking for something on screen) raises macOS's prompts and opens the exact Settings page, one at a time, and Xod carries on by itself as soon as each switch is on (it rechecks from a fresh process, since macOS only tells a running app after a restart). If Terminal says Xod isn't allowed, the Automation page opens. In the Xod app the entry is called Xod; run from Terminal or another tool, the card says that tool is the one macOS asks for.
+- Terminal windows by their id (their order changes whenever you click one), and Xod types into one only when it's named, when more than one is open. Xod's own windows are titled "Xod · <agent>", reused (the same agent and folder goes back to its window; a free one is reused), at most 3, and closed when it stops them; it never closes a window it didn't open.
+- Typing is pasted (your clipboard is put back right after), then Return pressed on its own, so apps that drop synthetic key presses (Notes) and full-screen terminal agents (Muse) both get it. Opening an app waits until it's really in front, and the front app is read from Accessibility (macOS's other answer goes stale in a background program).
+- Mac only for now. Checked live on a Mac: the screen and its controls, Terminal windows read by id, Notes opened and a line typed into a new note, Muse in a watched window answering a typed message.
 - Xod's own commands now also refuse `rm -rf ~/` and `rm -rf $HOME/` (only `rm -rf ~` was caught).
 
 **Xod in the terminal**

@@ -85,8 +85,31 @@ def permissions() -> Dict[str, Any]:
     import ApplicationServices as AS
     screen = bool(Quartz.CGPreflightScreenCaptureAccess())
     access = bool(AS.AXIsProcessTrusted())
+    if not (screen and access):
+        # macOS answers a running program from what it knew when it started: a switch you've just turned on only shows
+        # to a new process. Ask a fresh one (macOS counts it as the same app).
+        fs, fa = _fresh_check()
+        screen, access = screen or fs, access or fa
     return {"supported": True, "screen": screen, "accessibility": access, "enabled": enabled(),
             "ready": screen and access and enabled(), "app": _host_app(), "app_path": host_bundle()}
+
+
+_fresh: Dict[str, Any] = {"at": 0.0, "value": (False, False)}
+
+
+def _fresh_check() -> Tuple[bool, bool]:
+    if time.time() - _fresh["at"] < 2:
+        return _fresh["value"]
+    try:
+        r = subprocess.run([sys.executable, "-c", "import Quartz, ApplicationServices as A;"
+                            "print(int(bool(Quartz.CGPreflightScreenCaptureAccess())), int(bool(A.AXIsProcessTrusted())))"],
+                           capture_output=True, text=True, timeout=10)
+        a, b = (r.stdout.split() + ["0", "0"])[:2]
+        value = (a == "1", b == "1")
+    except Exception:
+        value = (False, False)
+    _fresh.update(at=time.time(), value=value)
+    return value
 
 
 def _host_app() -> str:
@@ -122,21 +145,63 @@ def host_bundle() -> str:
     return m.group(1) if m else path
 
 
-def request_permissions() -> Dict[str, Any]:
-    """Asks macOS for both permissions (it shows its own prompts the first time) and opens the right Settings pages."""
+PANES = {"screen": "Privacy_ScreenCapture", "accessibility": "Privacy_Accessibility", "automation": "Privacy_Automation"}
+_asked: Dict[str, float] = {}           # when Xod last opened each Settings page (so it doesn't keep popping them up)
+
+
+def _open_pane(which: str) -> None:
+    subprocess.Popen(["open", f"x-apple.systempreferences:com.apple.preference.security?{PANES[which]}"],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _asked[which] = time.time()
+
+
+def request_permissions(force: bool = True) -> Dict[str, Any]:
+    """Asks macOS for what's missing: its own prompts first, then the exact Settings page, one at a time (the screen
+    first), so you only have to flip a switch. force=False skips a page opened in the last 2 minutes."""
     if not MAC:
         return permissions()
     import Quartz
     import ApplicationServices as AS
     p = permissions()
-    if not p["screen"]:
-        Quartz.CGRequestScreenCaptureAccess()
-        subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"])
-    if not p["accessibility"]:
-        AS.AXIsProcessTrustedWithOptions({AS.kAXTrustedCheckOptionPrompt: True})
-        subprocess.Popen(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
-    return {**permissions(), "message": f"macOS shows {p['app']} in Privacy & Security: switch it on under Screen Recording and "
-                                        "Accessibility. macOS may ask you to quit and reopen it once."}
+    opened = []
+    for which, ok in (("screen", p["screen"]), ("accessibility", p["accessibility"])):
+        if ok:
+            continue
+        if not force and time.time() - _asked.get(which, 0) < 120:
+            break
+        if which == "screen":
+            Quartz.CGRequestScreenCaptureAccess()
+        else:
+            AS.AXIsProcessTrustedWithOptions({AS.kAXTrustedCheckOptionPrompt: True})
+        _open_pane(which)
+        opened.append(which)
+        break                                 # one page at a time; the next opens once this one is on
+    p = permissions()
+    need = [n for n, ok in (("Screen Recording", p["screen"]), ("Accessibility", p["accessibility"])) if not ok]
+    msg = ("Everything's allowed." if not need else
+           f"I opened System Settings → Privacy & Security → {need[0]} for you: switch on {p['app']} there"
+           + (f" (if it isn't listed, press + and pick {p['app_path']})" if p['app_path'] else "") + ". "
+           + ("Then the same for Accessibility. " if len(need) > 1 else "") + "Xod notices by itself and carries on."
+           + (f" (This Xod was started from {p['app']}, so macOS asks for {p['app']}; in the Xod app it's listed as Xod.)" if p["app"] != "Xod" else ""))
+    return {**p, "opened": opened, "missing": need, "message": msg}
+
+
+async def wait_for_permissions(seconds: float, need_screen: bool = True, need_input: bool = True, on_wait=None) -> bool:
+    """Opens what's missing and waits (up to seconds) for you to switch it on; the next page opens as each one is done."""
+    deadline = time.time() + seconds
+    last = None
+    while time.time() < deadline:
+        p = permissions()
+        missing = [w for w, ok, need in (("screen", p["screen"], need_screen), ("accessibility", p["accessibility"], need_input)) if need and not ok]
+        if not missing:
+            return True
+        if missing[0] != last:
+            last = missing[0]
+            res = request_permissions(force=False)
+            if on_wait:
+                on_wait(res["message"])
+        await asyncio.sleep(1)
+    return False
 
 
 def _ready(need_screen: bool = True, need_input: bool = True) -> None:
@@ -147,8 +212,8 @@ def _ready(need_screen: bool = True, need_input: bool = True) -> None:
     p = permissions()
     missing = [n for n, ok, need in (("Screen Recording", p["screen"], need_screen), ("Accessibility", p["accessibility"], need_input)) if need and not ok]
     if missing:
-        raise DesktopError(f"macOS hasn't allowed {p['app']} {' and '.join(missing)} yet. Open Add-ons → Use this computer's screen "
-                           "→ Allow, then switch it on in System Settings → Privacy & Security.")
+        res = request_permissions(force=False)          # open the page for them rather than send them looking
+        raise DesktopError(f"macOS hasn't allowed {p['app']} {' and '.join(missing)} yet. {res['message']} Say continue when it's on.")
 
 
 def allowed_apps() -> List[str]:
@@ -199,13 +264,46 @@ def _display() -> Dict[str, float]:
     return {"x": b.origin.x, "y": b.origin.y, "w": b.size.width, "h": b.size.height}
 
 
+def _app_of_pid(pid: int) -> Optional[Dict[str, Any]]:
+    from AppKit import NSRunningApplication
+    a = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+    if a is None:
+        return None
+    return {"name": str(a.localizedName() or ""), "bundle": str(a.bundleIdentifier() or ""), "pid": int(pid)}
+
+
 def front_app() -> Dict[str, Any]:
+    """The app in front right now. NSWorkspace's answer goes stale in a program with no window of its own (it only
+    updates on its run loop, which Xod's server doesn't run), so ask Accessibility, then the window list."""
+    try:
+        import ApplicationServices as AS
+        err, el = AS.AXUIElementCopyAttributeValue(AS.AXUIElementCreateSystemWide(), "AXFocusedApplication", None)
+        if err == 0 and el is not None:
+            err, pid = AS.AXUIElementGetPid(el, None)
+            if err == 0 and pid:
+                a = _app_of_pid(pid)
+                if a:
+                    return a
+    except Exception:
+        pass
+    try:
+        import Quartz
+        for w in Quartz.CGWindowListCopyWindowInfo(Quartz.kCGWindowListOptionOnScreenOnly | Quartz.kCGWindowListExcludeDesktopElements,
+                                                   Quartz.kCGNullWindowID) or []:
+            if w.get("kCGWindowLayer", 1) == 0:
+                a = _app_of_pid(int(w.get("kCGWindowOwnerPID", 0)))
+                if a:
+                    return a
+    except Exception:
+        pass
     from AppKit import NSWorkspace
     a = NSWorkspace.sharedWorkspace().frontmostApplication()
     return {"name": str(a.localizedName() or ""), "bundle": str(a.bundleIdentifier() or ""), "pid": int(a.processIdentifier())}
 
 
 def running_apps() -> List[Dict[str, Any]]:
+    """Regular apps running now. (NSWorkspace's list, like its front app, can lag in a program with no run loop:
+    _running() and _app_at() ask by bundle id and process id instead, which are always current.)"""
     from AppKit import NSWorkspace
     out = []
     for a in NSWorkspace.sharedWorkspace().runningApplications():
@@ -295,6 +393,10 @@ def elements(app: Optional[Dict[str, Any]] = None, budget: float = 2.0) -> Tuple
     found: List[Dict[str, Any]] = []
     texts: List[str] = []
     if win is None:
+        err, _ = AS.AXUIElementCopyAttributeValue(root, "AXWindows", None)
+        if err == AS.kAXErrorAPIDisabled:
+            raise DesktopError("macOS has Accessibility on for Xod, but only lets it use it after Xod is reopened once. "
+                               "Quit Xod and open it again, then say continue.")
         return found, texts
     deadline = time.time() + budget
     stack = [(win, 0)]
@@ -418,6 +520,12 @@ def _target(element: Any = None, x: Any = None, y: Any = None) -> Tuple[float, f
     return (px, py, None)
 
 
+def _post(ev: Any) -> None:
+    """The one place a real mouse or keyboard event leaves Xod (tests replace this, so they never touch the screen)."""
+    import Quartz
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+
+
 def _post_mouse(kind: str, pt: Tuple[float, float], button: str = "left", clicks: int = 1) -> None:
     import Quartz
     btn = {"left": Quartz.kCGMouseButtonLeft, "right": Quartz.kCGMouseButtonRight}.get(button, Quartz.kCGMouseButtonLeft)
@@ -428,7 +536,7 @@ def _post_mouse(kind: str, pt: Tuple[float, float], button: str = "left", clicks
     ev = Quartz.CGEventCreateMouseEvent(None, types[(kind, button)], pt, btn)
     if clicks > 1:
         Quartz.CGEventSetIntegerValueField(ev, Quartz.kCGMouseEventClickState, clicks)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+    _post(ev)
 
 
 def _glide(to: Tuple[float, float], steps: int = 12) -> None:
@@ -447,13 +555,9 @@ def _app_at(pt: Tuple[float, float]) -> Dict[str, Any]:
         if err == 0 and el is not None:
             err, pid = AS.AXUIElementGetPid(el, None)
             if err == 0:
-                for a in running_apps():
-                    if a["pid"] == pid:
-                        return a
-                from AppKit import NSRunningApplication
-                ra = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
-                if ra:
-                    return {"name": str(ra.localizedName() or ""), "bundle": str(ra.bundleIdentifier() or ""), "pid": pid}
+                a = _app_of_pid(pid)
+                if a:
+                    return a
     except Exception:
         pass
     return front_app()
@@ -534,7 +638,7 @@ async def scroll(direction: str = "down", amount: int = 5, element: Any = None, 
     def go():
         _glide((px, py), 6)
         ev = Quartz.CGEventCreateScrollWheelEvent(None, Quartz.kCGScrollEventUnitLine, 2, dy, dx)
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+        _post(ev)
         _mark_left()
     await asyncio.to_thread(go)
     return _did(f"scrolled {direction}", app)
@@ -575,20 +679,58 @@ async def type_text(text: str, element: Any = None, enter: bool = False) -> Dict
         no = _command_check(text)
         if no:
             return no
-    def go():
-        for i in range(0, len(text), 18):
-            chunk = text[i:i + 18]
-            for down in (True, False):
-                ev = Quartz.CGEventCreateKeyboardEvent(None, 0, down)
-                Quartz.CGEventKeyboardSetUnicodeString(ev, len(chunk.encode("utf-16-le")) // 2, chunk)
-                Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
-            time.sleep(0.01)
-        if enter:
-            _press(["return"])
-        _mark_left()
-    await asyncio.to_thread(go)
+    await asyncio.to_thread(_type_now, text, enter)
     shown = text if len(text) <= 60 else text[:57] + "…"
     return _did(f"typed \"{shown}\"" + (" and pressed Return" if enter else ""), app)
+
+
+def _type_now(text: str, enter: bool) -> None:
+    """Types it into what's focused. Pasted (your clipboard is put back right after): apps take a paste reliably, where
+    synthetic key events for each letter are dropped by some (Notes did) and arrive as a "paste" in others anyway.
+    Return is pressed on its own afterwards, so full-screen terminal agents (Muse, Claude Code) submit instead of
+    adding a new line."""
+    if text:
+        saved = _clipboard_get()
+        _clipboard_set(text)
+        time.sleep(0.05)
+        _press(["cmd", "v"])
+        time.sleep(0.35)
+        _clipboard_set(saved) if saved is not None else None
+    if enter:
+        time.sleep(0.25)
+        _press(["return"])
+    _mark_left()
+
+
+def _clipboard_get() -> Optional[str]:
+    try:
+        from AppKit import NSPasteboard, NSPasteboardTypeString
+        return NSPasteboard.generalPasteboard().stringForType_(NSPasteboardTypeString)
+    except Exception:
+        return None
+
+
+def _clipboard_set(text: str) -> None:
+    from AppKit import NSPasteboard, NSPasteboardTypeString
+    pb = NSPasteboard.generalPasteboard()
+    pb.clearContents()
+    pb.setString_forType_(text, NSPasteboardTypeString)
+
+
+def _chunks(text: str, units: int = 18) -> List[str]:
+    """Pieces of at most `units` UTF-16 code units (what one key event carries), never splitting a character: an emoji
+    or accented letter cut in half would type as garbage."""
+    out, cur, n = [], "", 0
+    for ch in text:
+        w = len(ch.encode("utf-16-le")) // 2
+        if n + w > units and cur:
+            out.append(cur)
+            cur, n = "", 0
+        cur += ch
+        n += w
+    if cur:
+        out.append(cur)
+    return out
 
 
 KEYCODES = {
@@ -620,7 +762,7 @@ def _press(keys: List[str]) -> None:
         ev = Quartz.CGEventCreateKeyboardEvent(None, code, down)
         if flags:
             Quartz.CGEventSetFlags(ev, flags)
-        Quartz.CGEventPost(Quartz.kCGHIDEventTap, ev)
+        _post(ev)
         time.sleep(0.02)
 
 
@@ -647,17 +789,49 @@ async def open_app(name: str) -> Dict[str, Any]:
     name = str(name or "").strip()
     if not name:
         raise DesktopError("Which app?")
+    bundle = _bundle_of(name)
     match = next((a for a in running_apps() if a["name"].lower() == name.lower()), None)
-    app = match or {"name": name, "bundle": _bundle_of(name)}
+    app = {"name": (match or {}).get("name") or name, "bundle": bundle or (match or {}).get("bundle", "")}
     held = _gate(app)
     if held:
         return held
     r = await asyncio.to_thread(subprocess.run, ["open", "-a", name], capture_output=True, text=True, timeout=20)
     if r.returncode != 0:
         return {"success": False, "error": f"Couldn't open {name}: {(r.stderr or '').strip()[:200]}"}
-    await asyncio.sleep(0.8)
+    # "open" can leave it behind the app that asked (macOS keeps the front app in front): bring it forward and wait
+    # until it really is in front, so the next key goes to it and not to whatever was there before.
+    front = await asyncio.to_thread(_bring_forward, name, app.get("bundle") or "")
     _mark_left()
+    if not front:
+        return {"success": False, "error": f"Opened {name}, but it didn't come to the front (it's {front_app()['name']}). Click its window, or try again."}
     return _did(f"opened {name}", app)
+
+
+def _bring_forward(name: str, bundle: str, seconds: float = 6.0) -> bool:
+    from AppKit import NSRunningApplication, NSApplicationActivateIgnoringOtherApps
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        f = front_app()
+        if (bundle and f["bundle"] == bundle) or f["name"].lower() == name.lower():
+            return True
+        apps = NSRunningApplication.runningApplicationsWithBundleIdentifier_(bundle) if bundle else []
+        if not apps:
+            apps = [a for a in NSRunningApplication.runningApplicationsWithBundleIdentifier_(_bundle_of(name) or "x")] if not bundle else []
+        for a in apps or []:
+            a.activateWithOptions_(NSApplicationActivateIgnoringOtherApps)
+            # Newer macOS won't let a background program pull another app forward, but Accessibility can: make it
+            # the front app and raise its window.
+            try:
+                import ApplicationServices as AS
+                el = AS.AXUIElementCreateApplication(a.processIdentifier())
+                AS.AXUIElementSetAttributeValue(el, "AXFrontmost", True)
+                win = _ax(el, "AXMainWindow") or (list(_ax(el, "AXWindows") or []) or [None])[0]
+                if win is not None:
+                    AS.AXUIElementPerformAction(win, "AXRaise")
+            except Exception:
+                pass
+        time.sleep(0.3)
+    return False
 
 
 def _bundle_of(name: str) -> str:
@@ -670,65 +844,177 @@ def _bundle_of(name: str) -> str:
 
 # ------------------------------------------------------------------ terminals
 def _as(s: str) -> str:
-    return str(s).replace("\\", "\\\\").replace('"', '\\"')
+    """Text as an AppleScript string: backslashes, quotes and line breaks escaped (a line break would end the command)."""
+    return str(s).replace("\\", "\\\\").replace('"', '\\"').replace("\r", "").replace("\n", "\\n").replace("\t", "\\t")
 
 
-def _osa(script: str, timeout: float = 15) -> str:
-    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
+_automation_ok: Dict[str, bool] = {}
+
+
+def _osa(script: str, timeout: float = 15, app: str = "") -> str:
+    """Runs AppleScript. The first time Xod talks to an app, macOS asks you ("Xod wants to control Terminal"): that
+    prompt waits for you, so the first call waits longer. Refused: the Automation page opens for you."""
+    first = app and not _automation_ok.get(app)
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=120 if first else timeout)
+    except subprocess.TimeoutExpired:
+        raise DesktopError(f"{app or 'The app'} didn't answer" + (": macOS may be asking you to let Xod control it, answer OK." if first else "."))
     if r.returncode != 0:
         err = (r.stderr or "").strip()
-        if "-1743" in err or "not authorized" in err.lower():
-            raise DesktopError("macOS hasn't allowed Xod to control that terminal app: allow it in System Settings → Privacy & Security → Automation.")
+        if "-1743" in err or "not authorized" in err.lower() or "not allowed" in err.lower():
+            _open_pane("automation")
+            raise DesktopError(f"macOS hasn't let Xod control {app or 'that app'}. I opened System Settings → Privacy & Security → "
+                               f"Automation: under {_host_app()}, switch on {app or 'the app'}, then say continue.")
         raise DesktopError(err[:300] or "The terminal didn't answer.")
+    if app:
+        _automation_ok[app] = True
     return r.stdout
 
 
+MAX_WINDOWS = 3          # Terminal windows Xod keeps open at once (it reuses them; past this it says so)
+
+
+def owned_windows() -> List[Dict[str, Any]]:
+    """The Terminal windows Xod opened that are still open (it forgets ones you closed)."""
+    from app.services.storage import get_setting, set_setting
+    try:
+        mine = json.loads(get_setting("desktop_terminals", "") or "[]")
+    except ValueError:
+        mine = []
+    if not mine:
+        return []
+    try:
+        live = {(t["window"]): t for t in terminals()["terminals"] if t["app"] == "Terminal"}
+    except DesktopError:
+        return mine
+    still = [dict(m, busy=live[m["window"]].get("busy"), running=live[m["window"]].get("running", "")) for m in mine if m["window"] in live]
+    if len(still) != len(mine):
+        set_setting("desktop_terminals", json.dumps([{k: v for k, v in m.items() if k not in ("busy", "running")} for m in still]))
+    return still
+
+
+def _remember_window(wid: int, agent: str, folder: str) -> None:
+    from app.services.storage import set_setting
+    mine = [m for m in owned_windows() if m["window"] != wid]
+    mine.append({"window": wid, "agent": agent, "folder": folder, "at": time.time()})
+    set_setting("desktop_terminals", json.dumps([{k: v for k, v in m.items() if k not in ("busy", "running")} for m in mine]))
+
+
+def _forget_window(wid: int) -> None:
+    from app.services.storage import set_setting
+    set_setting("desktop_terminals", json.dumps([{k: v for k, v in m.items() if k not in ("busy", "running")}
+                                                 for m in owned_windows() if m["window"] != wid]))
+
+
+def open_terminal_with(command: str, agent: str = "", folder: str = "") -> Dict[str, Any]:
+    """A Terminal window running this command, for an agent you want to watch. Reuses Xod's own windows first: the one
+    already running this agent in this folder, else one of Xod's that's free (back at its prompt). Opens a new one only
+    under MAX_WINDOWS, and titles it "Xod · <agent>" so it's clear which windows are Xod's."""
+    _ready(need_screen=False, need_input=False)
+    mine = owned_windows()
+    same = next((m for m in mine if m.get("agent") == agent and m.get("folder") == folder and m.get("busy")), None)
+    if same:
+        return {"window": same["window"], "reused": True, "already_running": True}
+    free = next((m for m in mine if not m.get("busy")), None)
+    if free:
+        _osa(f'tell application "Terminal" to do script "{_as(command)}" in tab 1 of window id {free["window"]}', app="Terminal")
+        wid = free["window"]
+        reused = True
+    else:
+        if len(mine) >= MAX_WINDOWS:
+            raise DesktopError(f"Xod already has {len(mine)} Terminal windows open ("
+                               + ", ".join(f"window {m['window']}: {m.get('agent') or 'shell'}" for m in mine)
+                               + "). Stop one first, or Xod reuses one when it's free.")
+        out = _osa(f'tell application "Terminal"\n activate\n do script "{_as(command)}"\n delay 0.5\n return id of front window\nend tell', app="Terminal")
+        try:
+            wid = int(out.strip())
+        except ValueError:
+            raise DesktopError("Terminal opened a window but didn't say which.")
+        reused = False
+    try:
+        _osa(f'tell application "Terminal" to set custom title of tab 1 of window id {wid} to "{_as("Xod · " + (agent or "shell"))}"', app="Terminal")
+    except DesktopError:
+        pass
+    _remember_window(wid, agent, folder)
+    return {"window": wid, "reused": reused}
+
+
+def close_terminal_window(wid: int) -> Dict[str, Any]:
+    """Stops what runs in one of Xod's own windows and closes it. Windows Xod didn't open are never closed."""
+    _ready(need_screen=False, need_input=False)
+    wid = int(wid)
+    if not any(m["window"] == wid for m in owned_windows()):
+        raise DesktopError(f"Window {wid} isn't one Xod opened, so Xod leaves it alone.")
+    try:
+        tty = _osa(f'tell application "Terminal" to return tty of tab 1 of window id {wid}', app="Terminal").strip()
+    except DesktopError:
+        _forget_window(wid)
+        return {"success": True, "closed": wid, "note": "It was already closed."}
+    stopped = 0
+    if re.match(r"^/dev/ttys\d+$", tty):
+        for pid in subprocess.run(["ps", "-t", tty[5:], "-o", "pid="], capture_output=True, text=True).stdout.split():
+            subprocess.run(["kill", pid], capture_output=True)
+            stopped += 1
+        time.sleep(1.0)
+    _osa(f'tell application "Terminal" to close (every window whose id is {wid}) saving no', app="Terminal")
+    _forget_window(wid)
+    return {"success": True, "closed": wid, "stopped": stopped}
+
+
 def _running(bundle: str) -> bool:
-    return any(a["bundle"] == bundle for a in running_apps())
+    from AppKit import NSRunningApplication
+    return bool(NSRunningApplication.runningApplicationsWithBundleIdentifier_(bundle))
 
 
 def terminals() -> Dict[str, Any]:
-    """Every Terminal and iTerm window and tab that's open, with what runs in it. Never opens either app."""
+    """Every Terminal and iTerm window and tab that's open, with what runs in it. Never opens either app.
+    Windows are named by their id, which stays the same however you rearrange them (their order changes every time
+    you click one, so "window 2" could be a different window a second later)."""
     _ready(need_screen=False, need_input=False)
     out: List[Dict[str, Any]] = []
+    sep = 'set sep to (character id 9)\nset text item delimiters to ","\n'      # "tab" inside a tell block means its tabs
     if _running("com.apple.Terminal"):
-        raw = _osa('''set text item delimiters to ","
-tell application "Terminal"
+        raw = _osa(sep + '''tell application "Terminal"
   set out to ""
   repeat with w from 1 to count windows
+    set wid to id of window w
     repeat with t from 1 to count tabs of window w
       set tb to tab t of window w
-      set out to out & w & tab & t & tab & (busy of tb) & tab & ((processes of tb) as text) & tab & (selected of tb) & tab & (custom title of tb) & linefeed
+      set out to out & wid & sep & w & sep & t & sep & (busy of tb) & sep & ((processes of tb) as text) & sep & (selected of tb) & sep & (custom title of tb) & linefeed
     end repeat
   end repeat
   return out
-end tell''')
+end tell''', app="Terminal")
+        for line in raw.splitlines():
+            p = line.split("\t")
+            if len(p) >= 6:
+                out.append({"app": "Terminal", "window": int(p[0]), "front": p[1] == "1", "tab": int(p[2]), "busy": p[3] == "true",
+                            "running": p[4].split(",")[-1] if p[4] else "", "processes": p[4], "selected": p[5] == "true",
+                            "title": p[6] if len(p) > 6 else ""})
+    if _running("com.googlecode.iterm2"):
+        raw = _osa(sep + '''tell application "iTerm2"
+  set out to ""
+  repeat with w from 1 to count windows
+    set wid to id of window w
+    repeat with t from 1 to count tabs of window w
+      set s to current session of tab t of window w
+      set out to out & wid & sep & w & sep & t & sep & (is processing of s) & sep & (name of s) & linefeed
+    end repeat
+  end repeat
+  return out
+end tell''', app="iTerm")
         for line in raw.splitlines():
             p = line.split("\t")
             if len(p) >= 5:
-                out.append({"app": "Terminal", "window": int(p[0]), "tab": int(p[1]), "busy": p[2] == "true",
-                            "running": p[3].split(",")[-1] if p[3] else "", "processes": p[3], "selected": p[4] == "true",
-                            "title": p[5] if len(p) > 5 else ""})
-    if _running("com.googlecode.iterm2"):
-        raw = _osa('''tell application "iTerm2"
-  set out to ""
-  repeat with w from 1 to count windows
-    repeat with t from 1 to count tabs of window w
-      set s to current session of tab t of window w
-      set out to out & w & tab & t & tab & (is processing of s) & tab & (name of s) & linefeed
-    end repeat
-  end repeat
-  return out
-end tell''')
-        for line in raw.splitlines():
-            p = line.split("\t")
-            if len(p) >= 4:
-                out.append({"app": "iTerm", "window": int(p[0]), "tab": int(p[1]), "busy": p[2] == "true", "title": p[3]})
+                out.append({"app": "iTerm", "window": int(p[0]), "front": p[1] == "1", "tab": int(p[2]), "busy": p[3] == "true",
+                            "selected": True, "title": p[4]})
     return {"success": True, "terminals": out,
             "note": "" if out else "No Terminal or iTerm window is open."}
 
 
-def _pick(app: str, window: Any, tab: Any) -> Tuple[str, int, int]:
+def _pick(app: str, window: Any, tab: Any, sending: bool = False) -> Tuple[str, int, int]:
+    """The tab meant: by window id (from terminals()) and tab number; with none given, the front window's tab.
+    Typing needs the window named when more than one is open, so text never lands in the wrong one."""
     found = terminals()["terminals"]
     app = (app or "").lower()
     cands = [t for t in found if not app or t["app"].lower().startswith(app[:4])]
@@ -736,10 +1022,14 @@ def _pick(app: str, window: Any, tab: Any) -> Tuple[str, int, int]:
         raise DesktopError("No Terminal or iTerm window is open." if not found else f"No {app} window is open.")
     w = int(window) if window not in (None, "") else None
     t = int(tab) if tab not in (None, "") else None
-    pick = next((c for c in cands if (w is None or c["window"] == w) and (t is None or c["tab"] == t)
-                 and (t is not None or c.get("selected", True) or c["app"] == "iTerm")), None)
+    if w is None and sending and len({(c["app"], c["window"]) for c in cands}) > 1:
+        raise DesktopError("More than one terminal window is open: say which (its window id from terminal_list), so Xod "
+                           "doesn't type into the wrong one.")
+    pick = next((c for c in cands if (c["window"] == w if w is not None else c["front"])
+                 and (c["tab"] == t if t is not None else c.get("selected", True))), None)
     if not pick:
-        raise DesktopError(f"There's no {app or 'terminal'} window {w} tab {t}: {json.dumps(found)[:400]}")
+        raise DesktopError(f"There's no {app or 'terminal'} window {w if w is not None else '(front)'} tab {t or '(current)'}. "
+                           f"Open ones: {json.dumps([{k: c[k] for k in ('app', 'window', 'tab', 'title')} for c in found])[:500]}")
     return pick["app"], pick["window"], pick["tab"]
 
 
@@ -748,9 +1038,9 @@ def terminal_read(app: str = "", window: Any = None, tab: Any = None, lines: int
     _ready(need_screen=False, need_input=False)
     a, w, t = _pick(app, window, tab)
     if a == "Terminal":
-        text = _osa(f'tell application "Terminal" to get history of tab {t} of window {w}')
+        text = _osa(f'tell application "Terminal" to get history of tab {t} of window id {w}', app="Terminal")
     else:
-        text = _osa(f'tell application "iTerm2" to get contents of current session of tab {t} of window {w}')
+        text = _osa(f'tell application "iTerm2" to get contents of current session of tab {t} of window id {w}', app="iTerm")
     rows = [r.rstrip() for r in text.replace("\r", "").split("\n")]
     while rows and not rows[-1]:
         rows.pop()
@@ -763,7 +1053,7 @@ async def terminal_send(text: str, app: str = "", window: Any = None, tab: Any =
     _ready(need_screen=False, need_input=False)
     _check_takeover()
     text = str(text or "")
-    a, w, t = _pick(app, window, tab)
+    a, w, t = _pick(app, window, tab, sending=True)
     bundle = "com.apple.Terminal" if a == "Terminal" else "com.googlecode.iterm2"
     held = _gate({"name": a, "bundle": bundle})
     if held:
@@ -774,10 +1064,21 @@ async def terminal_send(text: str, app: str = "", window: Any = None, tab: Any =
     if a == "Terminal":
         if not enter:
             raise DesktopError("Terminal can only be sent a whole line (with Return). To type without Return, click into it and use type.")
-        await asyncio.to_thread(_osa, f'tell application "Terminal" to do script "{_as(text)}" in tab {t} of window {w}')
+        busy = next((x.get("busy") for x in terminals()["terminals"] if x["app"] == "Terminal" and x["window"] == w and x["tab"] == t), False)
+        if busy and enter:
+            # A program runs in that tab (a full-screen agent like Muse or Claude Code): it takes text that arrives at once
+            # as a paste, Return included, so it would never submit. Bring that exact window forward, paste, press Return.
+            await asyncio.to_thread(_osa, f'tell application "Terminal"\n activate\n set index of window id {w} to 1\n'
+                                          f' set selected of tab {t} of window id {w} to true\nend tell', 15, "Terminal")
+            if not await asyncio.to_thread(_bring_forward, "Terminal", "com.apple.Terminal"):
+                raise DesktopError("Terminal didn't come to the front, so Xod didn't type anything.")
+            await asyncio.sleep(0.3)
+            await asyncio.to_thread(_type_now, text, True)
+        else:
+            await asyncio.to_thread(_osa, f'tell application "Terminal" to do script "{_as(text)}" in tab {t} of window id {w}', 15, "Terminal")
     else:
-        await asyncio.to_thread(_osa, f'tell application "iTerm2" to tell current session of tab {t} of window {w} to write text "{_as(text)}"'
-                                + ("" if enter else " newline no"))
+        await asyncio.to_thread(_osa, f'tell application "iTerm2" to tell current session of tab {t} of window id {w} to write text "{_as(text)}"'
+                                + ("" if enter else " newline no"), 15, "iTerm")
     return _did(f"sent \"{text[:60]}\" to {a} window {w} tab {t}", {"name": a})
 
 

@@ -23,6 +23,7 @@ logger = logging.getLogger("xod.desktop_task")
 
 MAX_STEPS = 30
 MAX_SECONDS = 360
+PERMISSION_WAIT = 120     # seconds to wait for you to switch Xod on in System Settings
 
 SYSTEM = """You are using a Mac's real screen, mouse and keyboard to do what the person asked. Each turn you get the
 screen (the front app's controls, numbered, and a screenshot or a description of it) and reply with ONE action as JSON:
@@ -35,9 +36,9 @@ Actions:
   scroll {"direction": "down|up|left|right", "amount": 5, "element": n (optional)}
   drag {"from_element": n, "to_element": m}  or with x1, y1, x2, y2
   open_app {"name": "Terminal"}
-  terminals {}                                        (lists Terminal and iTerm windows and tabs)
-  read_terminal {"app": "Terminal|iTerm", "window": n, "tab": n, "lines": 80}
-  send_terminal {"text": "a command", "app": "...", "window": n, "tab": n}   (types it and presses Return)
+  terminals {}                                        (lists Terminal and iTerm windows (by id) and tabs)
+  read_terminal {"app": "Terminal|iTerm", "window": <id>, "tab": n, "lines": 80}
+  send_terminal {"text": "a command", "app": "...", "window": <id>, "tab": n}   (types it and presses Return; name the window by its id)
   wait {"seconds": 2}
   done {"summary": "what you did and what you saw that shows it worked"}
   ask {"question": "what you need from the person"}
@@ -112,7 +113,17 @@ async def run(goal: str, max_steps: int = MAX_STEPS) -> Dict[str, Any]:
     """Works on the goal until it's done or something stops it. Returns what it did."""
     from app.services import vision, sentinel
     from app.services.llm import llm_service
-    desktop._ready()
+    if not desktop.enabled() or not desktop.MAC:
+        desktop._ready()
+    perms = desktop.permissions()
+    if not (perms["screen"] and perms["accessibility"]):
+        # Open what's missing and wait a little for you to switch it on, rather than stop and send you looking.
+        desktop._state["task"] = {"running": True, "goal": goal, "step": 0, "now": "Waiting for you to allow Xod in System Settings…",
+                                  "started": time.time(), "shot": None}
+        ok = await desktop.wait_for_permissions(PERMISSION_WAIT, on_wait=lambda m: desktop._state["task"].update(now=m))
+        desktop._state["task"]["running"] = False
+        if not ok:
+            desktop._ready()                  # says what's still missing (and has opened its page)
     if desktop._state.get("task") and desktop._state["task"].get("running"):
         return {"success": False, "error": "Xod is already using the screen for another task. Wait for it, or press Stop."}
     desktop._state["stop"] = False

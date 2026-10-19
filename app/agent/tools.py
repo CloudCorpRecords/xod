@@ -1,5 +1,6 @@
 import os
 import re
+import uuid
 import json
 import asyncio
 import logging
@@ -2474,6 +2475,60 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "desktop_setup",
+            "description": "Turns on Xod's use of this Mac's screen, mouse and keyboard (the add-on is off), after the person's OK, and asks macOS for its permissions. Use when the person wants Xod to look at or use their screen, apps or terminal windows and the desktop tools aren't available.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cli_agents",
+            "description": "Lists the AI agents installed in this computer's terminal (Muse, Claude Code, Codex, Gemini CLI, Aider, opencode, Goose, Cursor, Amp), whether you're signed in to each, and running sessions.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cli_agent_run",
+            "description": "Gives one of those terminal agents a job, headless (muse exec, claude -p, codex exec …), in a folder, and returns its answer. Use when the person asks to use that agent (\"use muse to …\", \"ask codex …\").",
+            "parameters": {"type": "object", "properties": {
+                "agent": {"type": "string", "description": "muse, claude, codex, gemini, aider, opencode, goose, cursor or amp"},
+                "prompt": {"type": "string", "description": "The job, in the person's words"},
+                "folder": {"type": "string", "description": "The project folder to work in (default: home)"},
+                "timeout_minutes": {"type": "integer", "description": "Stop it after this long (default 10)"}},
+                "required": ["agent", "prompt"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cli_agent_login",
+            "description": "Signs the person in to a terminal agent: starts its own sign-in, opens the page in their browser and shows its code; they approve there. Call again later to see whether it finished.",
+            "parameters": {"type": "object", "properties": {"agent": {"type": "string"}, "check": {"type": "boolean", "description": "Only see how a sign-in already started is going"}},
+                           "required": ["agent"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cli_agent_session",
+            "description": "A terminal agent left running for a back-and-forth: start it, send it a message, read what it shows, press a key (ctrl+c, escape, up, enter, y, n), or stop it. Runs in the background by default; visible (a Terminal window) only when the person wants to watch. Xod reuses its sessions and windows (starting the same agent in the same folder again gives the one already running), keeps at most a few, and stop closes them (with window for a visible one). Stop it when the job is done.",
+            "parameters": {"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["start", "send", "read", "key", "stop", "list"]},
+                "agent": {"type": "string", "description": "For start"}, "folder": {"type": "string", "description": "For start"},
+                "visible": {"type": "boolean", "description": "For start: in a Terminal window the person can watch"},
+                "session": {"type": "string", "description": "The session id from start"},
+                "window": {"type": "integer", "description": "For stop: the Terminal window id of a visible session (only Xod's own windows close)"},
+                "text": {"type": "string", "description": "For send"}, "key": {"type": "string", "description": "For key"},
+                "wait_seconds": {"type": "integer", "description": "For send: how long to wait for its answer (default 60)"}},
+                "required": ["action"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "desktop_task",
             "description": "Does a job on this Mac's real screen with the real mouse and keyboard, a step at a time, looking after each step, until it's done: using apps that have no other tool, clicking through windows, managing Terminal or iTerm windows the person has open. Give it the whole goal. Stops if the person moves the mouse.",
             "parameters": {"type": "object", "properties": {
@@ -2550,8 +2605,8 @@ TOOL_DEFINITIONS = [
             "name": "terminal_read",
             "description": "Reads the last lines of a Terminal or iTerm tab the person has open (exact text, with its scrollback). Without window/tab, the front one.",
             "parameters": {"type": "object", "properties": {
-                "app": {"type": "string", "enum": ["Terminal", "iTerm"]}, "window": {"type": "integer"}, "tab": {"type": "integer"},
-                "lines": {"type": "integer", "description": "How many of the last lines (default 80)"}}}
+                "app": {"type": "string", "enum": ["Terminal", "iTerm"]}, "window": {"type": "integer", "description": "The window id from terminal_list"},
+                "tab": {"type": "integer"}, "lines": {"type": "integer", "description": "How many of the last lines (default 80)"}}}
         }
     },
     {
@@ -2561,7 +2616,8 @@ TOOL_DEFINITIONS = [
             "description": "Types a command into a Terminal or iTerm tab the person has open and presses Return, so it runs there (in that tab's folder, with its programs). Read it afterwards with terminal_read.",
             "parameters": {"type": "object", "properties": {
                 "text": {"type": "string"}, "app": {"type": "string", "enum": ["Terminal", "iTerm"]},
-                "window": {"type": "integer"}, "tab": {"type": "integer"}, "enter": {"type": "boolean"}},
+                "window": {"type": "integer", "description": "The window id from terminal_list (needed when more than one is open)"},
+                "tab": {"type": "integer"}, "enter": {"type": "boolean"}},
                 "required": ["text"]}
         }
     },
@@ -2885,6 +2941,61 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     return result
 
 
+CLI_TOOLS = {"cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session"}
+_setup_grants: set = set()
+
+
+def _desktop_setup_card(a: Dict[str, Any]) -> Dict[str, Any]:
+    """Turning on screen control is the person's decision: always an approval card first; its approval turns it on."""
+    from app.services import desktop, packs, sentinel
+    token = a.pop("_grant", None)
+    if token and token in _setup_grants:
+        _setup_grants.discard(token)
+        packs.set_enabled(desktop.PACK, True)
+        res = desktop.request_permissions(force=True) if desktop.MAC else desktop.permissions()
+        return {"success": True, "enabled": True, **{k: res.get(k) for k in ("screen", "accessibility", "app", "message")},
+                "note": "The screen tools are available from the next message."}
+    if not desktop.MAC:
+        return {"success": False, "error": "Using the screen, mouse and keyboard works on a Mac for now."}
+    t = uuid.uuid4().hex
+    _setup_grants.add(t)
+    held = sentinel.hold("desktop_setup", {"_grant": t}, {"rule": "desktop_setup",
+                         "why": "Xod wants to turn on using your screen, mouse and keyboard (Add-ons → Use this computer's screen). "
+                                "It asks before each new app, never types passwords, and stops when you move the mouse."})
+    held["args"] = {}
+    return held
+
+
+async def _cli_agents(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
+    """Terminal agents: Muse, Claude Code, Codex … (services/agent_clis.py)."""
+    from app.services import agent_clis as ac
+    try:
+        if name == "cli_agents":
+            return {**ac.find(), "sessions": ac.sessions()}
+        if name == "cli_agent_run":
+            mins = max(1, min(int(a.get("timeout_minutes") or 10), 60))
+            return await ac.run(a.get("agent") or "", a.get("prompt") or "", a.get("folder") or "", timeout=mins * 60)
+        if name == "cli_agent_login":
+            return ac.login_status(a.get("agent") or "") if a.get("check") else await ac.login(a.get("agent") or "")
+        act = (a.get("action") or "").lower()
+        if act == "start":
+            return await ac.session_start(a.get("agent") or "", a.get("folder") or "", visible=bool(a.get("visible")))
+        if act == "send":
+            return await ac.session_send(a.get("session") or "", a.get("text") or "", wait=a.get("wait_seconds") or 60)
+        if act == "read":
+            return ac.session_read(a.get("session") or "")
+        if act == "key":
+            return ac.session_key(a.get("session") or "", a.get("key") or "")
+        if act == "stop":
+            return ac.session_stop(a.get("session") or "", a.get("window"))
+        return {"success": True, "sessions": ac.sessions()}
+    except Exception as e:
+        from app.services.desktop import DesktopError
+        if isinstance(e, (ac.CliError, DesktopError)):
+            return {"success": False, "error": str(e)}
+        raise
+
+
 DESKTOP_TOOLS = {"desktop_task", "desktop_look", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll", "desktop_open_app",
                  "terminal_list", "terminal_read", "terminal_send"}
 
@@ -2949,6 +3060,10 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         return await _agent_mail_setup(arguments or {})
     if name in DESKTOP_TOOLS:
         return await _desktop(name, dict(arguments or {}))
+    if name == "desktop_setup":
+        return _desktop_setup_card(dict(arguments or {}))
+    if name in CLI_TOOLS:
+        return await _cli_agents(name, dict(arguments or {}))
     if name in ("agent_mail_send", "agent_mail_inbox"):
         from app.services import agent_mail, packs as _packs
         if not _packs.tool_allowed(name):
@@ -3945,6 +4060,15 @@ _DESKTOP_RE = re.compile(r"\b(?:my |the |this )?(?:screen|mouse|cursor|desktop|p
                          r"what(?:'s| is) on (?:my |the )?screen|look at (?:my |the )?screen", re.I)
 
 
+_CLI_AGENT_RE = re.compile(r"\b(?:muse|claude code|claude cli|codex|gemini cli|aider|opencode|goose|cursor[- ]agent|amp)\b|"
+                           r"\b(?:cli|terminal|command[- ]line) (?:agents?|harness(?:es)?|ai)\b|\bharness(?:es)?\b", re.I)
+
+
+def _wants_cli_agent(query: str) -> bool:
+    """The terminal-agent tools when the request names one (or terminal agents in general)."""
+    return bool(_CLI_AGENT_RE.search(query or ""))
+
+
 def _wants_desktop(query: str) -> bool:
     """The screen, mouse and keyboard tools only when the request is about using the computer itself."""
     return bool(_DESKTOP_RE.search(query or ""))
@@ -3970,7 +4094,11 @@ def select_tools_for_query(query: str, persona: str = "ultimate_researcher", max
     """Xod's own tools for this request, plus any connected MCP tools that look relevant."""
     tools = _select_builtin_tools(query, persona, max_tools, active_workspace_path)
     if _wants_desktop(query):
-        tools = tools + [t for t in TOOL_DEFINITIONS if t["function"]["name"] in DESKTOP_TOOLS]
+        from app.services import packs as _packs
+        wanted = DESKTOP_TOOLS if _packs.tool_allowed("desktop_look") else {"desktop_setup"}
+        tools = tools + [t for t in TOOL_DEFINITIONS if t["function"]["name"] in wanted]
+    if _wants_cli_agent(query):
+        tools = tools + [t for t in TOOL_DEFINITIONS if t["function"]["name"] in CLI_TOOLS]
     if _wants_agent_mail(query):
         tools = tools + [t for t in TOOL_DEFINITIONS if t["function"]["name"] in ("agent_mail_setup", "agent_mail_send", "agent_mail_inbox")]
     if any(k in (query or "").lower() for k in ("report", "pdf", "share", "send this", "write up", "write-up")):

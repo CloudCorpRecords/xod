@@ -19,17 +19,52 @@
     box.innerHTML = `
       <div class="flex flex-wrap items-center gap-3">${perm(s.screen, "Screen Recording")}${perm(s.accessibility, "Accessibility")}
         ${s.screen && s.accessibility ? "" : `<button data-desktop-allow class="px-2.5 py-1 rounded-lg text-[12px] bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Allow in macOS</button>`}</div>
-      ${s.screen && s.accessibility ? "" : `<p class="text-[11px] text-zinc-500 mt-1">In System Settings → Privacy & Security, switch on <b class="text-zinc-300">${esc(s.app)}</b> under both (if it isn't listed, press + and pick <span class="font-mono break-all">${esc(s.app_path)}</span>). macOS may ask you to reopen it.</p>`}
+      ${s.screen && s.accessibility ? "" : `<p class="text-[11px] text-zinc-500 mt-1">In System Settings → Privacy & Security, switch on <b class="text-zinc-300">${esc(s.app)}</b> under both (if it isn't listed, press + and pick <span class="font-mono break-all">${esc(s.app_path)}</span>). macOS may ask you to reopen it.${s.app !== "Xod" ? ` <span class="text-zinc-400">This Xod was started from ${esc(s.app)}, so macOS asks for ${esc(s.app)}; in the Xod app it's listed as Xod.</span>` : ""}</p>`}
       <p class="text-[11px] text-zinc-500 mt-2">Apps Xod may use: ${apps || "none yet (it asks the first time)"}</p>`;
     if (window.lucide) lucide.createIcons();
   };
+
+  // Switching the add-on on asks macOS straight away (its prompt, then the exact Settings page), and the card ticks
+  // each permission off by itself as you switch it on: nothing to go looking for.
+  document.addEventListener("change", async (e) => {
+    const t = e.target.closest('[data-pack-toggle="desktop-control"]');
+    if (!t || !t.checked) return;
+    setTimeout(async () => {
+      const r = await post("/api/desktop/permissions");
+      if (r.missing && r.missing.length && typeof showToast === "function") showToast(r.message);
+      watchPermissions();
+    }, 600);
+  });
+
+  let permTimer = null;
+  function watchPermissions() {
+    clearInterval(permTimer);
+    let last = "";
+    const started = Date.now();
+    permTimer = setInterval(async () => {
+      if (Date.now() - started > 10 * 60 * 1000) return clearInterval(permTimer);
+      let s;
+      try { s = await (await fetch("/api/desktop/status")).json(); } catch (err) { return; }
+      const now = `${s.screen}${s.accessibility}`;
+      if (now !== last) {
+        last = now;
+        window.fillDesktopExtra();
+        if (s.screen && s.accessibility) {
+          clearInterval(permTimer);
+          if (typeof showToast === "function") showToast("Xod can see your screen and use the mouse and keyboard now.");
+        } else if (s.screen && !s.accessibility) {
+          post("/api/desktop/permissions", {});          // the next page: Accessibility
+        }
+      }
+    }, 2000);
+  }
 
   document.addEventListener("click", async (e) => {
     const allow = e.target.closest("[data-desktop-allow]");
     if (allow) {
       const r = await post("/api/desktop/permissions");
       if (typeof showToast === "function" && r.message) showToast(r.message);
-      setTimeout(window.fillDesktopExtra, 1500);
+      watchPermissions();
       return;
     }
     const forget = e.target.closest("[data-desktop-forget]");
