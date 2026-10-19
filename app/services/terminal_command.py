@@ -24,6 +24,7 @@ MARK = "Installed by Xod"
 WIN = sys.platform == "win32"
 HOME = Path.home()
 PROFILE_LINE = 'export PATH="$HOME/.local/bin:$PATH"  # added by Xod for the xod command'
+CANDIDATES = [HOME / ".local" / "bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")]     # first on PATH and writable wins
 
 
 def _packaged() -> bool:
@@ -69,7 +70,7 @@ def _where() -> Dict[str, Any]:
         d = Path(os.environ.get("LOCALAPPDATA") or (HOME / "AppData" / "Local")) / "Microsoft" / "WindowsApps"
         return {"dir": d, "file": d / "xod.cmd", "on_path": True}
     path = [os.path.realpath(p) for p in shell_path()]
-    for d in (HOME / ".local" / "bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")):
+    for d in CANDIDATES:
         if os.path.realpath(str(d)) in path and d.is_dir() and os.access(d, os.W_OK):
             return {"dir": d, "file": d / "xod", "on_path": True}
     d = HOME / ".local" / "bin"
@@ -95,7 +96,7 @@ def status() -> Dict[str, Any]:
     w = _where()
     f: Path = w["file"]
     installed = f.exists() and _ours(f)
-    current = installed and f.read_text(errors="replace") == _script()
+    current = installed and f.read_text(errors="replace").replace("\r\n", "\n") == _script().replace("\r\n", "\n")
     return {"installed": installed, "current": current, "path": str(f), "on_path": w["on_path"] or _profile_has_line(),
             "other": _found_elsewhere(), "command": "xod",
             "how": "Open a new terminal window and type xod (xod \"a question\", xod status)."}

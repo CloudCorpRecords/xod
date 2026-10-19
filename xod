@@ -9,6 +9,7 @@ while [ -L "$SELF" ]; do
 done
 DIR="$(cd "$(dirname "$SELF")" && pwd)"
 PY="$DIR/.venv/bin/python"
+if [ ! -x "$PY" ] && [ -n "$XOD_PYTHON" ]; then PY="$XOD_PYTHON"; fi     # a Python of your own with Xod's packages
 if [ ! -x "$PY" ]; then
     echo "Xod's Python environment isn't set up yet: run ./run.sh once (or open the desktop app from this folder)." >&2
     exit 1

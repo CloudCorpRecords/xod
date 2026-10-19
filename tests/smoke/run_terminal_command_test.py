@@ -26,7 +26,7 @@ HOMEDIR.mkdir()
 DATA = TMP / "data"
 DATA.mkdir()
 WIN = sys.platform == "win32"
-ENV = {**os.environ, "HOME": str(HOMEDIR), "USERPROFILE": str(HOMEDIR), "LOCALAPPDATA": str(HOMEDIR / "AppData" / "Local"),
+ENV = {**os.environ, "XOD_PYTHON": sys.executable, "HOME": str(HOMEDIR), "USERPROFILE": str(HOMEDIR), "LOCALAPPDATA": str(HOMEDIR / "AppData" / "Local"),
        "XOD_DATA_DIR": str(DATA), "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring",
        "XOD_TEST_KEYRING_FILE": str(TMP / "keys.json"), "XOD_NO_UPDATE_CHECK": "1", "SHELL": "/bin/zsh", "PYTHONUTF8": "1"}
 ENV.pop("XOD_PORT", None)
@@ -49,6 +49,9 @@ def free_port():
 
 def main():
     from app.services import terminal_command as tc
+    # Only folders inside this test's home: one on PATH (as /opt/homebrew/bin is on many Macs) and one that isn't.
+    onpath, offpath = HOMEDIR / "onpath-bin", HOMEDIR / ".local" / "bin"
+    tc.CANDIDATES = [offpath, onpath]
 
     print("T1 installing the command")
     s = tc.status()
@@ -71,11 +74,26 @@ def main():
         check("on Windows it goes in WindowsApps (already on PATH)", f.name == "xod.cmd" and "WindowsApps" in str(f))
     check("the app says it's installed", tc.status()["installed"] and tc.status()["current"])
 
+    if not WIN:
+        tc.uninstall()
+        onpath.mkdir()
+        real_path = tc.shell_path
+        tc.shell_path = lambda: real_path() + [str(onpath)]
+        r = tc.install()
+        check("a folder already on PATH is used as is, with no profile line", r["success"] and r["path"] == str(onpath / "xod")
+              and not r["added_to_profile"] and tc.PROFILE_LINE not in (HOMEDIR / ".zprofile").read_text(), str(r))
+        tc.uninstall()
+        tc.shell_path = real_path
+        onpath.rmdir()
+        r = tc.install()
+        f = Path(r["path"])
+
     print("T2 not someone else's")
     r = tc.uninstall()
     check("Remove deletes it", r["removed"] and not f.exists())
     if not WIN:
-        check("…and its PATH line", tc.PROFILE_LINE not in (HOMEDIR / ".zprofile").read_text())
+        prof = HOMEDIR / ".zprofile"
+        check("…and its PATH line", not prof.exists() or tc.PROFILE_LINE not in prof.read_text())
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text("#!/bin/sh\necho some other tool called xod\n")
     r = tc.install()

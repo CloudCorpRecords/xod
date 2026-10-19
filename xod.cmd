@@ -3,6 +3,7 @@ rem Xod in the terminal (app\cli.py) on Windows. Uses the same data, models and 
 rem   xod "question"      xod      xod status      (add this folder to PATH: see docs\TERMINAL.md)
 setlocal
 set "PY=%~dp0.venv\Scripts\python.exe"
+if not exist "%PY%" if defined XOD_PYTHON set "PY=%XOD_PYTHON%"
 if not exist "%PY%" (
   echo Xod's Python environment isn't set up yet: run .\run.ps1 once. 1>&2
   exit /b 1
