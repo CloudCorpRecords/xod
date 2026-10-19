@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main, windows-port]
-    paths: ["app/**", "electron/**", "requirements.txt", "tests/smoke/**", ".github/workflows/windows.yml"]
+    paths: ["app/**", "electron/**", "npm/**", "xod", "xod.cmd", "requirements.txt", "tests/smoke/**", ".github/workflows/windows.yml"]
 
 permissions:
   contents: read
