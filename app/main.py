@@ -1897,6 +1897,35 @@ async def get_lmstudio_status():
                                        "ready": ready, "problem": None if ready else "The built-in model isn't downloaded yet (Settings → Models)."}}
     return status
 
+@app.get("/api/desktop/status")
+async def desktop_status():
+    """The real screen, mouse and keyboard (services/desktop.py): macOS permissions, the apps Xod may use, the task running."""
+    from app.services import desktop
+    return desktop.status()
+
+
+@app.post("/api/desktop/permissions")
+async def desktop_permissions():
+    from app.services import desktop
+    return desktop.request_permissions()
+
+
+@app.post("/api/desktop/stop")
+async def desktop_stop():
+    from app.services import desktop
+    return desktop.stop()
+
+
+class DesktopApp(BaseModel):
+    bundle: str
+
+
+@app.post("/api/desktop/apps/forget")
+async def desktop_forget(req: DesktopApp):
+    from app.services import desktop
+    return desktop.forget_app(req.bundle)
+
+
 @app.get("/api/local-servers")
 async def local_servers_endpoint():
     """What answers chats, and which model servers on this computer are running and hold memory (services/local_servers.py)."""

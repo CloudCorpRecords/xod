@@ -32,8 +32,9 @@
           <p class="text-[12px] text-zinc-400">${esc(p.description)}${p.tools ? ` <span class="text-zinc-500">${p.tools} tools.</span>` : ""}</p>
         </div>
         <input type="checkbox" data-pack-toggle="${esc(p.id)}" ${p.enabled ? "checked" : ""} class="mt-1 accent-amber-400 size-4">
-      </label>`).join("") + `<p class="text-[12px] text-zinc-500">Core abilities are always on: research, the browser, your files, memory, tasks, routines, reports, connected apps and voice.</p>`;
+      </label>${p.id === "desktop-control" && p.enabled ? `<div data-desktop-extra class="-mt-1 px-3.5 pb-1"></div>` : ""}`).join("") + `<p class="text-[12px] text-zinc-500">Core abilities are always on: research, the browser, your files, memory, tasks, routines, reports, connected apps and voice.</p>`;
     if (window.lucide) lucide.createIcons();
+    if (window.fillDesktopExtra) window.fillDesktopExtra();   // desktop.js: macOS permissions and the apps Xod may use
   }
 
   window.openPacksPanel = () => {

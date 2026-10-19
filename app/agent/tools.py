@@ -2474,6 +2474,100 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "desktop_task",
+            "description": "Does a job on this Mac's real screen with the real mouse and keyboard, a step at a time, looking after each step, until it's done: using apps that have no other tool, clicking through windows, managing Terminal or iTerm windows the person has open. Give it the whole goal. Stops if the person moves the mouse.",
+            "parameters": {"type": "object", "properties": {
+                "goal": {"type": "string", "description": "What to get done, in the person's words, with any details (which app, which window, what counts as done)."},
+                "max_steps": {"type": "integer", "description": "At most this many actions (default 30)."}},
+                "required": ["goal"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_look",
+            "description": "Looks at this Mac's real screen: the front app, its buttons and fields numbered (use the numbers with desktop_click / desktop_type), the windows open, and what the screen shows.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_click",
+            "description": "Clicks on the real screen: an element number from the last desktop_look, or x, y on its screenshot.",
+            "parameters": {"type": "object", "properties": {
+                "element": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"},
+                "button": {"type": "string", "enum": ["left", "right"]}, "clicks": {"type": "integer", "description": "2 for a double-click"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_type",
+            "description": "Types text with the real keyboard, into an element number from the last desktop_look (clicked first) or wherever the cursor is. Never passwords.",
+            "parameters": {"type": "object", "properties": {
+                "text": {"type": "string"}, "element": {"type": "integer"}, "enter": {"type": "boolean", "description": "Press Return after"}},
+                "required": ["text"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_key",
+            "description": "Presses a key or shortcut on the real keyboard: return, escape, tab, up, cmd+t, cmd+c, ctrl+c.",
+            "parameters": {"type": "object", "properties": {"keys": {"type": "string"}}, "required": ["keys"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_scroll",
+            "description": "Scrolls on the real screen, over an element number or x, y (else where the pointer is).",
+            "parameters": {"type": "object", "properties": {
+                "direction": {"type": "string", "enum": ["down", "up", "left", "right"]}, "amount": {"type": "integer"},
+                "element": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_open_app",
+            "description": "Opens an app on this Mac, or brings it to the front.",
+            "parameters": {"type": "object", "properties": {"name": {"type": "string", "description": "e.g. Terminal, Notes, Safari"}}, "required": ["name"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal_list",
+            "description": "Lists the Terminal and iTerm windows and tabs open on this Mac, with what's running in each and whether it's busy.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal_read",
+            "description": "Reads the last lines of a Terminal or iTerm tab the person has open (exact text, with its scrollback). Without window/tab, the front one.",
+            "parameters": {"type": "object", "properties": {
+                "app": {"type": "string", "enum": ["Terminal", "iTerm"]}, "window": {"type": "integer"}, "tab": {"type": "integer"},
+                "lines": {"type": "integer", "description": "How many of the last lines (default 80)"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal_send",
+            "description": "Types a command into a Terminal or iTerm tab the person has open and presses Return, so it runs there (in that tab's folder, with its programs). Read it afterwards with terminal_read.",
+            "parameters": {"type": "object", "properties": {
+                "text": {"type": "string"}, "app": {"type": "string", "enum": ["Terminal", "iTerm"]},
+                "window": {"type": "integer"}, "tab": {"type": "integer"}, "enter": {"type": "boolean"}},
+                "required": ["text"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "agent_mail_setup",
             "description": "Sets up Agent Mail (the user's own agent address for messaging other AI agents; not normal email): turns the add-on on and claims an address with this computer's keys. With no shared post office, this computer hosts its own (no server needed): the address is name@<this computer on the network or Tailscale>. Use when the user asks to set up, turn on or get an agent mail address.",
             "parameters": {"type": "object", "properties": {
@@ -2791,6 +2885,61 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     return result
 
 
+DESKTOP_TOOLS = {"desktop_task", "desktop_look", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll", "desktop_open_app",
+                 "terminal_list", "terminal_read", "terminal_send"}
+
+
+async def _desktop(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
+    """The real screen, mouse and keyboard (services/desktop.py). The first time an app is used it waits for the person's OK:
+    an approval card whose approval lets Xod use that app from then on, and runs the step."""
+    from app.services import desktop, desktop_task
+    from app.services.desktop import DesktopError
+    desktop.use_grant(a.pop("_grant", None))
+    try:
+        if name == "desktop_task":
+            res = await desktop_task.run(str(a.get("goal") or ""), int(a.get("max_steps") or desktop_task.MAX_STEPS))
+        elif name == "desktop_look":
+            res = await desktop.look()
+            from app.services import vision
+            desc = None
+            if await vision.model():
+                desc = await vision.describe(res["screenshot_uri"], "Describe what's on this Mac's screen: the apps and windows, "
+                                             "what each shows, and anything that needs attention. Numbered boxes mark controls.")
+            res = {"success": True, "app": res["app"], "controls": res["elements"][:2600], "text": res["text"][:700],
+                   "windows": [f"{w['app']}: {w['title']}" for w in res["windows"][:10]], "screen": (desc or "")[:1200],
+                   "terminal": res["terminal"]}
+        elif name == "desktop_click":
+            res = await desktop.click(a.get("element"), a.get("x"), a.get("y"), a.get("button") or "left", int(a.get("clicks") or 1))
+        elif name == "desktop_type":
+            res = await desktop.type_text(a.get("text") or "", a.get("element"), bool(a.get("enter")))
+        elif name == "desktop_key":
+            from app.services import sentinel
+            st = sentinel._state() or {}
+            res = await desktop.key(a.get("keys") or "", asked=str(st.get("asked") or ""))
+        elif name == "desktop_scroll":
+            res = await desktop.scroll(a.get("direction") or "down", a.get("amount") or 5, a.get("element"), a.get("x"), a.get("y"))
+        elif name == "desktop_open_app":
+            res = await desktop.open_app(a.get("name") or "")
+        elif name == "terminal_list":
+            res = await asyncio.to_thread(desktop.terminals)
+        elif name == "terminal_read":
+            res = await asyncio.to_thread(desktop.terminal_read, a.get("app") or "", a.get("window"), a.get("tab"), a.get("lines") or 80)
+        else:
+            res = await desktop.terminal_send(a.get("text") or "", a.get("app") or "", a.get("window"), a.get("tab"), a.get("enter", True) is not False)
+    except DesktopError as e:
+        return {"success": False, "error": str(e)}
+    if res.get("needs_app_ok"):
+        from app.services import sentinel
+        token = res.pop("grant")
+        held = sentinel.hold(name, {**a, "_grant": token}, {"rule": "desktop_app",
+                             "why": f"Xod wants to use {res['app']} with your mouse and keyboard for the first time. Approve to let it use "
+                                    f"{res['app']} from now on (Add-ons → Use this computer's screen lists the apps it may use)."})
+        held["args"] = a                      # the approval's key stays with the card, not in what the model reads
+        return held
+    res.pop("grant", None)
+    return res
+
+
 async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None) -> Dict[str, Any]:
     """Dispatches tool execution to the appropriate service."""
     if name.startswith("mcp__"):
@@ -2798,6 +2947,8 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         return await mcp_hub.call(name, arguments or {})
     if name == "agent_mail_setup":
         return await _agent_mail_setup(arguments or {})
+    if name in DESKTOP_TOOLS:
+        return await _desktop(name, dict(arguments or {}))
     if name in ("agent_mail_send", "agent_mail_inbox"):
         from app.services import agent_mail, packs as _packs
         if not _packs.tool_allowed(name):
@@ -3788,6 +3939,17 @@ async def _agent_mail_setup(args: Dict[str, Any]) -> Dict[str, Any]:
     return r
 
 
+_DESKTOP_RE = re.compile(r"\b(?:my |the |this )?(?:screen|mouse|cursor|desktop|pointer)\b|\bclick(?:s|ing)? (?:on|the)\b|double[- ]click|"
+                         r"\bterminals?\b|\biterm\b|\bwindows? (?:i have )?open\b|take (?:over|control)|control (?:my|this|the) (?:mac|computer)|"
+                         r"use (?:my|this|the) (?:mac|computer)|\bon my (?:mac|computer)\b|\btype (?:in|into)\b|press (?:the )?(?:key|return|enter)|"
+                         r"what(?:'s| is) on (?:my |the )?screen|look at (?:my |the )?screen", re.I)
+
+
+def _wants_desktop(query: str) -> bool:
+    """The screen, mouse and keyboard tools only when the request is about using the computer itself."""
+    return bool(_DESKTOP_RE.search(query or ""))
+
+
 def _wants_agent_mail(query: str) -> bool:
     """Agent Mail tools only when the request is about agents, not ordinary email."""
     q = (query or "").lower()
@@ -3807,6 +3969,8 @@ def _wants_agent_mail(query: str) -> bool:
 def select_tools_for_query(query: str, persona: str = "ultimate_researcher", max_tools: int = 25, active_workspace_path: Optional[str] = None) -> List[Dict[str, Any]]:
     """Xod's own tools for this request, plus any connected MCP tools that look relevant."""
     tools = _select_builtin_tools(query, persona, max_tools, active_workspace_path)
+    if _wants_desktop(query):
+        tools = tools + [t for t in TOOL_DEFINITIONS if t["function"]["name"] in DESKTOP_TOOLS]
     if _wants_agent_mail(query):
         tools = tools + [t for t in TOOL_DEFINITIONS if t["function"]["name"] in ("agent_mail_setup", "agent_mail_send", "agent_mail_inbox")]
     if any(k in (query or "").lower() for k in ("report", "pdf", "share", "send this", "write up", "write-up")):

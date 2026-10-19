@@ -341,7 +341,7 @@ _NEVER_RE = re.compile(
     r"\bvssadmin\s+delete\b|\bcipher\s+/w\b|\breg(?:\.exe)?\s+delete\s+HK(?:LM|EY_LOCAL_MACHINE|CR|U\\Software\\Microsoft\\Windows)\b|"
     r"\b(?:Stop|Restart)-Computer\b|\bshutdown(?:\.exe)?\s|\bRemove-Item\b[^;|]*\s(?:-Path\s+)?['\"]?(?:[A-Z]:\\?|[A-Z]:\\Windows|"
     r"[A-Z]:\\Users|[A-Z]:\\Program Files[^'\"\s]*|~|\$env:USERPROFILE|\$HOME)['\"]?(?:\s|$)[^;|]*-Recurse|"
-    r"\brm\s+-[a-z]*r[a-z]*f?[a-z]*\s+(?:/|~|\$HOME|/\*)(?:\s|$)|\bmkfs\b|\bdd\s+if=.*\bof=/dev/|"
+    r"\brm\s+-[a-z]*r[a-z]*f?[a-z]*\s+['\"]?(?:/|~/?|\$HOME/?|/\*|~/\*|\$HOME/\*)['\"]?(?:\s|$)|\bmkfs\b|\bdd\s+if=.*\bof=/dev/|"
     r"\bSet-ExecutionPolicy\s+Unrestricted\s+-Scope\s+LocalMachine\b|\bDisable-ComputerRestore\b|\bSet-MpPreference\b.*-Disable|"
     r"\bnetsh\s+advfirewall\s+set\s+\w+\s+state\s+off\b|\bcsrutil\s+disable\b|\bspctl\s+--master-disable\b",
     re.I)

@@ -64,3 +64,10 @@ Pillow==12.3.0
 mlx==0.32.3; sys_platform == "darwin"
 mlx-lm==0.32.0; sys_platform == "darwin"
 mlx-whisper==0.4.3; sys_platform == "darwin"           # local speech to text for voice input
+
+# Seeing and using this Mac's screen, mouse and keyboard (services/desktop.py): screenshots, input events, accessibility
+pyobjc-core==12.2.2; sys_platform == "darwin"
+pyobjc-framework-Cocoa==12.2.2; sys_platform == "darwin"
+pyobjc-framework-Quartz==12.2.2; sys_platform == "darwin"
+pyobjc-framework-CoreText==12.2.2; sys_platform == "darwin"            # ApplicationServices
+pyobjc-framework-ApplicationServices==12.2.2; sys_platform == "darwin"

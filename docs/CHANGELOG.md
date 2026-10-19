@@ -2,6 +2,12 @@
 
 ## 0.7.10
 
+**Xod can use this Mac's screen (preview)**
+- Turn on "Use this computer's screen" in Add-ons, allow Xod under Screen Recording and Accessibility (the card has an Allow button and names the exact app macOS counts), and Xod sees your screen and uses the real mouse and keyboard: apps with no other tool, and Terminal or iTerm windows you have open (it reads and types into those as text, exactly). Ask for a whole job ("check my build in the terminal and fix what failed") and it works a step at a time, looking after each step, with a chip showing what it's doing and Stop.
+- Safety: it asks the first time it uses each app; it never uses System Settings, Keychain Access, Passwords or password managers; it never types into a password field; shortcuts that quit or delete only when you ask; a command typed into a terminal gets the same refusals and safety check as Xod's own commands; text on the screen is never taken as orders; and if you move the mouse while it works, it stops.
+- Mac only for now.
+- Xod's own commands now also refuse `rm -rf ~/` and `rm -rf $HOME/` (only `rm -rf ~` was caught).
+
 **Xod in the terminal**
 - `xod` chats with Xod from a terminal, with no window: the same agent, tools, memory, models, keys and safety check as the app. `xod "question"` answers once; plain `xod` is a conversation, with tool steps as short lines under the streaming answer; piped text goes along with the question; `-c` carries on the last terminal chat. Mac (`./xod`) and Windows (`xod.cmd`), from a source checkout. See [docs/TERMINAL.md](TERMINAL.md).
 - `xod task "…"` hands Xod a background task and follows it to the result; `xod tasks` lists them.

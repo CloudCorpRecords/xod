@@ -60,6 +60,7 @@ jobs:
           python tests/smoke/run_agent_mail_chat_test.py
           python tests/smoke/run_home_post_test.py
           python tests/smoke/run_local_servers_test.py
+          python tests/smoke/run_desktop_test.py
           python tests/smoke/run_cli_test.py
       - name: Dependency audit
         run: |
