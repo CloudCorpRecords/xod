@@ -22,7 +22,7 @@
 - Approval cards become a y/N question. With nobody to ask, the action is left waiting for you in the app and in `xod approvals`. `--yes` covers only ordinary connected-app actions, never something the safety check held, a delete or a task pressing Submit.
 - `xod status`: which model answers chats, the model servers on this computer and what they hold, add-ons, connected apps, tasks. `--json` for scripts.
 - Type `xod` anywhere: in the app, Tools → Terminal command → Install puts the command where your terminal looks and
-  runs it with the app's own Python; or `npm install -g xod-agent`. Works for the installed app, not only a checkout.
+  runs it with the app's own Python. Works for the installed app, not only a checkout. (From npm, `npm install -g xod-agent`, is coming soon.)
 - One Xod: the terminal uses the desktop app's server when it's running (wherever it is: the app writes down its
   address, since it uses another port when 8000 is taken), and only one using the same data folder. Otherwise it starts one in the background that the desktop app then uses too, so the two never run your tasks twice or load the model twice. `xod stop` stops it.
 

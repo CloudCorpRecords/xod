@@ -22,8 +22,8 @@ On Windows it's `xod.cmd`: `.\xod` in PowerShell, `xod` in Command Prompt.
   (Mac: `~/.local/bin`, `/opt/homebrew/bin` or `/usr/local/bin`, whichever is on your PATH, adding `~/.local/bin` to
   PATH in your shell profile only if none is; Windows: `%LOCALAPPDATA%\Microsoft\WindowsApps`). It runs Xod with the
   app's own Python, so nothing else is installed. Remove takes it away again (only its own file and line).
-- Or from npm: `npm install -g xod-agent`. The same `xod` command; it finds the app in Applications (Windows: its
-  install folder) and runs it the same way.
+- From npm (coming soon): `npm install -g xod-agent` will give the same `xod` command, finding the app in
+  Applications (Windows: its install folder). It isn't published yet; until then, use Tools → Terminal command.
 
 Open a new terminal window afterwards and type `xod`.
 
