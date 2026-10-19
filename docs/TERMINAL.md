@@ -16,23 +16,26 @@ On Windows it's `xod.cmd`: `.\xod` in PowerShell, `xod` in Command Prompt.
 
 ## Setting it up
 
-It runs from a source checkout (see "Build from source" in the README): run `./run.sh` (Windows: `.\run.ps1`) once so
-Xod's Python environment exists, then use `./xod` from that folder. To type just `xod` anywhere:
+**With the Xod app installed** (0.7.10 or newer), either:
 
-```bash
-ln -s "$PWD/xod" /usr/local/bin/xod
-```
+- In the app, **Tools → Terminal command → Install**. It puts a small `xod` command where your terminal looks
+  (Mac: `~/.local/bin`, `/opt/homebrew/bin` or `/usr/local/bin`, whichever is on your PATH, adding `~/.local/bin` to
+  PATH in your shell profile only if none is; Windows: `%LOCALAPPDATA%\Microsoft\WindowsApps`). It runs Xod with the
+  app's own Python, so nothing else is installed. Remove takes it away again (only its own file and line).
+- Or from npm: `npm install -g xod-agent`. The same `xod` command; it finds the app in Applications (Windows: its
+  install folder) and runs it the same way.
 
-On Windows, add the checkout's folder to your PATH (Settings → System → About → Advanced system settings →
-Environment Variables).
+Open a new terminal window afterwards and type `xod`.
 
-The desktop app you installed works too: a checkout's `xod` talks to the installed app while it's running, and uses
-its data, models and keys.
+**From a source checkout** (see "Build from source" in the README): run `./run.sh` (Windows: `.\run.ps1`) once so
+Xod's Python environment exists, then `./xod` from that folder, or Tools → Terminal command in the app you run from
+there. npm's `xod` can use a checkout too: `XOD_HOME=/path/to/xod xod`.
 
 ## One Xod, not two
 
 The terminal never runs a second copy of the agent. It talks to the Xod server that already serves the desktop app
-(`127.0.0.1:8000`), and only to one that uses the same data folder. If none is running, it starts one in the background
+(`127.0.0.1:8000`, or wherever the app says it is: it writes its address to `server.json` in Xod's data folder, since
+it uses another port when 8000 is taken), and only to one that uses the same data folder. If none is running, it starts one in the background
 on that port and leaves it running for your next command; when you open the desktop app, the app uses it too.
 
 That way there is one set of chats, memories, tasks and approvals, and one copy of the built-in model in memory. Two

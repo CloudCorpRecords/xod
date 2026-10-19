@@ -1,0 +1,25 @@
+{
+  "name": "xod-agent",
+  "version": "0.7.9",
+  "description": "Xod in your terminal: chat with your local-first AI agent, give it jobs, approve its actions. Uses the Xod desktop app you installed.",
+  "bin": {
+    "xod": "bin/xod.js"
+  },
+  "files": [
+    "bin/xod.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": ["ai", "agent", "cli", "terminal", "local-first", "llm", "xod"],
+  "homepage": "https://github.com/CloudCorpRecords/xod",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CloudCorpRecords/xod.git",
+    "directory": "npm"
+  },
+  "bugs": "https://github.com/CloudCorpRecords/xod/issues",
+  "license": "MIT"
+}

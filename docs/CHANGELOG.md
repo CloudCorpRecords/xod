@@ -17,11 +17,14 @@
 - Xod's own commands now also refuse `rm -rf ~/` and `rm -rf $HOME/` (only `rm -rf ~` was caught).
 
 **Xod in the terminal**
-- `xod` chats with Xod from a terminal, with no window: the same agent, tools, memory, models, keys and safety check as the app. `xod "question"` answers once; plain `xod` is a conversation, with tool steps as short lines under the streaming answer; piped text goes along with the question; `-c` carries on the last terminal chat. Mac (`./xod`) and Windows (`xod.cmd`), from a source checkout. See [docs/TERMINAL.md](TERMINAL.md).
+- `xod` chats with Xod from a terminal, with no window: the same agent, tools, memory, models, keys and safety check as the app. `xod "question"` answers once; plain `xod` is a conversation, with tool steps as short lines under the streaming answer; piped text goes along with the question; `-c` carries on the last terminal chat. Mac and Windows. See [docs/TERMINAL.md](TERMINAL.md).
 - `xod task "…"` hands Xod a background task and follows it to the result; `xod tasks` lists them.
 - Approval cards become a y/N question. With nobody to ask, the action is left waiting for you in the app and in `xod approvals`. `--yes` covers only ordinary connected-app actions, never something the safety check held, a delete or a task pressing Submit.
 - `xod status`: which model answers chats, the model servers on this computer and what they hold, add-ons, connected apps, tasks. `--json` for scripts.
-- One Xod: the terminal uses the desktop app's server when it's running, and only one using the same data folder. Otherwise it starts one in the background that the desktop app then uses too, so the two never run your tasks twice or load the model twice. `xod stop` stops it.
+- Type `xod` anywhere: in the app, Tools → Terminal command → Install puts the command where your terminal looks and
+  runs it with the app's own Python; or `npm install -g xod-agent`. Works for the installed app, not only a checkout.
+- One Xod: the terminal uses the desktop app's server when it's running (wherever it is: the app writes down its
+  address, since it uses another port when 8000 is taken), and only one using the same data folder. Otherwise it starts one in the background that the desktop app then uses too, so the two never run your tasks twice or load the model twice. `xod stop` stops it.
 
 ## 0.7.9
 

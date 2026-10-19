@@ -62,6 +62,7 @@ jobs:
           python tests/smoke/run_local_servers_test.py
           python tests/smoke/run_desktop_test.py
           python tests/smoke/run_agent_clis_test.py
+          python tests/smoke/run_terminal_command_test.py
           python tests/smoke/run_cli_test.py
       - name: Dependency audit
         run: |

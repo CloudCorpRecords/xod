@@ -28,6 +28,7 @@ PLACES = [
     ("app/mcp_server.py", r'version="([^"]+)"'),
     ("app/connectors/mac.py", r'version="([^"]+)"'),
     ("electron/package.json", r'^  "version": "([^"]+)"'),
+    ("npm/package.json", r'^  "version": "([^"]+)"'),               # the xod-agent npm package (the terminal command)
     ("electron/package-lock.json", r'^  "version": "([^"]+)"'),                                   # the package
     ("electron/package-lock.json", r'^    "": \{\r?\n      "name": "xod-desktop",\r?\n      "version": "([^"]+)"'),  # its root entry
 ]

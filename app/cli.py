@@ -223,6 +223,13 @@ def find_server(explicit: Optional[str] = None) -> Optional[str]:
     st = _state()
     if st.get("url") and _ours(hello(st["url"])):
         return st["url"]
+    # The desktop app says where its server is (it uses another port when 8000 is taken).
+    try:
+        announced = json.loads((DATA_DIR / "server.json").read_text()).get("url")
+    except (OSError, ValueError, AttributeError):
+        announced = None
+    if announced and _ours(hello(announced)):
+        return announced
     url = f"http://127.0.0.1:{_port()}"
     if _ours(hello(url)):
         return url

@@ -467,8 +467,28 @@ async def show_task_page(task_id: str):
     return await sb.manage_tabs("switch", target_id=t["tab_id"])
 
 
+def _announce_server() -> None:
+    """Writes where this server listens (DATA_DIR/server.json), so `xod` in a terminal finds the app's server even when
+    it isn't on port 8000 (the app picks another port when 8000 is taken)."""
+    import json as _json
+    import sys as _sys
+    port = None
+    argv = _sys.argv
+    for i, a in enumerate(argv):
+        if a == "--port" and i + 1 < len(argv):
+            port = argv[i + 1]
+        elif a.startswith("--port="):
+            port = a.split("=", 1)[1]
+    port = port or os.environ.get("XOD_PORT") or "8000"
+    try:
+        (DATA_DIR / "server.json").write_text(_json.dumps({"url": f"http://127.0.0.1:{int(port)}", "pid": os.getpid()}))
+    except (OSError, ValueError):
+        pass
+
+
 @app.on_event("startup")
 async def _start_task_worker():
+    _announce_server()
     from app.services.task_queue import task_queue
     from app.services.doctor import doctor
     task_queue.start()
@@ -1896,6 +1916,25 @@ async def get_lmstudio_status():
         status = {**status, "active": {"provider": "local", "server": "Built-in", "model": entry.get("label") or repo.split("/")[-1],
                                        "ready": ready, "problem": None if ready else "The built-in model isn't downloaded yet (Settings → Models)."}}
     return status
+
+@app.get("/api/terminal-command")
+async def terminal_command_status():
+    """The `xod` command for the terminal (services/terminal_command.py): installed or not, and where."""
+    from app.services import terminal_command
+    return terminal_command.status()
+
+
+@app.post("/api/terminal-command")
+async def terminal_command_install():
+    from app.services import terminal_command
+    return terminal_command.install()
+
+
+@app.delete("/api/terminal-command")
+async def terminal_command_uninstall():
+    from app.services import terminal_command
+    return terminal_command.uninstall()
+
 
 @app.get("/api/desktop/status")
 async def desktop_status():
