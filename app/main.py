@@ -746,6 +746,13 @@ async def sentinel_log():
     return {"held": list(reversed(sentinel.LOG[-50:]))}
 
 
+@app.get("/api/cli/hello")
+async def cli_hello():
+    """Who this server is, for the terminal (app/cli.py): it only talks to a Xod using the same data folder."""
+    from app.version import VERSION
+    return {"app": "xod", "version": VERSION, "data_dir": str(DATA_DIR), "pid": os.getpid()}
+
+
 @app.post("/api/mcp/import/check")
 async def mcp_import_check(req: MCPImport):
     """Anything a server's page says to paste (JSON, a command, an install link, an address): what's in it, what's

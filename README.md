@@ -219,6 +219,7 @@ cd xod
 .\run.ps1                     # Windows (PowerShell): the same
 ```
 
+Xod in the terminal: `./xod` (Windows: `xod.cmd`), see [docs/TERMINAL.md](docs/TERMINAL.md).
 The desktop app: `cd electron && npm install && npm start`. The installers: `npm run dist` (Mac), `npm run dist:win` (Windows).
 Releasing a new version: see [CONTRIBUTING.md](.github/CONTRIBUTING.md) (`python scripts/release.py 1.2.3`).
 

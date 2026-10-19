@@ -63,6 +63,8 @@ jobs:
         run: python tests/smoke/run_home_post_test.py
       - name: A saved API key instead of a local model, and what local model is running
         run: python tests/smoke/run_local_servers_test.py
+      - name: Xod in the terminal - one server, approvals as y/N, tasks, status, stop (stand-in model and Xod)
+        run: python tests/smoke/run_cli_test.py
       # Not run_engine_watchdog_test: the built-in engine (MLX) is Mac only, so its watchdog never runs here. The Mac job runs it.
 
   installer:

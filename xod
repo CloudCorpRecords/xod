@@ -1,0 +1,16 @@
+#!/bin/sh
+# Xod in the terminal (app/cli.py). Uses the same data, models and keys as the desktop app.
+#   ./xod "question"      ./xod      ./xod status      (put this folder on your PATH, or link it: see docs/TERMINAL.md)
+# Finds this folder even when called through a symlink, then runs with Xod's own Python.
+SELF="$0"
+while [ -L "$SELF" ]; do
+    LINK="$(readlink "$SELF")"
+    case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+done
+DIR="$(cd "$(dirname "$SELF")" && pwd)"
+PY="$DIR/.venv/bin/python"
+if [ ! -x "$PY" ]; then
+    echo "Xod's Python environment isn't set up yet: run ./run.sh once (or open the desktop app from this folder)." >&2
+    exit 1
+fi
+PYTHONUTF8=1 PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec "$PY" -m app.cli "$@"
