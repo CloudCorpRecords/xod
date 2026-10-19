@@ -35,13 +35,19 @@ function run(cmd, args, env) {
 
 const args = process.argv.slice(2);
 if (process.env.XOD_HOME) {
+  // A source checkout: its own Python (.venv), or XOD_PYTHON. Started directly: Windows won't let Node start a .cmd.
   const home = path.resolve(process.env.XOD_HOME);
-  const script = path.join(home, process.platform === "win32" ? "xod.cmd" : "xod");
-  if (!fs.existsSync(script)) {
-    console.error(`xod: XOD_HOME is ${home}, but there's no ${path.basename(script)} there.`);
+  const venv = process.platform === "win32" ? path.join(home, ".venv", "Scripts", "python.exe") : path.join(home, ".venv", "bin", "python");
+  const py = fs.existsSync(venv) ? venv : process.env.XOD_PYTHON;
+  if (!fs.existsSync(path.join(home, "app", "cli.py"))) {
+    console.error(`xod: XOD_HOME is ${home}, but that isn't a Xod checkout (no app/cli.py).`);
     process.exit(1);
   }
-  run(script, args, {});
+  if (!py) {
+    console.error(`xod: ${home} has no Python environment yet: run ./run.sh there once (Windows: .\\run.ps1).`);
+    process.exit(1);
+  }
+  run(py, ["-m", "app.cli", ...args], { PYTHONPATH: home });
 } else {
   const found = candidates().find((c) => fs.existsSync(c.py) && fs.existsSync(path.join(c.root, "app", "cli.py")));
   if (!found) {
