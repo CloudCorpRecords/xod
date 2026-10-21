@@ -8,6 +8,7 @@
 - Talking to an agent forgives half-filled requests from smaller models: a message with no session starts the agent first, and a "watch it" request without the screen add-on runs it in the background and says how to watch it.
 - When an agent asks something first ("Do you trust this workspace?"), Xod asks you instead of typing its message into the question.
 - Messages go in, then Return after a short pause: Muse 1.4.11 took a Return right after the text as part of a paste.
+- Security: Pillow (images) 12.3.0 → 13.0.0, which fixes 8 problems published this week (CVE-2026-112395 to -112899).
 - `--yolo`: Xod still starts agents normally (their own permission prompts stay on) and passes their questions to you, and now says so.
 
 ## 0.7.10
