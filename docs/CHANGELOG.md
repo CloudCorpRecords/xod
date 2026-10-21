@@ -9,6 +9,7 @@
 - An agent that isn't installed (Claude Code, Codex, Gemini CLI …) can be installed by Xod with its own published command, after your OK on an approval card; then it signs you in.
 - Conversations with Claude Code and Muse, the efficient way: Xod talks to them through their headless mode (Claude Code: `-p --output-format json`, then `--resume`; Muse: `exec --session-id`), so each answer comes back exact, with no screen to read, and the next message continues the same conversation. Several conversations at once, each by name; two messages to one go in order; they survive a restart.
 - Edge cases, each tested: Ctrl+C really interrupts (sessions now have a proper controlling terminal, as in Terminal), a character split between reads stays whole, a flood of output stays fast, progress bars show where they ended, two messages at once to one session don't interleave, a named session is a new one, and a password prompt (sudo, ssh …) is never typed into: Xod says to type it yourself in Tools → Terminals.
+- Security: pypdf (PDFs) 6.20.0 → 6.20.1, which fixes 2 problems published this week (CVE-2026-113792, -113793).
 - Sessions stop when Xod quits. A command Xod would refuse to run (a disk wipe …) is refused as a session too.
 - Checked live: two Muse sessions answering the same message at the same time; a Muse and a bash session in the Terminals panel; a Muse conversation remembering across messages, and two at once.
 
