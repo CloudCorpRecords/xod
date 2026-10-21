@@ -69,6 +69,7 @@ jobs:
         run: python tests/smoke/run_agent_clis_test.py
       - name: The xod terminal command - install from the app, finding the app's server, the npm package
         run: python tests/smoke/run_terminal_command_test.py
+      # Not run_terminals_edge_test: its stand-in agents are shell scripts, and Windows sessions use pipes, not a terminal.
       # Not run_desktop_test: using the screen, mouse and keyboard is Mac only for now (services/desktop.py).
       # Not run_engine_watchdog_test: the built-in engine (MLX) is Mac only, so its watchdog never runs here. The Mac job runs it.
 

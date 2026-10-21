@@ -54,6 +54,8 @@ if a[:1] == ["exec"]:
     p = rest[-1] if rest else ""
     if "NOAUTH" in p:
         print("muse: not signed in. Run muse login", file=sys.stderr); sys.exit(1)
+    if "WAIT2" in p:
+        time.sleep(2)
     if "SLOW" in p:
         import subprocess
         subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])   # a child too
@@ -255,6 +257,83 @@ async def main() -> None:
         ac._sessions[sid]._add("\r\nDo you trust this workspace?\r\n  1 Trust and continue  2 Quit\r\n")
         r = await ac.session_send(sid, "this must not answer the question")
         check("an agent asking something (trust this folder?): Xod doesn't type over it, it asks you", r.get("needs_answer") and not r["success"], str(r)[:200])
+
+    print("C7 several terminals at once")
+    if not WIN:
+        ac.stop_all()
+        sentinel.begin([{"role": "user", "content": "run two muse sessions and a cat"}])
+        a = await tools._cli_agents("cli_agent_session", {"action": "start", "agent": "muse", "folder": str(work)})
+        b = await tools._cli_agents("cli_agent_session", {"action": "start", "agent": "muse", "folder": str(work), "new": True})
+        check("two of the same agent in one folder, by name", a.get("name") == "muse-1" and b.get("name") == "muse-2" and a["session"] != b["session"], f"{a.get('name')} {b.get('name')}")
+        c = await tools._cli_agents("cli_agent_session", {"action": "start", "command": "cat", "folder": str(work)})
+        check("any program as a session (cat), named after it", c.get("success") and c.get("name") == "cat-1", str(c)[:200])
+        r = await tools._cli_agents("cli_agent_session", {"action": "send", "session": "cat-1", "text": "echo me", "wait_seconds": 3})
+        check("…and it gets what's typed", "echo me" in r.get("screen", ""), str(r)[:200])
+        try:
+            await ac.session_start(command="rm -rf ~", folder=str(work))
+            ok = False
+        except ac.CliError:
+            ok = True
+        check("a command Xod would refuse to run is refused as a session too", ok)
+        try:
+            await ac.session_start(command="no-such-program-xyz", folder=str(work))
+            ok = False
+        except ac.CliError as e:
+            ok = "no-such-program-xyz" in str(e)
+        check("a program that isn't there: says so", ok)
+        r = await tools._cli_agents("cli_agent_session", {"action": "send", "sessions": ["muse-1", "muse-2"], "text": "same to both", "wait_seconds": 5})
+        check("one message to several at once", r.get("success") and all("you said: same to both" in v.get("screen", "") for v in r["results"].values()), str(r)[:300])
+        first = ac.session_read("muse-1")
+        again = ac.session_read("muse-1")
+        check("read gives what's new since the last look (nothing new: nothing)", again["new"] == "" and "same to both" in first["screen"], repr(again["new"])[:100])
+        ac._session("muse-2")._add("\r\nDo you trust this workspace?\r\n")
+        lst = {x["name"]: x for x in ac.sessions() if x.get("name")}
+        check("list shows each with its state (one waiting for an answer)", lst["muse-2"]["state"] == "waiting" and lst["muse-1"]["state"] in ("idle", "working")
+              and lst["cat-1"]["running"], str({k: v["state"] for k, v in lst.items()}))
+        check("…and its last line", "same to both" in lst["muse-1"]["last"], lst["muse-1"]["last"])
+        ac.MAX_SESSIONS = 3
+        try:
+            await ac.session_start(agent="muse", folder=str(TMP), new=True)
+            ok = False
+        except ac.CliError as e:
+            ok = "muse-1" in str(e) and "Stop one first" in str(e)
+        ac.MAX_SESSIONS = 8
+        check("past the limit: says which are running", ok)
+        t = time.time()
+        r = await tools._cli_agents("cli_agent_run", {"jobs": [{"agent": "muse", "prompt": "WAIT2 job A"}, {"agent": "muse", "prompt": "WAIT2 job B"}]})
+        took = time.time() - t
+        check("separate jobs run in parallel (two 2-second jobs in about 2 seconds)", r.get("success") and len(r["jobs"]) == 2 and took < 3.8
+              and "ANSWER<WAIT2 job A>" in r["jobs"][0]["answer"] and "ANSWER<WAIT2 job B>" in r["jobs"][1]["answer"], f"{took:.1f}s {str(r)[:200]}")
+        r = await tools._cli_agents("cli_agent_session", {"action": "stop_all"})
+        check("stop_all stops them all", set(r["stopped"]) >= {"muse-1", "muse-2", "cat-1"} and not [x for x in ac.sessions() if x.get("session")], str(r))
+
+        print("C8 installing an agent that's missing")
+        ac.AGENTS["gemini"]["install"] = f"printf '#!/bin/sh\\necho gemini 1.0\\n' > '{BIN}/gemini' && chmod +x '{BIN}/gemini'"
+        held = await tools.execute_tool("cli_agent_install", {"agent": "gemini"})
+        check("installing asks you first (a card), naming the command", held.get("needs_approval") and "printf" in held.get("message", ""), str(held)[:200])
+        check("…the model can't approve it itself", (await tools.execute_tool("cli_agent_install", {"agent": "gemini", "_grant": "guess"})).get("needs_approval")
+              and not ac.which("gemini"))
+        from app.services.mcp_client import mcp_hub
+        r = await mcp_hub.approve(held["approval_id"])
+        check("approved: it installs, and says to sign in next", r.get("success") and ac.which("gemini") and "cli_agent_login" in r.get("next", ""), str(r)[:300])
+        r = await tools.execute_tool("cli_agent_install", {"agent": "gemini"})
+        check("already installed: nothing to approve", r.get("already"))
+
+        print("C9 the Terminals panel")
+        import httpx
+        from app.main import app as xod_app
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=xod_app), base_url="http://127.0.0.1:8000") as cl:
+            r = (await cl.post("/api/terminals", json={"agent": "muse", "folder": str(work)})).json()
+            sid = r.get("session")
+            check("the panel starts a session", r.get("success") and sid, str(r)[:200])
+            await cl.post(f"/api/terminals/{sid}/input", json={"text": "typed in the panel", "enter": True})
+            await asyncio.sleep(1.2)
+            r = (await cl.get(f"/api/terminals/{sid}")).json()
+            check("what you type there reaches it, and its screen shows", "you said: typed in the panel" in r.get("screen", ""), r.get("screen", "")[-200:])
+            r = (await cl.get("/api/terminals")).json()
+            check("the panel lists sessions and installed agents", any(x.get("session") == sid for x in r["sessions"]) and any(a["id"] == "muse" and a["installed"] for a in r["agents"]))
+            r = (await cl.delete(f"/api/terminals/{sid}")).json()
+            check("…and stops one", r.get("success") and not [x for x in ac.sessions() if x.get("session")])
 
     print("C5 the chat and the safety check")
     names = [t["function"]["name"] for t in tools.select_tools_for_query("use muse to fix the failing test in my project")]

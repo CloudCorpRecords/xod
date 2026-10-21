@@ -467,6 +467,17 @@ async def show_task_page(task_id: str):
     return await sb.manage_tabs("switch", target_id=t["tab_id"])
 
 
+@app.on_event("shutdown")
+async def _stop_terminal_sessions():
+    """The agents and programs Xod started in terminals stop with it (they run in their own process groups, so
+    nothing else would stop them)."""
+    try:
+        from app.services import agent_clis
+        agent_clis.stop_all()
+    except Exception:
+        pass
+
+
 def _announce_server() -> None:
     """Writes where this server listens (DATA_DIR/server.json), so `xod` in a terminal finds the app's server even when
     it isn't on port 8000 (the app picks another port when 8000 is taken)."""
@@ -1916,6 +1927,75 @@ async def get_lmstudio_status():
         status = {**status, "active": {"provider": "local", "server": "Built-in", "model": entry.get("label") or repo.split("/")[-1],
                                        "ready": ready, "problem": None if ready else "The built-in model isn't downloaded yet (Settings → Models)."}}
     return status
+
+@app.get("/api/terminals")
+async def terminals_list():
+    """Xod's terminal sessions (services/agent_clis.py): agents and programs, with their state, and the agents installed."""
+    from app.services import agent_clis
+    found = await asyncio.to_thread(agent_clis.find)
+    return {"sessions": agent_clis.sessions(), "agents": [{k: a[k] for k in ("id", "name", "installed", "signed_in")} for a in found["agents"]]}
+
+
+class TerminalStart(BaseModel):
+    agent: Optional[str] = ""
+    command: Optional[str] = ""
+    folder: Optional[str] = ""
+    name: Optional[str] = ""
+    new: Optional[bool] = False
+
+
+@app.post("/api/terminals")
+async def terminals_start(req: TerminalStart):
+    from app.services import agent_clis
+    try:
+        return await agent_clis.session_start(agent=req.agent or "", command=req.command or "", folder=req.folder or "",
+                                              name=req.name or "", new=bool(req.new))
+    except agent_clis.CliError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/terminals/{sid}")
+async def terminals_screen(sid: str):
+    from app.services import agent_clis
+    try:
+        s = agent_clis._session(sid)
+    except agent_clis.CliError as e:
+        return {"success": False, "error": str(e)}
+    return {"success": True, "session": s.id, "name": s.name, "agent": s.label, "state": s.state(), "running": s.running(),
+            "folder": s.cwd, "screen": s.screen()[-20000:]}
+
+
+class TerminalInput(BaseModel):
+    text: Optional[str] = ""
+    enter: Optional[bool] = True
+    key: Optional[str] = ""
+
+
+@app.post("/api/terminals/{sid}/input")
+async def terminals_input(sid: str, req: TerminalInput):
+    """What you type in the Terminals panel goes straight in (it's you typing, so no question is held back)."""
+    from app.services import agent_clis
+    try:
+        s = agent_clis._session(sid)
+        if req.key:
+            return agent_clis.session_key(s.id, req.key)
+        s.write(req.text or "")
+        if req.enter:
+            await asyncio.sleep(agent_clis.RETURN_PAUSE)
+            s.write("\r")
+        return {"success": True}
+    except agent_clis.CliError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.delete("/api/terminals/{sid}")
+async def terminals_stop(sid: str):
+    from app.services import agent_clis
+    try:
+        return agent_clis.session_stop(sid)
+    except agent_clis.CliError as e:
+        return {"success": False, "error": str(e)}
+
 
 @app.get("/api/terminal-command")
 async def terminal_command_status():

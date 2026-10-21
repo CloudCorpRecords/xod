@@ -2492,13 +2492,36 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "cli_agent_run",
-            "description": "Gives one of those terminal agents a job, headless (muse exec, claude -p, codex exec …), in a folder, and returns its answer. Use when the person asks to use that agent (\"use muse to …\", \"ask codex …\").",
+            "description": "Gives one of those terminal agents a job, headless (muse exec, claude -p, codex exec …), in a folder, and returns its answer. Use when the person asks to use that agent (\"use muse to …\", \"ask codex …\"). jobs runs several at once (\"muse does this while claude does that\").",
             "parameters": {"type": "object", "properties": {
+                "jobs": {"type": "array", "items": {"type": "object", "properties": {"agent": {"type": "string"}, "prompt": {"type": "string"},
+                         "folder": {"type": "string"}}}, "description": "Several jobs at once instead of agent/prompt"},
                 "agent": {"type": "string", "description": "muse, claude, codex, gemini, aider, opencode, goose, cursor or amp"},
                 "prompt": {"type": "string", "description": "The job, in the person's words"},
                 "folder": {"type": "string", "description": "The project folder to work in (default: home)"},
-                "timeout_minutes": {"type": "integer", "description": "Stop it after this long (default 10)"}},
-                "required": ["agent", "prompt"]}
+                "timeout_minutes": {"type": "integer", "description": "Stop it after this long (default 10)"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cli_agent_chat",
+            "description": "The efficient way to work with Claude Code or Muse: a conversation through its headless mode. Each message runs once and returns the exact answer; the next message with the same thread continues the same conversation (it remembers). No screen to read, and it survives a restart. Several threads can run at once (different names). Use this for jobs and back-and-forth; use cli_agent_session only when the person wants to watch it live or it needs answers to its own questions.",
+            "parameters": {"type": "object", "properties": {
+                "agent": {"type": "string", "description": "claude or muse (others: each message stands alone)"},
+                "message": {"type": "string"},
+                "thread": {"type": "string", "description": "The conversation's name, to continue it (from the last answer); empty starts a new one"},
+                "folder": {"type": "string", "description": "The project folder (first message; later ones stay there)"},
+                "timeout_minutes": {"type": "integer"}},
+                "required": ["message"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cli_agent_install",
+            "description": "Installs a terminal agent that isn't on this computer yet (Claude Code, Codex, Gemini CLI …) with its own published install command, after the person's OK on an approval card. Sign in to it after with cli_agent_login.",
+            "parameters": {"type": "object", "properties": {"agent": {"type": "string"}}, "required": ["agent"]}
         }
     },
     {
@@ -2514,12 +2537,17 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "cli_agent_session",
-            "description": "A terminal agent left running for a back-and-forth: start it, send it a message, read what it shows, press a key (ctrl+c, escape, up, enter, y, n), or stop it. Runs in the background by default; visible (a Terminal window) only when the person wants to watch. Xod reuses its sessions and windows (starting the same agent in the same folder again gives the one already running), keeps at most a few, and stop closes them (with window for a visible one). Stop it when the job is done.",
+            "description": "Terminal sessions Xod runs and manages, several at once: a terminal agent (muse, claude, codex …) or any program (command: \"npm run dev\", \"python3\", \"ssh box\"). start one (each gets a name like muse-1; new=true for a second of the same), send it a message (session: its name; sessions: several names to send the same to all at once), read what's new on its screen, press a key (ctrl+c, escape, up, enter, y, n), list them all with their state (working, idle, waiting for an answer, finished), stop one or stop_all. Runs in the background; visible (a Terminal window) only when the person wants to watch. If one is waiting on a question (trust this folder? allow this?), ask the person. Stop sessions when the job is done.",
             "parameters": {"type": "object", "properties": {
-                "action": {"type": "string", "enum": ["start", "send", "read", "key", "stop", "list"]},
-                "agent": {"type": "string", "description": "For start"}, "folder": {"type": "string", "description": "For start"},
+                "action": {"type": "string", "enum": ["start", "send", "read", "key", "stop", "stop_all", "list"]},
+                "agent": {"type": "string", "description": "For start: muse, claude, codex, gemini …"},
+                "command": {"type": "string", "description": "For start: any program instead of an agent, as typed in a terminal"},
+                "name": {"type": "string", "description": "For start: a name for it (e.g. claude-frontend)"},
+                "new": {"type": "boolean", "description": "For start: another one even if the same is already running there"},
+                "sessions": {"type": "array", "items": {"type": "string"}, "description": "For send: several sessions (names) at once"},
+                "folder": {"type": "string", "description": "For start"},
                 "visible": {"type": "boolean", "description": "For start: in a Terminal window the person can watch"},
-                "session": {"type": "string", "description": "The session id from start"},
+                "session": {"type": "string", "description": "The session's name (or id) from start or list"},
                 "window": {"type": "integer", "description": "For stop: the Terminal window id of a visible session (only Xod's own windows close)"},
                 "text": {"type": "string", "description": "For send: the message (a send with no session starts one)"}, "key": {"type": "string", "description": "For key"},
                 "wait_seconds": {"type": "integer", "description": "For send: how long to wait for its answer (default 60)"}},
@@ -2941,7 +2969,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     return result
 
 
-CLI_TOOLS = {"cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session"}
+CLI_TOOLS = {"cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session", "cli_agent_install", "cli_agent_chat"}
+_install_grants: Dict[str, str] = {}
 _setup_grants: set = set()
 
 
@@ -2978,7 +3007,12 @@ def _agent_from_request(ac) -> str:
     return installed[0] if len(installed) == 1 else ""
 
 
-async def _cli_start(ac, agent: str, folder: str, visible: bool) -> Dict[str, Any]:
+def _screen_on() -> bool:
+    from app.services import desktop
+    return desktop.MAC and desktop.enabled()
+
+
+async def _cli_start(ac, agent: str, folder: str, visible: bool, name: str = "", new: bool = False) -> Dict[str, Any]:
     """Starts a session; a visible one needs the screen add-on, so without it the session runs in the background."""
     if not agent:
         return {"success": False, "error": "Which agent? (muse, claude, codex, gemini …): cli_agents lists what's installed."}
@@ -2989,7 +3023,7 @@ async def _cli_start(ac, agent: str, folder: str, visible: bool) -> Dict[str, An
             visible = False
             note = ("Running it in the background: showing it in a Terminal window needs Add-ons → Use this computer's screen. "
                     "Xod reads and types to it the same way.")
-    res = await ac.session_start(agent, folder, visible=visible)
+    res = await ac.session_start(agent, folder, visible=visible, name=name, new=new)
     if note:
         res["note"] = (note + " " + res.get("note", "")).strip()
     return res
@@ -3000,10 +3034,30 @@ async def _cli_agents(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
     from app.services import agent_clis as ac
     try:
         if name == "cli_agents":
-            return {**ac.find(), "sessions": ac.sessions()}
+            return {**ac.find(), "sessions": ac.sessions(), "threads": ac.threads()}
         if name == "cli_agent_run":
             mins = max(1, min(int(a.get("timeout_minutes") or 10), 60))
-            return await ac.run(a.get("agent") or "", a.get("prompt") or "", a.get("folder") or "", timeout=mins * 60)
+            if a.get("jobs"):
+                return await ac.run_many(list(a["jobs"]), timeout=mins * 60)
+            return await ac.run(a.get("agent") or _agent_from_request(ac), a.get("prompt") or a.get("text") or "", a.get("folder") or "", timeout=mins * 60)
+        if name == "cli_agent_chat":
+            mins = max(1, min(int(a.get("timeout_minutes") or 15), 60))
+            return await ac.chat(a.get("agent") or _agent_from_request(ac), a.get("message") or a.get("text") or a.get("prompt") or "",
+                                 a.get("thread") or "", a.get("folder") or "", timeout=mins * 60)
+        if name == "cli_agent_install":
+            token = a.pop("_grant", None)
+            key = ac.resolve(a.get("agent") or "")
+            if token and _install_grants.pop(token, None) == key:
+                return await ac.install(key)
+            if ac.which(key):
+                return {"success": True, "already": True, "agent": ac.AGENTS[key]["name"], "path": ac.which(key)}
+            from app.services import sentinel
+            t = uuid.uuid4().hex
+            _install_grants[t] = key
+            held = sentinel.hold("cli_agent_install", {"agent": key, "_grant": t}, {"rule": "install",
+                                 "why": f"Xod wants to install {ac.AGENTS[key]['name']} with: {ac.AGENTS[key]['install']}"})
+            held["args"] = {"agent": key}
+            return held
         if name == "cli_agent_login":
             return ac.login_status(a.get("agent") or "") if a.get("check") else await ac.login(a.get("agent") or "")
         # Forgiving, for models that half-fill it (a plan is written before the first step gives a session id):
@@ -3012,7 +3066,14 @@ async def _cli_agents(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
         act = (a.get("action") or ("send" if text else "start" if (a.get("agent") or a.get("visible")) else "list")).lower()
         agent = a.get("agent") or _agent_from_request(ac)
         if act == "start":
-            return await _cli_start(ac, agent, a.get("folder") or "", bool(a.get("visible")))
+            if a.get("command") and not a.get("agent"):
+                return await ac.session_start(command=a["command"], folder=a.get("folder") or "", name=a.get("name") or "",
+                                              new=bool(a.get("new")), visible=bool(a.get("visible")) and _screen_on())
+            return await _cli_start(ac, agent, a.get("folder") or "", bool(a.get("visible")), a.get("name") or "", bool(a.get("new")))
+        if act == "send" and a.get("sessions"):
+            return await ac.send_many(list(a["sessions"]), text, wait=a.get("wait_seconds") or 60)
+        if act == "stop_all":
+            return ac.stop_all()
         if act == "send":
             sid = a.get("session") or ac.latest_session(agent)
             started = None
