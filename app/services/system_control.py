@@ -309,7 +309,11 @@ class SystemControlService:
         """The user's shell: zsh/bash on a Mac, Windows PowerShell on Windows."""
         if WIN:
             return await winsys.exec_shell(command, cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        return await asyncio.create_subprocess_shell(command, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        # Your terminal's PATH, not the app's: macOS starts apps with /usr/bin:/bin:/usr/sbin:/sbin, which misses
+        # ~/.local/bin, Homebrew, npm and the rest, so `muse`, `claude`, `brew`, `node` … weren't found.
+        from app.services.agent_clis import search_path
+        env = dict(os.environ, PATH=search_path())
+        return await asyncio.create_subprocess_shell(command, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
 
     async def run_command(self, command: str, cwd: Optional[str] = None, timeout_sec: int = 45) -> Dict[str, Any]:
         """

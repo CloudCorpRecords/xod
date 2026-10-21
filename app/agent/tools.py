@@ -2521,7 +2521,7 @@ TOOL_DEFINITIONS = [
                 "visible": {"type": "boolean", "description": "For start: in a Terminal window the person can watch"},
                 "session": {"type": "string", "description": "The session id from start"},
                 "window": {"type": "integer", "description": "For stop: the Terminal window id of a visible session (only Xod's own windows close)"},
-                "text": {"type": "string", "description": "For send"}, "key": {"type": "string", "description": "For key"},
+                "text": {"type": "string", "description": "For send: the message (a send with no session starts one)"}, "key": {"type": "string", "description": "For key"},
                 "wait_seconds": {"type": "integer", "description": "For send: how long to wait for its answer (default 60)"}},
                 "required": ["action"]}
         }
@@ -2966,6 +2966,35 @@ def _desktop_setup_card(a: Dict[str, Any]) -> Dict[str, Any]:
     return held
 
 
+def _agent_from_request(ac) -> str:
+    """The terminal agent the person named in this request, or the only one installed."""
+    from app.services import sentinel
+    asked = str((sentinel._state() or {}).get("asked") or "")
+    for key, info in ac.AGENTS.items():
+        names = [key] + [b for b in info["bins"]] + [info["name"].split(" (")[0]]
+        if any(re.search(rf"\b{re.escape(n)}\b", asked, re.I) for n in names):
+            return key
+    installed = [x["id"] for x in ac.find()["agents"] if x["installed"]]
+    return installed[0] if len(installed) == 1 else ""
+
+
+async def _cli_start(ac, agent: str, folder: str, visible: bool) -> Dict[str, Any]:
+    """Starts a session; a visible one needs the screen add-on, so without it the session runs in the background."""
+    if not agent:
+        return {"success": False, "error": "Which agent? (muse, claude, codex, gemini …): cli_agents lists what's installed."}
+    note = ""
+    if visible:
+        from app.services import desktop
+        if not (desktop.MAC and desktop.enabled()):
+            visible = False
+            note = ("Running it in the background: showing it in a Terminal window needs Add-ons → Use this computer's screen. "
+                    "Xod reads and types to it the same way.")
+    res = await ac.session_start(agent, folder, visible=visible)
+    if note:
+        res["note"] = (note + " " + res.get("note", "")).strip()
+    return res
+
+
 async def _cli_agents(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
     """Terminal agents: Muse, Claude Code, Codex … (services/agent_clis.py)."""
     from app.services import agent_clis as ac
@@ -2977,11 +3006,27 @@ async def _cli_agents(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
             return await ac.run(a.get("agent") or "", a.get("prompt") or "", a.get("folder") or "", timeout=mins * 60)
         if name == "cli_agent_login":
             return ac.login_status(a.get("agent") or "") if a.get("check") else await ac.login(a.get("agent") or "")
-        act = (a.get("action") or "").lower()
+        # Forgiving, for models that half-fill it (a plan is written before the first step gives a session id):
+        # text under another name, the action guessed, the agent from the request, a send that starts its session.
+        text = a.get("text") or a.get("message") or a.get("prompt") or a.get("input") or ""
+        act = (a.get("action") or ("send" if text else "start" if (a.get("agent") or a.get("visible")) else "list")).lower()
+        agent = a.get("agent") or _agent_from_request(ac)
         if act == "start":
-            return await ac.session_start(a.get("agent") or "", a.get("folder") or "", visible=bool(a.get("visible")))
+            return await _cli_start(ac, agent, a.get("folder") or "", bool(a.get("visible")))
         if act == "send":
-            return await ac.session_send(a.get("session") or "", a.get("text") or "", wait=a.get("wait_seconds") or 60)
+            sid = a.get("session") or ac.latest_session(agent)
+            started = None
+            if not sid:
+                if not agent:
+                    return {"success": False, "error": "Which agent? Start one first (action start, agent muse / claude / codex …)."}
+                started = await _cli_start(ac, agent, a.get("folder") or "", False)
+                if not started.get("success"):
+                    return started
+                sid = started.get("session")
+            res = await ac.session_send(sid, text, wait=a.get("wait_seconds") or 60)
+            if started:
+                res["started"] = f"Started {started.get('agent')} for this (session {sid})."
+            return res
         if act == "read":
             return ac.session_read(a.get("session") or "")
         if act == "key":
@@ -4060,7 +4105,7 @@ _DESKTOP_RE = re.compile(r"\b(?:my |the |this )?(?:screen|mouse|cursor|desktop|p
                          r"what(?:'s| is) on (?:my |the )?screen|look at (?:my |the )?screen", re.I)
 
 
-_CLI_AGENT_RE = re.compile(r"\b(?:muse|claude code|claude cli|codex|gemini cli|aider|opencode|goose|cursor[- ]agent|amp)\b|"
+_CLI_AGENT_RE = re.compile(r"\b(?:muse|claude? code|claude cli|codex|gemini cli|aider|opencode|goose|cursor[- ]agent|amp)\b|"
                            r"\b(?:cli|terminal|command[- ]line) (?:agents?|harness(?:es)?|ai)\b|\bharness(?:es)?\b", re.I)
 
 

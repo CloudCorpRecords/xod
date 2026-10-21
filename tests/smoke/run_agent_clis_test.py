@@ -220,6 +220,42 @@ async def main() -> None:
             ok = True
         check("an unknown session id: says none or which run", ok)
 
+    print("C6 what went wrong in a real chat (\"can you control muse?\")")
+    if not WIN:
+        from app.services.system_control import system_control_service
+        short = os.environ["PATH"]
+        os.environ["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"            # what macOS gives the desktop app
+        ac._path_cache.update(at=0.0, path="")
+        r = await system_control_service.run_command("command -v muse")
+        os.environ["PATH"] = short
+        check("a command Xod runs finds tools in ~/.local/bin, though the app's PATH is short", str(BIN / "muse") in (r.get("stdout") or r.get("output") or ""), str(r)[:300])
+    note = ac.context_note("can you control muse? like you type muse into terminal")
+    check("the planner is told Muse is installed, where, signed in, and which tools use it",
+          "Muse (Meta)" in note and "signed in" in note and "cli_agent_session" in note and "computer_run_command" in note, note[:300])
+    check("…that the answer to \"can you\" is yes", "the answer is yes" in note)
+    check("…and that Muse.app is a different app", "Muse.app" in note)
+    note = ac.context_note("muse --yolo and use gemini cli")
+    check("asked for --yolo: told Xod starts it normally and passes its questions on", "--yolo" in note and "passes their questions" in note)
+    check("an agent that isn't installed: says so, with how to install it", "Gemini CLI isn't installed" in note and "npm install" in note, note[-400:])
+    check("\"claud code\" (misspelled) still counts as asking about an agent", tools._wants_cli_agent("is this true for you to use claud code?"))
+    check("no note for requests about something else", ac.context_note("what's the weather") == "")
+    if not WIN:
+        sentinel.begin([{"role": "user", "content": "can you control muse? ask it to say hello"}])
+        r = await tools._cli_agents("cli_agent_session", {"visible": True, "folder": str(work)})
+        check("{visible: true} alone (what the model sent): starts the agent named in the request", r.get("success") and r.get("session"), str(r)[:300])
+        check("…in the background when the screen add-on is off, and says how to watch it", "Use this computer's screen" in (r.get("note") or ""))
+        r = await tools._cli_agents("cli_agent_session", {"message": "hi from the chat"})
+        check("{message: …} with no session or action: sent to the one running", r.get("success") and "you said: hi from the chat" in r.get("screen", ""), str(r)[:300])
+        for x in list(ac._sessions.values()):
+            x.stop()
+        ac._sessions.clear()
+        r = await tools._cli_agents("cli_agent_session", {"text": "hello again"})
+        check("a send with nothing running starts the agent first", r.get("success") and r.get("started") and "you said: hello again" in r.get("screen", ""), str(r)[:300])
+        sid = ac.latest_session()
+        ac._sessions[sid]._add("\r\nDo you trust this workspace?\r\n  1 Trust and continue  2 Quit\r\n")
+        r = await ac.session_send(sid, "this must not answer the question")
+        check("an agent asking something (trust this folder?): Xod doesn't type over it, it asks you", r.get("needs_answer") and not r["success"], str(r)[:200])
+
     print("C5 the chat and the safety check")
     names = [t["function"]["name"] for t in tools.select_tools_for_query("use muse to fix the failing test in my project")]
     check("naming an agent gives the chat its tools", "cli_agent_run" in names and "cli_agent_login" in names, str(names[-12:]))

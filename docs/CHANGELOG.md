@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.11
+
+**"Can you control Muse?" now works**
+- Commands Xod runs get your terminal's PATH. The app starts with macOS's short one (/usr/bin:/bin:/usr/sbin:/sbin), so `muse`, `claude`, `node`, `brew` and anything in ~/.local/bin, Homebrew or npm "didn't exist" for Xod.
+- When you name a terminal agent, Xod is told what's installed, where, and whether you're signed in, so it uses it (starts it, types to it, reads its answers) instead of trying it as a shell command or mistaking Meta's Muse desktop app for it. It also says which aren't installed and how to get them ("claud code" counts too).
+- Talking to an agent forgives half-filled requests from smaller models: a message with no session starts the agent first, and a "watch it" request without the screen add-on runs it in the background and says how to watch it.
+- When an agent asks something first ("Do you trust this workspace?"), Xod asks you instead of typing its message into the question.
+- Messages go in, then Return after a short pause: Muse 1.4.11 took a Return right after the text as part of a paste.
+- `--yolo`: Xod still starts agents normally (their own permission prompts stay on) and passes their questions to you, and now says so.
+
 ## 0.7.10
 
 **Xod uses the AI agents in your terminal**

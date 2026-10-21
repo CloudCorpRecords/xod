@@ -697,7 +697,7 @@ def _type_now(text: str, enter: bool) -> None:
         time.sleep(0.35)
         _clipboard_set(saved) if saved is not None else None
     if enter:
-        time.sleep(0.25)
+        time.sleep(0.8)          # apart from the paste, or full-screen terminal agents take it as part of it
         _press(["return"])
     _mark_left()
 

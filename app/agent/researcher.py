@@ -452,8 +452,14 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
 
         prior_messages = messages[:-1] if len(messages) > 1 else []
         deliberation = None
+        try:
+            from app.services.agent_clis import context_note
+            computer_note = await asyncio.to_thread(context_note, user_query)
+        except Exception:
+            computer_note = ""
         async for ev in self.deliberate_and_plan(
-            query=user_query + (f"\n\n(What they mean, in full: {self._understood})" if getattr(self, "_understood", "") else ""),
+            query=user_query + (f"\n\n(What they mean, in full: {self._understood})" if getattr(self, "_understood", "") else "")
+                  + (f"\n\n{computer_note}" if computer_note else ""),
             conversation_history=prior_messages,
             active_workspace_path=active_workspace_path,
             has_image=has_image,

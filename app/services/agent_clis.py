@@ -77,6 +77,7 @@ _help_cache: Dict[str, str] = {}
 _logins: Dict[str, Dict[str, Any]] = {}
 _sessions: Dict[str, "Session"] = {}
 COLS, ROWS = 140, 45
+RETURN_PAUSE = 0.8       # seconds between typing a message into an agent and pressing Return
 MAX_SESSIONS = 4         # agent sessions Xod keeps running in the background at once
 
 
@@ -402,18 +403,38 @@ def _session(sid: str) -> Session:
     return s
 
 
+QUESTION_RE = re.compile(r"do you trust|trust (?:this|the) (?:workspace|folder|directory)|trust and continue|\(y/n\)|\[y/n\]|"
+                         r"allow (?:this|once|always)|do you want to (?:allow|proceed|run)|approve\b.*\?|press enter to continue", re.I)
+
+
 async def session_send(sid: str, text: str, enter: bool = True, wait: float = 60) -> Dict[str, Any]:
     s = _session(sid)
+    tail = s.screen()[-1500:]
+    m = QUESTION_RE.search(tail)
+    if m:
+        # The agent is asking something (trust this folder? allow this command?): typing the message now would answer
+        # it. That answer is the person's: show the question and let them say (then answer with key: 1, y, enter…).
+        return {"success": False, "session": s.id, "needs_answer": True, "screen": tail,
+                "error": f"{AGENTS[s.agent]['name']} is asking something first (\"{m.group(0)}\"): ask the person what to answer, then "
+                         "answer it with action key, and send the message after."}
     s.write(text)
     if enter:
-        await asyncio.sleep(0.15)             # full-screen agents take a typed line, then Enter, as two things
+        # Full-screen agents take text that arrives at once as a paste, and a Return right after it as part of the paste
+        # (a new line, not "send"): Muse 1.4.11 needs about half a second between them.
+        await asyncio.sleep(RETURN_PAUSE)
         s.write("\r")
     await _settle(s, quiet=3.0, most=max(5.0, min(float(wait or 60), 600)))
     return {"success": True, "session": s.id, "running": s.running(), "screen": s.screen()[-6000:], "exit_code": s.exit}
 
 
+def latest_session(agent: str = "") -> str:
+    """The newest running session (of that agent, if named), for a send that didn't say which."""
+    live = [x for x in _sessions.values() if x.running() and (not agent or x.agent == agent)]
+    return max(live, key=lambda x: x.started).id if live else ""
+
+
 def session_read(sid: str, chars: int = 4000) -> Dict[str, Any]:
-    s = _session(sid)
+    s = _session(sid or latest_session())
     return {"success": True, "session": s.id, "running": s.running(), "screen": s.screen()[-max(500, min(int(chars or 4000), 20000)):], "exit_code": s.exit}
 
 
@@ -538,3 +559,37 @@ def login_status(agent: str) -> Dict[str, Any]:
     if not e:
         return {"success": True, **base, "state": "none"}
     return {"success": True, **base, "state": e["state"], "url": e["url"], "code": e["code"], "screen": e["session"].text()[-1500:]}
+
+
+def context_note(query: str) -> str:
+    """For the planner, when a request is about a terminal agent: which are installed, where, signed in or not, and
+    which tools use them (the model otherwise tried `muse` as a shell command, or took Meta's Muse desktop app for it)."""
+    from app.agent.tools import _wants_cli_agent
+    if not _wants_cli_agent(query):
+        return ""
+    try:
+        found = [a for a in find()["agents"] if a["installed"]]
+    except Exception:
+        return ""
+    if not found:
+        return ("(On this computer: no terminal AI agent (Muse, Claude Code, Codex, Gemini CLI …) is installed. Say so, "
+                "and how to install the one they mean: cli_agents lists the install commands.)")
+    home = str(HOME)
+    rows = [f"{a['name']} ({a['id']}) at {str(a['path']).replace(home, '~')}, "
+            + ("signed in" if a["signed_in"] else "not signed in yet" if a["signed_in"] is False else "sign-in unknown") for a in found]
+    note = ("(On this computer, terminal AI agents installed: " + "; ".join(rows) + ". To use one, call cli_agent_run "
+            "(one job, headless, in a folder) or cli_agent_session (start it, then send messages and read its screen; "
+            "visible=true opens it in a Terminal window the person can watch). Don't run them with computer_run_command. "
+            "If they ask whether Xod can use or control one of these, the answer is yes: say so plainly, say how (Xod "
+            "starts it, types to it, reads its answers), and offer to start it now, or do it if they asked. ")
+    typos = {"claude": r"claude?(?:\s*code)?", "gemini": r"gemini(?:\s*cli)?", "cursor": r"cursor[- ]?agent"}
+    missing = [k for k, info in AGENTS.items() if k not in {a["id"] for a in found}
+               and re.search(rf"\b(?:{typos.get(k, re.escape(k))}|{re.escape(info['name'].split(' (')[0])})\b", query or "", re.I)]
+    for k in missing:
+        note += f"{AGENTS[k]['name']} isn't installed (it installs with: {AGENTS[k]['install']}). "
+    if any(a["id"] == "muse" for a in found):
+        note += "Muse.app in Applications is a different app (Meta's desktop chat): this means the muse command. "
+    if re.search(r"--yolo|--dangerously|skip[- ]permissions", query or "", re.I):
+        note += ("Xod doesn't start agents with --yolo or other flags that switch off their own permission prompts: it "
+                 "starts them normally and passes their questions to the person. Say that, and that everything else works. ")
+    return note + ")"
