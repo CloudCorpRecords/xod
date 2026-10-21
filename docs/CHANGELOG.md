@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.13
+
+**Security**
+- pypdf (reading PDFs you attach) 6.20.1 → 6.21.1, which fixes a problem published just after 0.7.12 went out (CVE-2026-113786). PDFs can come from anywhere, so update if you open PDFs in Xod.
+
 ## 0.7.12
 
 **Several terminals at once: Muse, Claude Code, anything**
