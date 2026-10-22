@@ -2566,9 +2566,22 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "cli_agent_login",
-            "description": "Signs the person in to a terminal agent: starts its own sign-in, opens the page in their browser and shows its code; they approve there. Call again later to see whether it finished.",
-            "parameters": {"type": "object", "properties": {"agent": {"type": "string"}, "check": {"type": "boolean", "description": "Only see how a sign-in already started is going"}},
+            "description": "Signs the person in to a terminal agent: starts its own sign-in, opens the page in their browser and shows its code; they approve there. Call again later to see whether it finished. If the page showed them a code to paste back, pass it as code.",
+            "parameters": {"type": "object", "properties": {"agent": {"type": "string"}, "check": {"type": "boolean", "description": "Only see how a sign-in already started is going"},
+                                                            "method": {"type": "string", "enum": ["subscription", "console"], "description": "Claude Code: a Claude plan (default) or an Anthropic Console account (API billing)"},
+                                                            "code": {"type": "string", "description": "The code the sign-in page showed, to enter into the waiting sign-in"}},
                            "required": ["agent"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cli_agent_setup",
+            "description": "Sets up and looks after a terminal agent (Claude Code, Muse, Codex …) step by step: status shows the steps (installed, signed in, answering) and which is next; next does that step (install asks the person's OK on a card first; sign-in opens the page in their browser; the check asks it one short question). Also update (its own updater, after the person's OK) and doctor (its health check, read-only). For Claude Code it says which account the Claude app uses: Claude Code keeps its own sign-in, so it needs one approval in the browser on that account. Use this when they want an agent installed, set up, fixed or updated.",
+            "parameters": {"type": "object", "properties": {
+                "agent": {"type": "string", "description": "claude, muse, codex, gemini …"},
+                "action": {"type": "string", "enum": ["status", "next", "test", "update", "doctor"]}},
+                "required": ["agent"]}
         }
     },
     {
@@ -3007,7 +3020,7 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     return result
 
 
-CLI_TOOLS = {"cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session", "cli_agent_install", "cli_agent_chat",
+CLI_TOOLS = {"cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session", "cli_agent_install", "cli_agent_chat", "cli_agent_setup",
              "crew_start", "crew_status", "crew_message", "crew_stop"}
 _install_grants: Dict[str, str] = {}
 _setup_grants: set = set()
@@ -3116,6 +3129,8 @@ async def _cli_agents(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
             mins = max(1, min(int(a.get("timeout_minutes") or 15), 60))
             return await ac.chat(a.get("agent") or _agent_from_request(ac), a.get("message") or a.get("text") or a.get("prompt") or "",
                                  a.get("thread") or "", a.get("folder") or "", timeout=mins * 60)
+        if name == "cli_agent_setup":
+            return await _cli_setup(ac, a)
         if name == "cli_agent_install":
             token = a.pop("_grant", None)
             key = ac.resolve(a.get("agent") or "")
@@ -3131,7 +3146,10 @@ async def _cli_agents(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
             held["args"] = {"agent": key}
             return held
         if name == "cli_agent_login":
-            return ac.login_status(a.get("agent") or "") if a.get("check") else await ac.login(a.get("agent") or "")
+            if a.get("code"):
+                return ac.login_code(a.get("agent") or "", a["code"])
+            return ac.login_status(a.get("agent") or "") if a.get("check") else \
+                await ac.login(a.get("agent") or "", "console" if a.get("method") == "console" else "")
         # Forgiving, for models that half-fill it (a plan is written before the first step gives a session id):
         # text under another name, the action guessed, the agent from the request, a send that starts its session.
         text = a.get("text") or a.get("message") or a.get("prompt") or a.get("input") or ""
@@ -3172,6 +3190,41 @@ async def _cli_agents(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(e, (ac.CliError, DesktopError)):
             return {"success": False, "error": str(e)}
         raise
+
+
+async def _cli_setup(ac, a: Dict[str, Any]) -> Dict[str, Any]:
+    """cli_agent_setup: the steps, and doing the next one. Installing and updating run code from the internet, so each
+    waits for the person's OK on a card (cli_agent_install, or a grant held here for update)."""
+    key = ac.resolve(a.get("agent") or _agent_from_request(ac) or "")
+    act = (a.get("action") or "status").lower()
+    token = a.pop("_grant", None)
+    if act == "update":
+        if token and _install_grants.pop(token, None) == "update:" + key:
+            return await ac.update(key)
+        if not ac.which(key):
+            return {"success": False, "error": f"{ac.AGENTS[key]['name']} isn't installed yet: set it up first."}
+        from app.services import sentinel
+        t = uuid.uuid4().hex
+        _install_grants[t] = "update:" + key
+        held = sentinel.hold("cli_agent_setup", {"agent": key, "action": "update", "_grant": t}, {"rule": "install",
+                             "why": f"Xod wants to update {ac.AGENTS[key]['name']} with its own updater ({ac.version(key) or 'installed'} now)."})
+        held["args"] = {"agent": key, "action": "update"}
+        return held
+    if act == "doctor":
+        return await ac.doctor(key)
+    if act == "test":
+        return await ac.test(key)
+    st = await asyncio.to_thread(ac.setup_status, key)
+    if act != "next" or not st["next"]:
+        return st
+    if st["next"] == "install":
+        return await _cli_agents("cli_agent_install", {"agent": key})
+    if st["next"] == "login":
+        return await ac.login(key)
+    if st["next"] == "test":
+        res = await ac.test(key)
+        return {**res, "setup": await asyncio.to_thread(ac.setup_status, key)}
+    return st
 
 
 DESKTOP_TOOLS = {"desktop_task", "desktop_look", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll", "desktop_open_app",
@@ -4238,7 +4291,7 @@ _DESKTOP_RE = re.compile(r"\b(?:my |the |this )?(?:screen|mouse|cursor|desktop|p
                          r"what(?:'s| is) on (?:my |the )?screen|look at (?:my |the )?screen", re.I)
 
 
-_CLI_AGENT_RE = re.compile(r"\b(?:muse|claude? code|claude cli|codex|gemini cli|aider|opencode|goose|cursor[- ]agent|amp)\b|"
+_CLI_AGENT_RE = re.compile(r"\b(?:muse|claude? ?code|claude cli|codex|gemini cli|aider|opencode|goose|cursor[- ]agent|amp)\b|"
                            r"\b(?:cli|terminal|command[- ]line) (?:agents?|harness(?:es)?|ai)\b|\bharness(?:es)?\b", re.I)
 
 

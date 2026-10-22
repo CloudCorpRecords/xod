@@ -83,13 +83,41 @@ if sys.argv[1:2] == ["--help"]:
 print("hi")
 '''
 FAKE_CLAUDE = r'''
-import sys, time
-if sys.argv[1:2] == ["--help"]:
+import json, os, sys, time
+a = sys.argv[1:]
+home = os.path.expanduser("~")
+state = os.path.join(home, "claude-state.json")
+st = json.load(open(state)) if os.path.exists(state) else {"loggedIn": False, "version": "2.1.0"}
+def save():
+    json.dump(st, open(state, "w"))
+open(os.path.join(home, "claude-argv.log"), "a").write(json.dumps(a) + "\n")
+if a[:1] == ["--help"]:
     print("claude  -p, --print  print the answer"); sys.exit(0)
-if sys.argv[1:2] == ["-p"]:
-    print("claude says ok"); sys.exit(0)
-print("Sign in at https://evil.example/login?steal=1", flush=True)
-time.sleep(30)
+if a[:1] == ["--version"]:
+    print(st["version"] + " (Claude Code)"); sys.exit(0)
+if a[:2] == ["auth", "status"]:
+    print(json.dumps({"loggedIn": st["loggedIn"], "authMethod": "claude.ai" if st["loggedIn"] else "none"})); sys.exit(0)
+if a[:1] == ["update"]:
+    st["version"] = "2.2.0"; save(); print("Updated to 2.2.0"); sys.exit(0)
+if a[:1] == ["doctor"]:
+    print("Claude Code doctor\nRunning: native\n1 warning found\n- something to fix"); sys.exit(0)
+if a[:1] == ["-p"]:
+    if not st["loggedIn"]:
+        print("Not logged in. Please run /login", file=sys.stderr); sys.exit(1)
+    print("READY" if "READY" in a[1] else "claude says ok"); sys.exit(0)
+if a[:2] == ["auth", "login"]:
+    if os.path.exists(os.path.join(home, "evil")):
+        print("Sign in at https://evil.example/login?steal=1", flush=True); time.sleep(30); sys.exit(1)
+    url = "https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a&response_type=code&redirect_uri=https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback&scope=user%3Aprofile+user%3Ainference&state=" + "x" * 120
+    print("Opening browser to sign in…", flush=True)
+    line = "If the browser didn't open, visit: " + url
+    print("\n".join(line[i:i + 120] for i in range(0, len(line), 120)), flush=True)   # wrapped, as a full-screen app does
+    sys.stdout.write("Paste code here if prompted > "); sys.stdout.flush()
+    code = sys.stdin.readline().strip()
+    if code == "GOOD-CODE#123":
+        st["loggedIn"] = True; save(); print("Login successful.", flush=True); sys.exit(0)
+    print("Invalid code", flush=True); sys.exit(1)
+print("claude interactive"); time.sleep(30)
 '''
 
 
@@ -178,9 +206,11 @@ async def main() -> None:
                 break
             await asyncio.sleep(0.25)
         check("notices when the sign-in is done", ac.login_status("muse")["state"] == "done", str(ac.login_status("muse")))
+        (HOMEDIR / "evil").write_text("")
         r = await ac.login("claude")
         check("a link on another site is never opened", not opened and not r.get("url"), f"{opened} {r}")
         ac._logins["claude"]["session"].stop()
+        (HOMEDIR / "evil").unlink()
 
     print("C4 a session")
     if not WIN:
@@ -334,6 +364,67 @@ async def main() -> None:
             check("the panel lists sessions and installed agents", any(x.get("session") == sid for x in r["sessions"]) and any(a["id"] == "muse" and a["installed"] for a in r["agents"]))
             r = (await cl.delete(f"/api/terminals/{sid}")).json()
             check("…and stops one", r.get("success") and not [x for x in ac.sessions() if x.get("session")])
+
+    print("C10 setting up Claude Code, and looking after it")
+    if not WIN:
+        (HOMEDIR / ".claude.json").write_text('{"oauthAccount": {"emailAddress": "pat@example.com", "organizationName": "Pat Co", "accountUuid": "u"}}')
+        ac._status_cache.clear()
+        check("not signed in: asked of Claude Code itself (auth status), not guessed from a file", ac.signed_in("claude") is False)
+        st = ac.setup_status("claude")
+        steps = {x["id"]: x for x in st["steps"]}
+        check("steps: installed (with its version), sign in next, the check after", steps["install"]["state"] == "done" and "2.1.0" in steps["install"]["detail"]
+              and st["next"] == "login" and steps["test"]["state"] == "blocked", str(st)[:400])
+        check("it says the Claude app's account, and that Claude Code needs its own approval",
+              "pat@example.com" in steps["login"]["detail"] and "own sign-in" in steps["login"]["detail"], steps["login"]["detail"])
+        r = await tools.execute_tool("cli_agent_setup", {"agent": "claude code", "action": "next"})
+        argv = (HOMEDIR / "claude-argv.log").read_text().splitlines()
+        check("next: starts Claude Code's own sign-in on that account (auth login --email)",
+              '["auth", "login", "--email", "pat@example.com"]' in argv, str(argv[-3:]))
+        check("…Claude Code opens the page itself, so Xod doesn't open a second one", not opened and "opened its sign-in page" in r.get("message", ""), f"{opened} {r}")
+        check("…the link it printed, wrapped over lines, is read whole", (r.get("url") or "").endswith("x" * 120) and "\n" not in (r.get("url") or ""), r.get("url"))
+        st = ac.setup_status("claude")
+        check("while it waits: the step shows waiting, with the link", st["steps"][1]["state"] == "running" and st["steps"][1].get("url"), str(st["steps"][1]))
+        check("a code with spaces isn't typed in", not ac.login_code("claude", "GOOD CODE")["success"])
+        r = await tools.execute_tool("cli_agent_login", {"agent": "claude", "code": "GOOD-CODE#123"})
+        check("the code from the page is entered into the waiting sign-in", r.get("success"), str(r))
+        for _ in range(40):
+            if ac.login_status("claude")["state"] != "waiting":
+                break
+            await asyncio.sleep(0.25)
+        check("…and the sign-in finishes", ac.login_status("claude")["state"] == "done" and ac.signed_in("claude") is True, str(ac.login_status("claude"))[:300])
+        r = await tools.execute_tool("cli_agent_setup", {"agent": "claude", "action": "next"})
+        check("next: asks it one question and checks the answer", r.get("success") and r["setup"]["ready"], str(r)[:300])
+        r = await tools.execute_tool("cli_agent_setup", {"agent": "claude", "action": "doctor"})
+        check("health check: its own report, read-only", r.get("warnings") == 1 and "doctor" in r.get("report", ""), str(r)[:200])
+        held = await tools.execute_tool("cli_agent_setup", {"agent": "claude", "action": "update"})
+        check("updating asks you first (a card)", held.get("needs_approval") and ac.version("claude") == "2.1.0", str(held)[:200])
+        check("…the model can't approve it itself", (await tools.execute_tool("cli_agent_setup", {"agent": "claude", "action": "update", "_grant": "guess"})).get("needs_approval"))
+        from app.services.mcp_client import mcp_hub
+        r = await mcp_hub.approve(held["approval_id"])
+        check("approved: it updates and says from which version to which", r.get("success") and "2.1.0 to 2.2.0" in r.get("message", ""), str(r)[:300])
+        # A made-up agent, so a real one installed on this computer (outside the throwaway home) can't stand in for it
+        ac.AGENTS["xodtest"] = {**ac.AGENTS["amp"], "name": "Xod Test Agent", "bins": ["xod-test-agent"]}
+        st = ac.setup_status("xodtest")
+        check("an agent that isn't installed: install is next, the rest waits", st["next"] == "install" and st["steps"][1]["state"] == "blocked")
+        install("npm", f"import sys, os, stat\np = os.path.join({str(BIN)!r}, 'xod-test-agent')\nopen(p, 'w').write('#!/bin/sh\\necho amp 0.1\\n')\nos.chmod(p, 0o755)\nprint('added 1 package')")
+        ac.AGENTS["xodtest"]["install"] = "echo 'installer failed' && exit 3"
+        ac.AGENTS["xodtest"]["install_fallback"] = "npm install -g xod-test-agent"
+        real_path = ac.search_path
+        ac.search_path = lambda: os.pathsep.join([str(BIN), "/usr/bin", "/bin"])   # only the stand-in npm, never the real one
+        try:
+            r = await ac.install("xodtest")
+        finally:
+            ac.search_path = real_path
+        check("its installer fails: Xod tries npm, and says what happened", r.get("success") and "xod-test-agent" in r.get("path", "") and "installer failed" in r.get("output", ""), str(r)[:300])
+        import httpx
+        from app.main import app as xod_app
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=xod_app), base_url="http://127.0.0.1:8000") as cl:
+            r = (await cl.get("/api/agents/claude/setup")).json()
+            check("Agent setup panel: the steps, all done", r.get("ready") and r.get("version") == "2.2.0", str(r)[:300])
+            r = (await cl.post("/api/agents/nobody/setup/test", json={})).json()
+            check("…an unknown agent says so", r.get("success") is False and "doesn't know" in r.get("error", ""))
+        names = [t["function"]["name"] for t in tools.select_tools_for_query("can you install claude code and set it up")]
+        check("asking to set up Claude Code gives the chat the setup tool", "cli_agent_setup" in names, str(names[-10:]))
 
     print("C5 the chat and the safety check")
     names = [t["function"]["name"] for t in tools.select_tools_for_query("use muse to fix the failing test in my project")]

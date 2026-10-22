@@ -2014,6 +2014,43 @@ async def crew_act(jid: str, action: str, req: CrewAct):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/agents/{agent}/setup")
+async def agent_setup_status(agent: str):
+    """Setting up a terminal agent (services/agent_clis.py): installed, signed in, answering, and what's next."""
+    from app.services import agent_clis
+    try:
+        return await asyncio.to_thread(agent_clis.setup_status, agent)
+    except agent_clis.CliError as e:
+        return {"success": False, "error": str(e)}
+
+
+class AgentSetupAction(BaseModel):
+    code: Optional[str] = ""
+    method: Optional[str] = ""
+
+
+@app.post("/api/agents/{agent}/setup/{action}")
+async def agent_setup_action(agent: str, action: str, req: AgentSetupAction):
+    """The person's own click in Agent setup: install and update run here because the click is their OK."""
+    from app.services import agent_clis as ac
+    try:
+        if action == "install":
+            return await ac.install(agent)
+        if action == "login":
+            return await ac.login(agent, "console" if req.method == "console" else "")
+        if action == "code":
+            return await asyncio.to_thread(ac.login_code, agent, req.code or "")
+        if action == "test":
+            return await ac.test(agent)
+        if action == "update":
+            return await ac.update(agent)
+        if action == "doctor":
+            return await ac.doctor(agent)
+    except ac.CliError as e:
+        return {"success": False, "error": str(e)}
+    return {"success": False, "error": f"Unknown step {action!r}."}
+
+
 @app.get("/api/terminals")
 async def terminals_list():
     """Xod's terminal sessions (services/agent_clis.py): agents and programs, with their state, and the agents installed."""

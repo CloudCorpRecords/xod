@@ -43,10 +43,16 @@ AGENTS: Dict[str, Dict[str, Any]] = {
              "thread": "session_id",       # continues a conversation: muse exec --session-id <uuid we choose>
              "login": ["login"], "signed_in": [".config/muse/auth.json"], "key_env": "META_API_KEY",
              "auth_hosts": ("meta.com", "meta.ai", "facebook.com"), "install": "curl -fsSL https://muse.meta.ai/install.sh | bash"},
-    "claude": {"name": "Claude Code", "bins": ["claude"], "run": ["-p", "{prompt}"], "check": "--print", "login": None,
+    "claude": {"name": "Claude Code", "bins": ["claude"], "run": ["-p", "{prompt}"], "check": "--print", "login": ["auth", "login"],
                "thread": "resume",         # claude -p … --output-format json gives session_id; --resume <it> continues
+               "status": ["auth", "status", "--json"],   # {"loggedIn": …}: its sign-in lives in the Keychain on a Mac, not a file
+               "opens_browser": True,      # `claude auth login` opens the page itself (and prints it in case it couldn't)
+               "update": ["update"], "doctor": ["doctor"],
                "signed_in": [".claude/.credentials.json"], "key_env": "ANTHROPIC_API_KEY",
-               "auth_hosts": ("claude.ai", "anthropic.com", "claude.com"), "install": "npm install -g @anthropic-ai/claude-code"},
+               "auth_hosts": ("claude.ai", "anthropic.com", "claude.com"),
+               "install": ('powershell -NoProfile -Command "irm https://claude.ai/install.ps1 | iex"' if sys.platform == "win32"
+                           else "curl -fsSL https://claude.ai/install.sh | bash"),
+               "install_fallback": "npm install -g @anthropic-ai/claude-code"},
     "codex": {"name": "Codex (OpenAI)", "bins": ["codex"], "run": ["exec", "{prompt}"], "check": "exec", "login": ["login"],
               "signed_in": [".codex/auth.json"], "key_env": "OPENAI_API_KEY",
               "auth_hosts": ("openai.com", "chatgpt.com"), "install": "npm install -g @openai/codex"},
@@ -81,6 +87,11 @@ _sessions: Dict[str, "Session"] = {}
 COLS, ROWS = 140, 45
 RETURN_PAUSE = 0.8       # seconds between typing a message into an agent and pressing Return
 MAX_SESSIONS = 8         # sessions (agents or any program) Xod keeps running in the background at once
+
+
+_status_cache: Dict[str, Any] = {}   # agent -> (when, its auth status)
+_tested: Dict[str, Dict[str, Any]] = {}
+_version_cache: Dict[str, Any] = {}  # agent -> the last setup test: ok, when, what it said
 
 
 class CliError(Exception):
@@ -128,11 +139,33 @@ def which(agent: str) -> Optional[str]:
     return None
 
 
+def auth_status(agent: str) -> Optional[Dict[str, Any]]:
+    """The agent's own answer to "am I signed in?" (claude auth status --json), for agents that have one; cached a minute."""
+    a = AGENTS[agent]
+    path = which(agent) if a.get("status") else None
+    if not path:
+        return None
+    hit = _status_cache.get(agent)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    try:
+        r = subprocess.run([path, *a["status"]], capture_output=True, text=True, timeout=20, env=_env(), stdin=subprocess.DEVNULL)
+        d = json.loads(r.stdout)
+        d = d if isinstance(d, dict) else None
+    except Exception:
+        d = None
+    _status_cache[agent] = (time.time(), d)
+    return d
+
+
 def signed_in(agent: str) -> Optional[bool]:
-    """True when its sign-in file exists or its API key is set; None when Xod can't tell (it'll say if it isn't)."""
+    """True when the agent says it's signed in, its sign-in file exists or its API key is set; None when Xod can't tell."""
     a = AGENTS[agent]
     if a["key_env"] and os.environ.get(a["key_env"]):
         return True
+    st = auth_status(agent)
+    if st is not None and "loggedIn" in st:
+        return bool(st["loggedIn"])
     if not a["signed_in"]:
         return None
     return any((HOME / f).exists() for f in a["signed_in"]) or None
@@ -630,12 +663,35 @@ def sessions() -> List[Dict[str, Any]]:
 
 
 # ------------------------------------------------------------------ signing in
-def _login_argv(key: str, path: str) -> List[str]:
+def _login_argv(key: str, path: str, method: str = "") -> List[str]:
     a = AGENTS[key]
-    return [path] + (a["login"] or [])          # agents with no login command sign in on their first start
+    argv = [path] + (a["login"] or [])          # agents with no login command sign in on their first start
+    if key == "claude":
+        if method == "console":
+            argv.append("--console")            # an Anthropic Console account: API usage billing, not a Claude plan
+        elif (claude_app().get("account") or {}).get("email"):
+            argv += ["--email", claude_app()["account"]["email"]]   # the page opens on the account the Claude app uses
+    return argv
 
 
-async def login(agent: str) -> Dict[str, Any]:
+def claude_app() -> Dict[str, Any]:
+    """The Claude desktop app on this computer and the account it's signed in to. Its sign-in can't be handed to Claude
+    Code (each keeps its own), but knowing the account lets Claude Code's sign-in open on it: one click to approve."""
+    if WIN:
+        app = Path(os.environ.get("LOCALAPPDATA", str(HOME / "AppData/Local"))) / "AnthropicClaude"
+    else:
+        app = next((p for p in (Path("/Applications/Claude.app"), HOME / "Applications/Claude.app") if p.exists()), Path("/Applications/Claude.app"))
+    out: Dict[str, Any] = {"installed": app.exists(), "account": None}
+    try:
+        acct = json.loads((HOME / ".claude.json").read_text()).get("oauthAccount") or {}
+        if acct.get("emailAddress"):
+            out["account"] = {"email": acct["emailAddress"], "organization": acct.get("organizationName") or ""}
+    except (OSError, ValueError, AttributeError):
+        pass
+    return out
+
+
+async def login(agent: str, method: str = "") -> Dict[str, Any]:
     """Starts the agent's sign-in, finds its link and code, and opens the page in your browser for you to approve."""
     key = resolve(agent)
     a = AGENTS[key]
@@ -645,8 +701,10 @@ async def login(agent: str) -> Dict[str, Any]:
     old = _logins.get(key)
     if old and old.get("state") == "waiting" and old["session"].running():
         return {"success": True, **{k: v for k, v in old.items() if k != "session"}, "message": "Its sign-in is already waiting for you."}
-    s = Session(key, _login_argv(key, path), str(HOME))
-    entry = {"agent": a["name"], "state": "waiting", "url": None, "code": None, "opened": False, "started": time.time(), "session": s}
+    s = Session(key, _login_argv(key, path, method), str(HOME))
+    entry = {"agent": a["name"], "state": "waiting", "url": None, "code": None, "opened": bool(a.get("opens_browser")),
+             "started": time.time(), "session": s}
+    _status_cache.pop(key, None)
     _logins[key] = entry
     deadline = time.time() + 40
     while time.time() < deadline and s.running():
@@ -656,7 +714,7 @@ async def login(agent: str) -> Dict[str, Any]:
             entry["entered"] = True
             s.write("\r")                   # "Press Enter to open it in your browser": the agent opens the page itself
             entry["opened"] = True
-        urls = [u.rstrip(".,") for u in URL_RE.findall(text)]
+        urls = [u.rstrip(".,") for u in _urls(text)]
         ok = [u for u in urls if not a["auth_hosts"] or any(re.search(rf"(?:^|\.){re.escape(h)}(?::|/|$)", u.split("//", 1)[1].split("/")[0] + "/") for h in a["auth_hosts"])]
         m = CODE_RE.search(text)
         if m:
@@ -678,10 +736,31 @@ async def login(agent: str) -> Dict[str, Any]:
         return {"success": done or s.running(), "agent": a["name"], "state": entry["state"], "screen": text[-2000:],
                 "message": (f"{a['name']} says you're signed in." if done else
                             f"{a['name']}'s sign-in is running but showed no link yet; here's what it shows. Say what it asks and Xod answers it.")}
+    if a.get("opens_browser"):
+        return {"success": True, "agent": a["name"], "state": "waiting", "url": entry["url"], "code": entry["code"],
+                "message": f"{a['name']} opened its sign-in page in your browser: approve it there and Xod finishes by itself. "
+                           f"If no page opened, open the link. If the page shows a code instead, paste it into Xod's Agent setup "
+                           f"(or say it here) and Xod enters it."}
     return {"success": True, "agent": a["name"], "state": "waiting", "url": entry["url"], "code": entry["code"],
             "message": f"Opened {a['name']}'s sign-in page in your browser"
                        + (f": check it shows the code {entry['code']}" if entry["code"] else "") + ", then approve it there. "
                        "Xod finishes by itself when you do (nothing to type here)."}
+
+
+def _urls(text: str) -> List[str]:
+    """Links in what an agent printed. A full-screen agent wraps a long sign-in link onto the next lines, so a link that
+    runs to the edge takes the link-only lines under it too."""
+    out, lines = [], text.split("\n")
+    for i, line in enumerate(lines):
+        for m in URL_RE.finditer(line):
+            u = m.group(0)
+            if m.end() == len(line.rstrip()) and len(line.rstrip()) >= 100:
+                j = i + 1
+                while j < len(lines) and re.fullmatch(r"[A-Za-z0-9\-._~%!$&'()*+,;=:@/?#\[\]]{2,}", lines[j].strip()):
+                    u += lines[j].strip()
+                    j += 1
+            out.append(u)
+    return out
 
 
 def open_url(url: str) -> None:
@@ -704,7 +783,23 @@ def _watch_login(key: str) -> None:
     e["state"] = "done" if ok else ("expired" if time.time() - start >= 1800 else "failed")
     if s.running() and ok:
         s.stop()
+    _status_cache.pop(key, None)
     logger.info(f"{AGENTS[key]['name']} sign-in: {e['state']}")
+
+
+def login_code(agent: str, code: str) -> Dict[str, Any]:
+    """Enters the code a sign-in page showed (when the page couldn't hand it back by itself) into the waiting sign-in."""
+    key = resolve(agent)
+    e = _logins.get(key)
+    code = str(code or "").strip()
+    if not e or e.get("state") != "waiting" or not e["session"].running():
+        return {"success": False, "error": f"No {AGENTS[key]['name']} sign-in is waiting. Start it again."}
+    if not code or len(code) > 400 or re.search(r"\s", code):
+        return {"success": False, "error": "That doesn't look like the code from the sign-in page (one line, no spaces)."}
+    e["session"].write(code)
+    time.sleep(0.3)
+    e["session"].write("\r")
+    return {"success": True, "agent": AGENTS[key]["name"], "message": "Entered the code. Xod finishes the sign-in by itself."}
 
 
 def login_status(agent: str) -> Dict[str, Any]:
@@ -747,8 +842,14 @@ def context_note(query: str) -> str:
     missing = [k for k, info in AGENTS.items() if k not in {a["id"] for a in found}
                and re.search(rf"\b(?:{typos.get(k, re.escape(k))}|{re.escape(info['name'].split(' (')[0])})\b", query or "", re.I)]
     for k in missing:
-        note += (f"{AGENTS[k]['name']} isn't installed: cli_agent_install installs it after the person's OK (it runs "
-                 f"{AGENTS[k]['install']}), then cli_agent_login signs them in. ")
+        note += (f"{AGENTS[k]['name']} isn't installed: cli_agent_setup sets it up step by step (action next: installs it "
+                 f"after the person's OK on a card, with {AGENTS[k]['install']}; then signs them in, then checks it answers). ")
+        if k == "claude" and claude_app().get("account"):
+            note += ("The Claude desktop app is signed in on this computer, but Claude Code keeps its own sign-in: it needs "
+                     "one approval in the browser, and Xod opens it on the same account. Say that plainly. ")
+    unsigned = [a["name"] for a in found if a["signed_in"] is False]
+    if unsigned:
+        note += f"Not signed in yet: {', '.join(unsigned)} (cli_agent_setup with action next signs them in). "
     live = [x for x in sessions() if x.get("session") and x.get("running")]
     if live:
         note += "Running now: " + "; ".join(f"{x['name']} ({x['agent']}, {x['state']})" for x in live[:8]) + ". "
@@ -776,13 +877,131 @@ async def install(agent: str, timeout: float = 900) -> Dict[str, Any]:
         return {"success": False, "agent": a["name"], "error": f"Installing {a['name']} took longer than {int(timeout // 60)} minutes, so Xod stopped it."}
     _path_cache.update(at=0.0, path="")
     _help_cache.pop(key, None)
+    _status_cache.pop(key, None)
     text = clean(out.decode("utf-8", "replace"))[-3000:]
     path = which(key)
+    if (proc.returncode != 0 or not path) and a.get("install_fallback") and shutil.which("npm", path=search_path()):
+        first = text
+        proc = await asyncio.create_subprocess_shell(a["install_fallback"], cwd=str(HOME), env=_env(), stdin=subprocess.DEVNULL,
+                                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=not WIN)
+        try:
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+        except asyncio.TimeoutError:
+            _kill(proc.pid)
+            out = b"(stopped: it took too long)"
+        _path_cache.update(at=0.0, path="")
+        text = (first[-1200:] + "\n--- then with npm ---\n" + clean(out.decode("utf-8", "replace")))[-3000:]
+        path = which(key)
     if proc.returncode != 0 or not path:
         return {"success": False, "agent": a["name"], "exit_code": proc.returncode, "output": text,
                 "error": f"Installing {a['name']} didn't work" + (" (is npm installed?)" if a["install"].startswith("npm") and "not found" in text else "") + "."}
     return {"success": True, "agent": a["name"], "path": path, "output": text[-800:],
-            "next": f"Installed. Sign in next: cli_agent_login {key} (it opens the page in your browser)."}
+            "next": f"Installed. Sign in next (cli_agent_login {key}): it opens the page in your browser.",
+            "message": f"Installed {a['name']}. Sign in next: it opens the page in your browser."}
+
+
+# ------------------------------------------------------------------ setting one up, and looking after it
+def _plain(argv: List[str], timeout: float = 60) -> Dict[str, Any]:
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=_env(), stdin=subprocess.DEVNULL, cwd=str(HOME))
+        return {"exit_code": r.returncode, "output": clean((r.stdout or "") + (r.stderr or "")).strip()}
+    except subprocess.TimeoutExpired:
+        return {"exit_code": None, "output": f"(still running after {int(timeout)} seconds, so Xod stopped it)"}
+    except OSError as e:
+        return {"exit_code": None, "output": str(e)}
+
+
+def version(agent: str) -> str:
+    path = which(resolve(agent))
+    if not path:
+        return ""
+    try:
+        stamp = (path, os.path.realpath(path), os.stat(path).st_mtime)
+    except OSError:
+        stamp = (path,)
+    if _version_cache.get(path, (None,))[0] == stamp:     # the same file as last time: no need to start it again
+        return _version_cache[path][1]
+    out = _plain([path, "--version"], 20)["output"]
+    m = re.search(r"\d+\.\d+(?:\.\d+)?", out)
+    _version_cache[path] = (stamp, m.group(0) if m else out[:40])
+    return _version_cache[path][1]
+
+
+def setup_status(agent: str) -> Dict[str, Any]:
+    """Where setting up an agent stands, as steps: installed, signed in, answering. `next` is the first one not done."""
+    key = resolve(agent)
+    a = AGENTS[key]
+    path = which(key)
+    ver = version(key) if path else ""
+    si = signed_in(key) if path else None
+    lg = _logins.get(key) or {}
+    waiting = lg.get("state") == "waiting" and lg.get("session") is not None and lg["session"].running()
+    tested = _tested.get(key) or {}
+    app = claude_app() if key == "claude" else None
+    acct = (app or {}).get("account") or {}
+    steps = [
+        {"id": "install", "label": f"Install {a['name']}", "state": "done" if path else "todo",
+         "detail": f"{path.replace(str(HOME), '~')} (version {ver})" if path else f"With its own installer: {a['install']}"},
+        {"id": "login", "label": "Sign in",
+         "state": "done" if si else "running" if waiting else "todo" if path else "blocked",
+         "detail": ("Signed in." if si else
+                    "Waiting for you to approve it in your browser." if waiting else
+                    (f"The Claude app is signed in as {acct['email']}. Claude Code keeps its own sign-in, so it needs one "
+                     f"approval in your browser: Xod opens the page on that account." if acct else
+                     "Opens its sign-in page in your browser to approve.") if path else "After it's installed."),
+         **({"url": lg.get("url"), "code": lg.get("code")} if waiting else {})},
+        {"id": "test", "label": "Check it answers",
+         "state": ("done" if tested.get("ok") else "failed" if tested else "todo") if si else "blocked",
+         "detail": (tested.get("note") or "") if tested else "Xod asks it one short question and checks the answer."}]
+    nxt = next((s["id"] for s in steps if s["state"] in ("todo", "failed")), None)
+    ready = all(s["state"] == "done" for s in steps)
+    return {"success": True, "agent": key, "name": a["name"], "installed": bool(path), "version": ver, "signed_in": si,
+            "ready": ready, "steps": steps, "next": None if ready else (nxt or ("login" if waiting else None)),
+            "claude_app": app, "can_update": bool(a.get("update")), "can_doctor": bool(a.get("doctor")),
+            "message": (f"{a['name']} is set up and answering." if ready else
+                        f"Next: {(lambda l: l[0].lower() + l[1:])(next(s['label'] for s in steps if s['id'] == nxt))}." if nxt else
+                        "Waiting for you to approve the sign-in in your browser.")}
+
+
+async def test(agent: str, timeout: float = 120) -> Dict[str, Any]:
+    """Asks the agent one short question in its headless mode and checks the answer: proof it's installed, signed in
+    and can reach its model."""
+    key = resolve(agent)
+    res = await run(key, "Reply with exactly the word READY and nothing else.", timeout=timeout)
+    ok = bool(res.get("success")) and "READY" in (res.get("answer") or "").upper()
+    note = (f"It answered in {res.get('seconds')} s." if ok else
+            res.get("error") or (res.get("errors") or res.get("answer") or "It didn't answer.")[-400:])
+    _tested[key] = {"ok": ok, "at": time.time(), "note": note}
+    return {"success": ok, "agent": AGENTS[key]["name"], "needs_login": res.get("needs_login", False), "note": note,
+            "answer": (res.get("answer") or "")[-400:]}
+
+
+async def update(agent: str) -> Dict[str, Any]:
+    """Updates the agent with its own updater (claude update). Only after the person's OK."""
+    key = resolve(agent)
+    a, path = AGENTS[key], which(key)
+    if not path or not a.get("update"):
+        return {"success": False, "error": f"{a['name']} isn't installed." if not path else f"Xod doesn't know how {a['name']} updates itself."}
+    before = version(key)
+    r = await asyncio.to_thread(_plain, [path, *a["update"]], 600)
+    _help_cache.pop(key, None)
+    _version_cache.pop(path, None)
+    after = version(key)
+    return {"success": r["exit_code"] == 0, "agent": a["name"], "before": before, "after": after, "output": r["output"][-1500:],
+            "message": (f"Updated {a['name']} from {before} to {after}." if after and after != before else
+                        f"{a['name']} {after or before} is already the latest." if r["exit_code"] == 0 else f"Updating {a['name']} didn't work.")}
+
+
+async def doctor(agent: str) -> Dict[str, Any]:
+    """The agent's own health check (claude doctor): read-only, it changes nothing."""
+    key = resolve(agent)
+    a, path = AGENTS[key], which(key)
+    if not path or not a.get("doctor"):
+        return {"success": False, "error": f"{a['name']} isn't installed." if not path else f"{a['name']} has no health check Xod knows."}
+    r = await asyncio.to_thread(_plain, [path, *a["doctor"]], 90)
+    warn = re.search(r"(\d+) warnings? found", r["output"])
+    return {"success": r["exit_code"] in (0, None), "agent": a["name"], "report": r["output"][-4000:],
+            "warnings": int(warn.group(1)) if warn else 0}
 
 
 # ------------------------------------------------------------------ conversations (headless, by id)

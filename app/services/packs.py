@@ -42,7 +42,7 @@ PACKS: List[Dict[str, Any]] = [
                "terminal_list", "terminal_read", "terminal_send"]},
     {"id": "cli-agents", "name": "Terminal AI agents", "icon": "square-terminal", "default": True,
      "description": "Xod uses the AI agents in your terminal (Muse, Claude Code, Codex, Gemini CLI, Aider and more): it finds them, signs you in through your browser, and hands them jobs or keeps a session going.",
-     "tools": ["cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session", "cli_agent_install", "cli_agent_chat",
+     "tools": ["cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session", "cli_agent_install", "cli_agent_chat", "cli_agent_setup",
                "crew_start", "crew_status", "crew_message", "crew_stop"]},
     {"id": "creator-trends", "name": "Creators & trends", "icon": "flame", "default": False,
      "description": "Spot rising creators and what people are talking about across social sites and YouTube.",
