@@ -22,13 +22,13 @@ jobs:
     name: Build Xod.dmg (Apple silicon)
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: electron/package-lock.json
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
       - name: Standalone Python 3.12 to bundle
         run: uv python install 3.12
       - name: Release check
@@ -50,7 +50,7 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Xod ${TAG#v}" --notes "Building…"
           gh release upload "$TAG" electron/dist/Xod-*-arm64.dmg electron/dist/Xod-Mac.dmg --clobber
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sums-mac
           path: electron/dist/sums-mac.txt
@@ -59,13 +59,13 @@ jobs:
     name: Build Xod-setup.exe (Windows x64)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: electron/package-lock.json
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
       - name: Standalone Python 3.12 to bundle
         run: uv python install 3.12
       - name: Build the installer
@@ -88,7 +88,7 @@ jobs:
           for i in 1 2 3 4 5 6 7 8 9; do gh release view "$TAG" >/dev/null 2>&1 && break; sleep 20; done
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Xod ${TAG#v}" --notes "Building…"
           gh release upload "$TAG" electron/dist/Xod-*-x64-setup.exe electron/dist/Xod-Windows-Setup.exe --clobber
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sums-win
           path: electron/dist/sums-win.txt
@@ -98,8 +98,8 @@ jobs:
     needs: [mac, windows]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: sums-*
           merge-multiple: true
