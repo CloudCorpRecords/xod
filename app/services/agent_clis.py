@@ -732,7 +732,9 @@ def context_note(query: str) -> str:
     home = str(HOME)
     rows = [f"{a['name']} ({a['id']}) at {str(a['path']).replace(home, '~')}, "
             + ("signed in" if a["signed_in"] else "not signed in yet" if a["signed_in"] is False else "sign-in unknown") for a in found]
-    note = ("(On this computer, terminal AI agents installed: " + "; ".join(rows) + ". For Claude Code and Muse the "
+    note = ("(On this computer, terminal AI agents installed: " + "; ".join(rows) + ". For real work in a project with "
+            "Muse, use crew_start: a Crew job Xod follows step by step, where Muse's requests to run things go to the person "
+            "on the Crew board. For Claude Code and Muse the "
             "efficient way is cli_agent_chat: exact answers, and the same thread continues the conversation. Otherwise call cli_agent_run "
             "(one job, headless, in a folder) or cli_agent_session (start it, then send messages and read its screen; "
             "visible=true opens it in a Terminal window the person can watch). Several can run at once, each by name (muse-1, "

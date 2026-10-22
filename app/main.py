@@ -468,6 +468,15 @@ async def show_task_page(task_id: str):
 
 
 @app.on_event("shutdown")
+async def _stop_crew_host():
+    try:
+        from app.services import crew
+        await crew.shutdown()
+    except Exception:
+        pass
+
+
+@app.on_event("shutdown")
 async def _stop_terminal_sessions():
     """The agents and programs Xod started in terminals stop with it (they run in their own process groups, so
     nothing else would stop them)."""
@@ -1927,6 +1936,83 @@ async def get_lmstudio_status():
         status = {**status, "active": {"provider": "local", "server": "Built-in", "model": entry.get("label") or repo.split("/")[-1],
                                        "ready": ready, "problem": None if ready else "The built-in model isn't downloaded yet (Settings → Models)."}}
     return status
+
+@app.get("/api/crew")
+async def crew_list():
+    """The Crew (services/crew.py): jobs Xod hands to coding agents (Muse, natively), their steps and what they ask."""
+    from app.services import crew
+    return {"jobs": crew.jobs()}
+
+
+class CrewStart(BaseModel):
+    task: str
+    folder: Optional[str] = ""
+    title: Optional[str] = ""
+
+
+@app.post("/api/crew")
+async def crew_start(req: CrewStart):
+    from app.services import crew
+    try:
+        return {"success": True, "job": await crew.start(req.task, req.folder or "", req.title or "")}
+    except crew.CrewError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/crew/settings/muse-tools")
+async def crew_muse_tools():
+    """Muse's own tools (MCP servers in its settings) and which ones Crew jobs get (each slows Muse's start)."""
+    from app.services import crew
+    return crew.muse_tools()
+
+
+class CrewTools(BaseModel):
+    names: List[str]
+
+
+@app.post("/api/crew/settings/muse-tools")
+async def crew_set_muse_tools(req: CrewTools):
+    from app.services import crew
+    return crew.set_muse_tools(req.names)
+
+
+@app.get("/api/crew/{jid}")
+async def crew_job(jid: str):
+    from app.services import crew
+    try:
+        return {"success": True, "job": crew._view(crew.job(jid), steps=400)}
+    except crew.CrewError as e:
+        return {"success": False, "error": str(e)}
+
+
+class CrewAct(BaseModel):
+    text: Optional[str] = ""
+    steer: Optional[bool] = False
+    approval: Optional[str] = ""
+    decision: Optional[str] = ""
+    question: Optional[str] = ""
+    answers: Optional[List[Dict[str, Any]]] = None
+
+
+@app.post("/api/crew/{jid}/{action}")
+async def crew_act(jid: str, action: str, req: CrewAct):
+    """message, decide, answer, interrupt, stop: what you do on the Crew board (it's you, so it goes straight through)."""
+    from app.services import crew
+    try:
+        if action == "message":
+            return {"success": True, "job": await crew.message(jid, req.text or "", bool(req.steer))}
+        if action == "decide":
+            return {"success": True, "job": await crew.decide(jid, req.approval or "", req.decision or "once")}
+        if action == "answer":
+            return {"success": True, "job": await crew.answer(jid, req.question or "", req.answers or [])}
+        if action == "interrupt":
+            return {"success": True, "job": await crew.interrupt(jid)}
+        if action == "stop":
+            return {"success": True, "job": await crew.stop(jid)}
+        return {"success": False, "error": f"Unknown action {action}."}
+    except crew.CrewError as e:
+        return {"success": False, "error": str(e)}
+
 
 @app.get("/api/terminals")
 async def terminals_list():

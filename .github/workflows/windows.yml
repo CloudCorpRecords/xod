@@ -70,6 +70,7 @@ jobs:
       - name: The xod terminal command - install from the app, finding the app's server, the npm package
         run: python tests/smoke/run_terminal_command_test.py
       # Not run_terminals_edge_test: its stand-in agents are shell scripts, and Windows sessions use pipes, not a terminal.
+      # Not run_crew_test: its stand-in Muse is started through a shell script (Muse itself is Mac and Linux).
       # Not run_desktop_test: using the screen, mouse and keyboard is Mac only for now (services/desktop.py).
       # Not run_engine_watchdog_test: the built-in engine (MLX) is Mac only, so its watchdog never runs here. The Mac job runs it.
 

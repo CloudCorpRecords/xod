@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+**The Crew: Xod conducts Muse (part 1 of the 0.8 update)**
+- Xod drives Muse through Muse's own protocol (`muse serve`), not a terminal: Tools → Crew, or ask in the chat ("have muse fix the failing tests in ~/code/app"). Each job runs in the background while Xod records every step as it happens: what Muse says, each command and tool it runs with its result, and each file it edits with the lines added and removed.
+- Follow-ups continue the same Muse session, "change course now" steers it mid-turn, Interrupt and Stop; jobs and their steps are kept across restarts.
+- When Muse escalates something for a person to decide (it approves safe steps itself and blocks what its sandbox forbids), the job waits for you on the Crew board: Approve once, Approve for this job, or Deny, with Xod's own safety warning (download-and-run, deletes, sudo, secrets, anything Xod would refuse to run). Muse's questions wait there too, with their options. The chat's tools only report these: Xod never decides for you. Your phone gets a notice, and decisions are in the approvals history.
+- Fast starts: Muse starts every tool in its settings before a session can begin (31 tools took over 3 minutes), so Crew jobs run Muse with your settings minus its tools, which starts in seconds; tick the ones jobs should have under "Muse's tools for jobs". Your sign-in is linked, not copied, and your own Muse settings are never changed.
+- One Muse host serves every job and stops after 30 minutes unused; at most 4 jobs work at once.
+- Checked live with Muse 1.4.11: a reply in 11 seconds (instead of 200), a command run and shown step by step, a file written and edited with its line counts, and a follow-up from the Crew board answered in the same session.
+
 ## 0.7.13
 
 **Security**

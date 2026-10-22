@@ -2505,6 +2505,44 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "crew_start",
+            "description": "Hands a coding job to Muse as a Crew job: Muse works on it in a folder in the background while Xod follows every step (what it runs, the files it edits). When Muse asks permission to run something, or asks a question, the person decides on the Crew board (Tools → Crew); Xod never approves for them. Returns the job; with wait_seconds it waits that long for the result. Use for real work in a project (\"have muse fix the failing tests in ~/code/app\").",
+            "parameters": {"type": "object", "properties": {
+                "task": {"type": "string", "description": "The job, in the person's words, with what counts as done"},
+                "folder": {"type": "string", "description": "The project folder"},
+                "title": {"type": "string", "description": "A short name for the job"},
+                "wait_seconds": {"type": "integer", "description": "Wait up to this long for it to finish (default 90, max 600)"}},
+                "required": ["task"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "crew_status",
+            "description": "Where Crew jobs stand: all of them, or one (job: its name or id) with its latest steps, files changed, Muse's answer, and anything waiting for the person's OK. With wait_seconds, waits for it to finish first.",
+            "parameters": {"type": "object", "properties": {"job": {"type": "string"}, "wait_seconds": {"type": "integer"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "crew_message",
+            "description": "Sends a Crew job a follow-up (\"also add a test\"), or with steer=true a change of course while it's working.",
+            "parameters": {"type": "object", "properties": {"job": {"type": "string"}, "text": {"type": "string"}, "steer": {"type": "boolean"},
+                           "wait_seconds": {"type": "integer"}}, "required": ["job", "text"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "crew_stop",
+            "description": "Interrupts a Crew job (interrupt: it can be continued with a message) or stops it for good.",
+            "parameters": {"type": "object", "properties": {"job": {"type": "string"}, "for_good": {"type": "boolean"}}, "required": ["job"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "cli_agent_chat",
             "description": "The efficient way to work with Claude Code or Muse: a conversation through its headless mode. Each message runs once and returns the exact answer; the next message with the same thread continues the same conversation (it remembers). No screen to read, and it survives a restart. Several threads can run at once (different names). Use this for jobs and back-and-forth; use cli_agent_session only when the person wants to watch it live or it needs answers to its own questions.",
             "parameters": {"type": "object", "properties": {
@@ -2969,7 +3007,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     return result
 
 
-CLI_TOOLS = {"cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session", "cli_agent_install", "cli_agent_chat"}
+CLI_TOOLS = {"cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session", "cli_agent_install", "cli_agent_chat",
+             "crew_start", "crew_status", "crew_message", "crew_stop"}
 _install_grants: Dict[str, str] = {}
 _setup_grants: set = set()
 
@@ -3007,6 +3046,37 @@ def _agent_from_request(ac) -> str:
     return installed[0] if len(installed) == 1 else ""
 
 
+async def _crew_tool(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
+    """Crew jobs (services/crew.py). What the person must decide stays theirs: approvals and Muse's questions are only
+    reported here, and decided on the Crew board."""
+    from app.services import crew
+    wait = max(0, min(int(a.get("wait_seconds") if a.get("wait_seconds") is not None else 90), 600))
+    try:
+        if name == "crew_start":
+            j = await crew.start(a.get("task") or a.get("text") or a.get("prompt") or "", a.get("folder") or "", a.get("title") or "")
+            j = await crew.wait(j["id"], wait) if wait else j
+        elif name == "crew_status":
+            if not a.get("job"):
+                return {"success": True, "jobs": crew.jobs()}
+            j = await crew.wait(crew.job(a["job"])["id"], max(0, min(int(a.get("wait_seconds") or 0), 600)))
+        elif name == "crew_message":
+            j = await crew.message(a.get("job") or "", a.get("text") or "", bool(a.get("steer")))
+            j = await crew.wait(j["id"], wait) if wait else j
+        else:
+            j = await (crew.stop if a.get("for_good") else crew.interrupt)(a.get("job") or "")
+    except crew.CrewError as e:
+        return {"success": False, "error": str(e)}
+    out = {k: j.get(k) for k in ("id", "name", "title", "status", "folder", "answer", "files", "error", "usage")}
+    out["steps"] = [f"{x['kind']}: {x['text']}" for x in j["steps"][-25:]]
+    if j["approvals"] or j["questions"]:
+        out["waiting_for_you"] = [f"Muse wants to {x['what']}" + (f" (safety check: {x['warning']})" if x.get("warning") else "") for x in j["approvals"]] + \
+                                 [f"Muse asks: {' / '.join(q['question'] or '' for q in x['questions'])}" for x in j["questions"]]
+        out["note"] = "Tell the person: it's waiting for their decision on the Crew board (Tools → Crew). Don't decide for them."
+    elif j["status"] in ("starting", "working"):
+        out["note"] = "Still working. It carries on in the background; check with crew_status, or watch it on the Crew board."
+    return {"success": j["status"] != "failed", **out}
+
+
 def _screen_on() -> bool:
     from app.services import desktop
     return desktop.MAC and desktop.enabled()
@@ -3040,6 +3110,8 @@ async def _cli_agents(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
             if a.get("jobs"):
                 return await ac.run_many(list(a["jobs"]), timeout=mins * 60)
             return await ac.run(a.get("agent") or _agent_from_request(ac), a.get("prompt") or a.get("text") or "", a.get("folder") or "", timeout=mins * 60)
+        if name.startswith("crew_"):
+            return await _crew_tool(name, a)
         if name == "cli_agent_chat":
             mins = max(1, min(int(a.get("timeout_minutes") or 15), 60))
             return await ac.chat(a.get("agent") or _agent_from_request(ac), a.get("message") or a.get("text") or a.get("prompt") or "",
