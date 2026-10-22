@@ -2506,8 +2506,9 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "crew_start",
-            "description": "Hands a coding job to Muse as a Crew job: Muse works on it in a folder in the background while Xod follows every step (what it runs, the files it edits). When Muse asks permission to run something, or asks a question, the person decides on the Crew board (Tools → Crew); Xod never approves for them. Returns the job; with wait_seconds it waits that long for the result. Use for real work in a project (\"have muse fix the failing tests in ~/code/app\").",
+            "description": "Hands a coding job to Claude Code or Muse as a Crew job: it works in a folder in the background while Xod follows every step (what it runs, the files it edits). When it asks permission to run or change something, or asks a question, the person decides on the Crew board (Tools → Crew); Xod never approves for them. If GitHub is connected in Xod, the job can use it too. Returns the job; with wait_seconds it waits that long for the result. Use for real work in a project (\"have claude code fix the failing tests in ~/code/app\").",
             "parameters": {"type": "object", "properties": {
+                "agent": {"type": "string", "enum": ["claude", "muse"], "description": "Which agent: the one the person named; default Claude Code if installed"},
                 "task": {"type": "string", "description": "The job, in the person's words, with what counts as done"},
                 "folder": {"type": "string", "description": "The project folder"},
                 "title": {"type": "string", "description": "A short name for the job"},
@@ -3066,7 +3067,8 @@ async def _crew_tool(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
     wait = max(0, min(int(a.get("wait_seconds") if a.get("wait_seconds") is not None else 90), 600))
     try:
         if name == "crew_start":
-            j = await crew.start(a.get("task") or a.get("text") or a.get("prompt") or "", a.get("folder") or "", a.get("title") or "")
+            j = await crew.start(a.get("task") or a.get("text") or a.get("prompt") or "", a.get("folder") or "", a.get("title") or "",
+                                 agent=a.get("agent") or "")
             j = await crew.wait(j["id"], wait) if wait else j
         elif name == "crew_status":
             if not a.get("job"):

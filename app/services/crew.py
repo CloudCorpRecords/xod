@@ -12,6 +12,11 @@ Muse's own protocol). Each job is one Muse session in a folder:
                         is ever approved automatically.
   questions             Muse's questions for you, the same way, answered by picking an option or writing.
 
+Claude Code jobs (services/claude_native.py) work the same way on the board: one `claude -p` per job over its
+stream-json protocol, every permission it would ask for sent to Xod (--permission-prompt-tool stdio), its questions
+(AskUserQuestion) as Crew questions, follow-ups into the same running conversation, or --resume after a restart.
+Connected apps Xod may share (GitHub) go to the job in memory, never into a file.
+
 One Muse host (`muse serve`) is kept running and reused, so only the first job waits for Muse to start its tools
 (it starts every MCP server in its settings first: minutes, with many). It stops after HOST_IDLE minutes unused.
 """
@@ -24,6 +29,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from app.paths import DATA_DIR
+from app.services.claude_native import ClaudeError, ClaudeRun
 from app.services.muse_native import MuseError, MuseHost
 
 logger = logging.getLogger("xod.crew")
@@ -36,6 +42,8 @@ MAX_JOBS_RUNNING = 4
 _jobs: Dict[str, Dict[str, Any]] = {}
 _by_session: Dict[str, str] = {}
 _host: Dict[str, Any] = {"host": None, "lock": None, "used": 0.0, "starting": False}
+_runs: Dict[str, ClaudeRun] = {}           # job id -> its running Claude Code
+AGENTS = {"muse": "Muse", "claude": "Claude Code"}
 _listeners: List[Any] = []                 # callables(job_id, event) for whoever is watching (the board, a waiting tool)
 
 
@@ -69,8 +77,9 @@ def _save() -> None:
 
 
 def _view(j: Dict[str, Any], steps: int = 60) -> Dict[str, Any]:
-    pend_a = [a for a in j["approvals"].values() if a["state"] == "waiting"]
-    pend_q = [q for q in j["questions"].values() if q["state"] == "waiting"]
+    hide = ("input", "suggestions")             # Claude Code's raw tool input (a whole file for Write): not for the board
+    pend_a = [{k: v for k, v in a.items() if k not in hide} for a in j["approvals"].values() if a["state"] == "waiting"]
+    pend_q = [{k: v for k, v in q.items() if k not in hide} for q in j["questions"].values() if q["state"] == "waiting"]
     return {**{k: v for k, v in j.items() if k not in ("steps", "approvals", "questions", "_text")},
             "steps": j["steps"][-steps:], "step_count": len(j["steps"]), "approvals": pend_a, "questions": pend_q,
             "answer": j.get("answer") or j.get("_text") or ""}
@@ -215,24 +224,42 @@ async def shutdown() -> None:
     if h:
         await h.stop()
         _host["host"] = None
+    for jid in list(_runs):
+        await _runs.pop(jid).stop()
 
 
 # ------------------------------------------------------------------ jobs
-async def start(task: str, folder: str = "", title: str = "", approval_mode: Optional[str] = None) -> Dict[str, Any]:
-    """Hands a task to Muse in a folder. Returns the job at once; it works in the background."""
+def default_agent() -> str:
+    """Claude Code when it's installed (and Muse isn't asked for), else Muse."""
+    from app.services import agent_clis
+    return "claude" if agent_clis.which("claude") or not agent_clis.which("muse") else "muse"
+
+
+async def start(task: str, folder: str = "", title: str = "", approval_mode: Optional[str] = None, agent: str = "") -> Dict[str, Any]:
+    """Hands a task to a coding agent (Claude Code or Muse) in a folder. Returns the job at once; it works in the background."""
     from app.services import agent_clis
     _load()
+    agent = (agent or "").strip().lower().replace("claude code", "claude").replace("claude-code", "claude") or default_agent()
+    if agent not in AGENTS:
+        raise CrewError(f"The Crew works with {' and '.join(AGENTS.values())}, not {agent}.")
+    if not agent_clis.which(agent):
+        raise CrewError(f"{AGENTS[agent]} isn't installed. Xod can set it up: Tools → Agent setup, or say \"set up {AGENTS[agent]}\".")
     if not (task or "").strip():
-        raise CrewError("What should Muse do?")
+        raise CrewError(f"What should {AGENTS[agent]} do?")
     cwd = agent_clis._folder(folder)
     if len([j for j in _jobs.values() if j["status"] in ("starting", "working", "waiting")]) >= MAX_JOBS_RUNNING:
         raise CrewError(f"{MAX_JOBS_RUNNING} Crew jobs are already working: wait for one, or stop one.")
     jid = uuid.uuid4().hex[:8]
-    n = 1 + sum(1 for j in _jobs.values() if j["agent"] == "muse")
-    j = {"id": jid, "name": f"muse-job-{n}", "agent": "muse", "title": (title or task.strip().splitlines()[0])[:100], "task": task,
+    n = 1 + sum(1 for j in _jobs.values() if j["agent"] == agent)
+    j = {"id": jid, "name": f"{agent}-job-{n}", "agent": agent, "title": (title or task.strip().splitlines()[0])[:100], "task": task,
          "folder": cwd, "status": "starting", "started": time.time(), "updated": time.time(), "session_id": None, "turn_id": None,
          "steps": [], "approvals": {}, "questions": {}, "_text": "", "answer": "", "usage": {}, "error": None}
     _jobs[jid] = j
+    if agent == "claude":
+        _step(j, "status", "Starting Claude Code")
+        asyncio.create_task(_claude_start(j, j["task"]))
+        _save()
+        return _view(j)
     _step(j, "status", "Starting Muse" + (" (the first job waits while it starts its tools)" if not (_host["host"] and _host["host"].running()) else ""))
     asyncio.create_task(_run_start(j, approval_mode))
     _save()
@@ -242,7 +269,8 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
 async def _run_start(j: Dict[str, Any], approval_mode: Optional[str]) -> None:
     try:
         h = await _muse()
-        s = await h.start_session(j["folder"], approval_mode=approval_mode)
+        shared = {name: {"url": c["url"], "headers": {"Authorization": f"Bearer {c['token']}"}} for name, c in _shared().items()}
+        s = await h.start_session(j["folder"], approval_mode=approval_mode, mcp_servers=shared or None)
         j["session_id"] = s["sessionId"]
         _by_session[s["sessionId"]] = j["id"]
         _step(j, "status", "Muse is working on it")
@@ -273,10 +301,12 @@ async def _send(j: Dict[str, Any], text: str, if_busy: str = "queue") -> None:
 async def message(jid: str, text: str, steer: bool = False) -> Dict[str, Any]:
     """A follow-up to a job (or, with steer, a change of course while it's working)."""
     j = job(jid)
-    if not j.get("session_id"):
-        raise CrewError("That job never got going: start a new one.")
     if not (text or "").strip():
         raise CrewError("What should it hear?")
+    if j["agent"] == "claude":
+        return await _claude_message(j, text, steer)
+    if not j.get("session_id"):
+        raise CrewError("That job never got going: start a new one.")
     h = await _muse()
     if j["status"] in ("interrupted", "done", "failed", "stopped") and not h.running():
         pass
@@ -293,6 +323,16 @@ async def message(jid: str, text: str, steer: bool = False) -> Dict[str, Any]:
 
 async def interrupt(jid: str) -> Dict[str, Any]:
     j = job(jid)
+    if j["agent"] == "claude":
+        r = _runs.get(j["id"])
+        if r and r.running() and j["status"] in ("working", "waiting"):
+            j["_interrupting"] = True
+            try:
+                await r.interrupt()
+            except ClaudeError as e:
+                raise CrewError(str(e))
+        _step(j, "status", "Interrupted")
+        return _view(j)
     h = _host.get("host")
     if h and h.running() and j.get("session_id") and j["status"] in ("working", "waiting"):
         try:
@@ -313,6 +353,9 @@ async def stop(jid: str) -> Dict[str, Any]:
     for a in j["approvals"].values():
         if a["state"] == "waiting":
             a["state"] = "dropped"
+    r = _runs.pop(j["id"], None)
+    if r:
+        await r.stop()
     j.update(status="stopped", ended=time.time())
     _save()
     _emit(j, {"type": "done", "status": "stopped"})
@@ -507,6 +550,8 @@ async def decide(jid: str, approval_id: str, decision: str = "once") -> Dict[str
     want = {"once": ("approved", "once"), "session": ("approvedForSession", "session"), "deny": ("denied", None)}.get(decision)
     if not want:
         raise CrewError("Decide once, session or deny.")
+    if j["agent"] == "claude":
+        return await _claude_decide(j, a, decision)
     choice = next((c for c in a["choices"] if c["decision"] == want[0] and (want[1] is None or c["scope"] == want[1])), None) \
         or next((c for c in a["choices"] if c["decision"] == want[0]), None) \
         or (next((c for c in a["choices"] if str(c["decision"]).startswith("denied")), None) if decision == "deny" else None)
@@ -536,6 +581,8 @@ async def answer(jid: str, question_id: str, answers: List[Dict[str, Any]]) -> D
     q = j["questions"].get(question_id)
     if not q or q["state"] != "waiting":
         raise CrewError("That question was already answered, or isn't there.")
+    if j["agent"] == "claude":
+        return await _claude_answer(j, q, answers)
     wire = []
     for qq in q["questions"]:
         a = next((x for x in answers if x.get("question") in (qq["id"], None)), None) or {}
@@ -564,4 +611,344 @@ async def wait(jid: str, seconds: float = 120) -> Dict[str, Any]:
     end = time.time() + seconds
     while time.time() < end and j["status"] in ("starting", "working"):
         await asyncio.sleep(0.5)
+    return _view(j)
+
+
+# ------------------------------------------------------------------ Claude Code jobs
+def _shared() -> Dict[str, Dict[str, Any]]:
+    try:
+        from app.services import connectors
+        return connectors.for_agents()
+    except Exception:
+        logger.exception("Shared connectors")
+        return {}
+
+
+CLAUDE_MCP = DATA_DIR / "crew-claude-mcp.json"
+
+
+def _claude_env_and_config() -> tuple:
+    """Claude Code's environment and its --mcp-config for shared connectors. The file names each token by an environment
+    variable (${XOD_SHARED_GITHUB}); the token itself is only in the job's environment."""
+    import os
+    from app.services import agent_clis
+    env = dict(agent_clis._env())
+    servers = {}
+    for name, c in _shared().items():
+        var = "XOD_SHARED_" + re.sub(r"[^A-Z0-9]", "_", name.upper())
+        env[var] = c["token"]
+        servers[name] = {"type": "http", "url": c["url"], "headers": {"Authorization": f"Bearer ${{{var}}}"}}
+    if not servers:
+        return env, ""
+    CLAUDE_MCP.write_text(json.dumps({"mcpServers": servers}, indent=1))
+    os.chmod(CLAUDE_MCP, 0o600)
+    return env, str(CLAUDE_MCP)
+
+
+async def _claude_run(j: Dict[str, Any], resume: str = "") -> ClaudeRun:
+    from app.services import agent_clis
+    r = _runs.get(j["id"])
+    if r and r.running():
+        return r
+    path = agent_clis.which("claude")
+    if not path:
+        raise CrewError("Claude Code isn't installed. Xod can set it up: Tools → Agent setup.")
+    env, mcp = _claude_env_and_config()
+    r = ClaudeRun(path, j["folder"], env=env, resume=resume, mcp_config=mcp)
+    jid = j["id"]
+
+    async def on_event(m: Dict[str, Any]) -> None:
+        await _claude_event(_jobs.get(jid), m)
+
+    async def on_request(m: Dict[str, Any]) -> None:
+        await _claude_request(_jobs.get(jid), m)
+
+    async def on_exit(code: Optional[int], err: str) -> None:
+        jj = _jobs.get(jid)
+        if _runs.get(jid) is r:
+            _runs.pop(jid, None)
+        if jj and jj["status"] in ("starting", "working", "waiting"):
+            _fail(jj, "Claude Code stopped unexpectedly" + (f": {err}" if err else f" (exit code {code})."))
+
+    r.on_event, r.on_request, r.on_exit = on_event, on_request, on_exit
+    try:
+        await r.start(timeout=90)
+    except ClaudeError as e:
+        raise CrewError(str(e))
+    _runs[jid] = r
+    asyncio.create_task(_claude_idle(jid, r))
+    return r
+
+
+async def _claude_idle(jid: str, r: ClaudeRun) -> None:
+    """A finished job's Claude Code stays up for follow-ups, then stops after HOST_IDLE (a follow-up resumes it)."""
+    while r.running():
+        await asyncio.sleep(60)
+        j = _jobs.get(jid)
+        if not j or (j["status"] not in ("starting", "working", "waiting") and time.time() - j.get("updated", 0) > HOST_IDLE):
+            await r.stop()
+            if _runs.get(jid) is r:
+                _runs.pop(jid, None)
+
+
+async def _claude_start(j: Dict[str, Any], text: str) -> None:
+    try:
+        r = await _claude_run(j)
+        j["status"] = "working"
+        _step(j, "status", "Claude Code is working on it")
+        await r.send(text)
+        _save()
+    except (ClaudeError, CrewError) as e:
+        _fail(j, str(e))
+    except Exception as e:
+        logger.exception("Crew job didn't start")
+        _fail(j, f"It didn't start: {e}")
+
+
+async def _claude_message(j: Dict[str, Any], text: str, steer: bool) -> Dict[str, Any]:
+    r = _runs.get(j["id"])
+    if not (r and r.running()):
+        if not j.get("session_id"):
+            raise CrewError("That job never got going: start a new one.")
+        try:
+            r = await _claude_run(j, resume=j["session_id"])     # after a restart or a long pause: the same conversation
+        except CrewError as e:
+            raise CrewError(f"Claude Code couldn't pick that conversation up again: {e}")
+    elif steer and j["status"] in ("working", "waiting"):
+        j["_interrupting"] = True
+        try:
+            await r.interrupt()
+        except ClaudeError:
+            pass
+    _step(j, "you", text)
+    j.update(status="working", _text="", error=None)
+    j.pop("ended", None)
+    try:
+        await r.send(text)
+    except ClaudeError as e:
+        raise CrewError(str(e))
+    _save()
+    return _view(j)
+
+
+QUIET_TOOLS = {"ToolSearch"}                 # Claude Code's own bookkeeping: not a step a person needs to see
+
+
+def _short(path: Any, folder: str) -> str:
+    """A path inside the job's folder, relative to it (hello.py, not /Users/…/project/hello.py)."""
+    p = str(path or "")
+    f = (folder or "").rstrip("/") + "/"
+    return p[len(f):] if f != "/" and p.startswith(f) else p.replace(str(__import__("pathlib").Path.home()), "~", 1)
+
+
+def _claude_brief(name: str, inp: Dict[str, Any], folder: str = "", done: bool = True) -> str:
+    """One line for a tool step, as a person would say it: "Writing hello.py" while it runs, "Wrote hello.py" after."""
+    inp = inp if isinstance(inp, dict) else {}
+    f = _short(inp.get("file_path"), folder) or "a file"
+    verbs = {"Bash": ("Running", "Ran", str(inp.get("command") or "")[:300].replace((folder or "\0").rstrip("/") + "/", "")),
+             "Edit": ("Editing", "Edited", f), "MultiEdit": ("Editing", "Edited", f), "Write": ("Writing", "Wrote", f),
+             "Read": ("Reading", "Read", f), "Grep": ("Searching for", "Searched for", inp.get("pattern") or ""),
+             "Glob": ("Looking for", "Looked for", inp.get("pattern") or ""), "WebFetch": ("Fetching", "Fetched", inp.get("url") or ""),
+             "WebSearch": ("Searching the web for", "Searched the web for", inp.get("query") or ""),
+             "Task": ("Handing a part to a helper:", "Handed a part to a helper:", inp.get("description") or "")}
+    if name in verbs:
+        now, then, what = verbs[name]
+        return f"{then if done else now} {what}".strip()
+    if name == "TodoWrite":
+        return "Updated its to-do list" if done else "Updating its to-do list"
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        return f"{'Used' if done else 'Using'} {parts[-1].replace('_', ' ')} ({parts[1] if len(parts) > 2 else 'a tool'})"
+    return name
+
+
+def _claude_lines(inp: Dict[str, Any], name: str) -> str:
+    if name == "Write":
+        return f" (+{len(str(inp.get('content') or '').splitlines())} lines)"
+    if name == "Edit":
+        old, new = str(inp.get("old_string") or ""), str(inp.get("new_string") or "")
+        return f" (+{len(new.splitlines())} −{len(old.splitlines())} lines)"
+    if name == "MultiEdit":
+        edits = inp.get("edits") or []
+        return f" (+{sum(len(str(e.get('new_string') or '').splitlines()) for e in edits)} −{sum(len(str(e.get('old_string') or '').splitlines()) for e in edits)} lines)"
+    return ""
+
+
+async def _claude_event(j: Optional[Dict[str, Any]], m: Dict[str, Any]) -> None:
+    if not j:
+        return
+    t = m.get("type")
+    if t == "system" and m.get("subtype") == "init":
+        if m.get("session_id") and j.get("session_id") != m["session_id"]:
+            j["session_id"] = m["session_id"]
+            _save()
+        return
+    if t == "assistant":
+        for c in (m.get("message") or {}).get("content") or []:
+            if c.get("type") == "text" and (c.get("text") or "").strip():
+                j["_text"] = c["text"]
+                _step(j, "says", c["text"][:600])
+            elif c.get("type") == "tool_use":
+                name, inp = c.get("name") or "", c.get("input") or {}
+                if name == "AskUserQuestion" or name in QUIET_TOOLS:
+                    continue                                   # the question shows as itself; bookkeeping not at all
+                _step(j, "tool", _claude_brief(name, inp, j["folder"], done=False), tool=name, item=c.get("id"), status="running",
+                      file=_short(inp.get("file_path"), j["folder"]) if name in ("Edit", "Write", "MultiEdit") else None,
+                      _done=_claude_brief(name, inp, j["folder"]) + _claude_lines(inp, name))
+        return
+    if t == "user":
+        content = (m.get("message") or {}).get("content")
+        for c in content if isinstance(content, list) else []:
+            if c.get("type") != "tool_result":
+                continue
+            step = next((x for x in reversed(j["steps"]) if x.get("item") == c.get("tool_use_id") and x["kind"] == "tool"), None)
+            if not step:
+                continue
+            res = c.get("content")
+            if isinstance(res, list):
+                res = " ".join(str(x.get("text") or "") for x in res if isinstance(x, dict))
+            failed = bool(c.get("is_error"))
+            quiet = not failed and step.get("tool") in ("Edit", "MultiEdit", "Write")   # "The file … has been updated": nothing to read
+            step.update(status="failed" if failed else "completed", result="" if quiet else str(res or "")[:400], at=time.time())
+            done_text = step.pop("_done", "")
+            if not failed:
+                step["text"] = (done_text or step["text"])[:600]
+                if step.get("file"):
+                    j["files"] = sorted(set(j.get("files") or []) | {step["file"]})
+            j["updated"] = time.time()
+            _emit(j, {"type": "step", "step": step})
+        return
+    if t == "result":
+        u = m.get("usage") or {}
+        j["usage"] = {"inputTokens": (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0),
+                      "outputTokens": u.get("output_tokens") or 0, "costUsd": m.get("total_cost_usd"),
+                      "seconds": round((m.get("duration_ms") or 0) / 1000, 1)}
+        if m.get("result"):
+            j["answer"] = j["_text"] = str(m["result"])
+        for a in j["approvals"].values():
+            if a["state"] == "waiting":
+                a["state"] = "dropped"
+        if j.pop("_interrupting", False) or j["status"] == "stopped":
+            j.update(status="stopped" if j["status"] == "stopped" else "interrupted", ended=time.time())
+        elif m.get("subtype") == "success" and not m.get("is_error"):
+            j.update(status="done", ended=time.time())
+            _step(j, "status", "Done")
+        else:
+            why = m.get("result") or "; ".join(m.get("errors") or []) or str(m.get("subtype") or "it stopped")
+            j.update(status="failed", error=str(why)[:400], ended=time.time())
+            _step(j, "error", j["error"])
+        _save()
+        _emit(j, {"type": "done", "status": j["status"]})
+
+
+def _claude_what(name: str, inp: Dict[str, Any], folder: str = "") -> str:
+    inp = inp if isinstance(inp, dict) else {}
+    if name == "Bash":
+        cmd = str(inp.get("command") or "")
+        return f"run: {cmd.replace(folder.rstrip('/') + '/', '') if folder else cmd}"
+    if name == "Write":
+        return f"write {_short(inp.get('file_path'), folder) or 'a file'}"
+    if name in ("Edit", "MultiEdit", "NotebookEdit"):
+        return f"edit {_short(inp.get('file_path') or inp.get('notebook_path'), folder) or 'a file'}"
+    if name == "WebFetch":
+        return f"fetch {inp.get('url') or 'a page'}"
+    if name == "WebSearch":
+        return f"search the web for {inp.get('query') or ''}"
+    if name.startswith("mcp__"):
+        parts = name.split("__")
+        return f"use {parts[-1].replace('_', ' ')} in {parts[1] if len(parts) > 2 else 'a connected app'}"
+    return f"use {name}"
+
+
+async def _claude_request(j: Optional[Dict[str, Any]], m: Dict[str, Any]) -> None:
+    req = m.get("request") or {}
+    rid = m.get("request_id") or ""
+    if req.get("subtype") != "can_use_tool":
+        return
+    if not j:
+        return
+    name, inp = req.get("tool_name") or "", req.get("input") or {}
+    if name == "AskUserQuestion":
+        qs = [{"id": str(i), "header": q.get("header"), "question": q.get("question"),
+               "options": [o.get("label") for o in q.get("options") or [] if isinstance(o, dict)],
+               "selection": "multi" if q.get("multiSelect") else "single"} for i, q in enumerate(inp.get("questions") or [])]
+        q = {"id": rid, "job": j["id"], "questions": qs, "state": "waiting", "at": time.time(), "input": inp}
+        j["questions"][rid] = q
+        j["status"] = "waiting"
+        _step(j, "asks", "Claude Code asks: " + " / ".join(x["question"] or x["header"] or "" for x in qs), question=rid)
+        _notify_phone(j, f"Claude Code ({j['title'][:60]}) asks: " + " / ".join(x["question"] or "" for x in qs) + "\nAnswer in Xod → Crew.")
+        _save()
+        _emit(j, {"type": "question", "question": q})
+        return
+    what = _claude_what(name, inp, j["folder"])
+    warning = _safety(str(inp.get("command") or ""), what)
+    a = {"id": rid, "job": j["id"], "what": what, "tool": name, "subject": {"kind": "shell" if name == "Bash" else "tool", "command": inp.get("command")},
+         "choices": [{"id": "once", "label": "Yes", "decision": "approved", "scope": "once"},
+                     {"id": "session", "label": "Yes, for this job", "decision": "approvedForSession", "scope": "session"},
+                     {"id": "deny", "label": "No", "decision": "denied", "scope": "once"}],
+         "input": inp, "suggestions": req.get("permission_suggestions") or [], "warning": warning, "state": "waiting",
+         "at": time.time(), "detail": req.get("description") or ""}
+    j["approvals"][rid] = a
+    j["status"] = "waiting"
+    _step(j, "asks", f"Claude Code wants to {what}" + (f" (safety check: {warning})" if warning else ""), approval=rid)
+    try:
+        from app.services import agent_log
+        agent_log.approval_opened(f"crew-{rid}", "crew", "Claude Code", f"{j['title'][:60]}: {what}"[:200], warning)
+    except Exception:
+        pass
+    _notify_phone(j, f"Claude Code ({j['title'][:60]}) wants to {what}." + (f"\nSafety check: {warning}" if warning else "")
+                  + "\nOpen Xod → Crew to approve or deny.")
+    _save()
+    _emit(j, {"type": "approval", "approval": a})
+
+
+async def _claude_decide(j: Dict[str, Any], a: Dict[str, Any], decision: str) -> Dict[str, Any]:
+    r = _runs.get(j["id"])
+    if not (r and r.running()):
+        a["state"] = "dropped"
+        raise CrewError("Claude Code isn't running any more, so it can't take that. Send a message to carry on.")
+    try:
+        if decision == "deny":
+            await r.deny(a["id"], "The person said no. Don't try this again another way; ask them or carry on without it.")
+        else:
+            # "for this job": the rules Claude Code suggested, kept for this conversation only (never written to your settings)
+            perms = [{**s, "destination": "session"} for s in a.get("suggestions") or [] if s.get("type") == "addRules"] \
+                if decision == "session" else None
+            await r.allow(a["id"], a.get("input") or {}, perms)
+    except ClaudeError as e:
+        raise CrewError(f"Claude Code didn't take the decision: {e}")
+    a["state"] = "approved" if decision != "deny" else "denied"
+    try:
+        from app.services import agent_log
+        agent_log.approval_decided(f"crew-{a['id']}", "allowed" if decision != "deny" else "declined")
+    except Exception:
+        pass
+    _step(j, "you", ("Approved" if decision != "deny" else "Denied") + f": {a['what']}" + (" (for this job)" if decision == "session" else ""))
+    if not any(x["state"] == "waiting" for x in j["approvals"].values()) and not any(x["state"] == "waiting" for x in j["questions"].values()):
+        j["status"] = "working"
+    _save()
+    return _view(j)
+
+
+async def _claude_answer(j: Dict[str, Any], q: Dict[str, Any], answers: List[Dict[str, Any]]) -> Dict[str, Any]:
+    r = _runs.get(j["id"])
+    if not (r and r.running()):
+        q["state"] = "dropped"
+        raise CrewError("Claude Code isn't running any more, so it can't take that. Send a message to carry on.")
+    inp = dict(q.get("input") or {})
+    picked: Dict[str, str] = {}
+    for qq in q["questions"]:
+        a = next((x for x in answers if x.get("question") in (qq["id"], None)), None) or {}
+        val = a.get("choice") or (", ".join(a["choices"]) if a.get("choices") else str(a.get("text") or "")[:500])
+        picked[qq["question"] or qq["header"] or qq["id"]] = val
+    inp["answers"] = picked
+    try:
+        await r.allow(q["id"], inp)
+    except ClaudeError as e:
+        raise CrewError(f"Claude Code didn't take the answer: {e}")
+    q["state"] = "answered"
+    _step(j, "you", "Answered: " + "; ".join(picked.values()))
+    if not any(x["state"] == "waiting" for x in j["approvals"].values()):
+        j["status"] = "working"
+    _save()
     return _view(j)

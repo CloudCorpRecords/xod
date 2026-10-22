@@ -60,7 +60,8 @@ CATALOG: List[Dict[str, Any]] = [
      "blurb": "Repos, issues, pull requests and code search.",
      "kind": "token", "url": "https://api.githubcopilot.com/mcp/", "trust": "read_only",
      "token_help": "Make a fine-grained token at github.com/settings/personal-access-tokens with access to the repos you want, then paste it here. It goes into your Keychain.",
-     "token_url": "https://github.com/settings/personal-access-tokens/new"},
+     "token_url": "https://github.com/settings/personal-access-tokens/new",
+     "from_cli": "gh"},            # or one click: the sign-in the GitHub CLI (gh) already has on this computer
     _o("sentry", "Sentry", "bug", "Developers", "https://mcp.sentry.dev/mcp", "Errors and issues in Sentry, with their stack traces."),
     _o("vercel", "Vercel", "triangle", "Developers", "https://mcp.vercel.com", "Projects, deployments and logs on Vercel."),
     _o("netlify", "Netlify", "cloud", "Developers", "https://netlify-mcp.netlify.app/mcp", "Sites, deploys and settings on Netlify."),
@@ -92,6 +93,45 @@ CATALOG: List[Dict[str, Any]] = [
 _BY_ID = {c["id"]: c for c in CATALOG}
 
 
+_gh_cache: Dict[str, Any] = {"at": 0.0, "account": None}
+
+
+def gh_account() -> Optional[str]:
+    """The GitHub account the GitHub CLI (gh) is signed in to on this computer, if any (checked at most once a minute)."""
+    import shutil
+    import subprocess
+    import time
+    if time.time() - _gh_cache["at"] < 60:
+        return _gh_cache["account"]
+    account = None
+    try:
+        from app.services.agent_clis import search_path, _env
+        gh = shutil.which("gh", path=search_path())
+        if gh:
+            r = subprocess.run([gh, "api", "user", "--jq", ".login"], capture_output=True, text=True, timeout=15,
+                               env=_env(), stdin=subprocess.DEVNULL)
+            if r.returncode == 0 and r.stdout.strip():
+                account = r.stdout.strip().splitlines()[0][:100]
+    except Exception:
+        account = None
+    _gh_cache.update(at=time.time(), account=account)
+    return account
+
+
+def _gh_token() -> Optional[str]:
+    """The GitHub CLI's own token, for connecting GitHub with one click (the person's click is the OK)."""
+    import shutil
+    import subprocess
+    from app.services.agent_clis import search_path, _env
+    gh = shutil.which("gh", path=search_path())
+    if not gh:
+        return None
+    r = subprocess.run([gh, "auth", "token", "--hostname", "github.com"], capture_output=True, text=True, timeout=15,
+                       env=_env(), stdin=subprocess.DEVNULL)
+    tok = r.stdout.strip()
+    return tok if r.returncode == 0 and tok and " " not in tok and len(tok) < 400 else None
+
+
 def catalog() -> List[Dict[str, Any]]:
     servers = {s["name"]: s for s in mcp_client.mcp_hub.status()}
     out = []
@@ -105,6 +145,9 @@ def catalog() -> List[Dict[str, Any]]:
         out.append({**{k: v for k, v in c.items() if k not in ("command", "args")}, "state": state,
                     "error": _friendly(c, s and s["error"]), "tools": len(s["tools"]) if s else 0, "unavailable": unavailable,
                     "group": c.get("group") or ("More (advanced)" if c.get("advanced") else "Other")})
+        if c.get("from_cli") == "gh":
+            out[-1]["cli_account"] = gh_account()
+            out[-1]["shared_with_agents"] = share_with_agents()
     return out
 
 
@@ -124,11 +167,20 @@ def _friendly(c: Dict[str, Any], error: Optional[str]) -> Optional[str]:
 
 
 async def connect(cid: str, redirect_uri: str, token: Optional[str] = None,
-                  client_id: Optional[str] = None, client_secret: Optional[str] = None) -> Dict[str, Any]:
-    """Adds (or re-signs-in) a connector and connects it. May open a sign-in page in the browser."""
+                  client_id: Optional[str] = None, client_secret: Optional[str] = None, use_cli: bool = False) -> Dict[str, Any]:
+    """Adds (or re-signs-in) a connector and connects it. May open a sign-in page in the browser. use_cli: GitHub
+    with the sign-in the GitHub CLI already has (no token to make and paste)."""
     c = _BY_ID.get(cid)
     if not c:
         return {"success": False, "error": "Unknown connector."}
+    if use_cli:
+        if c.get("from_cli") != "gh":
+            return {"success": False, "error": f"{c['name']} can't use a command-line sign-in."}
+        import asyncio
+        token = await asyncio.to_thread(_gh_token)
+        if not token:
+            return {"success": False, "needs_token": True,
+                    "error": "The GitHub CLI isn't signed in on this computer. Run `gh auth login` once, or paste a token."}
     if c.get("only_on") and not sys.platform.startswith(c["only_on"]):
         return {"success": False, "error": c.get("unavailable_why") or "Not available on this computer."}
     from app.services import keychain
@@ -164,6 +216,36 @@ async def connect(cid: str, redirect_uri: str, token: Optional[str] = None,
 
 
 _tasks: Dict[str, Any] = {}
+
+
+# ------------------------------------------------------------------ sharing connectors with agent jobs
+SHAREABLE = ("github",)       # hosted, signed in with a token Xod holds: an agent job can be handed the same connection
+
+
+def share_with_agents(on: Optional[bool] = None) -> bool:
+    """Whether Crew jobs (Claude Code, Muse) get Xod's GitHub connection too. On unless you turn it off."""
+    from app.services.storage import get_setting, set_setting
+    if on is not None:
+        set_setting("crew_share_connectors", "1" if on else "0")
+    return (get_setting("crew_share_connectors", "1") or "1") != "0"
+
+
+def for_agents() -> Dict[str, Dict[str, Any]]:
+    """The connectors to hand an agent job, as {name: {"url", "token"}}: connected, shareable ones, when sharing is on.
+    The token goes to the agent in memory (an environment variable or its protocol), never into a file."""
+    if not share_with_agents():
+        return {}
+    from app.services import keychain
+    cfg = mcp_client.load_config()
+    out: Dict[str, Dict[str, Any]] = {}
+    for cid in SHAREABLE:
+        spec = cfg.get(cid) or {}
+        if not spec.get("enabled") or not spec.get("url"):
+            continue
+        tok = keychain.get_password(mcp_client.KEYCHAIN, f"{cid}:bearer_token")
+        if tok:
+            out[cid] = {"url": spec["url"], "token": tok}
+    return out
 
 
 def disconnect(cid: str) -> bool:

@@ -1162,6 +1162,7 @@ async def mail_contact_accept_keys(address: str):
 # ---- One-click connected apps (services/connectors.py) and OAuth sign-in returns
 
 class ConnectorConnect(BaseModel):
+    use_cli: Optional[bool] = False
     token: Optional[str] = None
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
@@ -1178,7 +1179,18 @@ async def connectors_connect(cid: str, req: ConnectorConnect, request: Request):
     from app.services import connectors
     redirect_uri = f"http://{request.headers.get('host', '127.0.0.1:8000')}/oauth/callback"
     return await connectors.connect(cid, redirect_uri, token=req.token, client_id=req.client_id,
-                                    client_secret=req.client_secret)
+                                    client_secret=req.client_secret, use_cli=bool(req.use_cli))
+
+
+class ConnectorShare(BaseModel):
+    on: bool
+
+
+@app.post("/api/connectors/share-with-agents")
+async def connectors_share(req: ConnectorShare):
+    """Whether Crew jobs (Claude Code, Muse) get Xod's GitHub connection too."""
+    from app.services import connectors
+    return {"success": True, "on": connectors.share_with_agents(req.on)}
 
 
 @app.delete("/api/connectors/{cid}")
@@ -1948,13 +1960,14 @@ class CrewStart(BaseModel):
     task: str
     folder: Optional[str] = ""
     title: Optional[str] = ""
+    agent: Optional[str] = ""
 
 
 @app.post("/api/crew")
 async def crew_start(req: CrewStart):
     from app.services import crew
     try:
-        return {"success": True, "job": await crew.start(req.task, req.folder or "", req.title or "")}
+        return {"success": True, "job": await crew.start(req.task, req.folder or "", req.title or "", agent=req.agent or "")}
     except crew.CrewError as e:
         return {"success": False, "error": str(e)}
 

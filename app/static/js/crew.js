@@ -1,6 +1,7 @@
-// The Crew (backend: services/crew.py, /api/crew): coding jobs Xod hands to Muse and conducts natively. Pick a job to
-// see every step live, decide what Muse asks (run this? edit that?), answer its questions, send a follow-up or a change
-// of course, interrupt or stop it, or start a new job. A chip shows anywhere in the app while Muse is waiting for you.
+// The Crew (backend: services/crew.py, /api/crew): coding jobs Xod hands to Claude Code or Muse and conducts natively.
+// Pick a job to see every step live, decide what the agent asks (run this? edit that?), answer its questions, send a
+// follow-up or a change of course, interrupt or stop it, or start a new job. A chip shows anywhere in the app while an
+// agent is waiting for you.
 (() => {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const DOT = { starting: "bg-sky-400 animate-pulse", working: "bg-emerald-400 animate-pulse", waiting: "bg-amber-400 animate-pulse",
@@ -8,6 +9,8 @@
   const WORD = { starting: "starting", working: "working", waiting: "needs you", done: "done", failed: "failed", stopped: "stopped", interrupted: "paused" };
   const ICON = { tool: "⚙", says: "💬", asks: "✋", you: "🙋", status: "•", error: "⚠" };
   let root = null, current = null, timer = null, chip = null;
+  const WHO = { claude: "Claude Code", muse: "Muse" };
+  const who = (j) => WHO[j.agent] || j.agent || "The agent";
 
   const api = async (url, body) => {
     try {
@@ -25,13 +28,14 @@
           <span class="text-white text-[13px] truncate">${esc(j.title)}</span>
           <span class="ml-auto text-[11px] ${j.status === "waiting" ? "text-amber-300" : "text-zinc-500"}">${esc(WORD[j.status] || j.status)}</span></div>
         <div class="text-zinc-500 text-[11px] truncate mt-0.5">${esc(j.name)} · ${esc((j.folder || "").replace(/^\/Users\/[^/]+/, "~"))} · ${ago(j.updated)} ago</div>
-      </button>`).join("") : `<p class="text-zinc-500 text-[12px] px-3 py-2">No jobs yet. Start one below, or ask Xod ("have muse fix the tests in ~/code/app").</p>`;
+      </button>`).join("") : `<p class="text-zinc-500 text-[12px] px-3 py-2">No jobs yet. Start one below, or ask Xod ("have claude code fix the tests in ~/code/app").</p>`;
   }
 
   function detail(j) {
     const asks = j.approvals.map((a) => `
       <div class="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
-        <div class="text-amber-100 text-[13px]">Muse wants to <b>${esc(a.what)}</b></div>
+        <div class="text-amber-100 text-[13px]">${esc(who(j))} wants to <b>${esc(a.what)}</b></div>
+        ${a.detail && !a.what.toLowerCase().includes(a.detail.toLowerCase()) ? `<div class="text-amber-200/70 text-[12px] mt-0.5">${esc(a.detail)}</div>` : ""}
         ${a.warning ? `<div class="text-red-300 text-[12px] mt-1">Safety check: ${esc(a.warning)}</div>` : ""}
         ${a.protected ? `<div class="text-amber-300 text-[12px] mt-1">This writes to a protected place.</div>` : ""}
         <div class="flex gap-1.5 mt-2">
@@ -52,11 +56,11 @@
           ${s.result ? `<pre class="mt-0.5 text-[11px] text-zinc-500 whitespace-pre-wrap max-h-24 overflow-hidden">${esc(s.result)}</pre>` : ""}</div>
         <span class="text-[10px] text-zinc-600 shrink-0">${s.status && s.status !== "completed" ? esc(s.status) : ""}</span>
       </div>`).join("");
-    const usage = j.usage && (j.usage.totalTokens || j.usage.inputTokens) ? ` · ${(j.usage.totalTokens || (j.usage.inputTokens || 0) + (j.usage.outputTokens || 0)).toLocaleString()} tokens` : "";
+    const usage = (j.usage && (j.usage.totalTokens || j.usage.inputTokens) ? ` · ${(j.usage.totalTokens || (j.usage.inputTokens || 0) + (j.usage.outputTokens || 0)).toLocaleString()} tokens` : "");
     return `
       <div class="px-4 py-3 border-b border-white/[0.06] flex items-start gap-2">
         <div class="min-w-0 flex-1"><div class="text-white font-medium truncate">${esc(j.title)}</div>
-          <div class="text-zinc-500 text-[11px]">${esc(j.name)} · Muse · ${esc(WORD[j.status] || j.status)} · ${esc(j.folder)}${usage}</div></div>
+          <div class="text-zinc-500 text-[11px]">${esc(j.name)} · ${esc(who(j))} · ${esc(WORD[j.status] || j.status)} · ${esc(j.folder)}${usage}</div></div>
         ${["working", "waiting", "starting"].includes(j.status) ? `<button data-c="interrupt" class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600 text-[12px]">Interrupt</button>` : ""}
         ${j.status !== "stopped" ? `<button data-c="stop" class="px-2 py-1 rounded-md text-red-300 bg-red-500/10 hover:bg-red-500/20 text-[12px]">Stop</button>` : ""}
       </div>
@@ -67,7 +71,7 @@
         <div class="text-[12px] font-mono">${steps}</div>
       </div>
       <div class="p-2 border-t border-white/[0.06] flex gap-1.5 items-center">
-        <input data-c-msg class="flex-1 bg-surface-700 text-white rounded-md px-2 py-1.5 text-[12px]" placeholder="Tell Muse something (a follow-up), Enter sends">
+        <input data-c-msg class="flex-1 bg-surface-700 text-white rounded-md px-2 py-1.5 text-[12px]" placeholder="Tell ${esc(who(j))} something (a follow-up), Enter sends">
         <label class="text-[11px] text-zinc-400 flex items-center gap-1"><input type="checkbox" data-c-steer> change course now</label>
       </div>`;
   }
@@ -101,16 +105,17 @@
         <div class="w-full max-w-5xl h-[84vh] flex flex-col rounded-2xl bg-surface-850 border border-white/[0.08] shadow-2xl text-[13px] overflow-hidden">
           <div class="flex items-center justify-between px-4 py-3 border-b border-white/[0.06]">
             <div><h3 class="text-white font-semibold text-[15px]">Crew</h3>
-              <p class="text-zinc-500 text-[11px]">Coding jobs Xod hands to Muse and follows step by step. What Muse asks to do waits here for your OK.</p></div>
+              <p class="text-zinc-500 text-[11px]">Coding jobs Xod hands to Claude Code or Muse and follows step by step. What they ask to do waits here for your OK.</p></div>
             <button data-c="close" class="p-1 rounded-lg text-zinc-500 hover:text-white" title="Close">✕</button>
           </div>
           <div class="flex flex-1 min-h-0">
             <div class="w-72 shrink-0 border-r border-white/[0.06] flex flex-col">
               <div data-c-list class="flex-1 overflow-y-auto p-2 space-y-1"></div>
               <div class="p-2 border-t border-white/[0.06] space-y-1.5">
-                <textarea data-c-task rows="3" class="w-full bg-surface-700 text-zinc-200 rounded-md px-2 py-1 text-[12px]" placeholder="What should Muse do?"></textarea>
+                <select data-c-agent class="w-full bg-surface-700 text-zinc-200 rounded-md px-2 py-1 text-[12px]"><option value="claude">Claude Code</option><option value="muse">Muse</option></select>
+                <textarea data-c-task rows="3" class="w-full bg-surface-700 text-zinc-200 rounded-md px-2 py-1 text-[12px]" placeholder="What should it do?"></textarea>
                 <input data-c-folder class="w-full bg-surface-700 text-zinc-200 rounded-md px-2 py-1 text-[12px]" placeholder="Project folder (default: home)">
-                <button data-c="start" class="w-full px-2 py-1.5 rounded-md bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Start a Muse job</button>
+                <button data-c="start" class="w-full px-2 py-1.5 rounded-md bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Start the job</button>
                 <p data-c-note class="text-[11px] text-zinc-400"></p>
                 <details data-c-tools class="text-[11px] text-zinc-400"><summary class="cursor-pointer hover:text-zinc-200">Muse's tools for jobs</summary>
                   <p class="mt-1">Each one Muse starts before a job begins (all of yours took minutes), so jobs get only the ones you tick.</p>
@@ -154,9 +159,10 @@
     if (t.closest('[data-c="start"]')) {
       const task = root.querySelector("[data-c-task]").value.trim(), folder = root.querySelector("[data-c-folder]").value.trim();
       const note = root.querySelector("[data-c-note]");
-      if (!task) { note.textContent = "Say what Muse should do."; return; }
+      const agent = root.querySelector("[data-c-agent]").value;
+      if (!task) { note.textContent = "Say what it should do."; return; }
       note.textContent = "Starting…";
-      const r = await api("/api/crew", { task, folder });
+      const r = await api("/api/crew", { task, folder, agent });
       note.textContent = r.success ? "" : r.error;
       if (r.success) { current = r.job.id; root.querySelector("[data-c-task]").value = ""; }
       refresh();
@@ -195,7 +201,7 @@
     }
   }
 
-  // Anywhere in the app: a chip when Muse is waiting for your OK.
+  // Anywhere in the app: a chip when an agent is waiting for your OK.
   async function watch() {
     if (window.enabledPacks && !window.enabledPacks.has("cli-agents")) return;
     const d = await api("/api/crew");
@@ -208,7 +214,7 @@
       document.body.appendChild(chip);
     }
     chip.classList.remove("hidden");
-    chip.innerHTML = `<span class="size-2 rounded-full bg-amber-400 animate-pulse"></span>Muse needs your OK on ${waiting.length === 1 ? `"${esc(waiting[0].title)}"` : `${waiting.length} jobs`} · Open Crew`;
+    chip.innerHTML = `<span class="size-2 rounded-full bg-amber-400 animate-pulse"></span>${waiting.length === 1 ? esc(who(waiting[0])) : "Crew"} needs your OK on ${waiting.length === 1 ? `"${esc(waiting[0].title)}"` : `${waiting.length} jobs`} · Open Crew`;
   }
   setInterval(watch, 4000);
 
