@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.9.0
+
+**Everyday abilities on your Mac: Messages, Calendar, Reminders, Contacts, places nearby, Home**
+- Tools → Abilities: Messages, Location, Calendar, Home, Reminders and Contacts, one Allow each. macOS asks you once per app; looking at where each one stands never makes it ask.
+- Messages: "did anyone text me today?", "what did mom say?", "text Sam I'm running late". Sending (iMessage, or SMS through your iPhone) always waits for your OK. Reading needs Full Disk Access for Xod, which macOS doesn't let apps ask for, so Allow opens that page in System Settings.
+- Contacts: find someone by name, company, number or email, or add a new contact.
+- Places nearby with Apple Maps' own search (no account or key): "coffee near me", "pharmacies near downtown Austin". Results come with distance, address, phone, website and a Maps link. "Near me" uses Location Services after you allow it, and any place you name works without it.
+- Home: lights, scenes, thermostat and locks run through the Shortcuts you've made with Home actions. One that unlocks a door, opens a garage or disarms an alarm always waits for your OK.
+- Calendar and Reminders were already here.
+- "Did anyone text me today?" and "where am I?" are no longer answered with a web search. Xod now picks the connected apps' tools that fit the request (not the first twelve, which missed tools once GitHub's 46 were connected). Approval cards say what will happen instead of "nothing has been deleted" for a message.
+
+**Coding agents: Claude Code natively, each job in its own copy, simpler tools**
+- Claude Code on the Crew board, through its own protocol: every step live, and everything it asks to run or change comes to you (Approve once, For this job, Deny) with Xod's safety warning. Its questions, follow-ups, changing course, interrupting and picking up again after a restart all work. Pick Claude Code or Muse per job.
+- In a git project each job works in its own copy, on its own branch, so jobs never collide and your checkout is untouched. When it's done: see the files and diff, then Merge, Open pull request, or Discard. From the chat, each of those waits for your OK. A clash or a checkout on another branch changes nothing.
+- Agent setup (Tools → Agent setup, or "set up Claude Code"): Xod installs it with the official installer, signs you in (the page opens on the account your Claude app uses; one click), checks it answers, and later updates it or runs its health check.
+- Four agent tools instead of eleven (agent_job, agent_ask, agent_terminal, agent_setup). Everything they did is still there, and Xod now routes 27 of 27 coding-agent requests right (it was 13 of 21).
+
+**GitHub in one click**
+- Connected apps → GitHub → "Connect as you": uses the sign-in the GitHub CLI (gh) already has, so there's no token to make. Crew jobs (Claude Code and Muse) get the same connection; the token reaches them only in memory.
+
+**Measuring how Xod does**
+- Tools → Scorecard: your chat answers (Xod's own check after each, and your corrections), Crew jobs, and model calls and cost, each next to the period before, with what went wrong listed.
+- Routing check: real requests (coding agents, everyday tasks) replayed through Xod's router and planner with your model, nothing run. "Run it now" on the Scorecard, or `python -m app.services.evals`.
+
 ## 0.8.0
 
 **The Crew: Xod conducts Muse (part 1 of the 0.8 update)**
