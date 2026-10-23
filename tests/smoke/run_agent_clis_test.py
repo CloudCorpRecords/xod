@@ -263,7 +263,8 @@ async def main() -> None:
         check("a command Xod runs finds tools in ~/.local/bin, though the app's PATH is short", str(BIN / "muse") in (r.get("stdout") or r.get("output") or ""), str(r)[:300])
     note = ac.context_note("can you control muse? like you type muse into terminal")
     check("the planner is told Muse is installed, where, signed in, and which tools use it",
-          "Muse (Meta)" in note and "signed in" in note and "cli_agent_session" in note and "computer_run_command" in note, note[:300])
+          "Muse (Meta)" in note and "signed in" in note and all(t in note for t in ("agent_job", "agent_ask", "agent_terminal", "agent_setup"))
+          and "never computer_run_command" in note, note[:300])
     check("…that the answer to \"can you\" is yes", "the answer is yes" in note)
     check("…and that Muse.app is a different app", "Muse.app" in note)
     note = ac.context_note("muse --yolo and use gemini cli")
@@ -345,7 +346,7 @@ async def main() -> None:
               and not ac.which("gemini"))
         from app.services.mcp_client import mcp_hub
         r = await mcp_hub.approve(held["approval_id"])
-        check("approved: it installs, and says to sign in next", r.get("success") and ac.which("gemini") and "cli_agent_login" in r.get("next", ""), str(r)[:300])
+        check("approved: it installs, and says to sign in next", r.get("success") and ac.which("gemini") and "agent_setup login" in r.get("next", ""), str(r)[:300])
         r = await tools.execute_tool("cli_agent_install", {"agent": "gemini"})
         check("already installed: nothing to approve", r.get("already"))
 

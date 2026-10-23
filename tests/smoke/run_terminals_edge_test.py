@@ -129,7 +129,7 @@ async def main():
         ok = "Claude Code" in str(e)
     check("a conversation belongs to one agent", ok)
     r = await ac.chat("claude", "NOLOGIN please")
-    check("not signed in: says so, and how", not r["success"] and r.get("needs_login") and "cli_agent_login" in r["error"], str(r)[:200])
+    check("not signed in: says so, and how", not r["success"] and r.get("needs_login") and "agent_setup login" in r["error"], str(r)[:200])
     r = await ac.chat("claude", "BOOM")
     check("an error answer is reported as one", not r["success"] and "Something broke" in r["error"])
     r = await ac.chat("codex", "hi")
