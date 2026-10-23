@@ -309,6 +309,80 @@ async def main():
         r = (await cl.post("/api/crew", json={"task": "hello board", "folder": str(work), "agent": "claude"})).json()
         j = await crew.wait(r["job"]["id"], 15)
         check("the board starts a Claude Code job", j["agent"] == "claude" and "echo: hello board" in j["answer"], str(j)[:200])
+
+    print("K9 each job in its own copy of the repository")
+    import subprocess as sp
+
+    def git(*a, cwd=None):
+        return sp.run(["git", *a], cwd=cwd or repo, capture_output=True, text=True).stdout.strip()
+    repo = TMP / "repo"
+    repo.mkdir()
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "T")
+    (repo / "app.py").write_text("print('v1')\n")
+    git("add", "-A")
+    git("commit", "-qm", "first")
+    j1 = await crew.start("WRITE notes.txt from job one", str(repo), agent="claude")
+    j2 = await crew.start("WRITE docs/guide.md from job two", str(repo), agent="claude")
+    j1, j2 = await crew.wait(j1["id"], 15), await crew.wait(j2["id"], 15)
+    w1, w2 = j1.get("worktree") or {}, j2.get("worktree") or {}
+    check("a job in a git repository works in its own copy, on its own branch", w1.get("branch", "").startswith("xod/claude-job-")
+          and str(TMP / "data" / "worktrees") in w1.get("path", "") and j1["folder"] == w1["path"] and str(w1["path"]) in j1["answer"], str(w1))
+    check("…two jobs at once get two copies", w1.get("path") != w2.get("path") and os.path.isdir(w2.get("path", "")))
+    check("…and your checkout is untouched (and `git status` stays clean)", not (repo / "notes.txt").exists() and git("status", "--porcelain") == "")
+    r = await crew.review(j1["id"])
+    check("review: each file it changed, with lines added and removed, and the diff",
+          [f["file"] for f in r["files"]] == ["notes.txt"] and r["files"][0]["added"] == 1 and "+from job one" in r["patch"], str(r)[:300])
+    r = await tools.execute_tool("agent_job", {"action": "merge", "job": j1["id"]})
+    check("merging from the chat waits for your OK on a card", r.get("needs_approval") and not (repo / "notes.txt").exists(), str(r)[:200])
+    r2 = await tools.execute_tool("agent_job", {"action": "merge", "job": j1["id"], "_grant": "guess"})
+    check("…the model can't approve it itself", r2.get("needs_approval") and not (repo / "notes.txt").exists())
+    from app.services.mcp_client import mcp_hub
+    r = await mcp_hub.approve(r["approval_id"])
+    check("approved: merged into the branch it started from, its copy and branch gone",
+          r.get("success") and (repo / "notes.txt").read_text() == "from job one\n" and "Merge xod/claude-job" in git("log", "-1", "--pretty=%s")
+          and not os.path.isdir(w1["path"]) and not git("branch", "--list", w1["branch"]), str(r)[:300])
+    try:
+        await crew.message(j1["id"], "more please")
+        ok = False
+    except crew.CrewError as e:
+        ok = "merged" in str(e)
+    check("…a merged job doesn't take more work (start a new one)", ok)
+    r = await crew.discard(j2["id"])
+    check("discard: its copy and branch are gone, your checkout untouched", not os.path.isdir(w2["path"]) and not git("branch", "--list", w2["branch"])
+          and not (repo / "docs").exists())
+    j3 = await crew.wait((await crew.start("WRITE notes.txt from job three", str(repo), agent="claude"))["id"], 15)
+    (repo / "notes.txt").write_text("changed by you meanwhile\n")
+    git("commit", "-qam", "yours")
+    try:
+        await crew.merge(j3["id"])
+        ok = False
+    except crew.CrewError as e:
+        ok, msg = "clashes" in str(e) and "notes.txt" in str(e), str(e)
+    check("a clash with your checkout: nothing changes, and it says which file", ok and (repo / "notes.txt").read_text() == "changed by you meanwhile\n"
+          and git("status", "--porcelain") == "", locals().get("msg", ""))
+    git("checkout", "-qb", "elsewhere")
+    try:
+        await crew.merge(j3["id"])
+        ok = False
+    except crew.CrewError as e:
+        ok = "is on elsewhere" in str(e)
+    check("your checkout moved to another branch: it won't merge there", ok)
+    git("checkout", "-q", "main")
+    try:
+        await crew.pull_request(j3["id"])
+        ok = False
+    except crew.CrewError as e:
+        ok = "no remote" in str(e)
+    check("a pull request needs a remote: says so", ok)
+    j4 = await crew.wait((await crew.start("WRITE here.txt in the folder", str(repo), agent="claude", isolate=False))["id"], 15)
+    check("its own copy can be turned off: then it works in the folder itself", not j4.get("worktree") and (repo / "here.txt").exists())
+    plain = TMP / "plain"
+    plain.mkdir()
+    j5 = await crew.wait((await crew.start("WRITE a.txt hi", str(plain), agent="claude"))["id"], 15)
+    check("not a git repository: it works in the folder itself", not j5.get("worktree") and (plain / "a.txt").exists())
+    await crew.discard(j3["id"])
     await crew.shutdown()
     check("shutting down stops every Claude Code it started", not crew._runs)
 

@@ -188,7 +188,11 @@ async def main():
     failed = [n for n, ok in results if not ok]
     print(f"\nSUMMARY {'PASS' if not failed else 'FAIL'} {failed}")
     srv.shutdown()
-    sys.exit(1 if failed else 0)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    # The stand-in Telegram's handler threads can still be writing to stderr as Python shuts down, which Windows turned
+    # into a crash after every check had passed: leave at once with the result instead.
+    os._exit(1 if failed else 0)
 
 
 if __name__ == "__main__":

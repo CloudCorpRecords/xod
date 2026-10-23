@@ -424,11 +424,11 @@ async def main() -> None:
             r = (await cl.post("/api/agents/nobody/setup/test", json={})).json()
             check("…an unknown agent says so", r.get("success") is False and "doesn't know" in r.get("error", ""))
         names = [t["function"]["name"] for t in tools.select_tools_for_query("can you install claude code and set it up")]
-        check("asking to set up Claude Code gives the chat the setup tool", "cli_agent_setup" in names, str(names[-10:]))
+        check("asking to set up Claude Code gives the chat the setup tool", "agent_setup" in names, str(names[-10:]))
 
     print("C5 the chat and the safety check")
     names = [t["function"]["name"] for t in tools.select_tools_for_query("use muse to fix the failing test in my project")]
-    check("naming an agent gives the chat its tools", "cli_agent_run" in names and "cli_agent_login" in names, str(names[-12:]))
+    check("naming an agent gives the chat its tools", "agent_job" in names and "agent_setup" in names, str(names[-12:]))
     names = [t["function"]["name"] for t in tools.select_tools_for_query("what's the capital of Peru")]
     check("…not otherwise", "cli_agent_run" not in names)
     res = await tools._cli_agents("cli_agents", {})

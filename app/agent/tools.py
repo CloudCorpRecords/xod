@@ -3021,8 +3021,119 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     return result
 
 
-CLI_TOOLS = {"cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session", "cli_agent_install", "cli_agent_chat", "cli_agent_setup",
-             "crew_start", "crew_status", "crew_message", "crew_stop"}
+# Coding agents (Claude Code, Muse, Codex …) through four tools, one per kind of work. Every ability the eleven
+# narrower tools had is still here, as an action; those names still run (approval cards and old plans use them) but
+# aren't offered to the model: with eleven to choose from it picked the wrong one (app/evals/agent_routing.json).
+AGENT_TOOL_DEFS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "agent_job",
+            "description": "Real work by a coding agent (Claude Code or Muse) in a project: a Crew job it does in the background while Xod follows every step (what it runs, files it edits). What it asks permission for, and its questions, wait for the person on the Crew board (Tools → Crew); Xod never approves for them. Xod's GitHub connection goes with it. Actions: start (task, folder, agent; several jobs at once: call start once per job), status (one job, or all of them), message (a follow-up to a job; steer=true changes course while it works), interrupt, stop. In a git repository each job works in its own copy (a branch of its own), so jobs never collide: review shows what it changed (files and diff); merge brings it into the person's checkout, pr opens a pull request, discard throws the copy away (each of those three waits for the person's OK). Use this for anything that changes code or files (\"have claude code fix the tests in ~/code/app\").",
+            "parameters": {"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["start", "status", "message", "interrupt", "stop", "review", "merge", "pr", "discard"]},
+                "agent": {"type": "string", "enum": ["claude", "muse"], "description": "For start: the one the person named; default Claude Code"},
+                "task": {"type": "string", "description": "For start: the job, in the person's words, with what counts as done"},
+                "folder": {"type": "string", "description": "For start: the project folder"},
+                "title": {"type": "string", "description": "For start: a short name for the job"},
+                "job": {"type": "string", "description": "For status, message, interrupt, stop: the job's name (claude-job-1) or id; status without it lists all"},
+                "text": {"type": "string", "description": "For message: what to tell it"},
+                "steer": {"type": "boolean", "description": "For message: change course now instead of after the current step"},
+                "wait_seconds": {"type": "integer", "description": "Wait up to this long for it to finish or need the person (default 90, max 600)"}},
+                "required": ["action"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "agent_ask",
+            "description": "A quick question to a terminal agent (Claude Code, Muse, Codex, Gemini CLI …), headless, with its exact answer: explain this code, review this, what does this error mean. The same thread continues the conversation. jobs asks several agents at once. For work that changes code, use agent_job instead.",
+            "parameters": {"type": "object", "properties": {
+                "agent": {"type": "string", "description": "claude, muse, codex, gemini, aider, opencode, goose, cursor or amp"},
+                "message": {"type": "string"},
+                "folder": {"type": "string", "description": "The project folder it should look at"},
+                "thread": {"type": "string", "description": "The conversation's name, to continue it (from the last answer)"},
+                "jobs": {"type": "array", "items": {"type": "object", "properties": {"agent": {"type": "string"}, "prompt": {"type": "string"},
+                         "folder": {"type": "string"}}}, "description": "Several at once instead of agent/message"},
+                "timeout_minutes": {"type": "integer"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "agent_terminal",
+            "description": "Live terminal sessions Xod runs, several at once: an agent the person wants to watch or talk to (visible=true opens a Terminal window), or any program (command: \"npm run dev\", \"python3\", \"ssh box\"). Actions: start, send (text; sessions=[…] sends to several), read (what's new on its screen), key (ctrl+c, escape, up, enter, y, n), list, stop, stop_all. If one asks a question (trust this folder? allow this?), ask the person. Stop sessions when done.",
+            "parameters": {"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["start", "send", "read", "key", "list", "stop", "stop_all"]},
+                "agent": {"type": "string", "description": "For start: muse, claude, codex …"},
+                "command": {"type": "string", "description": "For start: any program instead of an agent"},
+                "folder": {"type": "string"}, "name": {"type": "string", "description": "For start: a name for it"},
+                "new": {"type": "boolean", "description": "For start: another one even if the same is already running there"},
+                "visible": {"type": "boolean", "description": "For start: in a Terminal window the person can watch"},
+                "session": {"type": "string", "description": "Its name or id"},
+                "sessions": {"type": "array", "items": {"type": "string"}, "description": "For send: several at once"},
+                "text": {"type": "string"}, "key": {"type": "string"},
+                "window": {"type": "integer", "description": "For stop: the Terminal window of a visible session"},
+                "wait_seconds": {"type": "integer"}},
+                "required": ["action"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "agent_setup",
+            "description": "Which coding agents are on this computer, and setting them up and looking after them. Actions: list (installed agents, signed in or not, running sessions), status (one agent's setup steps and what's next), next (does the next step: install after the person's OK on a card, then sign-in in their browser, then a check that it answers), install, login (method console for an Anthropic Console account; code: the code a sign-in page showed), update (its own updater, after the person's OK), doctor (its health check), test (one short question to prove it works).",
+            "parameters": {"type": "object", "properties": {
+                "action": {"type": "string", "enum": ["list", "status", "next", "install", "login", "update", "doctor", "test"]},
+                "agent": {"type": "string", "description": "claude, muse, codex, gemini …"},
+                "method": {"type": "string", "enum": ["subscription", "console"]},
+                "code": {"type": "string", "description": "For login: the code the sign-in page showed"},
+                "check": {"type": "boolean", "description": "For login: only see how a sign-in already started is going"}},
+                "required": ["action"]}
+        }
+    },
+]
+LEGACY_AGENT_TOOLS = {"cli_agents", "cli_agent_run", "cli_agent_login", "cli_agent_session", "cli_agent_install", "cli_agent_chat",
+                      "cli_agent_setup", "crew_start", "crew_status", "crew_message", "crew_stop"}
+TOOL_DEFINITIONS[:] = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in LEGACY_AGENT_TOOLS] + AGENT_TOOL_DEFS
+CLI_TOOLS = {"agent_job", "agent_ask", "agent_terminal", "agent_setup"}
+
+
+def _agent_tool(name: str, a: Dict[str, Any]) -> tuple:
+    """One of the four agent tools, as the narrower tool that does it (and its arguments)."""
+    act = str(a.get("action") or "").lower().strip()
+    if name == "agent_job":
+        if not act:
+            act = "message" if a.get("job") and a.get("text") else "start" if a.get("task") else "status"
+        if act in ("start", "new"):
+            return "crew_start", a
+        if act in ("message", "steer", "follow_up", "followup", "send"):
+            return "crew_message", {**a, "text": a.get("text") or a.get("message") or a.get("task") or "",
+                                    "steer": bool(a.get("steer")) or act == "steer"}
+        if act in ("interrupt", "pause"):
+            return "crew_stop", {**a, "for_good": False}
+        if act in ("stop", "cancel"):
+            return "crew_stop", {**a, "for_good": True}
+        if act in ("review", "diff", "changes"):
+            return "crew_review", a
+        if act in ("merge", "pr", "pull_request", "discard"):
+            return "crew_land", {**a, "action": {"pull_request": "pr"}.get(act, act)}
+        return "crew_status", a
+    if name == "agent_ask":
+        if a.get("jobs"):
+            return "cli_agent_run", a
+        return "cli_agent_chat", {**a, "message": a.get("message") or a.get("prompt") or a.get("text") or ""}
+    if name == "agent_terminal":
+        return "cli_agent_session", a
+    if not act:
+        act = "status" if a.get("agent") else "list"
+    if act in ("list", "find", "which"):
+        return "cli_agents", a
+    if act == "install":
+        return "cli_agent_install", a
+    if act in ("login", "sign_in", "signin", "code"):
+        return "cli_agent_login", a
+    return "cli_agent_setup", {**a, "action": "status" if act in ("status", "setup") else act}
 _install_grants: Dict[str, str] = {}
 _setup_grants: set = set()
 
@@ -3062,8 +3173,39 @@ def _agent_from_request(ac) -> str:
 
 async def _crew_tool(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
     """Crew jobs (services/crew.py). What the person must decide stays theirs: approvals and Muse's questions are only
-    reported here, and decided on the Crew board."""
+    reported here, and decided on the Crew board. Merging a job's copy, opening a pull request or discarding it waits
+    for their OK on a card."""
     from app.services import crew
+    if name == "crew_review":
+        try:
+            r = await crew.review(crew.job(a.get("job") or "")["id"])
+        except crew.CrewError as e:
+            return {"success": False, "error": str(e)}
+        return {**r, "patch": r["patch"][:12000]}
+    if name == "crew_land":
+        act = a.get("action")
+        if act not in ("merge", "pr", "discard"):
+            return {"success": False, "error": "merge, pr or discard?"}
+        try:
+            j = crew.job(a.get("job") or "")
+        except crew.CrewError as e:
+            return {"success": False, "error": str(e)}
+        token = a.pop("_grant", None)
+        if token and _install_grants.pop(token, None) == f"{act}:{j['id']}":
+            try:
+                return await {"merge": crew.merge, "pr": crew.pull_request, "discard": crew.discard}[act](j["id"])
+            except crew.CrewError as e:
+                return {"success": False, "error": str(e)}
+        from app.services import sentinel
+        t = uuid.uuid4().hex
+        _install_grants[t] = f"{act}:{j['id']}"
+        w = j.get("worktree") or {}
+        why = {"merge": f"Xod wants to merge {j['name']} ({j['title'][:80]}) into {w.get('base', 'your branch')} in {w.get('repo_name', 'your repository')}.",
+               "pr": f"Xod wants to push {w.get('branch', 'its branch')} and open a pull request for {j['name']} ({j['title'][:80]}).",
+               "discard": f"Xod wants to throw away {j['name']}'s copy and branch ({j['title'][:80]}): its changes would be gone."}[act]
+        held = sentinel.hold("agent_job", {"action": act, "job": j["id"], "_grant": t}, {"rule": "crew_land", "why": why})
+        held["args"] = {"action": act, "job": j["name"]}
+        return held
     wait = max(0, min(int(a.get("wait_seconds") if a.get("wait_seconds") is not None else 90), 600))
     try:
         if name == "crew_start":
@@ -3117,6 +3259,8 @@ async def _cli_start(ac, agent: str, folder: str, visible: bool, name: str = "",
 async def _cli_agents(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
     """Terminal agents: Muse, Claude Code, Codex … (services/agent_clis.py)."""
     from app.services import agent_clis as ac
+    if name in CLI_TOOLS:
+        name, a = _agent_tool(name, a)
     try:
         if name == "cli_agents":
             return {**ac.find(), "sessions": ac.sessions(), "threads": ac.threads()}
@@ -3295,7 +3439,7 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         return await _desktop(name, dict(arguments or {}))
     if name == "desktop_setup":
         return _desktop_setup_card(dict(arguments or {}))
-    if name in CLI_TOOLS:
+    if name in CLI_TOOLS or name in LEGACY_AGENT_TOOLS:
         return await _cli_agents(name, dict(arguments or {}))
     if name in ("agent_mail_send", "agent_mail_inbox"):
         from app.services import agent_mail, packs as _packs
@@ -4294,7 +4438,8 @@ _DESKTOP_RE = re.compile(r"\b(?:my |the |this )?(?:screen|mouse|cursor|desktop|p
 
 
 _CLI_AGENT_RE = re.compile(r"\b(?:muse|claude? ?code|claude cli|codex|gemini cli|aider|opencode|goose|cursor[- ]agent|amp)\b|"
-                           r"\b(?:cli|terminal|command[- ]line) (?:agents?|harness(?:es)?|ai)\b|\bharness(?:es)?\b", re.I)
+                           r"\b(?:cli|terminal|command[- ]line|coding) (?:agents?|harness(?:es)?|ai)\b|\bharness(?:es)?\b|"
+                           r"\bcrew\b|\b(?:claude|muse|agent)(?:'s)?[- ](?:jobs?|sessions?)\b|\b(?:claude|muse)-job-\d+\b", re.I)
 
 
 def _wants_cli_agent(query: str) -> bool:

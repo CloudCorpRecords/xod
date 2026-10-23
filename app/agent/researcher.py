@@ -1482,6 +1482,9 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             return False          # "go ahead", "yes": answering something the planner asked
         if self._CHANGE_IT_RE.search(q):
             return False          # "now add a line to it": a change, which needs tools
+        from app.agent.tools import _wants_cli_agent
+        if _wants_cli_agent(q):
+            return False          # coding agents: the router answered "how's the claude job?" from nothing (evals)
         return 0 < len(q) <= 600 and not self._FAST_EXCLUDE_RE.search(q)
 
     @staticmethod
@@ -2560,6 +2563,20 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             if re.search(r"\b(report|pdf|share|send this|write[- ]?up)\b", query or "", re.I):
                 extra.append("   - xod_make_report: Save a finished answer as a shareable page + PDF with sources. "
                              "Args: {\"title\": \"...\", \"markdown\": \"...\"}")
+            from app.agent.tools import _wants_cli_agent
+            if _wants_cli_agent(query) and packs.tool_allowed("agent_job"):
+                extra += [
+                    "5. Coding agents (Claude Code, Muse, Codex … in this computer's terminal; never run them with computer_run_command):",
+                    "   - agent_job: Real work by Claude Code or Muse in a project (fix, build, change, refactor, write tests): a Crew job "
+                    "Xod follows; what it asks waits for the person. Args: {\"action\": \"start\", \"agent\": \"claude|muse\", \"task\": \"...\", "
+                    "\"folder\": \"...\"}; {\"action\": \"status\", \"job\": \"optional name\"}; {\"action\": \"message\", \"job\": \"claude-job-1\", "
+                    "\"text\": \"...\"}; {\"action\": \"interrupt|stop\", \"job\": \"...\"}. Two agents at once: one start per job.",
+                    "   - agent_ask: A quick question to an agent, answer only, nothing changed (explain, review). Args: {\"agent\": \"claude\", "
+                    "\"message\": \"...\", \"folder\": \"optional\"}",
+                    "   - agent_terminal: A live terminal session to watch or talk to, or any long-running program (npm run dev). Args: "
+                    "{\"action\": \"start\", \"agent\": \"claude\" or \"command\": \"npm run dev\", \"folder\": \"...\", \"visible\": true}",
+                    "   - agent_setup: Which agents are installed and signed in, and installing, signing in, updating or checking one. "
+                    "Args: {\"action\": \"list\"}; {\"action\": \"next|install|login|update|doctor\", \"agent\": \"codex\"}"]
             from app.services.mcp_client import mcp_hub
             mcp_tools = [d["function"] for d in mcp_hub.tool_definitions()][:12]
             if mcp_tools:

@@ -1961,13 +1961,14 @@ class CrewStart(BaseModel):
     folder: Optional[str] = ""
     title: Optional[str] = ""
     agent: Optional[str] = ""
+    isolate: Optional[bool] = None
 
 
 @app.post("/api/crew")
 async def crew_start(req: CrewStart):
     from app.services import crew
     try:
-        return {"success": True, "job": await crew.start(req.task, req.folder or "", req.title or "", agent=req.agent or "")}
+        return {"success": True, "job": await crew.start(req.task, req.folder or "", req.title or "", agent=req.agent or "", isolate=req.isolate)}
     except crew.CrewError as e:
         return {"success": False, "error": str(e)}
 
@@ -2009,7 +2010,8 @@ class CrewAct(BaseModel):
 
 @app.post("/api/crew/{jid}/{action}")
 async def crew_act(jid: str, action: str, req: CrewAct):
-    """message, decide, answer, interrupt, stop: what you do on the Crew board (it's you, so it goes straight through)."""
+    """message, decide, answer, interrupt, stop, and for a job's own copy review, merge, pr, discard: what you do on the
+    Crew board (it's you, so it goes straight through)."""
     from app.services import crew
     try:
         if action == "message":
@@ -2022,9 +2024,34 @@ async def crew_act(jid: str, action: str, req: CrewAct):
             return {"success": True, "job": await crew.interrupt(jid)}
         if action == "stop":
             return {"success": True, "job": await crew.stop(jid)}
+        if action == "review":
+            return await crew.review(jid)
+        if action == "merge":
+            return await crew.merge(jid)
+        if action == "pr":
+            return await crew.pull_request(jid)
+        if action == "discard":
+            return await crew.discard(jid)
         return {"success": False, "error": f"Unknown action {action}."}
     except crew.CrewError as e:
         return {"success": False, "error": str(e)}
+
+
+@app.get("/api/scorecard")
+async def scorecard_get(days: int = 7):
+    """How Xod is doing (services/scorecard.py): chat turns, model calls, Crew jobs and the routing check."""
+    from app.services import scorecard
+    return await asyncio.to_thread(scorecard.card, max(1, min(days, 90)))
+
+
+@app.post("/api/evals/run")
+async def evals_run():
+    """Replays the routing cases through the router and planner with the model Xod uses (services/evals.py)."""
+    from app.services import evals
+    if evals.status():
+        return {"success": False, "error": "A check is already running."}
+    asyncio.create_task(evals.run(label="from the Scorecard"))
+    return {"success": True, "started": True}
 
 
 @app.get("/api/agents/{agent}/setup")

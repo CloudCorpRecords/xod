@@ -4,6 +4,7 @@ Code's SDK protocol) for Xod's Crew tests. It does what a message asks, by keywo
   RUN <command>   asks to run it (can_use_tool); runs it if allowed (saying whether a rule was kept for the session)
   ASK             asks a question with options red / blue (AskUserQuestion) and repeats the answer
   EDIT <path>     edits a file without asking (+2 −1 lines)
+  WRITE <path> <text>  really writes the file where it works (to see which folder that is)
   FAIL            the turn fails
   SLOW            works for 4 seconds (interruptible)
   MCP             says which shared connectors it got and whether their token reached it (never the token)
@@ -99,6 +100,15 @@ def turn(text):
         result_of(tid, "edited")
         say("Edited it.")
         return done("Edited it.")
+    m = re.match(r"WRITE (\S+) (.+)", text)
+    if m:
+        tid = tool("Write", {"file_path": os.path.join(os.getcwd(), m.group(1)), "content": m.group(2)})
+        os.makedirs(os.path.dirname(os.path.join(os.getcwd(), m.group(1))) or ".", exist_ok=True)
+        with open(m.group(1), "w") as f:
+            f.write(m.group(2) + "\n")
+        result_of(tid, "written")
+        say(f"Wrote {m.group(1)} in {os.getcwd()}.")
+        return done(f"Wrote {m.group(1)} in {os.getcwd()}.")
     if text.startswith("FAIL"):
         return done("", ok=False, errors=["The model provider is down"])
     if text.startswith("SLOW"):

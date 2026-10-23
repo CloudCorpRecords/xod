@@ -29,6 +29,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from app.paths import DATA_DIR
+from app.services import worktrees
 from app.services.claude_native import ClaudeError, ClaudeRun
 from app.services.muse_native import MuseError, MuseHost
 
@@ -132,7 +133,7 @@ async def _muse() -> MuseHost:
         _host["stale"] = False
         path = agent_clis.which("muse")
         if not path:
-            raise CrewError("Muse isn't installed. Xod can install it (with your OK): cli_agent_install muse.")
+            raise CrewError("Muse isn't installed. Xod can set it up (with your OK): Tools → Agent setup, or agent_setup next muse.")
         env = dict(agent_clis._env(), XDG_CONFIG_HOME=str(_muse_config()))
         h = MuseHost(path, str(agent_clis.HOME), env=env)
         h.on_event, h.on_request = _on_event, _on_request
@@ -235,8 +236,11 @@ def default_agent() -> str:
     return "claude" if agent_clis.which("claude") or not agent_clis.which("muse") else "muse"
 
 
-async def start(task: str, folder: str = "", title: str = "", approval_mode: Optional[str] = None, agent: str = "") -> Dict[str, Any]:
-    """Hands a task to a coding agent (Claude Code or Muse) in a folder. Returns the job at once; it works in the background."""
+async def start(task: str, folder: str = "", title: str = "", approval_mode: Optional[str] = None, agent: str = "",
+                isolate: Optional[bool] = None) -> Dict[str, Any]:
+    """Hands a task to a coding agent (Claude Code or Muse) in a folder. Returns the job at once; it works in the background.
+    In a git repository the job works in its own copy (a worktree on a branch of its own), so jobs never collide and
+    nothing reaches your checkout until you merge it; isolate=False works in the folder itself."""
     from app.services import agent_clis
     _load()
     agent = (agent or "").strip().lower().replace("claude code", "claude").replace("claude-code", "claude") or default_agent()
@@ -252,9 +256,21 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
     jid = uuid.uuid4().hex[:8]
     n = 1 + sum(1 for j in _jobs.values() if j["agent"] == agent)
     j = {"id": jid, "name": f"{agent}-job-{n}", "agent": agent, "title": (title or task.strip().splitlines()[0])[:100], "task": task,
-         "folder": cwd, "status": "starting", "started": time.time(), "updated": time.time(), "session_id": None, "turn_id": None,
-         "steps": [], "approvals": {}, "questions": {}, "_text": "", "answer": "", "usage": {}, "error": None}
+         "folder": cwd, "project": cwd, "status": "starting", "started": time.time(), "updated": time.time(), "session_id": None,
+         "turn_id": None, "steps": [], "approvals": {}, "questions": {}, "_text": "", "answer": "", "usage": {}, "error": None}
+    if isolate is not False:
+        try:
+            wt = await asyncio.to_thread(worktrees.create, cwd, j["name"], jid)
+        except worktrees.WorktreeError as e:
+            raise CrewError(str(e))
+        if wt:
+            j["worktree"] = wt
+            j["folder"] = wt["cwd"]
     _jobs[jid] = j
+    if j.get("worktree"):
+        w = j["worktree"]
+        _step(j, "status", f"Working in its own copy of {w['repo_name']} (branch {w['branch']}, from {w['base']}): nothing reaches "
+                           f"your checkout until you merge it" + (". Your uncommitted changes there aren't in its copy." if w.get("dirty") else "."))
     if agent == "claude":
         _step(j, "status", "Starting Claude Code")
         asyncio.create_task(_claude_start(j, j["task"]))
@@ -303,6 +319,8 @@ async def message(jid: str, text: str, steer: bool = False) -> Dict[str, Any]:
     j = job(jid)
     if not (text or "").strip():
         raise CrewError("What should it hear?")
+    if (j.get("worktree") or {}).get("closed"):
+        raise CrewError(f"That job's copy was {j['worktree']['closed']}: start a new job to carry on.")
     if j["agent"] == "claude":
         return await _claude_message(j, text, steer)
     if not j.get("session_id"):
@@ -952,3 +970,78 @@ async def _claude_answer(j: Dict[str, Any], q: Dict[str, Any], answers: List[Dic
         j["status"] = "working"
     _save()
     return _view(j)
+
+
+# ------------------------------------------------------------------ a job's own copy: review, merge, pull request, discard
+def _busy(j: Dict[str, Any]) -> None:
+    if j["status"] in ("starting", "working", "waiting"):
+        raise CrewError("It's still working: wait for it to finish, or interrupt it first.")
+    if not j.get("worktree"):
+        raise CrewError("That job worked in the folder itself, so its changes are already there.")
+    if j["worktree"].get("closed"):
+        raise CrewError(f"That job's copy was already {j['worktree']['closed']}.")
+
+
+async def review(jid: str) -> Dict[str, Any]:
+    """What a job changed in its copy: each file with lines added and removed, and the diff."""
+    j = job(jid)
+    if not j.get("worktree"):
+        raise CrewError("That job worked in the folder itself (not a git repository, or you chose so): there's no copy to review.")
+    try:
+        return {"success": True, "job": j["id"], **await asyncio.to_thread(worktrees.changes, j["worktree"])}
+    except worktrees.WorktreeError as e:
+        raise CrewError(str(e))
+
+
+async def merge(jid: str) -> Dict[str, Any]:
+    """Brings a job's changes into your checkout: commits them on its branch, then merges the branch into the branch
+    it started from. Stops (changing nothing) if your checkout moved to another branch or a file would clash."""
+    j = job(jid)
+    _busy(j)
+    await _end_run(j)
+    try:
+        res = await asyncio.to_thread(worktrees.merge, j["worktree"], f"{j['title']} ({AGENTS.get(j['agent'], j['agent'])}, Crew)")
+    except worktrees.WorktreeError as e:
+        raise CrewError(str(e))
+    j["worktree"]["closed"] = "merged"
+    _step(j, "status", res["message"])
+    _save()
+    return {**res, "job": _view(j)}
+
+
+async def pull_request(jid: str) -> Dict[str, Any]:
+    """Commits a job's changes on its branch, pushes the branch and opens a pull request for it (GitHub CLI)."""
+    j = job(jid)
+    _busy(j)
+    await _end_run(j)
+    try:
+        res = await asyncio.to_thread(worktrees.pull_request, j["worktree"], j["title"],
+                                      f"{j['task']}\n\nDone by {AGENTS.get(j['agent'], j['agent'])} as a Xod Crew job.")
+    except worktrees.WorktreeError as e:
+        raise CrewError(str(e))
+    j["worktree"]["pr"] = res.get("url")
+    j["worktree"]["closed"] = "sent as a pull request"
+    _step(j, "status", res["message"])
+    _save()
+    return {**res, "job": _view(j)}
+
+
+async def discard(jid: str) -> Dict[str, Any]:
+    """Throws a job's copy away: its folder and its branch. Your checkout is never touched."""
+    j = job(jid)
+    _busy(j)
+    await _end_run(j)
+    try:
+        await asyncio.to_thread(worktrees.remove, j["worktree"], True)
+    except worktrees.WorktreeError as e:
+        raise CrewError(str(e))
+    j["worktree"]["closed"] = "discarded"
+    _step(j, "status", "Discarded its copy and its branch.")
+    _save()
+    return {"success": True, "job": _view(j)}
+
+
+async def _end_run(j: Dict[str, Any]) -> None:
+    r = _runs.pop(j["id"], None)
+    if r:
+        await r.stop()

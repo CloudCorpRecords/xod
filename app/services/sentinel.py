@@ -39,7 +39,7 @@ MAX_UNTRUSTED = 40000
 
 # Tools whose results someone else wrote.
 _UNTRUSTED_TOOLS = re.compile(r"^(?:web_|tavily_|you_|browser_|mcp__|computer_read_file|fs_read_workspace_file|agent_mail_inbox|"
-                              r"media_download|scan_|audit_|omni_|desktop_look|desktop_task|terminal_read|cli_agent_run|cli_agent_session|cli_agent_chat|crew_status|crew_start|crew_message)")
+                              r"media_download|scan_|audit_|omni_|desktop_look|desktop_task|terminal_read|cli_agent_run|cli_agent_session|cli_agent_chat|crew_status|crew_start|crew_message|agent_job|agent_ask|agent_terminal)")
 _SEND_RE = re.compile(r"(?:^|_)(?:send|post|reply|message|email|mail|publish|tweet|dm|share|invite|forward|comment|transfer|pay|"
                       r"payment|charge|refund|withdraw|deposit|order|purchase|buy|checkout|webhook|notify|submit)(?:_|$)", re.I)
 _DESTRUCTIVE_RE = re.compile(r"(?:^|_)(?:delete|remove|destroy|drop|erase|purge|trash|kill|uninstall|wipe|truncate|revoke)(?:_|$)", re.I)
@@ -115,7 +115,15 @@ def note_user(text: str) -> None:
 
 
 # ------------------------------------------------------------------ the review
+# The four agent tools: only what hands an agent work (or types into a session) runs anything.
+_AGENT_RUN_ACTIONS = {"agent_job": {"", "start", "new", "message", "steer", "send"}, "agent_ask": None,
+                      "agent_terminal": {"start", "send"}, "agent_setup": {"install"}}
+
+
 def _kind(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) -> Optional[str]:
+    if tool in _AGENT_RUN_ACTIONS:
+        acts = _AGENT_RUN_ACTIONS[tool]
+        return "run" if acts is None or str((args or {}).get("action") or "").lower() in acts else None
     if tool in _RUN_TOOLS:
         return "run"
     if tool in _SEND_TOOLS:

@@ -485,7 +485,7 @@ async def session_start(agent: str = "", folder: str = "", extra: Optional[List[
         path = which(key)
         if not path:
             return {"success": False, "installed": False, "error": f"{a['name']} isn't installed. Xod can install it (with your OK): "
-                    f"cli_agent_install, or yourself: {a['install']}"}
+                    f"agent_setup next, or yourself: {a['install']}"}
         argv = [path] + _safe_extra(extra)
         label = a["name"]
     if visible:
@@ -823,34 +823,29 @@ def context_note(query: str) -> str:
         return ""
     if not found:
         return ("(On this computer: no terminal AI agent (Muse, Claude Code, Codex, Gemini CLI …) is installed. Say so, "
-                "and how to install the one they mean: cli_agents lists the install commands.)")
+                "and offer to set it up: agent_setup with action next.)")
     home = str(HOME)
     rows = [f"{a['name']} ({a['id']}) at {str(a['path']).replace(home, '~')}, "
             + ("signed in" if a["signed_in"] else "not signed in yet" if a["signed_in"] is False else "sign-in unknown") for a in found]
-    note = ("(On this computer, terminal AI agents installed: " + "; ".join(rows) + ". For real work in a project with "
-            "Claude Code or Muse, use crew_start (agent claude or muse): a Crew job Xod follows step by step, where the agent's requests "
-            "to run or change things go to the person on the Crew board, and Xod's GitHub connection goes with it. For quick "
-            "questions to Claude Code and Muse the "
-            "efficient way is cli_agent_chat: exact answers, and the same thread continues the conversation. Otherwise call cli_agent_run "
-            "(one job, headless, in a folder) or cli_agent_session (start it, then send messages and read its screen; "
-            "visible=true opens it in a Terminal window the person can watch). Several can run at once, each by name (muse-1, "
-            "claude-1 …: start with new=true for a second of the same; list shows which are working, idle or waiting for an "
-            "answer; send with sessions=[…] reaches several; cli_agent_run with jobs=[…] runs separate jobs in parallel). "
-            "Don't run them with computer_run_command. "
-            "If they ask whether Xod can use or control one of these, the answer is yes: say so plainly, say how (Xod "
-            "starts it, types to it, reads its answers), and offer to start it now, or do it if they asked. ")
+    note = ("(On this computer, coding agents installed: " + "; ".join(rows) + ". Use the agent tools, never "
+            "computer_run_command: agent_job for real work in a project (action start, with agent claude or muse: a Crew job "
+            "Xod follows, what the agent asks waits for the person on the Crew board, Xod's GitHub goes with it; status, "
+            "message, interrupt, stop for jobs already running), agent_ask for a quick question with nothing changed, "
+            "agent_terminal for a live session to watch or any long-running program, agent_setup to list, install, sign in, "
+            "update or check them. If they ask whether Xod can use or control one, the answer is yes: say how, and offer to "
+            "start it. ")
     typos = {"claude": r"claude?(?:\s*code)?", "gemini": r"gemini(?:\s*cli)?", "cursor": r"cursor[- ]?agent"}
     missing = [k for k, info in AGENTS.items() if k not in {a["id"] for a in found}
                and re.search(rf"\b(?:{typos.get(k, re.escape(k))}|{re.escape(info['name'].split(' (')[0])})\b", query or "", re.I)]
     for k in missing:
-        note += (f"{AGENTS[k]['name']} isn't installed: cli_agent_setup sets it up step by step (action next: installs it "
+        note += (f"{AGENTS[k]['name']} isn't installed: agent_setup sets it up step by step (action next: installs it "
                  f"after the person's OK on a card, with {AGENTS[k]['install']}; then signs them in, then checks it answers). ")
         if k == "claude" and claude_app().get("account"):
             note += ("The Claude desktop app is signed in on this computer, but Claude Code keeps its own sign-in: it needs "
                      "one approval in the browser, and Xod opens it on the same account. Say that plainly. ")
     unsigned = [a["name"] for a in found if a["signed_in"] is False]
     if unsigned:
-        note += f"Not signed in yet: {', '.join(unsigned)} (cli_agent_setup with action next signs them in). "
+        note += f"Not signed in yet: {', '.join(unsigned)} (agent_setup with action next signs them in). "
     live = [x for x in sessions() if x.get("session") and x.get("running")]
     if live:
         note += "Running now: " + "; ".join(f"{x['name']} ({x['agent']}, {x['state']})" for x in live[:8]) + ". "
@@ -897,7 +892,7 @@ async def install(agent: str, timeout: float = 900) -> Dict[str, Any]:
         return {"success": False, "agent": a["name"], "exit_code": proc.returncode, "output": text,
                 "error": f"Installing {a['name']} didn't work" + (" (is npm installed?)" if a["install"].startswith("npm") and "not found" in text else "") + "."}
     return {"success": True, "agent": a["name"], "path": path, "output": text[-800:],
-            "next": f"Installed. Sign in next (cli_agent_login {key}): it opens the page in your browser.",
+            "next": f"Installed. Sign in next (agent_setup login {key}): it opens the page in your browser.",
             "message": f"Installed {a['name']}. Sign in next: it opens the page in your browser."}
 
 
@@ -1046,7 +1041,7 @@ async def chat(agent: str, message: str, thread: str = "", folder: str = "", tim
     a = AGENTS[key]
     path = which(key)
     if not path:
-        return {"success": False, "installed": False, "error": f"{a['name']} isn't installed. Xod can install it (with your OK): cli_agent_install."}
+        return {"success": False, "installed": False, "error": f"{a['name']} isn't installed. Xod can set it up (with your OK): agent_setup next."}
     if not str(message or "").strip():
         raise CliError("What should it say?")
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", thread.strip()) if thread else ""
@@ -1074,7 +1069,7 @@ async def chat(agent: str, message: str, thread: str = "", folder: str = "", tim
             _threads.pop(name, None)            # no conversation to keep: each message stands alone
             res = await run(key, message, cwd, timeout=timeout)
             return {**res, "thread": None, "note": f"{a['name']} can't continue a conversation headless: each message stands "
-                    "alone. For a back-and-forth with it, start a session (cli_agent_session)."}
+                    "alone. For a back-and-forth with it, start a session (agent_terminal)."}
         proc = await asyncio.create_subprocess_exec(path, *args, cwd=cwd, env=_env(), stdin=subprocess.DEVNULL,
                                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=not WIN)
         try:
@@ -1096,7 +1091,7 @@ async def chat(agent: str, message: str, thread: str = "", folder: str = "", tim
         if proc.returncode != 0 and not answer:
             login = re.search(r"not (?:logged|signed) in|log ?in|unauthori[sz]ed|401|api key", errs, re.I)
             return {"success": False, "thread": name, "needs_login": bool(login), "exit_code": proc.returncode, "errors": errs[-1500:],
-                    "error": f"{a['name']} needs you to sign in first: cli_agent_login {key}." if login else f"{a['name']} stopped with an error."}
+                    "error": f"{a['name']} needs you to sign in first: agent_setup login {key}." if login else f"{a['name']} stopped with an error."}
         t.update(folder=cwd, turns=t["turns"] + 1, last=time.time())
         _threads[name] = t
         _save_threads()

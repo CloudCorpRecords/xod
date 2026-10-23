@@ -60,7 +60,7 @@
     return `
       <div class="px-4 py-3 border-b border-white/[0.06] flex items-start gap-2">
         <div class="min-w-0 flex-1"><div class="text-white font-medium truncate">${esc(j.title)}</div>
-          <div class="text-zinc-500 text-[11px]">${esc(j.name)} · ${esc(who(j))} · ${esc(WORD[j.status] || j.status)} · ${esc(j.folder)}${usage}</div></div>
+          <div class="text-zinc-500 text-[11px]">${esc(j.name)} · ${esc(who(j))} · ${esc(WORD[j.status] || j.status)} · ${esc(j.project || j.folder)}${usage}</div></div>
         ${["working", "waiting", "starting"].includes(j.status) ? `<button data-c="interrupt" class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600 text-[12px]">Interrupt</button>` : ""}
         ${j.status !== "stopped" ? `<button data-c="stop" class="px-2 py-1 rounded-md text-red-300 bg-red-500/10 hover:bg-red-500/20 text-[12px]">Stop</button>` : ""}
       </div>
@@ -68,12 +68,46 @@
         ${asks}${qs}
         ${j.error ? `<div class="text-red-300 text-[12px]">${esc(j.error)}</div>` : ""}
         ${(j.files || []).length ? `<div class="text-[12px] text-zinc-400">Files changed: ${j.files.map((f) => `<span class="font-mono text-zinc-200">${esc(f)}</span>`).join(", ")}</div>` : ""}
+        ${copyBox(j)}
         <div class="text-[12px] font-mono">${steps}</div>
       </div>
       <div class="p-2 border-t border-white/[0.06] flex gap-1.5 items-center">
         <input data-c-msg class="flex-1 bg-surface-700 text-white rounded-md px-2 py-1.5 text-[12px]" placeholder="Tell ${esc(who(j))} something (a follow-up), Enter sends">
         <label class="text-[11px] text-zinc-400 flex items-center gap-1"><input type="checkbox" data-c-steer> change course now</label>
       </div>`;
+  }
+
+  // A job's own copy (a git worktree on its own branch): what it changed, and merge / pull request / discard.
+  const reviews = {};
+  function copyBox(j) {
+    const w = j.worktree;
+    if (!w) return "";
+    if (w.closed) return `<div class="text-[12px] text-zinc-400">Its copy was ${esc(w.closed)}${w.pr ? `: <a href="${esc(w.pr)}" target="_blank" rel="noopener" class="text-sky-300 hover:underline">${esc(w.pr)}</a>` : ""}.</div>`;
+    const busy = ["starting", "working", "waiting"].includes(j.status);
+    const r = reviews[j.id];
+    const files = r && r.files ? r.files.map((f) => `<div class="flex gap-2 font-mono text-[12px]"><span class="text-zinc-200 truncate flex-1">${esc(f.file)}</span>
+        <span class="text-emerald-400">+${f.added ?? "?"}</span><span class="text-red-300">−${f.removed ?? "?"}</span></div>`).join("") : "";
+    return `<div class="p-3 rounded-xl bg-surface-900 border border-white/[0.06] space-y-2">
+      <div class="text-[12px] text-zinc-400">Works in its own copy: branch <span class="font-mono text-zinc-200">${esc(w.branch)}</span> from <span class="font-mono text-zinc-200">${esc(w.base)}</span> in ${esc(w.repo_name)}. Your checkout is untouched until you merge.</div>
+      ${busy ? "" : `<div class="flex flex-wrap gap-1.5">
+        <button data-c-land="review" class="px-2.5 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600 text-[12px]">${r ? "Refresh changes" : "See changes"}</button>
+        <button data-c-land="merge" class="px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30 text-[12px]">Merge into ${esc(w.base)}</button>
+        <button data-c-land="pr" class="px-2.5 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600 text-[12px]">Open pull request</button>
+        <button data-c-land="discard" class="px-2.5 py-1 rounded-md bg-red-500/15 text-red-200 hover:bg-red-500/25 text-[12px]">Discard</button></div>`}
+      ${r && r.error ? `<div class="text-red-300 text-[12px]">${esc(r.error)}</div>` : ""}
+      ${r && r.files ? (r.files.length ? `<div>${files}</div><details class="text-[12px]"><summary class="cursor-pointer text-zinc-400 hover:text-zinc-200">The diff (+${r.added} −${r.removed})</summary>
+          <pre class="mt-1 max-h-80 overflow-auto p-2 rounded-md bg-black/40 text-zinc-300 font-mono text-[11px] whitespace-pre">${esc(r.patch)}${r.truncated ? "\n…" : ""}</pre></details>` : `<div class="text-zinc-500 text-[12px]">No changes.</div>`) : ""}
+    </div>`;
+  }
+
+  async function land(act) {
+    if (act === "discard" && !confirm("Throw away this job's copy and its branch? Its changes will be gone.")) return;
+    if (act === "pr" && !confirm("Push the job's branch and open a pull request on GitHub?")) return;
+    const r = await api(`/api/crew/${current}/${act}`, {});
+    if (act === "review") reviews[current] = r.success ? r : { error: r.error };
+    else if (!r.success) reviews[current] = { ...(reviews[current] || {}), error: r.error };
+    else { delete reviews[current]; if (typeof showToast === "function") showToast(r.message || "Done"); }
+    refresh();
   }
 
   async function refresh() {
@@ -115,6 +149,7 @@
                 <select data-c-agent class="w-full bg-surface-700 text-zinc-200 rounded-md px-2 py-1 text-[12px]"><option value="claude">Claude Code</option><option value="muse">Muse</option></select>
                 <textarea data-c-task rows="3" class="w-full bg-surface-700 text-zinc-200 rounded-md px-2 py-1 text-[12px]" placeholder="What should it do?"></textarea>
                 <input data-c-folder class="w-full bg-surface-700 text-zinc-200 rounded-md px-2 py-1 text-[12px]" placeholder="Project folder (default: home)">
+                <label class="flex items-center gap-1.5 text-[11px] text-zinc-400" title="In a git repository the job gets a branch and folder of its own; you merge it when you're happy."><input type="checkbox" data-c-isolate checked> Its own copy (git projects)</label>
                 <button data-c="start" class="w-full px-2 py-1.5 rounded-md bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Start the job</button>
                 <p data-c-note class="text-[11px] text-zinc-400"></p>
                 <details data-c-tools class="text-[11px] text-zinc-400"><summary class="cursor-pointer hover:text-zinc-200">Muse's tools for jobs</summary>
@@ -154,6 +189,8 @@
       if (!r.success && typeof showToast === "function") showToast(r.error);
       refresh(); return;
     }
+    const landBtn = t.closest("[data-c-land]");
+    if (landBtn && current) { landBtn.disabled = true; await land(landBtn.dataset.cLand); return; }
     const act = t.closest('[data-c="interrupt"], [data-c="stop"]');
     if (act) { await api(`/api/crew/${current}/${act.dataset.c}`, {}); refresh(); return; }
     if (t.closest('[data-c="start"]')) {
@@ -162,7 +199,8 @@
       const agent = root.querySelector("[data-c-agent]").value;
       if (!task) { note.textContent = "Say what it should do."; return; }
       note.textContent = "Starting…";
-      const r = await api("/api/crew", { task, folder, agent });
+      const isolate = root.querySelector("[data-c-isolate]").checked;
+      const r = await api("/api/crew", { task, folder, agent, isolate: isolate ? null : false });
       note.textContent = r.success ? "" : r.error;
       if (r.success) { current = r.job.id; root.querySelector("[data-c-task]").value = ""; }
       refresh();
