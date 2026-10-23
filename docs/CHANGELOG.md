@@ -1,5 +1,18 @@
 # Changelog
 
+## Next
+
+**Your API keys survive updates**
+- Saved keys no longer seem to vanish after an update. macOS only lets an app read a Keychain item the app is trusted for. Xod used to save by deleting its item and making a new one, which trusted only the copy of Xod that saved it, so the updated Xod (or Xod run from source next to the installed one) was locked out and showed no keys. Xod now changes the item in place, and the apps it already trusted stay trusted.
+- When macOS won't hand over the keys (you clicked Deny, or never saw its prompt), Xod no longer treats them as gone. Saving a key used to replace all of them in that state; now nothing is written. The model switcher says your keys are locked, and Try again brings back macOS's prompt (choose Always Allow).
+
+**Switch models from the top of the page**
+- The status at the top now names the model in use (for example "Fireworks · glm-5p3-flash"). Click it to switch to any model you have: online ones with a saved key, Ollama and LM Studio models when they're running, and downloaded built-in models. It no longer opens the LM Studio screen when you aren't using LM Studio.
+
+**1Password**
+- Settings → 1Password: connect 1Password's command line tool (1Password asks you to approve). Then search your items and use a field for any of Xod's API keys. Xod keeps only the op:// reference and reads the key from 1Password, so a key you rotate there is the one Xod uses. Pasting an op:// reference into any key field works too.
+- Optional: websites with no login saved in Xod can use the matching Login item in 1Password, typed by the browser exactly like a saved login. The model never sees it.
+
 ## 0.9.0
 
 **Everyday abilities on your Mac: Messages, Calendar, Reminders, Contacts, places nearby, Home**

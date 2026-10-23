@@ -16,6 +16,7 @@ import urllib.parse
 from typing import Any, Dict, List, Optional, Tuple
 
 import keyring
+from app.services import keychain
 from app.paths import DATA_DIR
 
 logger = logging.getLogger("xod.vault")
@@ -93,7 +94,7 @@ def save_login(url_or_domain: str, username: str, password: str, source: str = "
                 keyring.delete_password(_service(site), old["username"])
             except Exception:
                 pass
-        keyring.set_password(_service(site), username, password)
+        keychain.set_item(_service(site), username, password)   # in place: other copies of Xod keep access
         index[site] = {"username": username, "saved_at": time.strftime("%Y-%m-%d %H:%M"), "source": source}
         _write_index(index)
     logger.info(f"Saved login for {site} ({source})")
@@ -105,7 +106,8 @@ def get_login(url_or_domain: str) -> Optional[Tuple[str, str]]:
     site = site_key(url_or_domain)
     entry = _read_index().get(site)
     if not entry:
-        return None
+        from app.services import onepassword     # none saved here: the site's login in 1Password, if that's on
+        return onepassword.get_login(site)
     try:
         pw = keyring.get_password(_service(site), entry["username"])
     except Exception as e:
@@ -118,7 +120,10 @@ def describe_login(url_or_domain: str) -> Optional[Dict[str, Any]]:
     """Safe-to-show metadata (no password)."""
     site = site_key(url_or_domain)
     entry = _read_index().get(site)
-    return {"site": site, **entry} if entry else None
+    if not entry:
+        from app.services import onepassword
+        return onepassword.describe_login(site)
+    return {"site": site, **entry}
 
 
 def list_logins() -> List[Dict[str, Any]]:

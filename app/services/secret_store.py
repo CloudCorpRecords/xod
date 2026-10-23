@@ -52,10 +52,23 @@ def canonical(name: str) -> str:
 
 
 def get(name: str) -> str:
+    """The key. One saved as a 1Password reference (op://…) is read from 1Password (services/onepassword.py)."""
     try:
-        return keychain.get_password(SERVICE, canonical(name)) or ""
+        value = keychain.get_password(SERVICE, canonical(name)) or ""
     except Exception as e:
         logger.warning(f"Keychain read failed for {canonical(name)}: {type(e).__name__}")
+        return ""
+    if value.startswith("op://"):
+        from app.services import onepassword
+        return onepassword.read(value)
+    return value
+
+
+def stored(name: str) -> str:
+    """What the vault holds for a key: the key, or the 1Password reference it was saved as."""
+    try:
+        return keychain.get_password(SERVICE, canonical(name)) or ""
+    except Exception:
         return ""
 
 
@@ -76,6 +89,8 @@ def save(name: str, value: str) -> None:
 def mask(value: str) -> str:
     if not value:
         return ""
+    if value.startswith("op://"):
+        return "1Password: " + value[5:]
     return value[:4] + "…" + value[-4:] if len(value) > 12 else "••••••"
 
 
@@ -153,6 +168,13 @@ def migrate() -> Dict[str, str]:
     return report
 
 
+def health() -> Dict[str, object]:
+    """Whether Xod can read its saved keys right now, and if not why (macOS said no, or nobody saw its prompt)."""
+    problem = keychain.problem()
+    return {"readable": problem is None, "problem": problem}
+
+
 def status() -> List[Dict[str, object]]:
     """For the settings UI: which keys are saved, masked."""
-    return [{"name": f, "saved": bool(v), "masked": mask(v)} for f in SECRET_FIELDS for v in [get(f)]]
+    return [{"name": f, "saved": bool(v), "masked": mask(v), "from_1password": v.startswith("op://")}
+            for f in SECRET_FIELDS for v in [stored(f)]]

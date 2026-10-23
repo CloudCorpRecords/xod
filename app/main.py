@@ -383,6 +383,85 @@ async def delete_saved_login(site: str):
     return {"success": credential_vault.delete_login(site)}
 
 
+# 1Password (services/onepassword.py): API keys as op:// references, and website logins from 1Password.
+class OnePasswordLink(BaseModel):
+    name: str
+    reference: str
+
+
+class OnePasswordLogins(BaseModel):
+    on: bool
+
+
+def _op_call(fn, *args):
+    from app.services import onepassword
+    try:
+        return fn(*args)
+    except onepassword.OnePasswordError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/1password")
+async def onepassword_status():
+    from app.services import onepassword
+    return await asyncio.to_thread(onepassword.status)
+
+
+@app.post("/api/1password/connect")
+async def onepassword_connect():
+    from app.services import onepassword
+    return await asyncio.to_thread(_op_call, onepassword.connect)
+
+
+@app.post("/api/1password/disconnect")
+async def onepassword_disconnect():
+    from app.services import onepassword
+    return onepassword.disconnect()
+
+
+@app.post("/api/1password/logins")
+async def onepassword_logins(req: OnePasswordLogins):
+    from app.services import onepassword
+    return onepassword.set_logins(req.on)
+
+
+@app.get("/api/1password/items")
+async def onepassword_items(q: str = ""):
+    from app.services import onepassword
+    res = await asyncio.to_thread(_op_call, onepassword.items, q)
+    return res if isinstance(res, dict) else {"success": True, "items": res}
+
+
+@app.get("/api/1password/items/{item_id}/fields")
+async def onepassword_fields(item_id: str):
+    from app.services import onepassword
+    res = await asyncio.to_thread(_op_call, onepassword.fields, item_id)
+    return res if isinstance(res, dict) else {"success": True, "fields": res}
+
+
+@app.post("/api/1password/link")
+async def onepassword_link(req: OnePasswordLink):
+    """Uses a 1Password field for one of Xod's API keys: the vault keeps the op:// reference, not the key."""
+    from app.services import onepassword, secret_store
+    from app.config import update_env_variable, settings
+    if not secret_store.is_secret(req.name) or not onepassword.is_reference(req.reference):
+        raise HTTPException(status_code=400, detail="Pick one of Xod's keys and a 1Password field.")
+    value = await asyncio.to_thread(onepassword.read, req.reference)
+    if not value:
+        return {"success": False, "error": "1Password didn't hand over that field. Is 1Password unlocked?"}
+    field = secret_store.canonical(req.name)
+    update_env_variable(field, req.reference)
+    setattr(settings, field, value)        # in use now; the vault keeps only the reference
+    return {"success": True, "name": field, "masked": secret_store.mask(req.reference)}
+
+
+@app.get("/api/secrets")
+async def secrets_list():
+    """Which keys are saved (masked), and which come from 1Password."""
+    from app.services import secret_store
+    return {"keys": await asyncio.to_thread(secret_store.status), **secret_store.health()}
+
+
 # --------------------------------------------------------------
 # Task inbox: jobs that run in the background (see services/task_queue.py)
 # --------------------------------------------------------------
@@ -1853,8 +1932,9 @@ async def test_fireworks_connection(payload: Optional[Dict[str, str]] = None):
             if res.status_code == 200:
                 data = res.json()
                 models = data.get("data", [])
-                settings.fireworks_api_key = clean_key
-                update_env_variable("FIREWORKS_API_KEY", clean_key)
+                if not tested_saved:     # the saved one stays as it is (it may be a 1Password reference)
+                    settings.fireworks_api_key = clean_key
+                    update_env_variable("FIREWORKS_API_KEY", clean_key)
                 return {
                     "valid": True,
                     "message": f"Connected to Fireworks AI! ({len(models)} models available)",
@@ -1930,8 +2010,9 @@ async def get_lmstudio_status():
         "online": False, "server_url": llm_service.get_lmstudio_native_base(), "loaded_model": None, "models": [], "total_models": 0}
     from app.services.llm import CLOUD_PROVIDERS
     if info.get("provider") in CLOUD_PROVIDERS:
+        from app.services import keychain
         status = {**status, "active": {"cloud": True, "provider": info["provider"], "ready": info.get("api_key") not in ("", "missing", None),
-                                       "model": str(info.get("model") or "").split("/")[-1]}}
+                                       "model": str(info.get("model") or "").split("/")[-1], "keys_locked": bool(keychain.problem())}}
     elif info.get("provider") == "ollama":
         from app.services.ollama_context import status as ollama_status
         status = {**status, "active": await ollama_status(info["base_url"], info["model"])}
@@ -3626,6 +3707,24 @@ async def setup_download_endpoint(req: SetupDownload):
 async def setup_download_status_endpoint(repo: str):
     from app.services.local_engine import download_status
     return download_status(repo)
+
+@app.get("/api/models/quick")
+async def models_quick_endpoint():
+    """The model switcher at the top of the page (setup_wizard.quick)."""
+    from app.services import setup_wizard
+    return await setup_wizard.quick()
+
+@app.get("/api/secrets/health")
+async def secrets_health_endpoint():
+    """Whether Xod can read its saved API keys from the Keychain right now (services/keychain.py)."""
+    from app.services import secret_store
+    return secret_store.health()
+
+@app.post("/api/secrets/retry")
+async def secrets_retry_endpoint():
+    """Reads the Keychain again; macOS asks whether Xod may (Always Allow keeps it)."""
+    from app.config import reload_secrets
+    return await asyncio.to_thread(reload_secrets)
 
 @app.post("/api/setup/choose")
 async def setup_choose_endpoint(req: SetupChoice):

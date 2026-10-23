@@ -571,14 +571,15 @@ async function updateLMStudioUI() {
       llmText.textContent = `AI model: ${data.active.model} (${who})`;
       llmText.title = `${who}: ${data.active.model}`;
       if (pulseDot) pulseDot.className = `size-2 rounded-full ${data.active.ready ? "bg-emerald-400" : "bg-amber-400"}`;
-      setHeaderStatus(data.active.ready ? "ok" : "warn", data.active.ready ? `Ready · ${who}` : `${who} key missing`);
+      setHeaderStatus(data.active.ready ? "ok" : "warn", data.active.ready ? `${who} · ${data.active.model}`
+                      : data.active.keys_locked ? "Saved keys locked" : `${who} key missing`);
     } else if (data.active && ["ollama", "local"].includes(data.active.provider)) {
       const a = data.active;
       const who = a.server || "Ollama";
       llmText.textContent = `AI model: ${a.model} (${who})`;
       llmText.title = a.problem || `${who}: ${a.model}`;
       if (pulseDot) pulseDot.className = `size-2 rounded-full ${a.ready ? "bg-emerald-400" : "bg-red-400"}`;
-      setHeaderStatus(a.ready ? "ok" : "off", a.ready ? `Ready · ${who}` : a.problem);
+      setHeaderStatus(a.ready ? "ok" : "off", a.ready ? `${who} · ${a.model}` : a.problem);
     } else if (data.online) {
       if (data.loaded_model) {
         const m = data.loaded_model;
@@ -1153,6 +1154,7 @@ function openSettingsModal() {
   if (window.lucide) lucide.createIcons();
   loadMediaModelsSettings();
   loadSavedLogins();
+  if (typeof loadOnePassword === "function") loadOnePassword();
   const provider = document.getElementById("selectLlmProvider")?.value;
   if (provider === "lm_studio") {
     refreshLlmModels({ silent: true });

@@ -178,6 +178,37 @@ def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> D
     return {"success": True, "provider": provider, "model": model}
 
 
+async def quick() -> Dict[str, Any]:
+    """Everything the model switcher at the top of the page offers: online models with a saved key, models in Ollama
+    and LM Studio when they're running, built-in models that are downloaded. Each says whether it's the one in use."""
+    from app.config import settings
+    from app.services import secret_store
+    from app.services.llm import PROVIDER_NAMES
+    from app.services.model_hub import CLOUD_DEFAULTS
+    s = await status()
+    cur_p, cur_m = settings.llm_provider, settings.llm_model
+    out: List[Dict[str, Any]] = []
+
+    def add(group: str, provider: str, model: str, label: str, **extra):
+        out.append({"group": group, "provider": provider, "model": model, "label": label,
+                    "current": provider == cur_p and (model == cur_m or provider in CLOUD_DEFAULTS), **extra})
+
+    for p in s["cloud_keys"]:
+        m = cur_m if p == cur_p and cur_m else CLOUD_DEFAULTS[p]
+        add("Online", p, m, f"{PROVIDER_NAMES.get(p, p)} · {m.split('/')[-1]}")
+    for m in s["ollama"]["models"]:
+        add("Ollama", "ollama", m, m)
+    for m in s["lm_studio"]["models"]:
+        add("LM Studio", "lm_studio", m, m.split("/")[-1], loaded=m == s["lm_studio"].get("loaded"))
+    for m in s["builtin"]:
+        if m["downloaded"]:
+            add("Built-in", "xod", m["repo"], m.get("label") or m["repo"].split("/")[-1])
+    if not any(c["current"] for c in out):     # in use but not offered above (its key or server is missing): still shown
+        add("In use", cur_p, cur_m, f"{PROVIDER_NAMES.get(cur_p, cur_p)} · {str(cur_m).split('/')[-1]}", missing=True)
+    return {"choices": out, "keys": secret_store.health(), "lm_studio_online": s["lm_studio"]["online"],
+            "ollama_online": s["ollama"]["online"], "chosen_by": chosen_by()}
+
+
 CHOSEN_BY_KEY = "model_chosen_by"
 
 

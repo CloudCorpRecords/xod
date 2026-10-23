@@ -131,11 +131,15 @@
     </div>
 
     <div class="flex items-center gap-2">
-      <!-- Single friendly status pill -->
-      <button onclick="openLMStudioModal()" class="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] text-zinc-400 hover:text-white hover:bg-surface-700 transition-colors" title="AI model connection">
-        <span id="headerStatusDot" class="size-2 rounded-full bg-zinc-500"></span>
-        <span id="headerStatusText">Connecting…</span>
-      </button>
+      <!-- The model in use; click to switch (model_switcher.js) -->
+      <div class="relative hidden sm:block">
+        <button id="modelSwitcherBtn" onclick="toggleModelSwitcher()" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] text-zinc-400 hover:text-white hover:bg-surface-700 transition-colors" title="The AI model answering your chats. Click to switch.">
+          <span id="headerStatusDot" class="size-2 rounded-full bg-zinc-500"></span>
+          <span id="headerStatusText" class="max-w-[220px] truncate">Connecting…</span>
+          <i data-lucide="chevron-down" class="size-3 opacity-60"></i>
+        </button>
+        <div id="modelSwitcherPanel" class="hidden absolute right-0 top-full mt-1.5 w-80 max-h-[70vh] overflow-y-auto z-50 p-2 rounded-xl bg-surface-850 border border-white/[0.08] shadow-2xl text-[12px]"></div>
+      </div>
 
       <!-- Local model servers: running or not, memory, Stop (services/local_servers.py) -->
       <div class="relative hidden sm:block">
@@ -1025,6 +1029,15 @@
             </button>
           </div>
           <div id="testYoutubeFeedback" class="text-xs hidden"></div>
+        </div>
+
+        <!-- 1Password: API keys as op:// references, website logins (onepassword.js) -->
+        <div id="onePasswordSection" class="space-y-3 rounded-xl bg-surface-750 p-4 border border-surface-700">
+          <label class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+            <i data-lucide="lock-keyhole" class="size-4 text-brand-400"></i>
+            1Password
+          </label>
+          <div id="onePasswordBody" class="text-[12px] text-zinc-400">Checking…</div>
         </div>
 
         <!-- Saved Website Logins (passwords live in the macOS Keychain) -->
@@ -4259,6 +4272,8 @@
   <script src="/static/js/agent_setup.js?v=moonlit75"></script>
   <script src="/static/js/scorecard.js?v=moonlit75"></script>
   <script src="/static/js/abilities.js?v=moonlit75"></script>
+  <script src="/static/js/model_switcher.js?v=moonlit76"></script>
+  <script src="/static/js/onepassword.js?v=moonlit76"></script>
 </body>
 </html>
 

@@ -12,10 +12,19 @@ Items from before this are moved in the first time they're asked for and then ne
 the old items are left alone until that secret is saved or removed (so an older Xod still works).
 Tests that set XOD_SECRETS_SERVICE get their own vault and never look at the old items.
 
+Saving changes the item in place (SecItemUpdate). keyring's own save deletes the item and makes a new one, and a new
+item trusts only the app that made it: after an update (a new Python inside Xod.app), or with Xod run from source
+and installed side by side, every save locked the other copy out, and that copy then saw no keys at all. A changed
+item keeps the apps it trusted, and macOS adds one more on "Always Allow".
+
+A vault that can't be read (macOS asked and the answer was Deny, or nobody saw the prompt) is never written over: the
+read is tried again next time, problem() says what happened, and saves fail loudly instead of replacing your keys.
+
 On Windows the vault lives in Credential Manager (keyring's Windows backend, protected per user by Windows),
 which holds at most 2,560 bytes per item: there it's split into pieces ("_vault.1", "_vault.2", …) and the
 "_vault" item only says how many there are.
 """
+import ctypes
 import json
 import logging
 import os
@@ -36,6 +45,11 @@ LEGACY = SERVICE == DEFAULT_SERVICE  # only the real vault looks at the old one-
 
 _lock = threading.RLock()
 _vault: Optional[Dict[str, object]] = None
+_problem: Optional[str] = None
+
+
+class Unreadable(errors.KeyringError):
+    """The vault is there but Xod can't read it now; nothing may be written over it."""
 
 
 def _key(service: str, account: str) -> str:
@@ -43,30 +57,64 @@ def _key(service: str, account: str) -> str:
 
 
 def _load() -> Dict[str, object]:
-    global _vault
+    global _vault, _problem
     if _vault is None:
-        raw = None
         try:
             raw = keyring.get_password(SERVICE, ACCOUNT)
             if raw and raw.startswith('{"pieces":'):
                 n = int(json.loads(raw)["pieces"])
                 raw = "".join(keyring.get_password(SERVICE, f"{ACCOUNT}.{i}") or "" for i in range(1, n + 1))
         except Exception as e:
-            logger.warning(f"Keychain read failed: {type(e).__name__}")
+            _problem = (f"macOS didn't let Xod read its saved keys ({type(e).__name__}). Choose Try again, then "
+                        "Always Allow when macOS asks.")
+            logger.warning(f"Keychain read failed: {type(e).__name__}: {e}")
+            raise Unreadable(_problem) from e
         try:
-            _vault = json.loads(raw) if raw else {}
+            vault = json.loads(raw) if raw else {}
         except ValueError:
-            logger.error("Xod's Keychain vault is unreadable; starting a new one")
-            _vault = {}
-        _vault.setdefault("secrets", {})
-        _vault.setdefault("checked", [])
+            # Kept under another name before starting over, so nothing is lost for good.
+            logger.error("Xod's Keychain vault is unreadable; kept it as _vault.unreadable and starting a new one")
+            set_item(SERVICE, f"{ACCOUNT}.unreadable", raw)
+            vault = {}
+        vault.setdefault("secrets", {})
+        vault.setdefault("checked", [])
+        _vault, _problem = vault, None
     return _vault
+
+
+def problem() -> Optional[str]:
+    """Why the saved keys can't be read right now, or None (reads the vault if it hasn't been yet)."""
+    with _lock:
+        try:
+            _load()
+        except Unreadable:
+            pass
+        return _problem
+
+
+def set_item(service: str, account: str, value: str) -> None:
+    """keyring.set_password, except that on a Mac an existing item is changed in place (see the top of this file)."""
+    if sys.platform != "darwin" or not hasattr(keyring.get_keyring(), "keychain"):
+        keyring.set_password(service, account, value)
+        return
+    from keyring.backends.macOS import api
+    update = api._sec.SecItemUpdate
+    update.restype, update.argtypes = api.OS_status, (ctypes.c_void_p, ctypes.c_void_p)
+    q = api.create_query(kSecClass=api.k_("kSecClassGenericPassword"), kSecAttrService=service, kSecAttrAccount=account)
+    raw = value.encode("utf-8")
+    make = api._found.CFDataCreate
+    make.restype, make.argtypes = ctypes.c_void_p, (ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long)
+    status = update(q, api.create_query(kSecValueData=ctypes.c_void_p(make(None, raw, len(raw)))))   # update wants data, not a string
+    if status == api.error.item_not_found:
+        status = api.SecItemAdd(api.create_query(kSecClass=api.k_("kSecClassGenericPassword"), kSecAttrService=service,
+                                                 kSecAttrAccount=account, kSecValueData=value), None)
+    api.Error.raise_for_status(status)
 
 
 def _store() -> None:
     data = json.dumps(_vault)
     if not CHUNK:
-        keyring.set_password(SERVICE, ACCOUNT, data)
+        set_item(SERVICE, ACCOUNT, data)
         return
     pieces = [data[i:i + CHUNK] for i in range(0, len(data), CHUNK)] or [""]
     for i, piece in enumerate(pieces, 1):
@@ -85,7 +133,10 @@ def _store() -> None:
 
 def get_password(service: str, account: str) -> Optional[str]:
     with _lock:
-        v = _load()
+        try:
+            v = _load()
+        except Unreadable:
+            return None
         k = _key(service, account)
         if k in v["secrets"]:
             return v["secrets"][k]
@@ -142,7 +193,7 @@ def _drop_legacy(service: str, account: str) -> bool:
 
 
 def reset_cache() -> None:
-    """For tests: forget what's in memory so the next call reads the Keychain again."""
-    global _vault
+    """Forget what's in memory so the next call reads the Keychain again (Try again, and tests)."""
+    global _vault, _problem
     with _lock:
-        _vault = None
+        _vault, _problem = None, None

@@ -59,6 +59,15 @@ def load_synced_settings() -> Settings:
 
 settings = load_synced_settings()
 
+
+def reload_secrets() -> dict:
+    """Reads the Keychain again (after macOS said no, or the prompt went unseen) and puts the keys back in use."""
+    from app.services import keychain, secret_store
+    keychain.reset_cache()
+    for field in secret_store.SECRET_FIELDS:
+        setattr(settings, field, secret_store.get(field))
+    return secret_store.health()
+
 def update_env_variable(key: str, value: str):
     """Updates a setting. API keys go to the Keychain only; other settings to SQLite and .env."""
     global settings
@@ -69,8 +78,8 @@ def update_env_variable(key: str, value: str):
     if secret_store.is_secret(key_lower):
         field = secret_store.canonical(key_lower)
         secret_store.save(field, value)
-        if hasattr(settings, field):
-            setattr(settings, field, (value or "").strip())
+        if hasattr(settings, field):     # a 1Password reference (op://…) is in use as the key it points to
+            setattr(settings, field, secret_store.get(field) if (value or "").strip().startswith("op://") else (value or "").strip())
         return
 
     # 1. Update SQLite

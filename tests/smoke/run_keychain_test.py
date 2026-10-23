@@ -2,7 +2,7 @@
 One Keychain item for all of Xod's secrets (app/services/keychain.py): keys saved the old way (one
 item each) move in the first time they're asked for, a fresh start reads the Keychain once no matter
 how many keys there are (macOS asks for each item it reads), and saving or removing a key clears the
-old item too.
+old item too. A vault this copy of Xod isn't allowed to read is never written over.
 
 A throwaway file keyring, never the real Keychain, no model needed:
   .venv/bin/python tests/smoke/run_keychain_test.py
@@ -26,9 +26,14 @@ from tests.support.filekeyring import FileKeyring  # noqa: E402
 reads = []
 
 
+locked = []
+
+
 class CountingKeyring(FileKeyring):
     def get_password(self, service, username):
         reads.append((service, username))
+        if locked:      # macOS said no (Deny, or a prompt nobody saw)
+            raise keyring.errors.KeyringError("User interaction is not allowed.")
         return super().get_password(service, username)
 
 
@@ -101,6 +106,25 @@ def main():
         check("removing something that isn't there says so", False)
     except keyring.errors.PasswordDeleteError:
         check("removing something that isn't there says so", True)
+
+    # macOS won't let this copy of Xod read the vault (an update, or Xod from source beside the installed one).
+    secret_store.save("fireworks_api_key", "fw_saved_123456789")
+    secret_store.save("tavily_api_key", "tvly-saved-123456789")
+    before = vault_json()
+    locked.append(1)
+    keychain.reset_cache()
+    check("a vault macOS won't hand over reads as no keys, without failing", secret_store.get("fireworks_api_key") == "")
+    check("…and says why, with what to do", not secret_store.health()["readable"] and "Always Allow" in (secret_store.health()["problem"] or ""))
+    try:
+        secret_store.save("openai_api_key", "sk-new-123456789")
+        check("saving then fails loudly instead of replacing the keys", False)
+    except keychain.Unreadable:
+        check("saving then fails loudly instead of replacing the keys", True)
+    keychain.get_password("Xod MCP", "some-new-name")      # a first-time lookup used to write the vault too
+    locked.clear()
+    check("…so every key is still there", vault_json() == before, str(sorted(vault_json()["secrets"])))
+    check("once macOS allows it, the next read finds them (Try again)", secret_store.get("fireworks_api_key") == "fw_saved_123456789"
+          and secret_store.health()["readable"])
 
     failed = [n for n, ok in results if not ok]
     print(f"\nSUMMARY {'PASS' if not failed else 'FAIL'} {failed}")
