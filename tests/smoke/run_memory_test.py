@@ -51,6 +51,11 @@ async def main():
     await M.learn_from_message("remember that I prefer short answers")
     check("'remember that …' keeps it", any("short" in f["text"].lower() for f in M.facts()))
 
+    check("a conversational 'remember' is still a remember", M.worth_a_look(
+        "yeah, i also want you to remember that my github is already authenticated"))
+    await M.learn_from_message("yeah, i also want you to remember that my favourite colour is teal")
+    check("…and it keeps it too", any("teal" in f["text"].lower() for f in M.facts()))
+
     r = await M.learn_from_message("my password for the clinic portal is hunter2-Blue, my card is 4111 1111 1111 1111")
     check("passwords and card numbers are never kept", not any("hunter2" in f["text"] or "4111" in f["text"] for f in M.facts()),
           str(M.facts()))

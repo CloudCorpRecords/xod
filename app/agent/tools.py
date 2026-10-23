@@ -3214,7 +3214,17 @@ async def _crew_tool(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
             j = await crew.wait(j["id"], wait) if wait else j
         elif name == "crew_status":
             if not a.get("job"):
-                return {"success": True, "jobs": crew.jobs()}
+                out = {"success": True, "jobs": crew.jobs()}
+                try:
+                    from app.services import agent_clis
+                    out["ask_threads"] = agent_clis.threads()
+                except Exception:
+                    pass
+                if not out["jobs"]:
+                    out["note"] = ("No Crew jobs. Quick agent_ask conversations are tracked separately "
+                                    "(ask_threads), so an empty jobs list alone does not mean an agent "
+                                    "hasn't done anything — check ask_threads and the chat history first.")
+                return out
             j = await crew.wait(crew.job(a["job"])["id"], max(0, min(int(a.get("wait_seconds") or 0), 600)))
         elif name == "crew_message":
             j = await crew.message(a.get("job") or "", a.get("text") or "", bool(a.get("steer")))

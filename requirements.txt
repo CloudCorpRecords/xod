@@ -58,6 +58,7 @@ sentencepiece==0.2.2         # FLUX / T5 tokenizer
 piexif==1.1.3                # used by the vendored mflux (app/vendor)
 imageio-ffmpeg==0.6.0        # ffmpeg for video tools and downloads (the Mac app fetches it on first use)
 numpy==2.5.4
+chromadb==1.0.20             # unified memory store (services/memory_store.py): embedded locally, or a Chroma server via XOD_CHROMA_URL
 Pillow==13.0.0                                          # 13: fixes CVE-2026-112395…112899 (8 issues found in 12.3.0)
 
 # On-device models (MLX: Apple silicon only; on Windows Xod uses LM Studio, Ollama or a cloud model)

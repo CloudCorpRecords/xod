@@ -214,6 +214,16 @@ async def index_new(limit: int = 200) -> int:
             c.commit()
             if added:
                 logger.info(f"recall: indexed {added} new episodes")
+                try:  # unified store (services/memory_store.py): episodes searchable with facts + memories
+                    from app.services import memory_store
+                    store = memory_store.get_store()
+                    for e in eps:
+                        store.upsert({"id": f"episode:{e['id']}", "kind": "episode", "title": e["title"],
+                                      "text": e["text"], "category": e["kind"] or "episode",
+                                      "session_id": e.get("session_id") or "", "ts": e["ts"],
+                                      "created_at": e["ts"], "updated_at": e["ts"]})
+                except Exception as ex:
+                    logger.debug(f"recall: memory_store mirror failed: {ex}")
             return added
         finally:
             c.close()

@@ -213,6 +213,16 @@ class Doctor:
         c = task_queue.counts()
         return _check("tasks", "Task inbox", "ok", ", ".join(f"{v} {k}" for k, v in c.items() if v) or "Empty")
 
+    def _check_memory_store(self) -> Dict[str, Any]:
+        from app.services import memory_store
+        s = memory_store.stats()
+        detail = f"{s['backend']}: {s['total']} records ({', '.join(f'{v} {k}' for k, v in s['kinds'].items()) or 'empty'})"
+        if s.get("fallback_reason"):
+            return _check("memory_store", "Memory store", "warn", detail + f". {s['fallback_reason']}")
+        if s.get("chroma_url"):
+            detail += f" at {s['chroma_url']}"
+        return _check("memory_store", "Memory store", "ok", detail)
+
     def _check_keys(self) -> Dict[str, Any]:
         from app.services import secret_store
         saved = [s["name"].replace("_api_key", "").replace("_token", "") for s in secret_store.status() if s["saved"]]
@@ -235,7 +245,7 @@ class Doctor:
     async def check(self, apply_safe_fixes: bool = False) -> Dict[str, Any]:
         checks: List[Dict[str, Any]] = []
         for fn in (self._check_chat_model, self._check_memory, self._check_disk, self._check_browser,
-                   self._check_media, self._check_tasks, self._check_keys, self._check_failures):
+                   self._check_media, self._check_tasks, self._check_memory_store, self._check_keys, self._check_failures):
             name = fn.__name__.replace("_check_", "")
             try:
                 r = fn()

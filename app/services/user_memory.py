@@ -54,7 +54,7 @@ ABOUT_ME_RE = re.compile(r"\b(i'?m|i am|i'?ve|i'?ll be|i'?d (rather|prefer)|"
                          r"was born|graduated|run|teach|play|build|make|go to)|my (name|wife|husband|partner|girlfriend|boyfriend|son|daughter|kid|kids|mom|dad|mother|"
                          r"father|brother|sister|dog|cat|job|work|company|boss|team|startup|birthday|email|phone|address|"
                          r"city|home|school|major|favorite|favourite)|call me|we'?re|our (company|startup|team|family))\b", re.I)
-REMEMBER_RE = re.compile(r"^\s*(?:please\s+)?(?:remember|note|keep in mind|don'?t forget)\s+(?:that\s+)?(.{3,300})$", re.I)
+REMEMBER_RE = re.compile(r"^\s*(?:(?:yeah|yes|ok|okay|and|also|hey|please|so|well|right)[,!\s]+|i (?:also )?(?:want|need) you to\s+|can you\s+|could you\s+)*(?:please\s+)?(?:remember|note|keep in mind|don'?t forget)\s+(?:that\s+)?(.{3,300})$", re.I)
 FORGET_RE = re.compile(r"^\s*(?:please\s+)?forget\s+(?:that\s+|about\s+)?(.{2,200})$", re.I)
 FORGET_ALL_RE = re.compile(r"^\s*(?:please\s+)?forget (?:everything|all) (?:you know )?(?:about me)?\s*\.?$", re.I)
 
@@ -137,9 +137,27 @@ def add(text: str, topic: str = "other", key: Optional[str] = None, source: str 
                     "added": now, "updated": now, "used": 0, "pinned": pinned}
             facts.append(fact)
         save(d)
+    _mirror(fact)
     if key == "name":
         _sync_name(text)
     return {**fact, "_new": fresh}
+
+
+def _mirror(fact: Optional[Dict[str, Any]] = None, forget_id: str = "") -> None:
+    """Keeps the unified store (services/memory_store.py) in step with about_you.json. Never blocks a fact."""
+    try:
+        from app.services import memory_store
+        store = memory_store.get_store()
+        if forget_id:
+            store.delete(f"fact:{forget_id}")
+        elif fact:
+            store.upsert({"id": f"fact:{fact['id']}", "kind": "fact", "title": fact["text"][:80],
+                          "text": fact["text"], "category": fact.get("topic") or "other",
+                          "source": fact.get("source") or "", "ts": fact.get("added") or 0,
+                          "created_at": fact.get("added") or 0, "updated_at": fact.get("updated") or 0,
+                          "importance": 5.0 if fact.get("pinned") else 3.0})
+    except Exception:
+        pass
 
 
 def _sync_name(text: str) -> None:
@@ -169,6 +187,7 @@ def edit(fact_id: str, text: str) -> Optional[Dict[str, Any]]:
             return None
         f.update(text=text, updated=time.time(), source="you edited")
         save(d)
+    _mirror(f)
     if f.get("key") == "name":
         _sync_name(text)
     return f
@@ -180,7 +199,10 @@ def forget(fact_id: str) -> bool:
         n = len(d["facts"])
         d["facts"] = [f for f in d["facts"] if f["id"] != fact_id]
         save(d)
-        return len(d["facts"]) < n
+        gone = len(d["facts"]) < n
+    if gone:
+        _mirror(forget_id=fact_id)
+    return gone
 
 
 def forget_matching(what: str) -> List[str]:
@@ -199,8 +221,11 @@ def forget_matching(what: str) -> List[str]:
                 gone.append(f["text"])
             else:
                 keep.append(f)
+        gone_ids = [f["id"] for f in d["facts"] if f not in keep]
         d["facts"] = keep
         save(d)
+    for gid in gone_ids:
+        _mirror(forget_id=gid)
     return gone
 
 
@@ -208,9 +233,12 @@ def forget_all() -> int:
     with _lock:
         d = load()
         n = len(d["facts"])
+        ids = [f["id"] for f in d["facts"]]
         d["facts"] = []
         save(d)
-        return n
+    for gid in ids:
+        _mirror(forget_id=gid)
+    return n
 
 
 def facts() -> List[Dict[str, Any]]:

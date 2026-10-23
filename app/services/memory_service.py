@@ -173,6 +173,15 @@ class MemoryService:
         conn.commit()
         conn.close()
 
+        try:  # unified store (services/memory_store.py): same record, searchable with facts + episodes
+            from app.services import memory_store
+            memory_store.get_store().upsert(
+                {"id": mem_id, "kind": "memory", "title": title, "text": content, "category": category,
+                 "tags": tags or [], "importance": importance, "session_id": source_session_id or "",
+                 "created_at": now, "updated_at": now}, embedding=vector)
+        except Exception as e:
+            logger.debug(f"memory_store mirror failed: {e}")
+
         logger.info(f"Stored long-term memory [{category}] '{title}' (ID: {mem_id})")
         return {
             "id": mem_id,
@@ -227,6 +236,20 @@ class MemoryService:
 
         if query_vector is None:
             query_vector = self._fallback_semantic_vector(query)
+
+        try:  # unified store first; legacy path below is the fallback
+            from app.services import memory_store
+            hits = memory_store.get_store().search(
+                query, query_embedding=query_vector, kinds=["memory"],
+                category=category if category and category != "all" else None, limit=limit)
+            hits = [h for h in hits if h.get("score", 0) >= min_score]
+            if hits:
+                return [{"id": h["id"], "category": h["category"], "title": h["title"],
+                         "content": h["text"], "tags": h["tags"], "importance": h["importance"],
+                         "access_count": 0, "similarity_score": h.get("score", 0),
+                         "hybrid_score": h.get("score", 0), "updated_at": h["updated_at"]} for h in hits]
+        except Exception as e:
+            logger.debug(f"memory_store search failed, using legacy: {e}")
 
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -389,6 +412,11 @@ class MemoryService:
         deleted = cursor.rowcount > 0
         conn.commit()
         conn.close()
+        try:
+            from app.services import memory_store
+            deleted = memory_store.get_store().delete(memory_id) or deleted
+        except Exception:
+            pass
         return deleted
 
     def get_stats(self) -> Dict[str, Any]:
@@ -409,12 +437,30 @@ class MemoryService:
 
         conn.close()
 
-        return {
+        out = {
             "total_memories": total,
             "category_breakdown": breakdown,
             "models_used": models,
             "engine": "SQLite Vector + FTS5 Hybrid"
         }
+        try:
+            from app.services import memory_store
+            out["store"] = memory_store.stats()
+            out["engine"] = f"unified ({out['store']['backend']}) + legacy SQLite"
+        except Exception:
+            pass
+        return out
+
+    async def search_unified_async(
+        self,
+        query: str,
+        kinds=None,
+        limit: int = 5
+    ):
+        """Searches every kind of memory (fact + memory + episode) in the unified store."""
+        query_vec, _ = await self.generate_embedding(query)
+        from app.services import memory_store
+        return memory_store.get_store().search(query, query_embedding=query_vec, kinds=kinds, limit=limit)
 
     async def auto_index_workspace(self, workspace_path: Optional[str] = None) -> Dict[str, Any]:
         """

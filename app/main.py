@@ -4362,6 +4362,28 @@ async def memory_stats_endpoint():
     """Returns memory vault capacity, embedding model, and category distribution."""
     return memory_service.get_stats()
 
+
+@app.get("/api/memory/store")
+async def memory_store_endpoint():
+    """Unified memory store: backend (chroma embedded / chroma server / sqlite fallback) and counts."""
+    from app.services import memory_store
+    return memory_store.stats()
+
+
+@app.post("/api/memory/store/migrate")
+async def memory_store_migrate_endpoint():
+    """Imports about_you facts, legacy memories and recall episodes into the unified store (idempotent)."""
+    from app.services import memory_store
+    return memory_store.migrate()
+
+
+@app.post("/api/memory/store/search")
+async def memory_store_search_endpoint(req: MemorySearchRequest):
+    """Searches facts + memories + episodes together in the unified store."""
+    kinds = [k for k in (req.category or "").split(",") if k in ("fact", "memory", "episode")] or None
+    results = await memory_service.search_unified_async(query=req.query, kinds=kinds, limit=req.limit or 10)
+    return {"query": req.query, "count": len(results), "results": results}
+
 @app.post("/api/memory/index-workspace")
 async def memory_index_workspace_endpoint(req: Optional[MemoryIndexWorkspaceRequest] = None):
     """Scans and indexes workspace repository into persistent memory vault."""
