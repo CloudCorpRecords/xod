@@ -48,6 +48,8 @@ def ability(tool: str, args: Dict[str, Any]) -> str:
     """What a planned call does, in the cases' words. Knows the tool names of every version."""
     args = args if isinstance(args, dict) else {}
     act = str(args.get("action") or "").lower()
+    if tool.startswith("mcp__"):
+        return tool.split("__", 2)[-1]          # a connected app's tool: its own name (messages_send, places_nearby …)
     if tool in ("crew_start",):
         return "job"
     if tool in ("crew_status",):
@@ -126,12 +128,41 @@ FIXED_AGENTS = [
 ]
 
 
+def _mac_tools() -> List[Dict[str, Any]]:
+    """The This Mac connector's tools as the chat sees them when it's connected, read from the connector itself
+    (nothing is started or connected)."""
+    try:
+        from app.connectors import mac
+        tools = asyncio.run(mac.server.list_tools()) if not _loop_running() else []
+    except Exception:
+        return []
+    return [{"type": "function", "function": {"name": f"mcp__mac__{t.name}", "description": f"[mac] {(t.description or t.name)[:400]}",
+                                              "parameters": getattr(t, "inputSchema", None) or getattr(t, "input_schema", None) or
+                                              {"type": "object", "properties": {}}}} for t in tools]
+
+
+def _loop_running() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
 class _Fixed:
-    """Swaps in the fixed computer, and keeps the router's and planner's answers out of the training data."""
+    """Swaps in the fixed computer (Claude Code and Muse installed, This Mac connected), and keeps the router's and
+    planner's answers out of the training data."""
+
+    def __init__(self, mac_tools: Optional[List[Dict[str, Any]]] = None):
+        self.mac_tools = mac_tools or []
 
     def __enter__(self):
         from app.services import agent_clis, dataset_recorder
+        from app.services.mcp_client import mcp_hub
         self._saved = (agent_clis.find, agent_clis.sessions, agent_clis.claude_app, dataset_recorder.capture)
+        self._defs = mcp_hub.tool_definitions
+        if self.mac_tools:
+            mcp_hub.tool_definitions = lambda: list(self.mac_tools)
         others = [{"id": k, "name": a["name"], "installed": False, "path": None, "signed_in": None}
                   for k, a in agent_clis.AGENTS.items() if k not in ("claude", "muse")]
         agent_clis.find = lambda: {"success": True, "agents": FIXED_AGENTS + others, "installed": ["claude", "muse"]}
@@ -142,7 +173,9 @@ class _Fixed:
 
     def __exit__(self, *exc):
         from app.services import agent_clis, dataset_recorder
+        from app.services.mcp_client import mcp_hub
         agent_clis.find, agent_clis.sessions, agent_clis.claude_app, dataset_recorder.capture = self._saved
+        mcp_hub.tool_definitions = self._defs
 
 
 # ------------------------------------------------------------------ one case
@@ -202,6 +235,10 @@ async def run_case(case: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ------------------------------------------------------------------ a run
+def suites() -> List[str]:
+    return sorted(p.stem for p in SUITES.glob("*.json"))
+
+
 def suite(name: str = "agent_routing") -> Dict[str, Any]:
     return json.loads((SUITES / f"{name}.json").read_text())
 
@@ -225,7 +262,8 @@ async def run(name: str = "agent_routing", only: Optional[List[str]] = None, rep
     out: List[Dict[str, Any]] = []
     started = time.time()
     _running["run"] = {"suite": name, "done": 0, "total": len(cases) * repeat, "started": started}
-    with _Fixed():
+    mac_tools = await asyncio.to_thread(_mac_tools) if suite(name).get("mac_connected") else []
+    with _Fixed(mac_tools):
         for c in cases:
             for _ in range(max(1, repeat)):
                 try:

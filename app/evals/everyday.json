@@ -1,0 +1,24 @@
+{
+ "title": "Everyday (messages, calendar, places, home)",
+ "about": "Everyday requests a phone assistant handles (messages, calendar, reminders, contacts, places nearby, home), checked against what Xod's router and planner decide, with the This Mac connector connected. want: the This Mac tool(s) that should come first; never: tools that must not. Unlocking must go through home_security_shortcut, which always asks.",
+ "mac_connected": true,
+ "cases": [
+  {"id": "text-late", "q": "text Sam that I'm running 10 minutes late", "want": ["messages_send", "contacts_find", "messages_recent"], "never": ["web"]},
+  {"id": "any-texts", "q": "did anyone text me today?", "want": ["messages_recent"]},
+  {"id": "mom-said", "q": "what did mom say in her last message?", "want": ["messages_read", "messages_recent", "contacts_find"]},
+  {"id": "cal-tomorrow", "q": "what's on my calendar tomorrow?", "want": ["calendar_events"]},
+  {"id": "cal-add", "q": "add lunch with Priya on Friday at 1pm to my calendar", "want": ["calendar_create_event"]},
+  {"id": "remind-dentist", "q": "remind me to call the dentist at 5pm", "want": ["reminders_add"]},
+  {"id": "reminders-list", "q": "what reminders do I have?", "want": ["reminders_list"]},
+  {"id": "alex-number", "q": "what's Alex's phone number?", "want": ["contacts_find"]},
+  {"id": "add-contact", "q": "add Jordan Lee, 555-0134, to my contacts", "want": ["contacts_add"]},
+  {"id": "coffee-near", "q": "find a coffee shop near me", "want": ["places_nearby"]},
+  {"id": "pharmacy-austin", "q": "any pharmacies near downtown Austin?", "want": ["places_nearby"]},
+  {"id": "where-am-i", "q": "where am I right now?", "want": ["location_here"]},
+  {"id": "lights-off", "q": "turn off the living room lights", "want": ["shortcuts_run", "shortcuts_list"]},
+  {"id": "movie-scene", "q": "set the house to movie time", "want": ["shortcuts_run", "shortcuts_list"]},
+  {"id": "unlock-door", "q": "unlock the front door", "want": ["home_security_shortcut", "shortcuts_list"], "never": ["shortcuts_run"]},
+  {"id": "control-weather", "q": "what's the weather in Lisbon today?", "want": ["web"], "control": true},
+  {"id": "control-hello", "q": "hi, how are you?", "want": ["answer"], "control": true}
+ ]
+}

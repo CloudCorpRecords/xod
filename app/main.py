@@ -2037,6 +2037,20 @@ async def crew_act(jid: str, action: str, req: CrewAct):
         return {"success": False, "error": str(e)}
 
 
+@app.get("/api/abilities")
+async def abilities_status():
+    """Everyday abilities on this Mac (services/abilities.py): Messages, Location, Calendar, Home, Reminders, Contacts."""
+    from app.services import abilities
+    return await asyncio.to_thread(abilities.status)
+
+
+@app.post("/api/abilities/{aid}/allow")
+async def abilities_allow(aid: str):
+    """The person's Allow: switches This Mac on and has macOS ask (or opens the right page of System Settings)."""
+    from app.services import abilities
+    return await abilities.allow(aid)
+
+
 @app.get("/api/scorecard")
 async def scorecard_get(days: int = 7):
     """How Xod is doing (services/scorecard.py): chat turns, model calls, Crew jobs and the routing check."""
@@ -2050,7 +2064,10 @@ async def evals_run():
     from app.services import evals
     if evals.status():
         return {"success": False, "error": "A check is already running."}
-    asyncio.create_task(evals.run(label="from the Scorecard"))
+    async def all_suites():
+        for name in evals.suites():
+            await evals.run(name, label="from the Scorecard")
+    asyncio.create_task(all_suites())
     return {"success": True, "started": True}
 
 

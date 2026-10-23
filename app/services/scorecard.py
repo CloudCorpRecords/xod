@@ -98,12 +98,15 @@ def card(days: int = 7) -> Dict[str, Any]:
     from app.services import evals
     now = time.time()
     span = days * 86400
-    runs = evals.history(n=8)
-    latest = evals.latest()
+    suites = []
+    for name in evals.suites():
+        latest = evals.latest(name)
+        suites.append({"suite": name, "about": evals.suite(name).get("title") or name.replace("_", " "),
+                       "runs": evals.history(name, n=6),
+                       "latest": ({k: v for k, v in latest.items() if k != "results"} |
+                                  {"failed": [r for r in latest["results"] if not r["pass"]]}) if latest else None})
     return {"days": days,
             "now": {"turns": _turns(now - span, now), "calls": _calls(now - span, now), "crew": _crew(now - span, now)},
             "before": {"turns": _turns(now - 2 * span, now - span), "calls": _calls(now - 2 * span, now - span),
                        "crew": _crew(now - 2 * span, now - span)},
-            "routing": {"runs": runs, "latest": ({k: v for k, v in latest.items() if k != "results"} |
-                                                 {"failed": [r for r in latest["results"] if not r["pass"]]}) if latest else None,
-                        "running": evals.status()}}
+            "routing": {"suites": suites, "running": evals.status()}}

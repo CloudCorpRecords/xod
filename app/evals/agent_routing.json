@@ -1,4 +1,5 @@
 {
+ "title": "Coding agents",
  "about": "What Xod should do with requests about coding agents (Claude Code, Muse …), checked against what its router and planner decide. Each case names what it wants as an ability, not a tool name, so the same cases score any version of Xod's tools. abilities: job (a Crew job), job_status, job_message, ask (a quick question or conversation), terminal (a live terminal session), setup (install / set up / update / health check), login, list (which agents are here), answer (a plain answer, no tools), web (a web search), other (anything that isn't an agent tool). agent: which agent the call must name. never: abilities that are wrong here. Every agent case also fails if it drives an agent through the plain shell (computer_run_command with muse / claude …).",
  "cases": [
   {"id": "job-claude-fix", "q": "have claude code fix the failing tests in ~/code/shop", "want": ["job"], "agent": "claude"},

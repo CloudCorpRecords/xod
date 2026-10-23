@@ -80,7 +80,9 @@
       "hardenedRuntime": false,
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Xod listens when you talk to it, and for \"Hey Xod\" if you turn that on. Audio is transcribed on this Mac and never uploaded.",
-        "NSAppleEventsUsageDescription": "Xod reads and types into Terminal and iTerm windows you have open when you ask it to.",
+        "NSAppleEventsUsageDescription": "Xod uses Calendar, Reminders, Contacts, Messages, Notes and Mail for you, and reads and types into Terminal and iTerm windows you have open, when you ask it to.",
+        "NSLocationUsageDescription": "Xod finds places near you when you ask (coffee near me). Your location stays on this Mac.",
+        "NSLocationWhenInUseUsageDescription": "Xod finds places near you when you ask (coffee near me). Your location stays on this Mac.",
         "NSHumanReadableCopyright": "Copyright © 2026 Xod Contributors. MIT License."
       },
       "entitlements": "build/entitlements.mac.plist",

@@ -1345,7 +1345,11 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"tech ?stack|built with|funding|founders?|mrr|arr|acquisition|acquire|for sale|deal flow|due diligence|"
         r"competitors?|teardown|who works at|email (address|of)|xod|"
         r"send (a |an |the )?(message|dm|email|text|note)|message (the|my|him|her|them)|reply to|"
-        r"jobs? (on|at|in|near|for)|job (listings?|openings?|board)|hiring|resume|cv)\b", re.I)
+        r"jobs? (on|at|in|near|for)|job (listings?|openings?|board)|hiring|resume|cv|"
+        # This Mac's everyday abilities: your messages, where you are, places near you, your home
+        r"texts?|texted|imessages?|my messages|(any|new) messages|messaged|text (me|him|her|them|back)|"
+        r"near (me|here|us|downtown|my)|nearby|closest|nearest|where am i|my location|"
+        r"lights?|lamps?|thermostat|(un)?lock (the|my)|garage|scene|contacts?|phone number|my calendar|reminders?)\b", re.I)
 
     # Something to do on this computer (its files, folders, apps or command line), not something to look up.
     _LOCAL_ACTION_RE = re.compile(
@@ -2578,7 +2582,8 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
                     "   - agent_setup: Which agents are installed and signed in, and installing, signing in, updating or checking one. "
                     "Args: {\"action\": \"list\"}; {\"action\": \"next|install|login|update|doctor\", \"agent\": \"codex\"}"]
             from app.services.mcp_client import mcp_hub
-            mcp_tools = [d["function"] for d in mcp_hub.tool_definitions()][:12]
+            # The connected apps' tools that fit this request (GitHub alone has 46: the first twelve were often the wrong ones)
+            mcp_tools = [d["function"] for d in mcp_hub.tools_for_query(query, limit=12)]
             if mcp_tools:
                 extra.append("6. Connected apps (MCP; actions wait for the user's approval):")
                 extra += [f"   - {t['name']}: {t['description'][:110]}" for t in mcp_tools]

@@ -39,6 +39,11 @@ async def main():
     print("E1 the cases")
     cases = evals.suite()["cases"]
     known = {"job", "job_status", "job_message", "ask", "terminal", "setup", "login", "list", "answer", "web", "other"}
+    every = evals.suite("everyday")
+    from app.connectors import mac
+    mac_names = {t.name for t in await mac.server.list_tools()}
+    check("the everyday cases name This Mac tools that exist", every.get("mac_connected") and all(
+          set(c["want"]) - {"web", "answer"} <= mac_names for c in every["cases"]), str([c["id"] for c in every["cases"] if not set(c["want"]) - {"web", "answer"} <= mac_names]))
     check("the routing cases load, with unique ids", len(cases) >= 25 and len({c["id"] for c in cases}) == len(cases))
     check("…each wants abilities the scorer knows", all(set(c["want"]) <= known and set(c.get("never", [])) <= known for c in cases),
           str([c["id"] for c in cases if not set(c["want"]) <= known]))
@@ -118,7 +123,9 @@ async def main():
     check("…next to the week before", tb["turns"] == 1 and tb["pass_rate"] == 1.0)
     check("…what went wrong is listed, with why", t["went_wrong"] and t["went_wrong"][0]["question"] == "fix it" and "missed" in t["went_wrong"][0]["why"])
     check("…and which tools the answers used", ("agent_job", 2) in [tuple(x) for x in t["top_tools"]], str(t["top_tools"]))
-    check("the routing check is on it, with what failed", card["routing"]["latest"]["passed"] == 13 and card["routing"]["latest"]["failed"][0]["id"] == "x")
+    ar = next(x for x in card["routing"]["suites"] if x["suite"] == "agent_routing")
+    check("each routing suite is on it, with what failed", ar["latest"]["passed"] == 13 and ar["latest"]["failed"][0]["id"] == "x"
+          and {x["suite"] for x in card["routing"]["suites"]} >= {"agent_routing", "everyday"})
     import httpx
     from app.main import app as xod_app
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=xod_app), base_url="http://127.0.0.1:8000") as cl:

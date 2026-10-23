@@ -66,6 +66,7 @@ jobs:
           python tests/smoke/run_terminals_edge_test.py
           python tests/smoke/run_crew_test.py
           python tests/smoke/run_evals_test.py
+          python tests/smoke/run_mac_abilities_test.py
           python tests/smoke/run_cli_test.py
       - name: Dependency audit
         run: |

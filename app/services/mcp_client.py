@@ -45,6 +45,18 @@ def _attr(obj: Any, snake: str, camel: str, default: Any = None) -> Any:
     return v if v is not None else getattr(obj, camel, default)
 
 
+# Picking a connected app's tools for a request: words that say nothing, and everyday words for what tools call things.
+_STOP = {"the", "and", "for", "you", "your", "can", "please", "with", "that", "this", "what", "whats", "from", "are", "have",
+         "has", "was", "will", "about", "into", "just", "now", "get", "let", "know", "tell", "want", "need", "how", "who", "any"}
+_SAME = {"text": {"message", "messages"}, "texts": {"message", "messages"}, "imessage": {"messages"}, "sms": {"messages"},
+         "lights": {"shortcut", "home"}, "light": {"shortcut", "home"}, "lamp": {"shortcut", "home"}, "scene": {"shortcut", "home"},
+         "thermostat": {"shortcut", "home"}, "lock": {"shortcut", "home"}, "unlock": {"security", "shortcut"},
+         "garage": {"security", "shortcut"}, "near": {"places", "nearby"}, "nearby": {"places"}, "closest": {"places", "nearby"},
+         "remind": {"reminders"}, "reminder": {"reminders"}, "schedule": {"calendar", "events"}, "meeting": {"calendar", "event"},
+         "appointment": {"calendar", "event"}, "number": {"contacts", "phone"}, "phone": {"contacts"}, "contact": {"contacts"},
+         "email": {"mail"}, "inbox": {"mail"}, "where": {"location"}}
+
+
 def _read_only(tool: Any) -> bool:
     return bool(_attr(getattr(tool, "annotations", None), "read_only_hint", "readOnlyHint", False))
 
@@ -335,10 +347,13 @@ class MCPHub:
         defs = self.tool_definitions()
         if len(defs) <= limit:
             return defs
-        words = set(re.findall(r"[a-z0-9]{3,}", (query or "").lower()))
+        words = {w for w in re.findall(r"[a-z0-9]{3,}", (query or "").lower()) if w not in _STOP}
+        for w in list(words):
+            words |= _SAME.get(w, set())
+
         def score(d):
-            text = (d["function"]["name"] + " " + d["function"]["description"]).lower()
-            return sum(1 for w in words if w in text)
+            name, text = d["function"]["name"].lower(), d["function"]["description"].lower()
+            return sum(2 if w in name else 1 for w in words if w in name or w in text)
         ranked = sorted(defs, key=score, reverse=True)
         return [d for d in ranked[:limit] if score(d) > 0]
 
@@ -368,7 +383,8 @@ class MCPHub:
                                       ", ".join(f"{k}: {str(v)[:60]}" for k, v in list((args or {}).items())[:4]))
             return {"success": False, "needs_approval": True, "approval_id": pid, "tool": full_name, "destructive": destructive,
                     "message": (f"Waiting for your OK to {t.name.replace('_', ' ')} on {c.name}. Nothing has been deleted yet."
-                                if destructive else f"Waiting for your OK to run {t.name} on {c.name}. It hasn't run yet."),
+                                if destructive and re.search(r"(^|_)(delete|remove|destroy|drop|erase|purge|trash)(_|$)", t.name)
+                                else f"Waiting for your OK to {t.name.replace('_', ' ')} on {c.name}. It hasn't happened yet."),
                     "args": args}
         try:
             res = await c.client.call_tool(t.name, args or {})

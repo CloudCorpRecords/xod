@@ -73,3 +73,5 @@ pyobjc-framework-Cocoa==12.2.2; sys_platform == "darwin"
 pyobjc-framework-Quartz==12.2.2; sys_platform == "darwin"
 pyobjc-framework-CoreText==12.2.2; sys_platform == "darwin"            # ApplicationServices
 pyobjc-framework-ApplicationServices==12.2.2; sys_platform == "darwin"
+pyobjc-framework-CoreLocation==12.2.2; sys_platform == "darwin"            # where this Mac is (This Mac: places nearby)
+pyobjc-framework-MapKit==12.2.2; sys_platform == "darwin"                 # Apple Maps search, no key

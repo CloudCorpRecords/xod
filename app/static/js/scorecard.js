@@ -31,16 +31,20 @@
     // The period before with nothing in it isn't "0 before": it's no comparison at all.
     const n = d.now || {}, b = d.before || {}, t = n.turns || {}, c = n.crew || {}, m = n.calls || {};
     const tb = (b.turns || {}).turns ? b.turns : {}, cb = (b.crew || {}).jobs ? b.crew : {}, mb = (b.calls || {}).calls ? b.calls : {};
-    const r = d.routing || {}, L = r.latest, running = r.running;
-    const wrong = (t.went_wrong || []).map((w) => `
-      <div class="py-1.5 border-b border-white/[0.04]"><div class="text-zinc-200 text-[12px]">${esc(w.question)}</div>
-        <div class="text-zinc-500 text-[11px]">${esc(w.why)}${w.tools && w.tools.length ? ` · ${esc(w.tools.join(", "))}` : ""} · ${when(w.at)}</div></div>`).join("")
-      || `<p class="text-zinc-500 text-[12px]">Nothing flagged in this window.</p>`;
-    const failed = L ? (L.failed || []).map((f) => `<div class="text-[12px] py-1"><span class="text-zinc-200">${esc(f.q)}</span><div class="text-red-300 text-[11px]">${esc(f.why)}</div></div>`).join("") : "";
-    const runs = (r.runs || []).slice(0, 6).map((x) => `
-      <div class="flex items-center gap-2 text-[11px] py-0.5"><span class="text-zinc-500 w-28 shrink-0">${when(x.at)}</span>
-        <span class="${x.passed === x.total ? "text-emerald-400" : "text-amber-300"} w-14 shrink-0">${x.passed}/${x.total}</span>
-        <span class="text-zinc-400 truncate">${esc(x.label || "")}${x.partial ? " (some cases)" : ""} · ${esc((x.tools || "").split(" (")[0])}</span></div>`).join("");
+    const r = d.routing || {}, running = r.running;
+    const suiteBox = (x) => {
+      const L = x.latest;
+      const failed = L ? (L.failed || []).map((f) => `<div class="text-[12px] py-1"><span class="text-zinc-200">${esc(f.q)}</span><div class="text-red-300 text-[11px]">${esc(f.why)}</div></div>`).join("") : "";
+      const runs = (x.runs || []).slice(0, 4).map((y) => `
+        <div class="flex items-center gap-2 text-[11px] py-0.5"><span class="text-zinc-500 w-28 shrink-0">${when(y.at)}</span>
+          <span class="${y.passed === y.total ? "text-emerald-400" : "text-amber-300"} w-14 shrink-0">${y.passed}/${y.total}</span>
+          <span class="text-zinc-400 truncate">${esc(y.label || "")}${y.partial ? " (some cases)" : ""}</span></div>`).join("");
+      return `<div class="rounded-xl bg-surface-900 border border-white/[0.06] p-3 mt-2">
+        <div class="text-zinc-300 text-[12px] mb-1">${esc(x.about)}</div>
+        ${L ? `<div class="flex items-baseline gap-3"><span class="text-[22px] font-semibold ${L.passed === L.total ? "text-emerald-400" : "text-amber-300"}">${L.passed}/${L.total}</span>
+            <span class="text-zinc-400 text-[11px]">${esc(L.model)} · ${when(L.at)}</span></div>${failed}` : `<p class="text-zinc-500 text-[12px]">Not run yet.</p>`}
+        ${runs ? `<div class="mt-1">${runs}</div>` : ""}</div>`;
+    };
     return `
       <div class="space-y-5">
         <section><h4 class="text-white font-semibold mb-2">Chat answers</h4>
@@ -66,12 +70,9 @@
             ${stat("Cost", m.cost_usd, mb.cost_usd, { lowerIsBetter: true, fmt: (x) => `$${Number(x || 0).toFixed(2)}` })}
           </div></section>
         <section><div class="flex items-center gap-2 mb-2"><h4 class="text-white font-semibold">Routing check</h4>
-            <span class="text-zinc-500 text-[11px] flex-1">Real requests about coding agents, put through Xod's router and planner with its model. Nothing is run.</span>
+            <span class="text-zinc-500 text-[11px] flex-1">Real requests put through Xod's router and planner with its model, to see it picks the right thing. Nothing is run.</span>
             <button data-sc="run" ${running ? "disabled" : ""} class="px-2.5 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600 text-[12px] disabled:opacity-50">${running ? `Checking ${running.done}/${running.total}…` : "Run it now"}</button></div>
-          ${L ? `<div class="flex items-baseline gap-3"><span class="text-[24px] font-semibold ${L.passed === L.total ? "text-emerald-400" : "text-amber-300"}">${L.passed}/${L.total}</span>
-              <span class="text-zinc-400 text-[12px]">agent requests ${L.agent_passed}/${L.agent_total} · ${esc(L.model)} · ${when(L.at)}</span></div>
-            <div class="text-zinc-500 text-[11px]">${esc(L.tools)}</div>${failed}` : `<p class="text-zinc-500 text-[12px]">Not run yet.</p>`}
-          ${runs ? `<div class="mt-2">${runs}</div>` : ""}</section>
+          ${(r.suites || []).map(suiteBox).join("")}</section>
       </div>`;
   }
 
