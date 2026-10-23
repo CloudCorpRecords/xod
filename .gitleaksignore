@@ -1,0 +1,3 @@
+# Made-up test values the secret scan flagged (not real keys): the Keychain test's stand-in Fireworks and Tavily keys.
+858457f0d04bcf1359419710218e27413f85eb4f:tests/smoke/run_keychain_test.py:generic-api-key:111
+858457f0d04bcf1359419710218e27413f85eb4f:tests/smoke/run_keychain_test.py:generic-api-key:112

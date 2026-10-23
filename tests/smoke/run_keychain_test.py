@@ -108,22 +108,22 @@ def main():
         check("removing something that isn't there says so", True)
 
     # macOS won't let this copy of Xod read the vault (an update, or Xod from source beside the installed one).
-    secret_store.save("fireworks_api_key", "fw_saved_123456789")
-    secret_store.save("tavily_api_key", "tvly-saved-123456789")
+    secret_store.save("fireworks_api_key", "fw_test_value")
+    secret_store.save("tavily_api_key", "tvly_test_value")
     before = vault_json()
     locked.append(1)
     keychain.reset_cache()
     check("a vault macOS won't hand over reads as no keys, without failing", secret_store.get("fireworks_api_key") == "")
     check("…and says why, with what to do", not secret_store.health()["readable"] and "Always Allow" in (secret_store.health()["problem"] or ""))
     try:
-        secret_store.save("openai_api_key", "sk-new-123456789")
+        secret_store.save("openai_api_key", "sk_test_value")
         check("saving then fails loudly instead of replacing the keys", False)
     except keychain.Unreadable:
         check("saving then fails loudly instead of replacing the keys", True)
     keychain.get_password("Xod MCP", "some-new-name")      # a first-time lookup used to write the vault too
     locked.clear()
     check("…so every key is still there", vault_json() == before, str(sorted(vault_json()["secrets"])))
-    check("once macOS allows it, the next read finds them (Try again)", secret_store.get("fireworks_api_key") == "fw_saved_123456789"
+    check("once macOS allows it, the next read finds them (Try again)", secret_store.get("fireworks_api_key") == "fw_test_value"
           and secret_store.health()["readable"])
 
     failed = [n for n, ok in results if not ok]
