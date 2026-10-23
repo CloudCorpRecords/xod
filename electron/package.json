@@ -36,6 +36,7 @@
     "files": [
       "main.js",
       "updater.js",
+      "own_server.js",
       "preload.js",
       "splash.html",
       "build/icon.png",

@@ -184,6 +184,15 @@ def main():
             i = logtext.index("Traceback")
             print("      server log, first error:\n        " + "\n        ".join(logtext[i:i + 3000].splitlines()[:40]))
 
+    # The installer packs only the files electron/package.json lists: one the app's code requires but isn't listed
+    # would make the installed app fail to start, and nothing else here would notice.
+    import re
+    edir = Path(__file__).resolve().parents[2] / "electron"
+    listed = set(json.loads((edir / "package.json").read_text())["build"]["files"])
+    needed = {m + ("" if m.endswith(".js") else ".js") for f in listed if f.endswith(".js")
+              for m in re.findall(r"""require\(["']\./([^"']+)["']\)""", (edir / f).read_text())}
+    check("every file the desktop app requires is packed into the installer", needed <= listed, str(sorted(needed - listed)))
+
     failed = [n for n, ok in results if not ok]
     print(f"\nSUMMARY {'PASS' if not failed else 'FAIL'} {failed}")
     sys.exit(1 if failed else 0)

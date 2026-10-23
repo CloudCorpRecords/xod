@@ -661,7 +661,12 @@ class EvidenceBoard:
             lines.append("* Other tool results:")
             for t in others[-6:]:
                 compact = {k: v for k, v in t["result"].items() if k not in ("raw", "html", "screenshot_uri")}
-                lines.append(f"  - {t['tool']}: {json.dumps(compact, default=str)[:500]}")
+                if str(t.get("tool", "")).startswith("mcp__"):
+                    # A connected app's list (places, messages, events…): all of it the answer can use, not the first two.
+                    text = re.sub(r"\s*\n\s*", " ", str(compact.get("content") or json.dumps(compact, default=str)))
+                    lines.append(f"  - {t['tool']}: {text[:3000]}")
+                else:
+                    lines.append(f"  - {t['tool']}: {json.dumps(compact, default=str)[:500]}")
 
         if hasattr(self, "fs_telemetry") and self.fs_telemetry:
             lines.append(f"* Controlled Workspace Filesystem Telemetry:")

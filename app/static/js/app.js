@@ -591,7 +591,7 @@ async function updateLMStudioUI() {
         llmText.textContent = `AI model: ${m.display_name}`;
         llmText.title = `LM Studio: ${m.display_name}${capStr}`;
         if (pulseDot) pulseDot.className = "size-2 rounded-full bg-emerald-400";
-        setHeaderStatus("ok", "Ready");
+        setHeaderStatus("ok", `LM Studio · ${m.display_name}`);
       } else {
         llmText.textContent = "AI model: none loaded";
         if (pulseDot) pulseDot.className = "size-2 rounded-full bg-amber-400";
@@ -4926,6 +4926,19 @@ function auditEntityStack(target) {
 // -------------------------------------------------------------
 // HELPERS
 // -------------------------------------------------------------
+// A connected app's tool, as people say it: mcp__mac__messages_send → "Send messages · This Mac".
+const MCP_APPS = { mac: "This Mac", github: "GitHub", notion: "Notion", linear: "Linear", gmail: "Gmail", slack: "Slack" };
+const MCP_VERBS = new Set(["send", "add", "create", "run", "delete", "remove", "update", "edit", "move", "set", "start", "stop",
+  "post", "reply", "book", "buy", "pay", "write", "rename", "archive", "close", "merge", "open", "complete", "unlock", "lock"]);
+function mcpToolLabel(name) {
+  const [, server = "", tool = ""] = name.split("__");
+  let words = tool.split(/[_-]/).filter(Boolean);
+  if (words.length > 1 && MCP_VERBS.has(words[words.length - 1]) && !MCP_VERBS.has(words[0])) words = [words.pop(), ...words];
+  const what = words.join(" ");
+  const app = MCP_APPS[server] || server.charAt(0).toUpperCase() + server.slice(1);
+  return `${what.charAt(0).toUpperCase()}${what.slice(1)} · ${app}`;
+}
+
 function formatToolName(name) {
   const map = {
     "preview_check": "Ran it",
@@ -5007,6 +5020,7 @@ function formatToolName(name) {
     "fs_move_file": "Move File",
     "fs_organize_files": "Organize Files into Folder"
   };
+  if (!map[name] && /^mcp__/.test(name)) return mcpToolLabel(name);
   return map[name] || name;
 }
 

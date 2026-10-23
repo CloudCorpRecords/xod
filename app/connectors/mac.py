@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 READ = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
@@ -51,17 +52,27 @@ server = MCPServer(
 SEP, END = "\x1f", "\x1e"   # field and record separators that never appear in normal text
 
 
+
+# What goes wrong is said to the model (and so to you): a ToolError's message reaches it, any other error arrives as a
+# bare "Error executing tool". Still a ValueError / RuntimeError for code that catches those.
+class Refusal(ToolError, ValueError):
+    """The request can't be done as asked (who? which one? not found)."""
+
+
+class Problem(ToolError, RuntimeError):
+    """This Mac can't do it right now (a permission, Location Services, an app that didn't answer)."""
+
 def _osa(script: str, *args: Any, timeout: int = 60) -> str:
     p = subprocess.run(["/usr/bin/osascript", "-", *[str(a) for a in args]], input=script, capture_output=True,
                        text=True, timeout=timeout)
     if p.returncode != 0:
         err = p.stderr.strip()
         if "-1743" in err or "Not authorized" in err:
-            raise RuntimeError("macOS hasn't allowed Xod to use this app yet. Allow it in System Settings → "
+            raise Problem("macOS hasn't allowed Xod to use this app yet. Allow it in System Settings → "
                                "Privacy & Security → Automation, then try again.")
         if "-600" in err or "isn't running" in err:
-            raise RuntimeError("That app isn't available on this Mac.")
-        raise RuntimeError(err[-300:] or "AppleScript failed")
+            raise Problem("That app isn't available on this Mac.")
+        raise Problem(err[-300:] or "AppleScript failed")
     return p.stdout
 
 
@@ -80,7 +91,7 @@ def _when(value: str) -> datetime:
     try:
         return datetime.fromisoformat(value.strip().replace("Z", "+00:00")).replace(tzinfo=None)
     except ValueError:
-        raise ValueError(f"Use a date like 2026-10-14T15:00, not {value!r}")
+        raise Refusal(f"Use a date like 2026-10-14T15:00, not {value!r}")
 
 
 CAL_FIND = r'''
@@ -629,7 +640,7 @@ def contacts_find(search: str, limit: int = 10) -> List[Dict[str, Any]]:
     number or address, or who a number belongs to."""
     q = (search or "").strip().lower()
     if not q:
-        raise ValueError("Who should I look for?")
+        raise Refusal("Who should I look for?")
     d = _digits(q)
     hits = [p for p in _people() if q in (p["name"] or "").lower() or q in (p["company"] or "").lower()
             or (len(d) >= 4 and any(d in _digits(x) for x in p["phones"])) or any(q in e.lower() for e in p["emails"])]
@@ -678,7 +689,7 @@ def _chat_db():
         c.execute("SELECT 1 FROM message LIMIT 1")
         return c
     except Exception:
-        raise RuntimeError("Xod can't read your messages yet: macOS keeps them private until you allow it. Turn on Xod in "
+        raise Problem("Xod can't read your messages yet: macOS keeps them private until you allow it. Turn on Xod in "
                            "System Settings → Privacy & Security → Full Disk Access (Tools → Abilities → Messages opens it), "
                            "then ask again. Sending works without it.")
 
@@ -750,7 +761,7 @@ def messages_read(with_whom: str, limit: int = 20) -> List[Dict[str, str]]:
                  if _digits(ident or "") in wanted or (ident or "").lower() in wanted]
     if not chats:
         c.close()
-        raise ValueError(f"No conversation with {with_whom} in Messages.")
+        raise Refusal(f"No conversation with {with_whom} in Messages.")
     q = ",".join("?" * len(chats))
     rows = c.execute(f"""SELECT m.text, m.attributedBody, m.date, m.is_from_me, h.id FROM message m
                          JOIN chat_message_join j ON j.message_id = m.ROWID LEFT JOIN handle h ON h.ROWID = m.handle_id
@@ -765,10 +776,10 @@ def messages_send(to: str, text: str) -> str:
     """Sends a text message (iMessage, or SMS through your iPhone) with Messages: text someone, message them. `to` is a
     phone number, an email, a chat id from messages_recent, or a name from Contacts. Always waits for the user's OK."""
     if not (text or "").strip():
-        raise ValueError("What should the message say?")
+        raise Refusal("What should the message say?")
     target = (to or "").strip()
     if not target:
-        raise ValueError("Who should it go to?")
+        raise Refusal("Who should it go to?")
     if ";" in target and target.split(";")[0] in ("iMessage", "SMS", "RCS", "any"):
         _osa(SEND_CHAT, target, text)
         return "Sent."
@@ -776,10 +787,10 @@ def messages_send(to: str, text: str) -> str:
     if not any(ch.isdigit() for ch in target) and "@" not in target:
         people = [p for p in contacts_find(target, 5) if p["phones"] or p["emails"]]
         if not people:
-            raise ValueError(f"There's no {target} with a phone number or email in Contacts.")
+            raise Refusal(f"There's no {target} with a phone number or email in Contacts.")
         exact = [p for p in people if (p["name"] or "").lower() == target.lower()]
         if len(people) > 1 and len(exact) != 1:
-            raise ValueError("More than one person matches: " + "; ".join(p["name"] for p in people) + ". Which one?")
+            raise Refusal("More than one person matches: " + "; ".join(p["name"] for p in people) + ". Which one?")
         p = (exact or people)[0]
         target, shown = (p["phones"] or p["emails"])[0], p["name"]
     how = _osa(SEND_TO, target, text).strip()
@@ -815,12 +826,12 @@ def _here() -> Dict[str, Any]:
         mgr.requestWhenInUseAuthorization()
         _run_loop(lambda: mgr.authorizationStatus() != 0, 60)
     if mgr.authorizationStatus() in (1, 2):
-        raise RuntimeError("Location Services is off for Xod. Turn it on in System Settings → Privacy & Security → "
+        raise Problem("Location Services is off for Xod. Turn it on in System Settings → Privacy & Security → "
                            "Location Services, or say where to look (near: \"Austin, TX\").")
     mgr.requestLocation()
     _run_loop(lambda: "loc" in got or "err" in got, 20)
     if "loc" not in got:
-        raise RuntimeError("This Mac couldn't tell where it is just now (Location Services needs Wi-Fi). Say where to look instead.")
+        raise Problem("This Mac couldn't tell where it is just now (Location Services needs Wi-Fi). Say where to look instead.")
     c = got["loc"].coordinate()
     out: Dict[str, Any] = {"lat": round(c.latitude, 5), "lon": round(c.longitude, 5), "accuracy_m": int(got["loc"].horizontalAccuracy())}
     marks: Dict[str, Any] = {}
@@ -843,25 +854,48 @@ def _search(query: str, center: Any = None, radius_m: float = 3000, limit: int =
     MapKit.MKLocalSearch.alloc().initWithRequest_(req).startWithCompletionHandler_(lambda r, e: got.update(r=r, e=e))
     _run_loop(lambda: "r" in got, 20)
     if "r" not in got:
-        raise RuntimeError("Apple Maps didn't answer. Check the internet connection.")
+        raise Problem("Apple Maps didn't answer. Check the internet connection.")
     return list(got["r"].mapItems())[:limit] if got["r"] else []
 
 
+# Apple Maps and Location Services answer on the main thread, and MCP runs plain tools on a worker thread, where
+# those answers never arrive: these two are async, so they run on the main thread (each takes a second or two).
 @server.tool(annotations=READ)
-def location_here() -> Dict[str, Any]:
+async def location_here() -> Dict[str, Any]:
     """Where this Mac is now (Location Services): coordinates and the town. macOS asks the first time."""
     return _here()
 
 
 @server.tool(annotations=READ)
-def places_nearby(what: str, near: str = "", radius_km: float = 3, limit: int = 8) -> List[Dict[str, Any]]:
-    """Finds places nearby with Apple Maps (coffee, a pharmacy, gas, restaurants, a store by name…) around where you are,
-    or `near` a place you name ("Austin, TX", an address), with each one's address, distance, phone and website."""
+async def places_nearby(what: str = "", near: str = "", radius_km: float = 3, limit: int = 8, query: str = "",
+                        location: str = "", place: str = "", address: str = "", where: str = "") -> List[Dict[str, Any]]:
+    """Finds places with Apple Maps (coffee, a pharmacy, gas, restaurants, a store by name…), with each one's address,
+    distance, phone and website. `what`: the kind of place. `near`: the place the request names (a neighborhood and
+    city, an address: "Union Square, San Francisco"); always pass it when one is named. Leave `near` empty only for
+    "near me", which uses this Mac's location."""
+    near = near or location or place or address or where      # the names models use for it besides `near`
+    try:
+        return _places(what, near, radius_km, limit, query)
+    except ToolError:
+        raise
+    except Exception as e:      # whatever else went wrong, said plainly rather than as a bare error
+        raise Problem(f"Apple Maps search didn't work: {type(e).__name__}: {e}"[:300])
+
+
+def _places(what: str, near: str, radius_km: float, limit: int, query: str) -> List[Dict[str, Any]]:
     import CoreLocation
+    # Small models often send the whole request as `query` ("coffee shops near Union Square, San Francisco").
+    what = (what or query).strip()
+    if not near.strip():
+        m = re.match(r"(.+?)\s+(?:near|around|in)\s+(.+)$", what, re.I)
+        if m and not re.fullmatch(r"(me|here|us)", m.group(2).strip(), re.I):
+            what, near = m.group(1).strip(), m.group(2).strip()
+    if not what:
+        raise Refusal("Say what to look for, e.g. coffee or a pharmacy.")
     if near.strip():
         found = _search(near.strip(), limit=1)
         if not found:
-            raise ValueError(f"Apple Maps doesn't know {near}.")
+            raise Refusal(f"Apple Maps doesn't know {near}.")
         c = found[0].placemark().coordinate()
         where = near.strip()
     else:
@@ -899,7 +933,7 @@ def _shortcuts(*args: str, timeout: int = 60, input_text: str = "") -> str:
         if path:
             os.unlink(path)
     if p.returncode != 0:
-        raise RuntimeError((p.stderr or p.stdout).strip()[-300:] or "Shortcuts didn't run it.")
+        raise Problem((p.stderr or p.stdout).strip()[-300:] or "Shortcuts didn't run it.")
     return p.stdout
 
 
@@ -917,10 +951,10 @@ def shortcuts_run(name: str, input_text: str = "") -> str:
     """Runs one of your Shortcuts by name: turn the lights on or off, a scene, a plug, the thermostat, lock a door…
     (shortcuts_list shows them). One that unlocks, opens or disarms something needs home_security_shortcut instead."""
     if SECURITY_RE.search(name or ""):
-        raise ValueError("That one unlocks, opens or disarms something: use home_security_shortcut, which always asks first.")
+        raise Refusal("That one unlocks, opens or disarms something: use home_security_shortcut, which always asks first.")
     names = shortcuts_list()
     if name not in names:
-        raise ValueError(f"There's no shortcut called {name!r}. Your shortcuts: " + ", ".join(names[:30]))
+        raise Refusal(f"There's no shortcut called {name!r}. Your shortcuts: " + ", ".join(names[:30]))
     out = _shortcuts("run", name, input_text=input_text, timeout=120).strip()
     return f"Ran “{name}”." + (f" It said: {out[:500]}" if out else "")
 
@@ -929,7 +963,7 @@ def shortcuts_run(name: str, input_text: str = "") -> str:
 def home_security_shortcut(name: str) -> str:
     """Runs a shortcut that unlocks a door, opens a garage or gate, or disarms an alarm. Always waits for the user's OK."""
     if name not in shortcuts_list():
-        raise ValueError(f"There's no shortcut called {name!r}.")
+        raise Refusal(f"There's no shortcut called {name!r}.")
     out = _shortcuts("run", name, timeout=120).strip()
     return f"Ran “{name}”." + (f" It said: {out[:500]}" if out else "")
 

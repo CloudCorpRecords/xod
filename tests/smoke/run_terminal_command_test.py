@@ -141,6 +141,9 @@ def main():
     out = subprocess.run([node, str(ROOT / "npm" / "bin" / "xod.js"), "status"], capture_output=True, text=True,
                          env={**ENV, "XOD_HOME": ""}, timeout=60)
     app_here = any(Path(p).exists() for p in ("/Applications/Xod.app/Contents/Resources/backend/app/cli.py",))
+    if app_here:      # the installed app's `xod status` starts a server for this test's data folder: stop it again
+        subprocess.run([node, str(ROOT / "npm" / "bin" / "xod.js"), "stop"], capture_output=True, text=True,
+                       env={**ENV, "XOD_HOME": ""}, timeout=60)
     if not app_here:
         check("without the app it says where to get it", out.returncode == 1 and "releases/latest" in out.stderr, out.stderr[-300:])
     pkg = json.loads((ROOT / "npm" / "package.json").read_text())
@@ -149,8 +152,30 @@ def main():
     check("it installs a command called xod", pkg["bin"] == {"xod": "bin/xod.js"})
 
 
+def leftover_servers():
+    """Xod servers still running with this test's data folder (an installed Xod.app's `xod` may start one)."""
+    import psutil
+    mine = os.path.realpath(TMP)
+    found = []
+    for proc in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            if "uvicorn" in " ".join(proc.info["cmdline"] or []) and \
+                    os.path.realpath(proc.environ().get("XOD_DATA_DIR") or "/nonexistent").startswith(mine):
+                found.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return found
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # One left running took port 8000, and the desktop app then showed this test's empty settings instead of yours.
+        left = leftover_servers()
+        for proc in left:
+            proc.kill()
+        check("no Xod server is left running with this test's data", not left, str([p.pid for p in left]))
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")
     if failed:

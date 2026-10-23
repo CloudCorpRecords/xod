@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.2
+
+**The app always uses its own Xod**
+- The desktop app reused any Xod it found on the usual port. When another one was left running (an older version, or one started with a different data folder), the app showed that one's settings: no saved keys ("Fireworks key missing") and the wrong model. Now it reuses a running Xod only when it has your data folder and the same version, and otherwise starts its own.
+- Xod's tests no longer leave servers running, and CI checks that every file the desktop app needs is packed into the installer.
+
+**Your Mac's apps, working for real**
+- Places search from chat works now: Apple Maps answers on the main thread, and the tool ran where its answer never arrived. "Coffee near Union Square" goes to Apple Maps instead of a web search, the answer lists every place found (not the first two), and the place can be given however a model names it.
+- What goes wrong reaches the model and you ("allow Full Disk Access", "Location Services is off"), instead of a bare "Error executing tool".
+- Approvals: the card says what will happen ("send messages with This Mac"), a call with the wrong argument names goes back to the model instead of to you, the same request repeated is the card already waiting (not a second one), and waiting for your OK is no longer treated as a failure to work around. A phone number you typed counts as yours however it's written.
+- Chat shows connected apps' tools by name ("Send messages · This Mac"), and the top bar names LM Studio's model.
+
+**Coding agents**
+- On a narrow window the Crew board shows the open job across the whole board (← All jobs goes back). A finished job shows a quiet End instead of a red Stop, and a merge says where the change went.
+
+**Videos**
+- New one-minute videos: Claude Code fixing a bug in its own copy, your Mac's apps, and switching models. The launch film has a new section for each.
+
 ## 0.9.1
 
 **A README you can take in at a glance**

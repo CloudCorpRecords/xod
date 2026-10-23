@@ -73,10 +73,11 @@ def title_for(tool: str, args: Dict[str, Any], result: Any) -> (str, str):
     if tool == "team_delegate":
         return f"Handed off: {str(a.get('task') or '')[:70]}", str(r.get("summary") or r.get("error") or "")[:160]
     if tool.startswith("mcp__"):
+        from app.services.mcp_client import _action, _app_name
         _, server, name = (tool.split("__", 2) + ["", ""])[:3]
         if r.get("needs_approval"):
-            return f"Asked to {name.replace('_', ' ')} ({server})", "waiting for your OK"
-        return f"Used {name.replace('_', ' ')} ({server})", str(r.get("content") or r.get("error") or "")[:140].replace("\n", " ")
+            return f"Asked to {_action(name)} ({_app_name(server)})", "waiting for your OK"
+        return f"Used {name.replace('_', ' ')} ({_app_name(server)})", str(r.get("content") or r.get("error") or "")[:140].replace("\n", " ")
     try:
         from app.services import activity
         t, d = activity.describe(tool, a, result, ok, [])

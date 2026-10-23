@@ -190,25 +190,40 @@ async def main():
                 Item("Near Cafe", "1 Near St", 30.268, -97.744, "+1 512 555 0002")]
     m._search = fake_search
     m._here = lambda: {"lat": 30.2672, "lon": -97.7431, "place": "Austin, TX, United States"}
-    out = m.places_nearby("coffee")
+    out = await m.places_nearby("coffee")
     check("places around you, nearest first, with address, distance, phone, website and a Maps link",
           [x["name"] for x in out] == ["Near Cafe", "Far Cafe"] and out[0]["km"] < out[1]["km"] and out[1]["website"] == "https://far.example"
           and out[0]["maps"].startswith("https://maps.apple.com/?q=Near%20Cafe") and out[0]["near"].startswith("Austin"), str(out)[:300])
     m._here = lambda: (_ for _ in ()).throw(RuntimeError("Location Services is off for Xod. Turn it on in System Settings"))
-    out = m.places_nearby("coffee", near="Austin, TX", radius_km=1)
+    out = await m.places_nearby("coffee", near="Austin, TX", radius_km=1)
     check("…near a place you name (no location needed)", out and out[0]["near"] == "Austin, TX" and searched[-1] == ("coffee", True, 1000))
     try:
-        m.places_nearby("coffee")
+        await m.places_nearby("coffee")
         ok = False
     except RuntimeError as e:
         ok = "Location Services is off" in str(e)
     check("Location off: says how to turn it on", ok)
     try:
-        m.places_nearby("coffee", near="Nowhereville")
+        await m.places_nearby("coffee", near="Nowhereville")
         ok = False
     except ValueError:
         ok = True
     check("a place Apple Maps doesn't know: says so", ok)
+    out = await m.places_nearby(query="coffee shops near Austin, TX")
+    check("a whole request sent as `query` (small models do) still finds them, near the place it names",
+          out and out[0]["near"] == "Austin, TX" and searched[-1][0] == "coffee shops", str(searched[-1]))
+    out = await m.places_nearby(query="coffee shop", location="Austin, TX")
+    check("…and the place sent as `location` (another name models use) counts as `near`",
+          out and out[0]["near"] == "Austin, TX" and searched[-1][0] == "coffee shop", str(searched[-1]))
+    import inspect
+    check("the location tools run on the main thread, where Apple Maps and Location Services answer",
+          inspect.iscoroutinefunction(m.places_nearby) and inspect.iscoroutinefunction(m.location_here))
+    try:
+        await m.server.call_tool("places_nearby", {"arg_name": "query"})
+        said = ""
+    except Exception as e:
+        said = str(e)
+    check("what went wrong reaches the model, not just \"Error executing tool\"", "Say what to look for" in said, said)
 
     print("M4 Home, through your Shortcuts")
     fake = TMP / "shortcuts"
@@ -246,7 +261,15 @@ async def main():
     hub.conns["mac"] = SimpleNamespace(name="mac", client=True, tools=[tools["messages_send"]])
     r = await hub.call("mcp__mac__messages_send", {"to": "Sam", "text": "hi"})
     check("the card says what will happen, not \"deleted\"", r.get("needs_approval") and "deleted" not in r["message"]
-          and "messages send" in r["message"], r.get("message"))
+          and "send messages with This Mac" in r["message"], r.get("message"))
+    first = r
+    r = await hub.call("mcp__mac__messages_send", {"to": "Sam", "text": "hi", "approval_id": first["approval_id"]})
+    check("the same call again (even with the approval id copied in) is the card already waiting, not a second one",
+          r.get("approval_id") == first["approval_id"] and len(hub.pending) == 1, str(r)[:200])
+    waiting = len(hub.pending)
+    r = await hub.call("mcp__mac__messages_send", {"someone": "Sam", "text": "hi"})
+    check("a call missing what the tool needs goes back to the model to fix, never to you to approve",
+          not r.get("needs_approval") and "`to`" in (r.get("error") or "") and "`someone`" in r["error"] and len(hub.pending) == waiting, str(r)[:200])
 
     print("M6 the Abilities screen")
     from app.services import abilities as ab

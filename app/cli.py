@@ -481,8 +481,9 @@ def settle_approvals(x: Xod, cards: List[Dict[str, Any]], yes: bool) -> None:
 
 def _ask_one(x: Xod, rec: Dict[str, Any], yes: bool) -> None:
     pid = rec["id"] if "id" in rec else rec["approval_id"]
-    what = str(rec.get("tool_name") or str(rec.get("tool") or "").split("__")[-1]).replace("_", " ")
-    where = rec.get("server") or ""
+    from app.services.mcp_client import _action, _app_name
+    what = _action(str(rec.get("tool_name") or str(rec.get("tool") or "").split("__")[-1]))
+    where = _app_name(rec.get("server") or "")
     say()
     say(yellow(bold(f"Xod wants to {what}" + (f" ({where})" if where else ""))))
     why = rec.get("why") or rec.get("message") or rec.get("description")

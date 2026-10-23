@@ -369,9 +369,9 @@
     box.classList.add("xp-lasso");
     F.approval = { btn, box };
     goTo({
-      el: btn, stay: true, prop: "wand",
-      anchor: (r) => ({ x: r.right + 26, y: r.top - 4 }),
-      look: (r) => ({ x: r.left + r.width / 2, y: r.top + r.height / 2 }),
+      el: box, stay: true, prop: "wand",
+      anchor: (r) => ({ x: r.right - 34, y: r.top - 8 }),       // on the card's top edge, clear of both buttons
+      look: () => { const b = btn.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; },
       onArrive: () => { M.glyph(famEl, "!", "is-bang"); },
       whileThere: (t) => {
         if (btn.disabled || !btn.isConnected) {

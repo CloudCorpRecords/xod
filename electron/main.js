@@ -4,6 +4,7 @@
 // routines and the phone link keep working; the server is stopped when the app quits.
 const { app, BrowserWindow, Menu, Tray, Notification, nativeImage, shell, session, dialog, systemPreferences, globalShortcut, ipcMain } = require("electron");
 const { spawn, spawnSync } = require("child_process");
+const { isOwnServer } = require("./own_server");
 const fs = require("fs");
 const http = require("http");
 const net = require("net");
@@ -145,9 +146,11 @@ function serverEnv() {
 }
 
 async function startServer() {
-  // A Xod server already running on the usual port (e.g. ./run.sh): use it instead of starting another.
-  const existing = await get(`http://127.0.0.1:${PREFERRED_PORT}/`);
-  if (existing && existing.status === 200 && /<title>\s*Xod/i.test(existing.body)) {
+  // A Xod server already running on the usual port (./run.sh, or `xod start`): use it only when it's this Xod, with
+  // the same data folder and version. Any other one (an older version left running, or one a test started with a
+  // throwaway folder) would show someone else's settings and none of your keys, so Xod starts its own on a free port.
+  const existing = await get(`http://127.0.0.1:${PREFERRED_PORT}/api/cli/hello`);
+  if (existing && existing.status === 200 && isOwnServer(existing.body, DATA_DIR, app.getVersion())) {
     return `http://127.0.0.1:${PREFERRED_PORT}`;
   }
   await ensurePythonEnv();

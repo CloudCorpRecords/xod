@@ -10,6 +10,11 @@ Five vertical (9:16) videos, about a minute each, of things Xod is good at, for 
   hired      "find me jobs", "do it all": your résumé found, an answer written for each job, your OK, sent
   trap       a job post with instructions for AI hidden in it; Xod catches them and ignores them
   forms      a job profile that fills itself in from your résumé, then the real application filled in its browser
+  apps       your Mac's own apps: Abilities, places from Apple Maps, and a text that waits for your OK (declined on camera)
+  agents     "have Claude Code fix the failing tests": a job in its own copy of the repo, each command OK'd, the diff, merged.
+             Needs Claude Code signed in, and a demo repo at ~/code/tip-calc with failing tests (your home folder shows as ~)
+  models     the model switcher: the free built-in model answers, its memory is freed in one click, then a cloud model
+             (the top bar names the model in every frame). Needs the built-in Qwen 3.5 4B downloaded and a cloud key saved
 
 hired, trap and forms run on the practice careers site against the demo Xod from demo/run.py (made-up companies,
 tagged Practice; nothing goes to a real company), with the made-up résumé:
@@ -61,6 +66,9 @@ HOOKS = {
     "hired": ("I applied to *3 jobs*|before my coffee was ready.", "One sentence. Xod did the rest,|and asked before sending."),
     "trap": ("This job post tries|to *hack your AI*.", "Watch what Xod does."),
     "forms": ("Never fill out|a job application *again*.", "Xod fills it in from your résumé.|You just check it."),
+    "apps": ("Your AI should know|*your Mac's apps*.", "Maps, Messages, Calendar,|Reminders, Contacts, Home."),
+    "agents": ("Hand a bug to|*Claude Code*.", "It works in its own copy.|You review, then merge."),
+    "models": ("One app.|*Any AI you want.*", "Free on your own Mac, or a cloud|model with your own key."),
 }
 SITE = "http://127.0.0.1:8765"          # the practice careers site (demo/careers)
 
@@ -129,17 +137,27 @@ def duration(p: Path) -> float:
     return int(h) * 3600 + int(m) * 60 + float(s)
 
 
-def compose(app: Path, frame: Path, mask: Path, caption: Path, out: Path, badge: Optional[Path] = None) -> Path:
-    """The app clip with rounded corners in the frame, the caption above it, and a badge if it's sped up."""
+def compose(app: Path, frame: Path, mask: Path, caption: Path, out: Path, badge: Optional[Path] = None,
+            note: Optional[Path] = None) -> Path:
+    """The app clip with rounded corners in the frame, the caption above it, a badge if it's sped up, and a note in the
+    other corner (which model answered, when it isn't one on this computer)."""
     x, y, w, h = APP_BOX
     ins = ["-loop", "1", "-i", str(frame), "-i", str(app), "-loop", "1", "-i", str(mask), "-loop", "1", "-i", str(caption)]
     fc = (f"[1:v]scale={w}:{h}:flags=lanczos,format=rgba[a];[2:v]scale={w}:{h},format=gray[m];[a][m]alphamerge[am];"
           f"[0:v][am]overlay={x}:{y}[b];[b][3:v]overlay=0:0[c]")
     last = "c"
     if badge:
+        idx = sum(1 for a in ins if a == "-i")
         ins += ["-loop", "1", "-i", str(badge)]
-        fc += f";[c][4:v]overlay={BADGE_AT[0]}:{BADGE_AT[1]}[d]"
+        fc += f";[{last}][{idx}:v]overlay={BADGE_AT[0]}:{BADGE_AT[1]}[d]"
         last = "d"
+    if note:
+        from PIL import Image
+        nw = Image.open(note).size[0]
+        idx = sum(1 for a in ins if a == "-i")
+        ins += ["-loop", "1", "-i", str(note)]
+        fc += f";[{last}][{idx}:v]overlay={x + w - nw - 28}:{BADGE_AT[1]}[n]"
+        last = "n"
     subprocess.run([ffmpeg(), "-y", "-loglevel", "error", *ins, "-filter_complex", fc + f";[{last}]fps=30,format=yuv420p[v]",
                     "-map", "[v]", "-t", f"{duration(app):.3f}", "-c:v", "libx264", "-preset", "slow", "-crf", "19",
                     "-movflags", "+faststart", str(out)], check=True)
@@ -181,8 +199,9 @@ class Take:
 
 
 class Scenes:
-    def __init__(self, url: str, work: Path):
-        self.url, self.work = url.rstrip("/"), work
+    def __init__(self, url: str, work: Path, model_note: str = "", size=(APP_W, APP_H, APP_SCALE)):
+        self.url, self.work, self.model_note = url.rstrip("/"), work, model_note
+        self.w, self.h, self.scale = size          # the app's window: phone-shaped for the shorts, wide for the film
 
     def api(self, path, body=None):
         req = urllib.request.Request(self.url + path, data=json.dumps(body).encode() if body is not None else None,
@@ -248,7 +267,7 @@ class Scenes:
         """A new install connects itself, knows the hardware, answers on the computer."""
         takes = []
         self.api("/api/setup/complete", {})        # its setup screen is opened on purpose below, not by itself
-        async with Studio(width=APP_W, height=APP_H, scale=APP_SCALE, port=9511) as s:
+        async with Studio(width=self.w, height=self.h, scale=self.scale, port=9511) as s:
             await s.goto(self.url + "/", wait=0.3)
             await s.js("try { localStorage.setItem('xod.saidHello', '1') } catch (_) {} true")
             await s.start_recording()
@@ -269,7 +288,7 @@ class Scenes:
             await asyncio.sleep(1.0)
             chips = await s.js("""(() => { const c = [...document.querySelectorAll('#setupWizard span')].find(e => /GB/.test(e.textContent) && e.offsetParent);
                 if (!c) return null; const r = c.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()""")
-            await s.move(*(chips or (APP_W / 2, 200)), 0.8)          # the GPU and memory it found
+            await s.move(*(chips or (self.w / 2, 200)), 0.8)          # the GPU and memory it found
             await asyncio.sleep(3.0)
             await s.js("""(async () => { const box = document.querySelector('#setupWizard > div'); if (!box) return true;
                 const h = [...box.querySelectorAll('h3, p')].find(e => /Get a model/.test(e.textContent));
@@ -314,13 +333,13 @@ class Scenes:
     async def research(self) -> List[Take]:
         takes = []
         q = "Compare the Sony WH-1000XM6 and Bose QuietComfort Ultra headphones: price, battery life and noise cancelling."
-        async with Studio(width=APP_W, height=APP_H, scale=APP_SCALE, port=9512) as s:
+        async with Studio(width=self.w, height=self.h, scale=self.scale, port=9512) as s:
             await self.open_app(s)
             await s.start_recording()
             await self.ask(s, q, cps=28)
             await asyncio.sleep(1.5)
             takes.append(Take(await s.stop_recording(), "Ask a *real* question.", seconds=8))
-            await s.move(APP_W - 180, 300, 0.6)
+            await s.move(self.w - 180, 300, 0.6)
             await s.start_recording()
             await self.until(s, self.ANSWER_STARTED, 900)
             takes.append(Take(await s.stop_recording(), "It searches and reads|the pages *itself*.", seconds=9))
@@ -329,7 +348,7 @@ class Scenes:
             await asyncio.sleep(2.0)
             takes.append(Take(await s.stop_recording(), "Then answers from|what it *actually read*.", seconds=10))
             await s.start_recording()
-            await s.move(APP_W / 2, APP_H / 2, 0.5)
+            await s.move(self.w / 2, self.h / 2, 0.5)
             await self.scroll_answer(s, speed_px=3)
             # Point at the sites it read.
             at = await s.js("""(() => { const a = [...document.querySelectorAll('.prose-custom a, a[href^="http"]')].filter(a => a.offsetParent).pop();
@@ -373,7 +392,7 @@ class Scenes:
 
     async def tidy(self) -> List[Take]:
         takes = []
-        async with Studio(width=APP_W, height=APP_H, scale=APP_SCALE, port=9513) as s:
+        async with Studio(width=self.w, height=self.h, scale=self.scale, port=9513) as s:
             await self.open_app(s)
             await s.start_recording()
             await self.ask(s, "What's in my Downloads folder?", cps=20)
@@ -412,7 +431,7 @@ class Scenes:
             time.sleep(2)
             request = ("Reply to Dana at Acme on the job board (http://localhost:8799/messages): \"Hi Dana, thanks for the call "
                        "today. I'm excited about the role and happy to share more examples.\"")
-            async with Studio(width=APP_W, height=APP_H, scale=APP_SCALE, port=9514) as s:
+            async with Studio(width=self.w, height=self.h, scale=self.scale, port=9514) as s:
                 await self.open_app(s)
                 await s.start_recording()
                 await s.js("openTasksPanel(); true")
@@ -458,7 +477,7 @@ class Scenes:
         takes = []
         q = "Build me a pomodoro timer app: 25 minute focus, 5 minute break, start and reset buttons, a nice dark design."
         # The preview may be another origin: keep it in this page's process, so its button can be found and pressed.
-        async with Studio(width=APP_W, height=APP_H, scale=APP_SCALE, port=9515,
+        async with Studio(width=self.w, height=self.h, scale=self.scale, port=9515,
                           chrome_args=["--disable-site-isolation-trials", "--disable-features=IsolateOrigins,site-per-process"]) as s:
             await self.open_app(s)
             await s.start_recording()
@@ -561,7 +580,7 @@ class Scenes:
     async def hired(self) -> List[Take]:
         self.fresh_take()
         takes = []
-        async with Studio(width=APP_W, height=APP_H, scale=APP_SCALE, port=9516) as s:
+        async with Studio(width=self.w, height=self.h, scale=self.scale, port=9516) as s:
             await self.open_app(s)
             await s.start_recording()
             await self.ask(s, "find me forward deployed engineer jobs", cps=20)
@@ -609,7 +628,7 @@ class Scenes:
     async def trap(self) -> List[Take]:
         self.fresh_take()
         takes = []
-        async with Studio(width=APP_W, height=APP_H, scale=APP_SCALE, port=9517) as s:
+        async with Studio(width=self.w, height=self.h, scale=self.scale, port=9517) as s:
             # The job post, as anyone would see it…
             await s.goto(SITE + "/jobs/atlas-fde", wait=1.5)
             await s.start_recording()
@@ -675,7 +694,7 @@ class Scenes:
     async def forms(self) -> List[Take]:
         self.fresh_take()
         takes = []
-        async with Studio(width=APP_W, height=APP_H, scale=APP_SCALE, port=9518) as s:
+        async with Studio(width=self.w, height=self.h, scale=self.scale, port=9518) as s:
             await self.open_app(s)
             # Something to apply to, off camera.
             await self.ask(s, "find me forward deployed engineer jobs", cps=60)
@@ -724,6 +743,219 @@ class Scenes:
         return takes
 
 
+    def clear_chats(self):
+        for sess in self.api("/api/sessions").get("sessions", []):
+            urllib.request.urlopen(urllib.request.Request(f"{self.url}/api/sessions/{sess['id']}", method="DELETE"), timeout=10)
+
+    async def apps(self) -> List[Take]:
+        """Abilities, then places from Apple Maps, then a text that stops for your OK. Nothing personal is on screen:
+        the place is a public one, and the text goes to a made-up 555 number and is declined on camera, never sent."""
+        takes = []
+        self.clear_chats()
+        async with Studio(width=self.w, height=self.h, scale=self.scale, port=9519) as s:
+            await self.open_app(s)
+            await s.start_recording()
+            await s.js("openAbilities(); true")
+            await self.until(s, "[...document.querySelectorAll('*')].some(e => e.offsetParent && e.children.length === 0 && e.textContent.trim() === 'Contacts')", 30)
+            await asyncio.sleep(0.8)
+            for sel in ("Messages", "Location", "Calendar", "Home"):
+                at = await s.js(f"""(() => {{ const e = [...document.querySelectorAll('*')].find(e => e.offsetParent && e.children.length === 0 && e.textContent.trim() === '{sel}');
+                    if (!e) return null; const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()""")
+                if at:
+                    await s.move(at[0], at[1], 0.7)
+                    await asyncio.sleep(0.5)
+            await asyncio.sleep(0.8)
+            takes.append(Take(await s.stop_recording(), "It can use|*your Mac's own apps*.", seconds=8))
+
+            await s.js("document.querySelectorAll('.fixed.inset-0').forEach(e => { if (/Abilities/.test(e.textContent)) e.classList.add('hidden'); }); true")
+            await asyncio.sleep(0.5)
+            await s.start_recording()
+            await self.ask(s, "Find coffee shops near Union Square in San Francisco", cps=20)
+            await self.until(s, self.ANSWER_STARTED, 900)
+            takes.append(Take(await s.stop_recording(), "Ask for places,|*anywhere*.", seconds=9))
+            await s.start_recording()
+            await self.until(s, self.DONE, 900)
+            await asyncio.sleep(1.0)
+            await s.move(self.w / 2, self.h / 2, 0.5)
+            # Bring the table of places into view and stay there (not the source list under it).
+            await s.js("""(async () => { const box = document.querySelector('#chatMessages'); const t = [...document.querySelectorAll('.prose-custom table')].pop();
+                if (!box || !t) return true; const end = t.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 90;
+                const step = end > box.scrollTop ? 3 : -5;           // the chat may already be past it, at the bottom
+                for (let y = box.scrollTop; step > 0 ? y < end : y > end; y += step) { box.scrollTop = y; await new Promise(r => setTimeout(r, 16)); }
+                box.scrollTop = end; return true; })()""")
+            await asyncio.sleep(1.0)
+            at = await s.js("""(() => { const a = [...document.querySelectorAll('.prose-custom td a')].filter(a => a.offsetParent)[1];
+                if (!a) return null; const r = a.getBoundingClientRect(); return [r.left + Math.min(r.width / 2, 50), r.top + r.height / 2]; })()""")
+            if at:
+                await s.move(at[0], at[1], 1.0)
+            await asyncio.sleep(3.0)
+            takes.append(Take(await s.stop_recording(), "Real places from *Apple Maps*.|No account. No key.", seconds=12))
+
+            await s.start_recording()
+            await self.ask(s, "Send a text to +1 415 555 0134 saying: running 10 minutes late, sorry!", cps=20)
+            asked = await self.until(s, "!!document.querySelector('[data-mcp-approval] [data-mcp=decline]')", 900)
+            await self.until(s, self.DONE, 300)          # the page stops moving before the button is measured
+            DECLINE = """(() => { const b = document.querySelector('[data-mcp-approval] [data-mcp=decline]'); if (!b) return null;
+                b.scrollIntoView({block: 'center'}); const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()"""
+            await s.js(DECLINE)
+            await asyncio.sleep(2.0)
+            takes.append(Take(await s.stop_recording(), "Sending a text?|It *always asks first*.", seconds=10))
+            await s.start_recording()
+            at = await s.js(DECLINE)
+            if at:
+                await s.move(at[0], at[1], 1.0)
+                await asyncio.sleep(0.6)
+                at = await s.js(DECLINE)
+                await s.click(at=at, move=0.1)          # Decline: nothing is sent
+            shown = await self.until(s, "/Declined/.test(document.querySelector('[data-mcp-approval]')?.innerText || '')", 8)
+            await asyncio.sleep(2.5)
+            takes.append(Take(await s.stop_recording(), "You decide.|*Every time.*", seconds=6))
+            left = self.api("/api/mcp").get("pending", [])
+            for p in left:                                # never leave a text waiting to be approved
+                self.api(f"/api/mcp/decline/{p['id']}", {})
+            print(f"apps: approval card after {asked:.0f}s | declined on screen: {not left} | "
+                  f"declined afterwards through the API: {len(left)}")
+        return takes
+
+    # Your home folder as "~" on screen (paths in the Crew board and answers would show your username).
+    MASK_HOME = """(() => { const H = %s; const fix = (n) => { if (n.nodeType === 3) { if (n.nodeValue.includes(H)) n.nodeValue = n.nodeValue.split(H).join('~'); }
+        else n.childNodes && n.childNodes.forEach(fix); };
+        fix(document.body); new MutationObserver((ms) => ms.forEach((m) => { m.addedNodes.forEach(fix); if (m.type === 'characterData') fix(m.target); }))
+        .observe(document.body, {childList: true, subtree: true, characterData: true}); return true; })()""" % json.dumps(str(Path.home()))
+
+    async def agents(self) -> List[Take]:
+        """Claude Code fixes a failing test in a demo repo, in its own copy; each command is approved on screen, then
+        the change is reviewed and merged."""
+        takes = []
+        self.clear_chats()
+        since = time.time()
+
+        def this_job():          # the job this recording started (not one left from an earlier take)
+            return next((j for j in self.api("/api/crew")["jobs"] if j.get("started", 0) >= since), None)
+        async with Studio(width=self.w, height=self.h, scale=self.scale, port=9520) as s:
+            await self.open_app(s)
+            await s.js(self.MASK_HOME)
+            await s.start_recording()
+            await self.ask(s, "Have Claude Code fix the failing tests in ~/code/tip-calc", cps=20)
+            await self.until(s, self.DONE + " && " + self.ANSWER_STARTED, 300)
+            await asyncio.sleep(2.5)
+            takes.append(Take(await s.stop_recording(), "Ask for a fix.|*Claude Code* takes the job.", seconds=10))
+
+            await s.start_recording()
+            for _ in range(60):
+                if this_job():
+                    break
+                await asyncio.sleep(1)
+            jid = this_job()["id"]
+            await s.js("openCrew(); true")
+            await asyncio.sleep(1.5)
+            if not await s.js(f"!!document.querySelector(\"[data-c-pick='{jid}']\")?.offsetParent"):
+                await s.click("[data-c=back]", move=0.6)           # a narrow window shows the open job: back to the list
+                await asyncio.sleep(0.8)
+            await s.click(f"[data-c-pick='{jid}']", move=0.7)
+            await asyncio.sleep(1.0)
+            approved, t0 = 0, time.time()
+            while time.time() - t0 < 300:
+                at = await s.js("""(() => { const b = document.querySelector('[data-c-decide][data-d=session]'); if (!b) return null;
+                    b.scrollIntoView({block: 'center'}); const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()""")
+                if at:
+                    await asyncio.sleep(1.2)                      # long enough to read what it wants to run
+                    await s.click(at=at, move=0.6)
+                    approved += 1
+                    await asyncio.sleep(0.8)
+                    continue
+                job = this_job()
+                if job["status"] in ("done", "failed", "stopped", "interrupted"):
+                    break
+                print(f"   agents: {time.time() - t0:.0f}s, job {job['status']}, {len(job.get('approvals') or [])} waiting, "
+                      f"approved {approved}, button found {bool(at)}", flush=True)
+                if job.get("approvals"):                          # one is waiting but isn't drawn yet: open the job again
+                    await s.js(f"document.querySelector(\"[data-c-pick='{jid}']\")?.click(); true")
+                await asyncio.sleep(0.8)
+            await asyncio.sleep(1.0)
+            takes.append(Take(await s.stop_recording(), "It works in *its own copy*.|You OK what it runs.", seconds=16))
+
+            await s.start_recording()
+            # Its closing message ("Both tests pass now…") is at the end of the steps.
+            await s.js("""(async () => { const sc = document.querySelector('#crewPanel [data-c-scroll]'); if (!sc) return true;
+                for (let y = sc.scrollTop; y < sc.scrollHeight; y += 12) { sc.scrollTop = y; await new Promise(r => setTimeout(r, 16)); } return true; })()""")
+            await asyncio.sleep(3.0)
+            takes.append(Take(await s.stop_recording(), "*Tests pass.*", seconds=7))
+
+            def at(sel):      # a button inside the board's scrolling panel: into view first, then where it is
+                return s.js(f"""(() => {{ const b = document.querySelector({json.dumps(sel)}); if (!b) return null; b.scrollIntoView({{block: 'center'}});
+                    const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()""")
+            print("   agents: loop ended; job", this_job()["status"], flush=True)
+            await s.start_recording()
+            await s.click(at=await at("[data-c-land=review]"), move=0.8)
+            await self.until(s, "!!document.querySelector('details summary') && /The diff/.test(document.body.innerText)", 30)
+            await s.js("(() => { const d = [...document.querySelectorAll('details')].find(d => /The diff/.test(d.innerText)); if (d) { d.open = true; d.scrollIntoView({block: 'center', behavior: 'smooth'}); } return true; })()")
+            await asyncio.sleep(4.0)
+            takes.append(Take(await s.stop_recording(), "See exactly|*what changed*.", seconds=9))
+
+            await s.start_recording()
+            await s.click(at=await at("[data-c-land=merge]"), move=0.8)
+            merged = await self.until(s, "/merged/i.test(document.querySelector('#crewPanel')?.innerText || '')", 20)
+            await asyncio.sleep(2.5)
+            takes.append(Take(await s.stop_recording(), "Merge it.|*Your repo, fixed.*", seconds=6))
+            job = this_job()
+            print(f"agents: approved on screen {approved} times | job {job['status']} | its copy: {(job.get('worktree') or {}).get('closed')}")
+        return takes
+
+    async def models(self) -> List[Take]:
+        takes = []
+        self.clear_chats()
+
+        async def pick(s, label):
+            await s.click("#modelSwitcherBtn", move=0.7)
+            await self.until(s, f"[...document.querySelectorAll('#modelSwitcherPanel button')].some(b => b.innerText.includes({json.dumps(label)}))", 30)
+            await asyncio.sleep(1.0)
+            at = await s.js(f"""(() => {{ const b = [...document.querySelectorAll('#modelSwitcherPanel button')].find(b => b.innerText.includes({json.dumps(label)}));
+                const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()""")
+            await s.click(at=at, move=0.8)
+            await asyncio.sleep(1.5)
+
+        async with Studio(width=self.w, height=self.h, scale=self.scale, port=9521) as s:
+            await self.open_app(s)
+            await s.start_recording()
+            await s.click("#modelSwitcherBtn", move=0.8)
+            await self.until(s, "document.querySelectorAll('#modelSwitcherPanel button').length > 3", 30)
+            for i in range(1, 6):
+                at = await s.js(f"""(() => {{ const b = document.querySelectorAll('#modelSwitcherPanel button')[{i}]; if (!b) return null;
+                    const r = b.getBoundingClientRect(); return [r.left + 60, r.top + r.height / 2]; }})()""")
+                if at:
+                    await s.move(at[0], at[1], 0.5)
+            await asyncio.sleep(1.0)
+            await s.js("document.getElementById('modelSwitcherPanel').classList.add('hidden'); true")
+            takes.append(Take(await s.stop_recording(), "Every model you have,|*one click away*.", seconds=8))
+
+            await s.start_recording()
+            await pick(s, "Qwen 3.5 4B")
+            await self.ask(s, "Write a haiku about Monday mornings.", cps=20)
+            await self.until(s, self.DONE + " && " + self.ANSWER_STARTED, 300)
+            await asyncio.sleep(2.0)
+            takes.append(Take(await s.stop_recording(), "A *free* model,|running on this Mac.", seconds=12))
+
+            await s.start_recording()
+            await s.click("#localServersBtn", move=0.8)
+            await asyncio.sleep(2.0)
+            stop = await s.js("""(() => { const b = [...document.querySelectorAll('#localServersPanel button')].find(b => /stop|unload/i.test(b.innerText));
+                if (!b) return null; const r = b.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()""")
+            if stop:
+                await s.click(at=stop, move=0.8)
+            await asyncio.sleep(2.5)
+            await s.js("document.getElementById('localServersPanel').classList.add('hidden'); true")
+            takes.append(Take(await s.stop_recording(), "See the memory it uses.|*Free it* in one click.", seconds=8))
+
+            await s.start_recording()
+            await pick(s, "Fireworks")
+            await self.ask(s, "Now one about Friday afternoons.", cps=20)
+            await self.until(s, "document.querySelectorAll('.prose-custom').length > 1 && " + self.DONE, 300)
+            await asyncio.sleep(2.5)
+            takes.append(Take(await s.stop_recording(), "Or a cloud model,|*with your own key*.", seconds=10))
+            print("models: memory freed on screen:", bool(stop))
+        return takes
+
 async def make(name: str, sc: Scenes, kit: Kit, out_dir: Path) -> Path:
     work = kit.work / name
     work.mkdir(parents=True, exist_ok=True)
@@ -740,7 +972,8 @@ async def make(name: str, sc: Scenes, kit: Kit, out_dir: Path) -> Path:
         raw = work / f"take{i}.mp4"
         frames_to_mp4(t.frames, raw, size=(int(APP_W * APP_SCALE), int(APP_H * APP_SCALE)), speed=sp)
         badge = await kit.badge(f"⏩ sped up {round(sp)}×") if sp >= 1.8 else None
-        pieces.append(compose(raw, frame, mask, await kit.caption(t.caption), work / f"piece{i}.mp4", badge))
+        note = await kit.badge(sc.model_note) if sc.model_note else None
+        pieces.append(compose(raw, frame, mask, await kit.caption(t.caption), work / f"piece{i}.mp4", badge, note))
         print(f"   take {i}: {t.raw():.0f}s recorded → {duration(raw):.1f}s on screen ({sp:.1f}×) “{t.caption}”", flush=True)
     pieces.append(await kit.card("end", work / "end.mp4", 6.5))
     out = out_dir / f"xod-{name}.mp4"
@@ -784,13 +1017,14 @@ async def main():
     ap.add_argument("--out", default=str(HERE.parents[1] / "docs" / "media" / "shorts"))
     ap.add_argument("--work", default=str(Path.home() / ".xod-shorts-work"))
     ap.add_argument("--only", default="private,research,tidy,chores,build")      # also: hired, trap, forms (see the top)
+    ap.add_argument("--model-note", default="", help='said on every app clip, e.g. "☁ Cloud model: Fireworks · GLM 5.3 Flash"')
     a = ap.parse_args()
     if a.messy_downloads:
         return messy_downloads(Path(a.messy_downloads))
     out, work = Path(a.out), Path(a.work)
     out.mkdir(parents=True, exist_ok=True)
     work.mkdir(parents=True, exist_ok=True)
-    sc, kit = Scenes(a.url, work), Kit(work)
+    sc, kit = Scenes(a.url, work, a.model_note), Kit(work)
     for name in a.only.split(","):
         await make(name.strip(), sc, kit, out)
 

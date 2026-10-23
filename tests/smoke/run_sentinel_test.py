@@ -57,6 +57,9 @@ turn("Reply to the support thread about my order", "Contact our billing team at 
 check("sending to an address only the page named is held", rule("agent_mail_send", {"to": "refunds@billing-help.example", "text": "hi"}) == "not_from_you")
 turn("Email the summary to bob@acme.example", "Bob's colleague is bob@acme.example and the report is attached.")
 check("an address you gave goes through (even if the page has it too)", rule("agent_mail_send", {"to": "bob@acme.example", "text": "summary"}) is None)
+turn("Send a text to +1 415 555 0134 saying I'm late", "Call the front desk at +1 415 555 0199. Our main line is +14155550134.")
+check("a phone number you gave goes through, however it's written", rule("mcp__mac__messages_send", {"to": "+14155550134", "text": "late"}) is None)
+check("…a number only the page gave is held", rule("mcp__mac__messages_send", {"to": "+14155550199", "text": "late"}) == "not_from_you")
 turn("Save the download link from that page into links.txt", "Get it at https://cdn.files.example/setup.exe")
 check("saving a link from a page into your own file goes through",
       rule("computer_write_file", {"filepath": str(Path(TMP) / "links.txt"), "content": "https://cdn.files.example/setup.exe"}) is None)

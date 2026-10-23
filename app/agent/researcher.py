@@ -1348,7 +1348,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"jobs? (on|at|in|near|for)|job (listings?|openings?|board)|hiring|resume|cv|"
         # This Mac's everyday abilities: your messages, where you are, places near you, your home
         r"texts?|texted|imessages?|my messages|(any|new) messages|messaged|text (me|him|her|them|back)|"
-        r"near (me|here|us|downtown|my)|nearby|closest|nearest|where am i|my location|"
+        r"near (?!(the |a )?(future|term|end|zero|perfect|miss|death|record|impossible|enough)\b)\w+|nearby|closest|nearest|where am i|my location|"
         r"lights?|lamps?|thermostat|(un)?lock (the|my)|garage|scene|contacts?|phone number|my calendar|reminders?)\b", re.I)
 
     # Something to do on this computer (its files, folders, apps or command line), not something to look up.
@@ -2779,8 +2779,12 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
     def _format_summary(self, result: Dict[str, Any]) -> str:
         if not isinstance(result, dict):
             return "Completed"
-        if "error" in result:
+        if result.get("error"):          # a job's record carries "error": None when nothing went wrong
             return f"Error: {result.get('message') or result.get('error')}"
+        if result.get("agent") in ("claude", "muse") and "worktree" in result and "status" in result:
+            who = "Claude Code" if result["agent"] == "claude" else "Muse"
+            return f"{who} is on it ({result.get('name')})" if result["status"] in ("starting", "working", "waiting") \
+                else f"{who}: {result.get('name')} is {result['status']}"
         if "occurrences_replaced" in result:
             return f"Surgically Updated {result.get('name')}: line {result.get('line_number')} ({result.get('occurrences_replaced')} chunk replaced, delta {result.get('lines_delta', 0):+d} lines)"
         elif "tree" in result and "stats" in result and isinstance(result.get("stats"), dict):
@@ -2887,6 +2891,11 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             if isinstance(v, list) and len(v) > 15:
                 cleaned[k] = v[:15]
                 cleaned[f"{k}_total_count"] = len(v)
+            elif isinstance(v, str) and k == "content" and tool_name.startswith("mcp__") and len(v) > 800:
+                # A connected app's answer is a list (places, messages, events…): without its padding, and enough of it
+                # that the answer has more than the first two items.
+                v = re.sub(r"\n\s*", " ", v)
+                cleaned[k] = v[:3000] + ("... [truncated for brevity]" if len(v) > 3000 else "")
             elif isinstance(v, str) and len(v) > 800:
                 cleaned[k] = v[:800] + "... [truncated for brevity]"
             else:

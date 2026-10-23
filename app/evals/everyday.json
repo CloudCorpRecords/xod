@@ -14,6 +14,7 @@
   {"id": "add-contact", "q": "add Jordan Lee, 555-0134, to my contacts", "want": ["contacts_add"]},
   {"id": "coffee-near", "q": "find a coffee shop near me", "want": ["places_nearby"]},
   {"id": "pharmacy-austin", "q": "any pharmacies near downtown Austin?", "want": ["places_nearby"]},
+  {"id": "coffee-named-place", "q": "Find coffee shops near Union Square in San Francisco", "want": ["places_nearby"]},
   {"id": "where-am-i", "q": "where am I right now?", "want": ["location_here"]},
   {"id": "lights-off", "q": "turn off the living room lights", "want": ["shortcuts_run", "shortcuts_list"]},
   {"id": "movie-scene", "q": "set the house to movie time", "want": ["shortcuts_run", "shortcuts_list"]},

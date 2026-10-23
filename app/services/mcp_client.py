@@ -181,6 +181,27 @@ def remove_server(name: str) -> bool:
 
 # ---------------------------------------------------------------- connections
 
+
+_VERBS = {"send", "add", "create", "run", "delete", "remove", "update", "edit", "move", "set", "start", "stop", "post", "reply",
+          "book", "buy", "pay", "write", "rename", "archive", "close", "merge", "open", "complete", "unlock", "lock"}
+
+
+def _action(tool: str) -> str:
+    """A tool's name as what it does: messages_send → "send messages", create_note → "create note"."""
+    words = tool.replace("-", "_").split("_")
+    if len(words) > 1 and words[-1].lower() in _VERBS and words[0].lower() not in _VERBS:
+        words = [words[-1]] + words[:-1]
+    return " ".join(words)
+
+
+def _app_name(server: str) -> str:
+    """The connection's name as Xod shows it ("This Mac" for mac), or the server's own name."""
+    try:
+        from app.services.connectors import CATALOG
+        return next((x["name"] for x in CATALOG if x.get("id") == server), server)
+    except Exception:
+        return server
+
 class ServerConn:
     def __init__(self, name: str, spec: Dict[str, Any], interactive: bool = False, redirect_uri: Optional[str] = None):
         self.name, self.spec = name, spec
@@ -375,16 +396,34 @@ class MCPHub:
         read_only = _read_only(t)
         destructive = _destructive(t)
         if not approved and (destructive or not (trust == "always" or (trust == "read_only" and read_only))):
+            # A call that can't run as written goes back to the model to fix, not to you to approve first.
+            schema = getattr(t, "inputSchema", None) or getattr(t, "input_schema", None) or {}
+            missing = [k for k in schema.get("required", []) if k not in (args or {})]
+            if missing:
+                known = ", ".join(f"`{k}`" for k in (schema.get("properties") or {}))
+                return {"success": False, "error": f"{t.name} needs {', '.join(f'`{k}`' for k in missing)} (its arguments: {known})"
+                        + (f"; it was sent {', '.join(f'`{k}`' for k in args)}" if args else "") + ". Call it again with those names."}
+            # The same call again (models repeat it, often with the approval_id they were given): the card that's already
+            # waiting, not a second one.
+            args = {k: v for k, v in (args or {}).items() if k != "approval_id"}
+            same = next((p for p in self.pending.values() if p["tool"] == full_name and p["args"] == args), None)
+            if same:
+                return {"success": False, "needs_approval": True, "approval_id": same["id"], "tool": full_name,
+                        "destructive": destructive, "args": args, "for_you": ("The person has to approve or decline this on the card in the chat. Tell them it's ready and waiting for "
+                                    "their OK, in one short sentence. Don't call it again or pass the approval_id: only they can approve it."),
+                        "message": f"Still waiting for your OK to {_action(t.name)} with {_app_name(c.name)}. It hasn't happened yet."}
             pid = uuid.uuid4().hex[:10]
             self.pending[pid] = {"id": pid, "tool": full_name, "server": c.name, "tool_name": t.name, "args": args,
                                  "description": (t.description or "")[:300], "created_at": time.time()}
             from app.services import agent_log
-            agent_log.approval_opened(pid, "app", c.name, t.name.replace("_", " ").capitalize(),
+            agent_log.approval_opened(pid, "app", _app_name(c.name), _action(t.name).capitalize(),
                                       ", ".join(f"{k}: {str(v)[:60]}" for k, v in list((args or {}).items())[:4]))
             return {"success": False, "needs_approval": True, "approval_id": pid, "tool": full_name, "destructive": destructive,
-                    "message": (f"Waiting for your OK to {t.name.replace('_', ' ')} on {c.name}. Nothing has been deleted yet."
+                    "for_you": ("The person has to approve or decline this on the card in the chat. Tell them it's ready and waiting for "
+                                 "their OK, in one short sentence. Don't call it again or pass the approval_id: only they can approve it."),
+                    "message": (f"Waiting for your OK to {_action(t.name)} with {_app_name(c.name)}. Nothing has been deleted yet."
                                 if destructive and re.search(r"(^|_)(delete|remove|destroy|drop|erase|purge|trash)(_|$)", t.name)
-                                else f"Waiting for your OK to {t.name.replace('_', ' ')} on {c.name}. It hasn't happened yet."),
+                                else f"Waiting for your OK to {_action(t.name)} with {_app_name(c.name)}. It hasn't happened yet."),
                     "args": args}
         try:
             res = await c.client.call_tool(t.name, args or {})

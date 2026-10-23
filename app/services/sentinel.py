@@ -168,6 +168,12 @@ def _mentioned(target: str, asked: str) -> bool:
     a = asked.lower()
     if target in a:
         return True
+    # A phone number is the same number however it's written: "+1 415 555 0134" and "+14155550134".
+    digits = re.sub(r"\D", "", target)
+    if len(digits) >= 7 and re.fullmatch(r"[\d\s()+.\-]+", target.strip()):
+        said = re.sub(r"\D", "", a)
+        if digits in said or digits[-10:] in said:
+            return True
     h = _host(target)
     return bool(h) and h in a
 
@@ -206,7 +212,8 @@ def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) ->
             h = _host(t)
             if h in _SAFE_DOMAINS or h.endswith((".localhost",)) or _mentioned(t, asked):
                 continue
-            if t in u or (h and h in u):
+            d = re.sub(r"\D", "", t) if re.fullmatch(r"[\d\s()+.\-]{7,}", t) else ""
+            if t in u or (h and h in u) or (d and d[-10:] in re.sub(r"\D", "", u)):
                 what = "address" if "@" in t else ("link" if t.startswith("http") else "contact")
                 return {"rule": "not_from_you", "why": f"The {what} {t[:80]} came from something it read, not from you."}
 
@@ -274,9 +281,9 @@ def flagged(where: str, found: Dict[str, Any], did: str) -> None:
 # ------------------------------------------------------------------ holding it for an OK
 def hold(tool: str, args: Dict[str, Any], hit: Dict[str, Any]) -> Dict[str, Any]:
     """Held as an approval card (the same queue as connected apps' changes, so the chat and the phone both show it)."""
-    from app.services.mcp_client import mcp_hub
+    from app.services.mcp_client import mcp_hub, _action
     pid = uuid.uuid4().hex[:10]
-    label = tool.split("__")[-1].replace("_", " ")
+    label = _action(tool.split("__")[-1])
     mcp_hub.pending[pid] = {"id": pid, "tool": tool, "server": "Xod safety check", "tool_name": label, "args": args,
                             "description": hit["why"], "created_at": time.time(), "sentinel": True, "why": hit["why"]}
     from app.services import agent_log
@@ -285,5 +292,7 @@ def hold(tool: str, args: Dict[str, Any], hit: Dict[str, Any]) -> Dict[str, Any]
     del LOG[:-100]
     logger.warning(f"Sentinel held {tool}: {hit['rule']}: {hit['why']}")
     return {"success": False, "needs_approval": True, "approval_id": pid, "tool": tool, "sentinel": True, "args": args,
+            "for_you": ("The person has to approve or decline this on the card in the chat. Tell them why it's waiting, in one "
+                        "short sentence. Don't call it again or pass the approval_id: only they can approve it."),
             "message": f"Safety check: {hit['why']} Approve if you want it anyway; nothing has happened yet.",
             "error": f"Held for your OK: {hit['why']}"}

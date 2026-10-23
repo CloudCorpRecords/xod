@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Mac.dmg"><b>Download for Mac</b></a> ·
   <a href="https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Windows-Setup.exe"><b>Download for Windows</b></a> ·
-  <a href="docs/media/xod-launch.mp4">Watch the 2-minute film</a> ·
+  <a href="docs/media/xod-launch.mp4">Watch the 3-minute film</a> ·
   <a href="#build-from-source">Build from source</a> ·
   <a href="#get-involved">Get involved</a>
 </p>
@@ -48,8 +48,13 @@ It stops for your OK before anything is sent, paid, posted, merged or deleted, a
 
 | | |
 |---|---|
-| **Talk to it, hands-free** ([watch with sound](docs/media/xod-conversation.mp4), 1 min) | **Watch it work** ([2-minute film](docs/media/xod-launch.mp4)) |
+| **Talk to it, hands-free** ([watch with sound](docs/media/xod-conversation.mp4), 1 min) | **Watch it work** ([3-minute film](docs/media/xod-launch.mp4)) |
 | <img src="docs/media/conversation.gif" width="420" alt="Saying Hey Xod, asking about tomorrow's weather in Tokyo, hearing the answer and asking a follow-up"> | <img src="docs/media/powers.gif" width="420" alt="The owl companion flying to a web search, peeking at a browser snapshot, waiting by an approval and writing the answer"> |
+
+**New:**
+[Claude Code fixes a bug in its own copy](docs/media/shorts/xod-agents.mp4) ·
+[Your Mac's apps: Maps, and a text that waits for your OK](docs/media/shorts/xod-apps.mp4) ·
+[Any AI you want, one click away](docs/media/shorts/xod-models.mp4)
 
 **One-minute videos:**
 [Free AI on your own computer](docs/media/shorts/xod-private.mp4) ·
@@ -61,7 +66,7 @@ It stops for your OK before anything is sent, paid, posted, merged or deleted, a
 [This job post tries to hack your AI](docs/media/shorts/xod-trap.mp4) ·
 [Never fill out a job application again](docs/media/shorts/xod-forms.mp4)
 
-<sub>Every demo is recorded from the real app with a throwaway demo data folder. Waits are sped up and say so; speech is never sped up. The vertical videos ran on a Windows PC with a free local model; the job videos ran on a Mac with the built-in Qwen 3.5 4B, on a practice careers site with made-up companies (`demo/careers`).</sub>
+<sub>Every demo is recorded from the real app with a throwaway demo data folder. Waits are sped up and say so; speech is never sped up. The vertical videos ran on a Windows PC with a free local model; the job videos ran on a Mac with the built-in Qwen 3.5 4B, on a practice careers site with made-up companies (`demo/careers`). The three new ones ran on a Mac with a cloud model (Fireworks · GLM 5.3 Flash), and say so on screen; the coding one uses Claude Code on a small demo project.</sub>
 
 ## Why Xod
 

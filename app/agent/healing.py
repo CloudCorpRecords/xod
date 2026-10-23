@@ -87,6 +87,10 @@ def check_result(tool: str, args: Dict[str, Any], result: Any) -> Dict[str, Any]
                     "detail": f"exit code {result.get('exit_code')}: {(result.get('stderr') or result.get('stdout') or '')[-400:]}"}
         return {"ok": True, "problem": None, "detail": ""}
 
+    # Held for your OK is not a failure: "fixing" it would mean finding another way to do what you haven't approved.
+    if result.get("needs_approval"):
+        return {"ok": True, "problem": None, "detail": ""}
+
     err = _error_text(result)
     if result.get("success") is False or (result.get("error") and not result.get("success")):
         return {"ok": False, "problem": "error", "detail": err or "the tool reported a failure"}

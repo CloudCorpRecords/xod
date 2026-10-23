@@ -9,6 +9,7 @@
   const WORD = { starting: "starting", working: "working", waiting: "needs you", done: "done", failed: "failed", stopped: "stopped", interrupted: "paused" };
   const ICON = { tool: "⚙", says: "💬", asks: "✋", you: "🙋", status: "•", error: "⚠" };
   let root = null, current = null, timer = null, chip = null;
+  let listOnly = false;          // a narrow window showing the list instead of the open job
   const WHO = { claude: "Claude Code", muse: "Muse" };
   const who = (j) => WHO[j.agent] || j.agent || "The agent";
 
@@ -27,7 +28,7 @@
         <div class="flex items-center gap-2"><span class="size-2 rounded-full shrink-0 ${DOT[j.status] || DOT.stopped}"></span>
           <span class="text-white text-[13px] truncate">${esc(j.title)}</span>
           <span class="ml-auto text-[11px] ${j.status === "waiting" ? "text-amber-300" : "text-zinc-500"}">${esc(WORD[j.status] || j.status)}</span></div>
-        <div class="text-zinc-500 text-[11px] truncate mt-0.5">${esc(j.name)} · ${esc((j.folder || "").replace(/^\/Users\/[^/]+/, "~"))} · ${ago(j.updated)} ago</div>
+        <div class="text-zinc-500 text-[11px] truncate mt-0.5">${esc(j.name)} · ${esc((j.project || j.folder || "").replace(/^\/Users\/[^/]+/, "~"))} · ${ago(j.updated)} ago</div>
       </button>`).join("") : `<p class="text-zinc-500 text-[12px] px-3 py-2">No jobs yet. Start one below, or ask Xod ("have claude code fix the tests in ~/code/app").</p>`;
   }
 
@@ -62,7 +63,8 @@
         <div class="min-w-0 flex-1"><div class="text-white font-medium truncate">${esc(j.title)}</div>
           <div class="text-zinc-500 text-[11px]">${esc(j.name)} · ${esc(who(j))} · ${esc(WORD[j.status] || j.status)} · ${esc(j.project || j.folder)}${usage}</div></div>
         ${["working", "waiting", "starting"].includes(j.status) ? `<button data-c="interrupt" class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600 text-[12px]">Interrupt</button>` : ""}
-        ${j.status !== "stopped" ? `<button data-c="stop" class="px-2 py-1 rounded-md text-red-300 bg-red-500/10 hover:bg-red-500/20 text-[12px]">Stop</button>` : ""}
+        ${["working", "waiting", "starting"].includes(j.status) ? `<button data-c="stop" class="px-2 py-1 rounded-md text-red-300 bg-red-500/10 hover:bg-red-500/20 text-[12px]">Stop</button>`
+          : j.status !== "stopped" ? `<button data-c="stop" class="px-2 py-1 rounded-md text-zinc-400 hover:text-white hover:bg-surface-700 text-[12px]" title="Close its session: it won't take follow-ups after this">End</button>` : ""}
       </div>
       <div class="flex-1 overflow-y-auto px-4 py-3 space-y-2" data-c-scroll>
         ${asks}${qs}
@@ -82,6 +84,7 @@
   function copyBox(j) {
     const w = j.worktree;
     if (!w) return "";
+    if (w.closed === "merged") return `<div class="text-[12px] text-emerald-300">✓ Merged into ${esc(w.base)} in ${esc(w.repo_name)}: your checkout has the change.</div>`;
     if (w.closed) return `<div class="text-[12px] text-zinc-400">Its copy was ${esc(w.closed)}${w.pr ? `: <a href="${esc(w.pr)}" target="_blank" rel="noopener" class="text-sky-300 hover:underline">${esc(w.pr)}</a>` : ""}.</div>`;
     const busy = ["starting", "working", "waiting"].includes(j.status);
     const r = reviews[j.id];
@@ -118,6 +121,13 @@
     if (!current && jobs.length) current = jobs[0].id;
     setHtml(root.querySelector("[data-c-list]"), list(jobs));
     const right = root.querySelector("[data-c-detail]");
+    // A narrow window shows one side at a time: the open job across the whole board, or the list (← All jobs).
+    const narrow = root.firstElementChild.clientWidth < 900;
+    const side = root.querySelector("[data-c-side]");
+    side.classList.toggle("hidden", narrow && !!current && !listOnly);
+    side.classList.toggle("w-72", !narrow);
+    side.classList.toggle("w-full", narrow);
+    right.classList.toggle("hidden", narrow && (listOnly || !current));
     if (!current) { setHtml(right, `<div class="m-auto text-zinc-500 text-[12px] p-6">Pick a job, or start one.</div>`); return; }
     const r = await api(`/api/crew/${encodeURIComponent(current)}`);
     if (!r.success) return;
@@ -125,7 +135,7 @@
     if (typing) return;                                   // don't redraw while you type there
     const sc = right.querySelector("[data-c-scroll]");
     const atBottom = !sc || sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 40;
-    setHtml(right, detail(r.job));
+    setHtml(right, (narrow ? `<button data-c="back" class="self-start m-2 mb-0 px-2 py-1 rounded-md text-[12px] text-zinc-400 hover:text-white hover:bg-surface-700">← All jobs</button>` : "") + detail(r.job));
     const sc2 = right.querySelector("[data-c-scroll]");
     if (sc2 && atBottom) sc2.scrollTop = sc2.scrollHeight;
   }
@@ -143,7 +153,7 @@
             <button data-c="close" class="p-1 rounded-lg text-zinc-500 hover:text-white" title="Close">✕</button>
           </div>
           <div class="flex flex-1 min-h-0">
-            <div class="w-72 shrink-0 border-r border-white/[0.06] flex flex-col">
+            <div data-c-side class="w-72 shrink-0 border-r border-white/[0.06] flex flex-col">
               <div data-c-list class="flex-1 overflow-y-auto p-2 space-y-1"></div>
               <div class="p-2 border-t border-white/[0.06] space-y-1.5">
                 <select data-c-agent class="w-full bg-surface-700 text-zinc-200 rounded-md px-2 py-1 text-[12px]"><option value="claude">Claude Code</option><option value="muse">Muse</option></select>
@@ -175,7 +185,8 @@
     const t = e.target;
     if (t === root || t.closest('[data-c="close"]')) { root.classList.add("hidden"); clearInterval(timer); return; }
     const pick = t.closest("[data-c-pick]");
-    if (pick) { current = pick.dataset.cPick; root.querySelector("[data-c-detail]").dataset.html = ""; refresh(); return; }
+    if (pick) { current = pick.dataset.cPick; listOnly = false; root.querySelector("[data-c-detail]").dataset.html = ""; refresh(); return; }
+    if (t.closest('[data-c="back"]')) { listOnly = true; refresh(); return; }
     const dec = t.closest("[data-c-decide]");
     if (dec) {
       dec.disabled = true;
