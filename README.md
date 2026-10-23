@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>A private AI that works on your computer.</b><br>
-  It researches, works with your files and runs jobs in the background, and it asks before it acts.<br>
+  It researches, works with your files and your Mac's apps, hands code to coding agents, and asks before it acts.<br>
   Free and open source, for Mac and Windows. It finds the AI on your computer and sets itself up.
 </p>
 
@@ -30,6 +30,20 @@
 
 ![Xod answering a research question, with sources](docs/screenshots/answer.png)
 
+## What you can ask it
+
+| | |
+|---|---|
+| 🔎 **Research** | "What changed in the EU AI Act this year? Cite sources." It reads the pages in its own browser and answers with links. |
+| 📱 **Your Mac's apps** | "Did anyone text me today?" · "Coffee near me" · "Turn off the lights" · "Move my dentist appointment to Friday" · "Text Sam I'm running late" (it asks before sending) |
+| 🗂 **Files** | "Tidy my Downloads and tell me what's taking the space." Every move can be undone. |
+| 🧑‍💻 **Code** | "Have Claude Code fix the failing tests in ~/code/app." Coding agents work on their own copy of your repo; you review, then merge or open a pull request. |
+| 💼 **Jobs** | "Find remote ML engineer roles and fill in the applications." It stops for your OK before each Submit. |
+| 🛠 **Build** | "Make me a 3D game where you dodge falling cubes." Written, run, tested and fixed, with a live preview. |
+| 🔁 **Routines** | "Every weekday at 8, the five biggest tech stories with sources." Saved once, waiting for you each morning. |
+
+It stops for your OK before anything is sent, paid, posted, merged or deleted, and it logs everything it does.
+
 ## See it in action
 
 | | |
@@ -37,9 +51,7 @@
 | **Talk to it, hands-free** ([watch with sound](docs/media/xod-conversation.mp4), 1 min) | **Watch it work** ([2-minute film](docs/media/xod-launch.mp4)) |
 | <img src="docs/media/conversation.gif" width="420" alt="Saying Hey Xod, asking about tomorrow's weather in Tokyo, hearing the answer and asking a follow-up"> | <img src="docs/media/powers.gif" width="420" alt="The owl companion flying to a web search, peeking at a browser snapshot, waiting by an approval and writing the answer"> |
 
-All demos are recorded from the real app with a throwaway demo data folder. In the conversation video, long thinking pauses are shortened and labelled; speech is never sped up.
-
-**One-minute videos** (vertical, recorded on a Windows PC with a free local model; waits are sped up and say so):
+**One-minute videos:**
 [Free AI on your own computer](docs/media/shorts/xod-private.mp4) ·
 [Research with sources](docs/media/shorts/xod-research.mp4) ·
 [Tidy a messy Downloads folder](docs/media/shorts/xod-tidy.mp4) ·
@@ -49,44 +61,33 @@ All demos are recorded from the real app with a throwaway demo data folder. In t
 [This job post tries to hack your AI](docs/media/shorts/xod-trap.mp4) ·
 [Never fill out a job application again](docs/media/shorts/xod-forms.mp4)
 
-The three job videos were recorded on a Mac with the built-in Qwen 3.5 4B, on a practice careers site with made-up companies (`demo/careers`) and a made-up résumé; waits are sped up and say so.
-
-## Hand it a job
-
-- **"Every weekday at 8, give me the five biggest tech stories with sources."** Save it once as a routine; the report is waiting for you.
-- **"Find the junior Python roles on these three job boards and fill in the applications."** Xod works through the sites in its own browser and stops for your OK before each submit.
-- **"Tidy my Downloads folder and tell me what's taking the space."** It sorts the files, shows exactly what it moved, and one click puts everything back.
-- **"Set up a Node project here, install what it needs and make sure it runs."** It checks what your computer has, does each step, fixes what fails, and shows the output that proves it works.
+<sub>Every demo is recorded from the real app with a throwaway demo data folder. Waits are sped up and say so; speech is never sped up. The vertical videos ran on a Windows PC with a free local model; the job videos ran on a Mac with the built-in Qwen 3.5 4B, on a practice careers site with made-up companies (`demo/careers`).</sub>
 
 ## Why Xod
 
 |  |  |
 |---|---|
-| **Private by default** | Chats, files, voice and images stay on your computer. Use Xod's built-in engine (Mac), Ollama, LM Studio or any local model server. No account, no telemetry. |
-| **Sets itself up** | It finds the AI on your computer (Ollama, LM Studio, llama.cpp, Jan…), reads your graphics card and picks a model that fits, installs Ollama with one click if you need it, and keeps it running: it restarts a stopped model app and frees memory a crashed one left behind. |
-| **It does things** | A real browser, your files, the terminal, background tasks, and a task inbox that keeps working while you're away. Ask it to install something or set up a project and it does the work itself, step by step, and doesn't call it done until it has run something that proves it works. |
-| **Any MCP server** | Paste whatever a server's page says to add (a JSON block, `claude mcp add …`, an install link or its address) and Xod works out the format, the sign-in and the keys, and connects it. |
-| **Checks itself** | Every action that sends, runs or changes something is compared with what you asked. If it came from a web page or email instead, or would leak a key, it waits for your OK. |
-| **Measured, not claimed** | A [reliability score](docs/RELIABILITY.md) from real requests checked on disk, run with each local model: 17 of 17 with Qwen 2.5 14B on Windows. |
-| **Works toward goals** | Give it a goal that takes days; it makes a plan, checks in on its own and moves it on. An optional morning brief sums up your day. |
-| **Always there** | Close the window and Xod keeps working from the tray (the menu bar on a Mac), and it can start when you log in. |
-| **In your pocket** | Message Xod from your phone through a Telegram bot of your own: it does the job on your computer, asks before anything is sent or paid, and you approve with one tap. Nothing is opened to the internet. |
-| **Your models, your choice** | One list of every model on this computer, your network and the cloud, with what each can do and a score from a test on your computer. Swap the model for chat or for seeing with a click, and ask Xod what works right now and why not. |
-| **It sees** | Screenshots in its browser and pictures you attach, even when your chat model reads text only: Xod adds a small local vision model that describes them. |
-| **It reads the web itself** | It searches in its own browser, reads the top pages side by side and answers from them with sources. No search API key. |
-| **You stay in charge** | It stops for your OK before anything is sent, paid, posted or deleted. Every action is logged, and file changes can be undone. |
-| **Builds what you ask for** | Apps and games written, run, tested and fixed on your computer, with a live preview beside the chat. |
-| **A companion that grows** | Moods, a bond with you, five stages to grow through, and a journal of what it thought about while you were away. |
-| **Talk to it** | Say "Hey Xod" and have a spoken back-and-forth, hands-free. It answers out loud, takes follow-ups and stops when you talk over it, all on your Mac. |
-| **Teach once, repeat forever** | Turn any chat into a routine. Xod remembers the steps that worked and runs it again, on a schedule if you like. |
-| **Plays well with others** | 29 one-click connections, each checked to sign in: your Mac's Calendar, Notes, Mail and Reminders, Notion, Linear, GitHub, Jira, Todoist, Airtable, Zapier, Dropbox, Canva, Stripe, Vercel, Supabase and more, plus any MCP tool. Claude Desktop, Cursor and others can hand work to Xod. |
-| **Cloud only when it helps** | Optionally pass the hard steps to Claude, GPT or Gemini, with your permission, the cost shown, and a monthly budget. |
+| **Private by default** | Chats, files, voice and images stay on your computer, with the built-in engine (Mac), Ollama, LM Studio or any local server. No account, no telemetry. Cloud models (Claude, GPT, Gemini, Fireworks…) only if you add a key. |
+| **Sets itself up** | Finds the AI already on your computer, picks a model that fits your memory or graphics card, installs Ollama in one click if you need it, and keeps it running. Switch models any time from the top of the window. |
+| **It does things** | A real browser, your files, the terminal, your Mac's Messages, Calendar, Reminders, Contacts, Maps and Home, and a task inbox that keeps working while you're away. It doesn't call a job done until it has proof. |
+| **Coding agents on a board** | Claude Code and Muse work as a crew: each job gets its own copy of your repo, Xod shows every step and question, and you merge or open a PR when you're happy. Xod installs and signs them in for you. |
+| **Connects to your tools** | 32 one-click connections (GitHub from your `gh` login, Notion, Linear, Jira, Todoist, Stripe, Vercel, Supabase…) plus any MCP server: paste what its page says and Xod works out the rest. |
+| **Keys stay safe** | API keys and logins live in the macOS Keychain (Credential Manager on Windows), or in **1Password** if you use it: Xod keeps only an `op://` reference. |
+| **Checks itself** | Every action that sends, runs or changes something is compared with what you asked. If it came from a web page or email instead, or would leak a key, it waits for you. |
+| **Measured, not claimed** | A [reliability score](docs/RELIABILITY.md) from real requests checked on disk, and a Scorecard in the app that tracks how well it routes and answers over time. |
+| **From your phone** | Message your own Telegram bot; the job runs on your computer and you approve with a tap. Nothing is opened to the internet. |
+| **A companion that grows** | A moon (or cat, ghost, robot, owl, sprout) that does the work where you can see it, has moods and a journal, and talks with you hands-free. |
+
+<p align="center">
+  <img src="docs/screenshots/abilities.png" width="420" alt="Abilities: let Xod use Messages, Location, Calendar, Home, Reminders and Contacts, one Allow each">
+  <img src="docs/screenshots/models.png" width="420" alt="The model switcher at the top of the window: online models with your keys, Ollama, LM Studio and built-in models">
+</p>
 
 ## Install
 
 ### Mac
 
-1. [Download Xod for Mac](https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Mac.dmg) (the latest version, about 370 MB) and open it.
+1. [Download Xod for Mac](https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Mac.dmg) (about 400 MB) and open it.
 2. Drag **Xod** onto **Applications**.
 3. Open Xod. Everything it needs is already inside, so it's ready in seconds; a short setup helps you pick a model. From then on Xod keeps itself up to date: the bottom of the sidebar shows your version, it checks GitHub every hour, and a new version is one **Update** click away.
 
@@ -114,7 +115,10 @@ Needs a Mac with Apple silicon (M1 or newer), macOS 13 or later, and Google Chro
 
 Chats, web research in its own browser (Chrome or Edge), memory, the companion, files with undo (the Recycle Bin), terminal commands (PowerShell), building apps and background tasks work on Windows. Mac only for now: the built-in model engine, on-device images, video and voice, and the Calendar/Notes/Reminders/Mail connectors. Xod updates itself on Windows too. Your data is in `%APPDATA%\Xod`, API keys in Windows Credential Manager.
 
-## A quick tour
+## A closer look
+
+<details>
+<summary><b>The companion, routines, activity and undo, reports, Agent Mail, connected apps, add-ons</b></summary>
 
 **Meet the moon, or the cat, the ghost, the robot, the owl or the sprout.** Xod's companion reads along as you type, listens when you talk, scans pages while it searches, talks while answers arrive, and dozes off in a nightcap when you're away. Each look has its own habits: the cat's tail swishes, the ghost vanishes and says boo, the robot's light shows what it's doing, the sprout blooms when it's happy. Pet it, drag it, double-click for a flip, and right-click to change its look.
 
@@ -146,7 +150,10 @@ While Xod works, its companion leaves its spot by the reply and does the work wh
 
 ![Add-ons](docs/screenshots/add-ons.png)
 
-### Build apps and games
+</details>
+
+<details>
+<summary><b>Build apps and games</b></summary>
 
 <p align="center"><img src="docs/screenshots/builder.png" width="760" alt="Xod built a 3D game from one sentence; it's running in the preview pane beside the chat"></p>
 
@@ -159,14 +166,20 @@ Ask for something you can use or play, like **"make me a 3D game where you dodge
 - **Move it around by asking.** "Move it to my Desktop", "rename it", "zip it up", "show it in Finder", "open main.js in VS Code". Deleting asks first, and everything has Undo.
 - **Safely fenced off.** Previews run sandboxed, with no access to Xod, your files or its API. Each app lives in a folder of your project and shows under the project on the left.
 
-### Find jobs and apply
+</details>
+
+<details>
+<summary><b>Find jobs and apply</b></summary>
 
 Say **"find me FDE jobs"** or **"remote staff ML engineer roles in New York"** and Xod goes to the source. It understands job acronyms (FDE, SWE, SRE, MLE, TPM, …), finds the companies hiring on Ashby, Greenhouse and Lever, and reads their public job boards directly. You get a list of real, open roles with company, location, remote or hybrid, pay when it's posted, and a direct apply link, usually in about ten seconds.
 
 - **Narrow it by asking.** "Only remote", "in San Francisco", "senior only", "not at Google", "newest first". The numbers stay matched to what's on screen.
 - **Apply from the list.** Pick roles and press **Apply**, or say "apply to 1 and 3". The first time, Xod fills in a short job profile for you: it finds your résumé on your computer or in Google Drive (connect it in Tools → Connected apps), checks it's yours and not a résumé someone sent you, and fills in your name, email, phone, links, city and experience for you to check. Press **Do it all**, or just say "do it all", and it saves the profile and starts the applications. It never guesses work authorization, sponsorship or salary, and the profile stays on your computer. Each application runs as a task in Xod's own browser: it fills the form from your profile, uploads your résumé, answers the questions, and **stops for your OK before it presses Submit**.
 
-### Xod's heart
+</details>
+
+<details>
+<summary><b>Xod's heart</b></summary>
 
 <p align="center"><img src="docs/screenshots/heart.png" width="760" alt="Xod's heart: its stage, bond, mood, what it learned about you, and its journal"></p>
 
@@ -176,7 +189,10 @@ You can make it happy, too. Every job you finish together leaves a little stardu
 
 It learns from you too: your name, whether you like answers short or detailed, the topics you keep coming back to, and what you correct. **Tools → Xod's heart** shows all of it, and you can make it forget anything. It's a character, not a person: it never guilt-trips, its bond never drops because you were away, it never touches your files or accounts on its own, and everything stays on your Mac.
 
-### Talk to it
+</details>
+
+<details>
+<summary><b>Talk to it</b></summary>
 
 <p align="center"><img src="docs/media/conversation.gif" width="640" alt="A hands-free conversation with Xod: the question, the spoken answer with live captions, and a follow-up"></p>
 
@@ -188,7 +204,10 @@ Say **"Hey Xod, what's the weather tomorrow?"** in one breath, click the mic, or
 - **Spoken replies anywhere.** Have Xod read answers aloud when you talk, every time, or never, and press **Listen** on any reply.
 - **On your Mac.** Whisper turns speech into text on your Mac and Xod speaks with your Mac's own voices; nothing is recorded or sent. Listening for "Hey Xod" stays off until you turn it on under the speaker button, and voice commands that would move files go through the agent, where they can be undone.
 
-### From your phone
+</details>
+
+<details>
+<summary><b>From your phone</b></summary>
 
 Hand Xod a job from anywhere. In **Tools → Your phone**, paste the token of a Telegram bot you make in a minute with [@BotFather](https://t.me/BotFather), then send the bot the 6-digit code Xod shows. After that:
 
@@ -198,10 +217,12 @@ Hand Xod a job from anywhere. In **Tools → Your phone**, paste the token of a 
 
 Also inside: images and video (FLUX, AnimateDiff), long-term memory, projects, a health check that fixes common problems, and a gated way for Xod to improve its own code, with tests, your approval and one-click revert.
 
+</details>
+
 ## Privacy and security
 
 - **Your data stays on your computer**: `~/Library/Application Support/Xod` on a Mac, `%APPDATA%\Xod` on Windows, readable only by your account. Set `XOD_DATA_DIR` to keep it elsewhere.
-- **Keys and logins live in the macOS Keychain** (Windows: Credential Manager), never in files, logs or prompts.
+- **Keys and logins live in the macOS Keychain** (Windows: Credential Manager), or in 1Password if you connect it, never in files, logs or prompts. Updates keep access to them.
 - **The phone link is off until you connect it.** Then Xod asks Telegram for messages to your own bot; it answers only your account.
 - **One small network check:** once a day Xod asks GitHub whether a newer version exists (nothing else is sent). Switch it off in Tools → What's coming next, or with `XOD_NO_UPDATE_CHECK=1`.
 - **Local only.** The server listens on `127.0.0.1` and refuses requests from websites, so a page you visit can't drive Xod.

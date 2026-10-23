@@ -5,6 +5,7 @@ README screenshots, taken from a running Xod with headless Chrome.
 Use a demo data folder (never your own: screenshots end up public):
   XOD_DATA_DIR=/tmp/xod-demo .venv/bin/python -m uvicorn app.main:app --port 8125
   .venv/bin/python scripts/take_screenshots.py --url http://127.0.0.1:8125 --chat <session id>
+  (--only abilities,models takes just those)
 
 Writes docs/screenshots/*.png at 2x for a 1440x900 window.
 """
@@ -28,8 +29,8 @@ PORT = 9461
 
 
 class Page:
-    def __init__(self, ws):
-        self.ws, self.n = ws, 0
+    def __init__(self, ws, only=()):
+        self.ws, self.n, self.only = ws, 0, only
 
     async def cmd(self, method, **params):
         self.n += 1
@@ -47,13 +48,15 @@ class Page:
         return (r.get("result") or {}).get("value")
 
     async def shot(self, name, wait=1.2):
+        if self.only and name not in self.only:
+            return
         await asyncio.sleep(wait)
         data = (await self.cmd("Page.captureScreenshot", format="png"))["data"]
         (OUT / f"{name}.png").write_bytes(base64.b64decode(data))
         print("saved", name)
 
 
-async def run(url, chat):
+async def run(url, chat, only=""):
     OUT.mkdir(parents=True, exist_ok=True)
     profile = tempfile.mkdtemp(prefix="xod-shots-")
     chrome = subprocess.Popen([CHROME, "--headless=new", f"--remote-debugging-port={PORT}", f"--user-data-dir={profile}",
@@ -68,7 +71,7 @@ async def run(url, chat):
                 time.sleep(0.2)
         target = next(t for t in tabs if t["type"] == "page")
         async with websockets.connect(target["webSocketDebuggerUrl"], max_size=50_000_000) as ws:
-            p = Page(ws)
+            p = Page(ws, [n for n in only.split(",") if n])
             await p.cmd("Emulation.setDeviceMetricsOverride", width=1440, height=900, deviceScaleFactor=2, mobile=False)
             await p.cmd("Emulation.setEmulatedMedia", features=[{"name": "prefers-color-scheme", "value": "dark"}])
             await p.cmd("Page.enable")
@@ -107,6 +110,8 @@ async def run(url, chat):
             await p.js("document.querySelectorAll('#mcpBody pre, #mcpBody code').forEach(e => e.textContent = e.textContent.replace(/\\/Users\\/[^/\\s\"]+/g, '/Users/you'))")
             await p.shot("connected-apps", wait=0.3)
             await fresh(); await p.js("openPacksPanel()"); await p.shot("add-ons")
+            await fresh(); await p.js("openAbilities()"); await p.shot("abilities", wait=3)
+            await fresh(); await p.js("toggleModelSwitcher()"); await p.shot("models", wait=3)
     finally:
         chrome.terminate()
         shutil.rmtree(profile, ignore_errors=True)
@@ -116,5 +121,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://127.0.0.1:8125")
     ap.add_argument("--chat", default="")
+    ap.add_argument("--only", default="", help="comma-separated shot names, e.g. abilities,models")
     a = ap.parse_args()
-    asyncio.run(run(a.url, a.chat))
+    asyncio.run(run(a.url, a.chat, a.only))

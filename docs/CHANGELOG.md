@@ -1,6 +1,9 @@
 # Changelog
 
-## Next
+## 0.9.1
+
+**A README you can take in at a glance**
+- What you can ask Xod, the videos, and why it's different come first; the long tour is folded into sections. New screenshots of Abilities and the model switcher.
 
 **Your API keys survive updates**
 - Saved keys no longer seem to vanish after an update. macOS only lets an app read a Keychain item the app is trusted for. Xod used to save by deleting its item and making a new one, which trusted only the copy of Xod that saved it, so the updated Xod (or Xod run from source next to the installed one) was locked out and showed no keys. Xod now changes the item in place, and the apps it already trusted stay trusted.
