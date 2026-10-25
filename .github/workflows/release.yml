@@ -50,7 +50,7 @@ jobs:
           TAG="${GITHUB_REF_NAME}"
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Xod ${TAG#v}" --notes "Building…"
           gh release upload "$TAG" electron/dist/Xod-*-arm64.dmg electron/dist/Xod-Mac.dmg --clobber
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sums-mac
           path: electron/dist/sums-mac.txt
@@ -88,7 +88,7 @@ jobs:
           for i in 1 2 3 4 5 6 7 8 9; do gh release view "$TAG" >/dev/null 2>&1 && break; sleep 20; done
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --draft --title "Xod ${TAG#v}" --notes "Building…"
           gh release upload "$TAG" electron/dist/Xod-*-x64-setup.exe electron/dist/Xod-Windows-Setup.exe --clobber
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sums-win
           path: electron/dist/sums-win.txt
