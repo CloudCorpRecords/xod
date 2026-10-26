@@ -1,5 +1,12 @@
 # Changelog
 
+## Next
+
+**Better answers, from real chats**
+- "Have Muse check my PRs" starts the job right away. Work that isn't in one project (your GitHub, PRs across repos) starts from your home folder, instead of Xod hunting for folders or asking which repo. Xod says a job has started and where to watch it, and never calls it done before it is.
+- How-to questions get real steps ("set up SSH on this Dell"), from what Xod knows when the pages don't have them, instead of "the results don't cover your OS". Answers no longer mention the "evidence board" or "search results", paste raw JSON, or list every command that ran.
+- Model errors say what to do: "Fireworks refused the API key… paste a new one in Settings, or pick another model from the top bar", not "LLM error 401: {…}".
+
 ## 0.9.2
 
 **The app always uses its own Xod**

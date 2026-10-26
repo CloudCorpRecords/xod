@@ -3034,7 +3034,7 @@ AGENT_TOOL_DEFS = [
                 "action": {"type": "string", "enum": ["start", "status", "message", "interrupt", "stop", "review", "merge", "pr", "discard"]},
                 "agent": {"type": "string", "enum": ["claude", "muse"], "description": "For start: the one the person named; default Claude Code"},
                 "task": {"type": "string", "description": "For start: the job, in the person's words, with what counts as done"},
-                "folder": {"type": "string", "description": "For start: the project folder"},
+                "folder": {"type": "string", "description": "For start: the project folder. Leave it out for work that isn't in one project (their GitHub or PRs across repos): the agent starts in the home folder"},
                 "title": {"type": "string", "description": "For start: a short name for the job"},
                 "job": {"type": "string", "description": "For status, message, interrupt, stop: the job's name (claude-job-1) or id; status without it lists all"},
                 "text": {"type": "string", "description": "For message: what to tell it"},

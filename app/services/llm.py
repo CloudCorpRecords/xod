@@ -238,6 +238,26 @@ def _effort_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int,
     return False
 
 
+def plain_error(info: Dict[str, Any], status: Optional[int] = None, body: str = "") -> str:
+    """What went wrong with the model, in words a person can act on (not "LLM error 401: {json}")."""
+    who = PROVIDER_NAMES.get(info.get("provider", ""), info.get("provider") or "The model")
+    if status is None:
+        if info.get("provider") in CLOUD_PROVIDERS:
+            return f"Xod couldn't reach {who}. Check the internet connection, or pick another model from the top bar."
+        return f"{who} isn't running on this computer. Open it, or pick another model from the top bar."
+    if status in (401, 403):
+        return (f"{who} refused the API key (it may be wrong or expired). Paste a new one in Settings, or pick another "
+                "model from the top bar.")
+    if status in (402, 429):
+        return f"{who} says the account is over its limit or out of credit right now. Try again later, or pick another model."
+    try:
+        said = json.loads(body).get("error")
+        said = said.get("message") if isinstance(said, dict) else said
+    except Exception:
+        said = None
+    return f"{who} answered with an error ({status}): {str(said or body).strip()[:200]}"
+
+
 class LLMService:
     def __init__(self):
         pass
@@ -887,7 +907,7 @@ class LLMService:
                                 await asyncio.sleep(1.5 * attempt)
                                 continue
                             yield {"type": "error", "content": ollama_context.friendly_error(info, response.status_code, err_body.decode("utf-8", "ignore"))
-                                   or f"LLM error {response.status_code}: {err_body.decode('utf-8')}"}
+                                   or plain_error(info, response.status_code, err_body.decode('utf-8', 'ignore'))}
                             return
 
                         async for line in _lines(response, info):
@@ -960,7 +980,7 @@ class LLMService:
                         await asyncio.sleep(1.5 * attempt)
                         continue
                     yield {"type": "error", "content": ollama_context.friendly_error(info)
-                           or f"Could not connect to {info['provider']} at {info['base_url']}. Is your local LLM running?"}
+                           or plain_error(info)}
                     return
                 except EngineStuck as e:
                     err = await _after_stall(info, e, engine_start, restarted, said=bool(streamed or reasoned))
@@ -1050,7 +1070,7 @@ class LLMService:
                                 await asyncio.sleep(1.5 * attempt)
                                 continue
                             yield {"type": "error", "content": ollama_context.friendly_error(info, response.status_code, err_body.decode("utf-8", "ignore"))
-                                   or f"LLM error {response.status_code}: {err_body.decode('utf-8')}"}
+                                   or plain_error(info, response.status_code, err_body.decode('utf-8', 'ignore'))}
                             return
 
                         async for line in _lines(response, info):
@@ -1124,7 +1144,7 @@ class LLMService:
                         await asyncio.sleep(1.5 * attempt)
                         continue
                     yield {"type": "error", "content": ollama_context.friendly_error(info)
-                           or f"Could not connect to {info['provider']} at {info['base_url']}. Is your local LLM running?"}
+                           or plain_error(info)}
                     return
                 except EngineStuck as e:
                     err = await _after_stall(info, e, engine_start, restarted, said=bool(full_content or full_reasoning))

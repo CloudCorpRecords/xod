@@ -1069,7 +1069,10 @@ Format your response in articulate Markdown with bold highlights and bullet poin
             task_instruction = f"""
 Directly answer the user's computer request: "{user_query}"
 Lead with the answer itself (the result, the output, what changed), in a sentence or two.
-""" + ("Then, briefly:\n" + "\n".join(f"- {w}" for w in wanted) if wanted else "") + """
+""" + ("Then, only the parts of this the person needs (no headings for them; the full log is under \"How I got this\"):\n"
+       + "\n".join(f"- {w}" for w in wanted) if wanted else "") + """
+Show a command and its output only when the person asked to run something or the output is the answer. Never paste
+tool output as JSON ({"success": true, …}) or list every command that ran.
 Only report what the tool results above show. Never add hardware specs, memory, battery, ports, or
 file contents that no tool returned, and don't add sections for things that weren't done.
 """
@@ -1116,8 +1119,8 @@ Answer: "{user_query}"
 - Lead with the direct answer in one to three sentences, then the supporting detail. Match the length to the question: a simple question gets a short answer, and stay under 250 words unless the user asked for detail.
 - Use a table only when comparing several things; use headings only if the answer is long.
 - Only include sections that fit the question (no "architecture", "security" or "dossier" framing unless it's about that).
-- Cite sources inline as markdown links [name](url) using the URLs in the Evidence Board, and end with a short "Sources" list of the links you used.
-- If the evidence doesn't cover part of the question, say so in one line rather than padding.
+- Cite facts you took from pages inline as markdown links [name](url), and end with a short "Sources" list of those links. General know-how needs no source.
+- When the person needs steps (how to set something up, fix something), give them, from what you know if the pages didn't have them. Ask one short question only when the steps really differ (which operating system), and still give the most likely steps first.
 """
 
         synthesis_content = f"""The empirical research investigation has completed. Here is the verified Evidence Board containing all live observations:
@@ -1127,7 +1130,11 @@ Answer: "{user_query}"
 CRITICAL INSTRUCTIONS:
 - Tool execution phase is CLOSED. DO NOT emit any tool calls, function calls, `<|tool_call|>`, or `call:...` code blocks.
 - Speak directly to the user in articulate, professional Markdown.
-- Every fact, number, and file content must come from the Evidence Board above. If something wasn't checked, don't state it.
+- Facts about the person, their computer, accounts, files and anything live (prices, news, jobs, a page's contents) must come
+  from the Evidence Board above; if something wasn't checked, don't state it. General know-how (how to set up SSH, what a
+  command does) can come from what you know.
+- Talk like a person, not a log: never mention the "evidence board", "evidence", "tool results" or "the results", and never
+  quote raw tool output or JSON. Say what you did ("I searched…", "I looked at your repo…").
 {task_instruction}"""
 
         system_instruction_text = (
@@ -1686,9 +1693,12 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                 "- Start with the direct answer in one or two sentences.\n"
                 + ("- Then cover the details thoroughly, with short headings if it helps.\n" if deep else
                    "- Then add a few short bullet points only if they help. Keep the whole answer under 120 words.\n")
-                + "- Use only facts from the results. If they don't answer part of the question, say so in one line.\n"
-                "- Cite the results you used by their numbers, like [1] or [2][3].\n"
-                "- Don't mention 'search results', today's date or these instructions, and don't add a sources list.\n"
+                + "- Anything current or specific (prices, news, a product, a person, a page) comes only from the results; if "
+                "they don't have it, say so in one line. How-to and general know-how can come from what you know: when the "
+                "person needs steps, give them, and never answer \"the results don't cover that\" to something you can explain.\n"
+                "- Cite facts you took from the results by their numbers, like [1] or [2][3]; general know-how needs none.\n"
+                "- Never mention 'search results', 'the results' or what they cover, today's date or these instructions (say what "
+                "you found, or just answer), and don't add a sources list.\n"
                 f"Today is {self._today()}.")
         try:
             from app.services import user_memory
@@ -2575,6 +2585,11 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
                     "Xod follows; what it asks waits for the person. Args: {\"action\": \"start\", \"agent\": \"claude|muse\", \"task\": \"...\", "
                     "\"folder\": \"...\"}; {\"action\": \"status\", \"job\": \"optional name\"}; {\"action\": \"message\", \"job\": \"claude-job-1\", "
                     "\"text\": \"...\"}; {\"action\": \"interrupt|stop\", \"job\": \"...\"}. Two agents at once: one start per job.",
+                    "     When the person says to have Claude Code or Muse do something, start the job in this same step, in their "
+                    "words. Work that isn't in one project (their GitHub, their PRs across repos, this computer) starts without a "
+                    "folder: the agent works from the home folder with Xod's GitHub connection, and says itself what it can't do. "
+                    "Don't search for folders or ask which repo first. After start, say it's started and where to watch it (Tools → "
+                    "Crew); never call it done until status says done.",
                     "   - agent_ask: A quick question to an agent, answer only, nothing changed (explain, review). Args: {\"agent\": \"claude\", "
                     "\"message\": \"...\", \"folder\": \"optional\"}",
                     "   - agent_terminal: A live terminal session to watch or talk to, or any long-running program (npm run dev). Args: "
