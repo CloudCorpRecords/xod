@@ -100,7 +100,7 @@ def _pick_button(labels: List[str]) -> Optional[str]:
     for l in clean:
         if l.lower() == "allow all once":
             return l
-    for want in ("send", "allow"):
+    for want in ("send", "allow once", "allow"):
         for l in clean:
             if l.lower() == want:
                 return l
@@ -254,8 +254,11 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
             if chosen is not None and press and _card_id(entry) in (skip_ids or set()):
                 entry["reason"] = "already pressed: not pressing again"
             elif chosen is None:
-                labs = [l for l in buttons if l.lower() in ("deny", "don't send")]
-                if labs == ["Deny"]:
+                labs = [l for l in buttons if l.lower() in ("deny", "don't send", "deny all")]
+                others = [l for l in buttons if l.lower() not in ("deny", "don't send", "deny all")]
+                if others:
+                    entry["reason"] = "no button Xod may press (saw: %s)" % ", ".join(others)
+                elif labs == ["Deny"]:
                     entry["reason"] = "only a Deny button"
                 elif labs:
                     entry["reason"] = "only negative buttons (%s)" % ", ".join(labs)
