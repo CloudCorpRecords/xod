@@ -1,6 +1,6 @@
 {
   "name": "xod-agent",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "Xod in your terminal: chat with your local-first AI agent, give it jobs, approve its actions. Uses the Xod desktop app you installed.",
   "bin": {
     "xod": "bin/xod.js"
