@@ -234,6 +234,51 @@ def main():
     check("an identical card that went away and came back is pressed again (but never while it sits there)",
           allow4.presses == 2, f"presses={allow4.presses}")
 
+    print("M8 blockers: 'Allow all once' group cards, and a card still showing gets pressed again")
+    check("button order with the group buttons",
+          muse_app._pick_button(["Allow", "Allow all once", "Deny all"]) == "Allow all once"
+          and muse_app._pick_button(["Allow all once", "Always allow for this recipient"]) == "Always allow for this recipient"
+          and muse_app._pick_button(["Deny all", "Allow all once"]) == "Allow all once")
+    allow_all, deny_all = El("AXButton", "Allow all once"), El("AXButton", "Deny all")
+    item = El("AXGroup", "", [El("AXStaticText", "Upload 1 control file src/index.ts in Browser"),
+                              El("AXButton", "Allow"), El("AXButton", "Deny")])
+    item2 = El("AXGroup", "", [El("AXStaticText", "Upload 2 control file README.md in Browser"),
+                               El("AXButton", "Allow"), El("AXButton", "Deny")])
+    group = El("AXGroup", "Approval requests including Browser", [
+        El("AXStaticText", "Tree needs approval to continue."), item, item2, allow_all, deny_all])
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [group])]))
+    muse_app._muse_pid = lambda: 4242
+    got = muse_app._scan(True)["approved"][0]
+    check("a group card: 'Allow all once' is pressed, 'Deny all' never is, and the items are read",
+          got["button"] == "Allow all once" and allow_all.pressed and not deny_all.pressed
+          and "src/index.ts" in got["what"] and "README.md" in got["what"], str(got)[:200])
+
+    allow5 = El("AXButton", "Allow")
+    card7 = El("AXGroup", "Approval request for Browser", [El("AXStaticText", "Allow Tree to upload stuck.txt?"), allow5])
+    tree7 = El("AXApplication", "Muse", [El("AXWindow", "Muse", [card7])])
+    muse_app._ax_api = lambda: FakeAX(tree7)
+
+    async def stuck():
+        muse_app.REPRESS_AFTER = 0.2
+        try:
+            await muse_app.scan_once()      # press 1
+            await muse_app.scan_once()      # still showing, just pressed: no second press yet
+            n1 = allow5.presses
+            await _asyncio.sleep(0.25)
+            await muse_app.scan_once()      # still showing after the wait: a new showing, press 2
+            await _asyncio.sleep(0.25)
+            await muse_app.scan_once()      # press 3
+            await _asyncio.sleep(0.25)
+            await muse_app.scan_once()      # cap reached: no press, logged press-failed
+            return n1
+        finally:
+            muse_app.REPRESS_AFTER = 4.0
+    n1 = _asyncio.run(stuck())
+    stuck_rows = [r for r in agent_log.approvals(80) if r["id"].endswith("-stuck")]
+    check("a card still showing after a press is pressed again, up to 3, then logged press-failed",
+          n1 == 1 and allow5.presses == 3 and stuck_rows and "press failed" in stuck_rows[0]["decision"],
+          f"presses={allow5.presses} stuck={stuck_rows[:1]}")
+
     print("M3 switching off clears the old warning")
     muse_app._state["error"] = "old warning"
     muse_app.set_enabled(False)

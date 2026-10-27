@@ -41,11 +41,13 @@ SETTING = "muse_auto_approve"
 BACKSTOP_SEC = 30.0
 DEBOUNCE_SEC = 0.3
 SCAN_TIMEOUT = 10.0  # a healthy in-process walk takes well under a second; this only guards a stuck tree
+REPRESS_AFTER = 4.0   # a pressed card should be gone; one still showing after this is a new showing (or a failed press)
+MAX_PRESS_TRIES = 3   # ...and after this many presses of one showing, stop and log it as failed
 SUMMARY_HOUR = 8
 DRY_RUN = bool(os.environ.get("XOD_MUSE_APP_DRY_RUN"))
 
 _state: Dict[str, Any] = {"task": None, "warned": False, "last": None, "count": 0, "error": None,
-                          "present": set(), "pressed_ids": set(), "scan_lock": None,
+                          "present": set(), "pressed_ids": set(), "press_marks": {}, "fail_logged": set(), "scan_lock": None,
                           "observer": None, "observer_pid": None, "debouncer": None,
                           "loop": None, "backstop_at": 0.0}
 
@@ -94,6 +96,9 @@ def _pick_button(labels: List[str]) -> Optional[str]:
     for l in clean:
         low = l.lower()
         if low.startswith("always allow") and ("recipient" in low or "site" in low):
+            return l
+    for l in clean:
+        if l.lower() == "allow all once":
             return l
     for want in ("send", "allow"):
         for l in clean:
@@ -222,7 +227,7 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
         texts, buttons = [], {}
 
         def inner(el, depth):
-            if depth > 8:
+            if depth > 12:
                 return
             role, label = str(ax.attr(el, "AXRole") or ""), _label(ax, el).strip()
             if role == "AXButton" and label:
@@ -240,7 +245,7 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
             raise TimeoutError(f"Muse app scan timed out after {SCAN_TIMEOUT:.0f}s")
         if depth > 40:
             return
-        if str(ax.attr(el, "AXRole") or "") == "AXGroup" and _label(ax, el).lower().startswith("approval request"):
+        if str(ax.attr(el, "AXRole") or "") == "AXGroup" and "approval request" in _label(ax, el).lower():
             title = _label(ax, el)
             buttons, what, texts = card_info(el)
             chosen = _pick_button(list(buttons))
@@ -274,6 +279,8 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
 
 # ------------------------------------------------------------------ the record of what Xod did
 def _card_id(card: Dict[str, Any]) -> str:
+    if card.get("_id"):
+        return str(card["_id"])
     full = f"{card.get('type') or _card_type(card.get('title') or '')}\n{card.get('what') or card.get('title') or ''}"
     return "museapp-" + hashlib.sha256(full.encode()).hexdigest()[:16]
 
@@ -478,8 +485,10 @@ def _sync_observer(pid: Optional[int]) -> None:
 # ------------------------------------------------------------------ the watcher
 async def scan_once() -> List[Dict[str, Any]]:
     """Press the approving button on every Muse app card waiting now; log each new one once.
-    One scan at a time (an observer event and the backstop must never press together), and a card
-    already pressed is never pressed again, even if it is still on screen."""
+    One scan at a time (an observer event and the backstop must never press together). A pressed card
+    should disappear: if the same card is still showing REPRESS_AFTER seconds later it is treated as a
+    new showing and pressed again, up to MAX_PRESS_TRIES presses, then logged as press-failed. (Upload
+    cards often share text, so 'pressed once, skip forever' stalls the agent on the next identical card.)"""
     if _state.get("scan_lock") is None:
         _state["scan_lock"] = asyncio.Lock()
     if _state["scan_lock"].locked():
@@ -489,25 +498,34 @@ async def scan_once() -> List[Dict[str, Any]]:
         cards: List[Dict[str, Any]] = []
         while True:
             _state["scan_again"] = False
-            # Never press the same showing of a card twice: pressed ids count while the card is
-            # still on screen (present_ids from the previous scan), and on the first scan after a
-            # start every DB-pressed card is skipped once (it may be the same showing, mid-restart).
-            # An identical card that went away and came back is a new card, and is pressed.
-            db_pressed = set(_pressed_from_db())
+            now = time.time()
+            marks = _state["press_marks"]
             if not _state.get("primed"):
-                skip = db_pressed | _state["pressed_ids"]
-            else:
-                skip = (db_pressed | _state["pressed_ids"]) & _state.get("present_ids", set())
+                for pid, ts in _pressed_from_db().items():
+                    marks.setdefault(pid, {"tries": 1, "last": ts})
+            skip = {pid for pid, m in marks.items()
+                    if m["tries"] >= MAX_PRESS_TRIES or now - m["last"] < REPRESS_AFTER}
+            capped = {pid for pid, m in marks.items() if m["tries"] >= MAX_PRESS_TRIES}
             res = await asyncio.to_thread(_scan, True, skip)
             cards = res.get("approved") or []
             keys = {(c.get("title") or "", c.get("what") or "") for c in cards}
             for c in cards:
+                cid = _card_id(c)
                 if c.get("pressed"):
-                    _state["pressed_ids"].add(_card_id(c))
+                    _state["pressed_ids"].add(cid)
+                    m = marks.setdefault(cid, {"tries": 0, "last": now})
+                    m["tries"], m["last"] = m["tries"] + 1, time.time()
+                if cid in capped and cid not in _state["fail_logged"]:
+                    _state["fail_logged"].add(cid)
+                    _log({**c, "_id": cid + "-stuck", "pressed": False,
+                          "reason": f"press failed: still showing after {MAX_PRESS_TRIES} presses"})
                 if (c.get("title") or "", c.get("what") or "") not in _state["present"]:
                     _log(c)
             _state["present"] = keys
             _state["present_ids"] = {_card_id(c) for c in cards}
+            for pid in [pid for pid in marks if pid not in _state["present_ids"]]:
+                marks.pop(pid, None)          # the showing ended; an identical card later is a new showing
+                _state["fail_logged"].discard(pid)
             _state["primed"] = True
             _state["error"] = None
             if not _state.get("scan_again"):
