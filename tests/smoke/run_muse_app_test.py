@@ -42,6 +42,8 @@ class FakeAX:
         return self.root
 
     def attr(self, el, name):
+        if name == "AXParent":
+            return getattr(el, "parent", None)
         if name == "AXRole":
             return el.role
         if name in ("AXTitle", "AXDescription", "AXValue"):
@@ -281,6 +283,42 @@ def main():
     check("a card still showing after a press is pressed again, up to 3, then logged press-failed",
           n1 == 1 and allow5.presses == 3 and stuck_rows and "press failed" in stuck_rows[0]["decision"],
           f"presses={allow5.presses} stuck={stuck_rows[:1]}")
+
+    print("M9 a trigger looks three times (cards build in stages), never on a timer of its own")
+    muse_app.set_enabled(True)
+
+    async def burst_check():
+        import asyncio as _a
+        calls = []
+        real_scan, real_delays = muse_app._run_scan, muse_app.BURST_DELAYS
+
+        async def fake_scan():
+            calls.append(1)
+        muse_app._run_scan, muse_app.BURST_DELAYS = fake_scan, (0.05, 0.12, 0.2)
+        muse_app._state["loop"] = _a.get_running_loop()
+        try:
+            muse_app._schedule_burst()
+            await _a.sleep(0.35)
+        finally:
+            muse_app._run_scan, muse_app.BURST_DELAYS = real_scan, real_delays
+            muse_app._state["loop"] = None
+        return calls
+    burst_calls = _asyncio.run(burst_check())
+    check("one trigger -> looks at 0.25s, 1s and 2.5s (here scaled down), so a late-rendering button is caught",
+          len(burst_calls) == 3, f"looks={len(burst_calls)}")
+
+    print("M10 buttons that live just outside the card group (the side-panel Gmail card)")
+    send_out = El("AXButton", "Send")
+    card8 = El("AXGroup", "Approval request for Gmail", [
+        El("AXStaticText", "Allow Tree to send this email in Gmail?"),
+        El("AXStaticText", "To: jdunn@webucator.com Subject: References")])
+    panel = El("AXGroup", "", [card8, El("AXGroup", "", [send_out, El("AXButton", "Don't send")])])
+    card8.parent = panel
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [panel])]))
+    muse_app._muse_pid = lambda: 4242
+    got = muse_app._scan(True)["approved"][0]
+    check("no button inside the card: Xod looks in the card's panel and presses Send there",
+          got["button"] == "Send" and send_out.pressed, str(got)[:200])
 
     print("M3 switching off clears the old warning")
     muse_app._state["error"] = "old warning"

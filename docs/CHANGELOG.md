@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.5
+
+**Approve everything: quicker, and harder to miss a card**
+- Xod now hears about a Muse card the moment it appears — macOS notifies it — and looks three times in the first couple of seconds, because cards build in stages and their buttons often arrive a beat after the card. It also listens on each Muse window, not just the app.
+- Some Gmail cards (the side-panel kind) keep their buttons just outside the card. Xod now looks in the panel around the card too, so those are approved instead of sitting in Needs review.
+
 ## 0.9.4
 
 **Approve everything: one more button**

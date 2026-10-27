@@ -40,6 +40,10 @@ logger = logging.getLogger("xod.muse_app")
 SETTING = "muse_auto_approve"
 BACKSTOP_SEC = 30.0
 DEBOUNCE_SEC = 0.3
+# After a window-change trigger, look three times: cards build in stages, and the buttons (the part
+# Xod presses) often arrive a beat after the card itself. Each look is a ~0.25s tree walk with no
+# model call and no screenshot, and looks only ever happen on a trigger or the 30s backstop.
+BURST_DELAYS = (0.25, 1.0, 2.5)
 SCAN_TIMEOUT = 10.0  # a healthy in-process walk takes well under a second; this only guards a stuck tree
 REPRESS_AFTER = 4.0   # a pressed card should be gone; one still showing after this is a new showing (or a failed press)
 MAX_PRESS_TRIES = 3   # ...and after this many presses of one showing, stop and log it as failed
@@ -240,6 +244,35 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
         inner(card, 0)
         return buttons, " ".join(" ".join(texts).split()), texts
 
+    def nearby_button(card):
+        """Some cards (the side-panel Gmail one) keep their buttons just OUTSIDE the card group,
+        in the panel around it. Climb a few parents and look there - never inside another card."""
+        el = card
+        for _ in range(3):
+            parent = ax.attr(el, "AXParent")
+            if parent is None:
+                return None, None
+            btns = {}
+
+            def hunt(x, d):
+                if x is not card and str(ax.attr(x, "AXRole") or "") == "AXGroup" \
+                        and "approval request" in _label(ax, x).lower():
+                    return
+                if str(ax.attr(x, "AXRole") or "") == "AXButton":
+                    lab = _label(ax, x).strip()
+                    if lab:
+                        btns.setdefault(lab, x)
+                if d < 8:
+                    for c in children(x):
+                        hunt(c, d + 1)
+
+            hunt(parent, 0)
+            chosen = _pick_button(list(btns))
+            if chosen is not None:
+                return btns[chosen], chosen
+            el = parent
+        return None, None
+
     def walk(el, depth):
         if time.time() > deadline:
             raise TimeoutError(f"Muse app scan timed out after {SCAN_TIMEOUT:.0f}s")
@@ -249,6 +282,11 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
             title = _label(ax, el)
             buttons, what, texts = card_info(el)
             chosen = _pick_button(list(buttons))
+            if chosen is None:
+                btn2, chosen2 = nearby_button(el)
+                if btn2 is not None:
+                    buttons[chosen2] = btn2
+                    chosen = chosen2
             entry = {"title": title, "what": what, "pressed": False, "button": chosen, "reason": "",
                      "type": _card_type(title), **_card_fields(what, texts)}
             if chosen is not None and press and _card_id(entry) in (skip_ids or set()):
@@ -430,8 +468,22 @@ class _Observer:
             from CoreFoundation import (CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopRunInMode,
                                         kCFRunLoopDefaultMode)
 
+            watched = []
+
+            def subscribe(el):
+                try:
+                    if any(el is w for w in watched):
+                        return
+                    watched.append(el)
+                    for name in self.NOTIFICATIONS:
+                        AXObserverAddNotification(obs, el, name, None)
+                except Exception:
+                    pass
+
             @objc.callbackFor(AXObserverCreate)
             def cb(observer, element, notification, refcon):
+                if str(notification) == "AXWindowCreated":
+                    subscribe(element)
                 on_event()
 
             err, obs = AXObserverCreate(self.pid, cb, None)
@@ -439,8 +491,14 @@ class _Observer:
                 logger.warning(f"couldn't watch the Muse app (AXObserver {err}); the backstop scan still runs")
                 return
             app = AXUIElementCreateApplication(self.pid)
-            for name in self.NOTIFICATIONS:
-                AXObserverAddNotification(obs, app, name, None)
+            subscribe(app)
+            try:
+                from ApplicationServices import AXUIElementCopyAttributeValue
+                err2, windows = AXUIElementCopyAttributeValue(app, "AXWindows", None)
+                for w in (windows if err2 == 0 and windows else []):
+                    subscribe(w)
+            except Exception:
+                pass
             CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(obs), kCFRunLoopDefaultMode)
             while not self._stop.is_set():
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, False)
@@ -479,7 +537,7 @@ def _sync_observer(pid: Optional[int]) -> None:
     def on_event():
         loop = _state.get("loop")
         if loop is not None:
-            loop.call_soon_threadsafe(lambda: _state["debouncer"].call())
+            loop.call_soon_threadsafe(_schedule_burst)
 
     _state["observer"] = _observer_factory(pid, on_event)
     _state["observer_pid"] = pid
@@ -550,6 +608,18 @@ def _fire_scan() -> None:
     loop = _state.get("loop")
     if loop is not None and enabled():
         asyncio.run_coroutine_threadsafe(_run_scan(), loop)
+
+
+def _schedule_burst() -> None:
+    """On the event loop: cancel the pending burst and schedule BURST_DELAYS looks. Each look is
+    the cheap AX walk; the scan lock keeps them one at a time."""
+    loop = _state.get("loop")
+    if loop is None or not enabled():
+        return
+    for h in _state.get("burst_handles") or []:
+        h.cancel()
+    _state["burst_handles"] = [loop.call_later(d, lambda: asyncio.ensure_future(_run_scan()))
+                               for d in BURST_DELAYS]
 
 
 async def _watch() -> None:
