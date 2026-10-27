@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.4
+
+**Approve everything: one more button**
+- The Muse app also asks with an **Allow once** button (for example when Tree shares information with a website). Xod now presses that too, so those cards no longer wait for you. When a card has a button Xod doesn't know, the approvals history now names the button it saw instead of saying only a Deny button was there.
+
 ## 0.9.3
 
 **Better answers, from real chats**

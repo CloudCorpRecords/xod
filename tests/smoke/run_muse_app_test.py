@@ -239,6 +239,9 @@ def main():
           muse_app._pick_button(["Allow", "Allow all once", "Deny all"]) == "Allow all once"
           and muse_app._pick_button(["Allow all once", "Always allow for this recipient"]) == "Always allow for this recipient"
           and muse_app._pick_button(["Deny all", "Allow all once"]) == "Allow all once")
+    check("'Allow once' (the one-time button on network/share cards) is pressed too",
+          muse_app._pick_button(["Allow once", "Deny"]) == "Allow once"
+          and muse_app._pick_button(["Send", "Allow once"]) == "Send")
     allow_all, deny_all = El("AXButton", "Allow all once"), El("AXButton", "Deny all")
     item = El("AXGroup", "", [El("AXStaticText", "Upload 1 control file src/index.ts in Browser"),
                               El("AXButton", "Allow"), El("AXButton", "Deny")])
