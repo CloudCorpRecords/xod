@@ -7,6 +7,13 @@
 - How-to questions get real steps ("set up SSH on this Dell"), from what Xod knows when the pages don't have them, instead of "the results don't cover your OS". Answers no longer mention the "evidence board" or "search results", paste raw JSON, or list every command that ran.
 - Model errors say what to do: "Fireworks refused the API key… paste a new one in Settings, or pick another model from the top bar", not "LLM error 401: {…}".
 
+**Xod finishes the job**
+- Jobs said in plain words ("make a script that saves the top stories to a csv, then run it", "write a cron job that backs up my Documents") go to the loop that keeps going until the job is checked, not a plan written up front.
+- "Go through the websites about it and bring me the info" reads the pages themselves, one at a time, until every part is covered, instead of answering from two front pages and asking "want me to dig deeper?".
+- "Yes" to Xod's own "Want me to try that?" does it. When a job stops to ask something, your answer ("three.js", "hacker news") or "start!" carries it on.
+- After writing a file or running a command, Xod looks again at whether the job is really done: a file that was never run, or an empty one, isn't.
+- A site that shows a bot-check page is skipped, not fought with: Xod gets the rest from other sites and says which one blocked it.
+
 **Security**
 - pypdf (reading PDFs you attach) 6.21.1 → 6.21.2, which fixes 3 problems published this week (CVE-2026-115572, -115580, -115585). PDFs can come from anywhere, so update if you open PDFs in Xod.
 

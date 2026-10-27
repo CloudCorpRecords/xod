@@ -25,7 +25,7 @@ import shutil
 import socket
 import sys
 import time
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from app.services.llm import llm_service, parse_llm_json, JSON_MIN_TOKENS
 
@@ -40,6 +40,7 @@ KEEP_FULL = 6             # tool results kept whole; older ones shrink so a long
 TOOLS = ("computer_run_command", "computer_start_job", "computer_wait_for", "computer_check_job", "computer_stop_job",
          "computer_read_file", "computer_write_file", "computer_edit_file", "computer_list_directory",
          "computer_find_files", "web_search")
+WEB_TOOLS = ("web_search", "web_scrape", "computer_write_file", "computer_read_file")
 
 # ------------------------------------------------------------------ which requests are work on the computer
 _INSTALL_RE = re.compile(r"\b(?:install|uninstall|reinstall)(?:ed|ing|s)?\b", re.I)
@@ -53,7 +54,25 @@ _DEV_RE = re.compile(r"\b(?:npm|npx|pnpm|yarn|pip3?|pipx|uv|winget|choco(?:latey
 # Installing a model, a connector or an add-on has its own place in Xod.
 _NOT_HERE_RE = re.compile(r"\b(?:model|llm|connector|connection|add-?on|plugin|extension for xod|xod update|update xod)\b", re.I)
 _CONTINUE_RE = re.compile(r"^\s*(?:ok(?:ay)?[,.!]?\s*)?(?:please\s+)?(?:continue|keep going|go on|carry on|resume|finish (?:it|that|the job)|"
-                          r"try again|do it|go ahead|yes,? (?:continue|keep going|go ahead)|it didn'?t work)\b", re.I)
+                          r"try again|do it|go ahead|yes,? (?:continue|keep going|go ahead)|it didn'?t work|proceed|start|begin|"
+                          r"go for it|let'?s (?:go|do it)|launch it)\b", re.I)
+# "Start!" carries on a job that isn't finished; after one that is, it means something new.
+_START_RE = re.compile(r"^\s*(?:ok(?:ay)?[,.!]?\s*)?(?:please\s+)?(?:proceed|start|begin|go for it|let'?s (?:go|do it))\b", re.I)
+# Jobs said in plain words: "make a script that gets the top stories and saves a csv, then run it".
+_DO_RE = re.compile(r"\b(?:make|create|write|build|set ?up|code|generate|fix|debug)\b[^.?!]{0,80}?\b(?:script|program|cli|command[- ]line tool|"
+                    r"bot|scraper|cron job|config(?:uration)?|csv|spreadsheet|json file|dotfiles?)\b"
+                    r"|\bthen (?:run|test|execute) (?:it|them)\b", re.I)
+# "Go through the websites about them and bring me the info": reading pages, not one search.
+_GATHER_RE = re.compile(r"\b(?:go (?:through|thru|thur)|visit|read|click (?:through|around)|dig (?:into|through|deeper)|look through|"
+                        r"open up|check out)\b[^.?!]{0,50}?\b(?:websites?|web ?pages?|sites|pages|links|articles|sources|them|each one|"
+                        r"all of them)\b", re.I)
+_QUESTION_RE = re.compile(r"^\s*(?:how|what|why|when|where|which|who|is|are|does|do i|should i|can i|could i)\b", re.I)
+# The last answer offered to do something ("Want me to try that?") and the person says yes: do it, don't ask again.
+_OFFER_RE = re.compile(r"(?:want me to|shall i|should i|would you like me to|i can|i could|happy to)\s+([^?\n]{4,220})\?\s*$", re.I)
+_YES_RE = re.compile(r"^\s*(?:ok(?:ay)?|y(?:es|eah|ep|up)|sure|please(?: do)?|do it|go ahead|go for it|proceed|start|let'?s (?:go|do it)|"
+                     r"(?:well,? )?(?:then )?(?:try|install|retry|do) (?:it|that|again))\b", re.I)
+_OFFER_WORK_RE = re.compile(r"\b(?:install|set up|run|retry|try|fix|build|make|create|write|open|go through|dig|look into|read|visit|"
+                            r"check|download|update)\b", re.I)
 
 
 def _last_job(messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -69,17 +88,54 @@ def _last_job(messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _last_answer(messages: List[Dict[str, Any]]) -> Tuple[str, str]:
+    """The last answer before this message, and the request it answered."""
+    answer = ""
+    for m in reversed(messages[:-1]):
+        c = m.get("content")
+        if not isinstance(c, str):
+            continue
+        if m.get("role") == "assistant" and not answer:
+            answer = c
+        elif m.get("role") == "user" and answer:
+            return answer, c
+    return answer, ""
+
+
 def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """{"goal": …} when this is a job to do on the computer, or "continue" after one that stopped."""
-    q = query or ""
-    if _CONTINUE_RE.search(q) and len(q) < 120:
-        prev = _last_job(messages)
-        if prev and prev.get("goal"):
-            return {"goal": prev["goal"], "resume": prev.get("left") or "", "extra": "" if _CONTINUE_RE.fullmatch(q.strip()) else q}
+    """{"goal": …} when this is a job to do on the computer (or to read the web for), or a reply that carries one on."""
+    q = (query or "").strip()
+    prev = _last_job(messages)
+    if prev and prev.get("goal"):
+        kind = prev.get("kind") or "computer"
+        if _CONTINUE_RE.search(q) and len(q) < 120 and (prev.get("left") or prev.get("waiting") or not _START_RE.match(q)):
+            return {"goal": prev["goal"], "kind": kind, "resume": prev.get("left") or "",
+                    "extra": "" if _CONTINUE_RE.fullmatch(q.rstrip("!. ")) else q}
+        # It stopped to ask ("which one: three.js or plain canvas?"), and this is the answer.
+        if prev.get("waiting") and len(q) < 150 and not _QUESTION_RE.match(q):
+            return {"goal": prev["goal"], "kind": kind, "resume": prev.get("left") or "", "extra": q}
     if _NOT_HERE_RE.search(q):
         return None
     if _INSTALL_RE.search(q) or _DEV_RE.search(q):
-        return {"goal": q.strip(), "resume": "", "extra": ""}
+        return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
+    if _QUESTION_RE.match(q) or len(q) > 1500:
+        return None
+    from app.agent import builder
+    if builder.wants_build(q):
+        return None
+    if _DO_RE.search(q):
+        return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
+    if _GATHER_RE.search(q):
+        return {"goal": q, "kind": "web", "resume": "", "extra": ""}
+    # "Want me to try that?" → "yes" / "well install homebrew": the offer becomes the job.
+    answer, asked = _last_answer(messages)
+    if answer and "<!-- xod-" not in answer and len(q) < 150 and _YES_RE.match(q):
+        m = _OFFER_RE.search(re.sub(r"\s+", " ", answer).strip())
+        if m and _OFFER_WORK_RE.search(m.group(1)):
+            offer = m.group(1).strip()
+            goal = (f"{asked.strip()}\n(You offered to {offer}; they said: {q})" if asked else f"{offer} (they said: {q})")
+            kind = "web" if _GATHER_RE.search(offer) or re.search(r"\b(?:dig|look into|research|find out)\b", offer, re.I) else "computer"
+            return {"goal": goal, "kind": kind, "resume": "", "extra": ""}
     return None
 
 
@@ -213,6 +269,20 @@ How you work:
 - When it's done, reply briefly: what you did, how you checked it works, and where things are.
 {shell}"""
 
+WEB_SYSTEM = """You are Xod, finding something out for this person by reading the web yourself. It's {now}.
+
+How you work:
+- Search with web_search, then read the pages that matter with web_scrape (the article itself, not a home page or a
+  list of headlines). Reading the pages is the job: a search result list is only where to start.
+- One step at a time: read a page, see what it gives you and what's still missing, then decide the next page or search.
+- A page that's blocked, asks you to prove you're human, or comes back empty: never try to get past it. Find the same
+  thing on another site and keep going.
+- Cover every part of what they asked (each item, each site, each comparison) before you finish.
+- Save something to a file only when they asked for a file.
+- Stop and ask only for what you truly can't do yourself (signing in, paying, a choice only they can make).
+- When it's done, give them the information itself: short, plain words, each fact with the page it came from as a
+  markdown link. No headings about your process, no "evidence", no list of what you searched."""
+
 SHELL_WIN = """
 Windows notes:
 - Commands run in Windows PowerShell 5.1. `&&` and `||` work (Xod converts them).
@@ -233,7 +303,10 @@ Mac notes:
 def _out(res: Any) -> str:
     if not isinstance(res, dict):
         return str(res or "")
-    return "\n".join(str(res.get(k) or "") for k in ("stdout", "stderr", "error", "output", "new_output", "content") if res.get(k))
+    text = "\n".join(str(res.get(k) or "") for k in ("stdout", "stderr", "error", "output", "new_output", "content") if res.get(k))
+    if not text and isinstance(res.get("results"), list):     # a search: what it found, not the pages themselves
+        text = "\n".join(f"- {r.get('title', '')} {r.get('url', '')}" for r in res["results"][:8] if isinstance(r, dict))
+    return text
 
 
 def _failed(res: Any) -> bool:
@@ -360,11 +433,9 @@ def refused(name: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 # ------------------------------------------------------------------ the done-check
-CHECK = """You check whether a job on a computer is really finished. Judge only from the outputs below, not from what the
-worker says. Finished means: everything the person asked for is done, AND something was run whose output proves it works
-(a version printed, an import that worked, the program's own output, a page that answered).
-For a server or web page, proof is the page's content fetched and shown in an output; "the port is open" or "it's
-listening" is not proof. A claim in the worker's message is never proof.
+CHECK = """You check whether a job is really finished. Judge only from the outputs below, not from what the
+worker says. {finished}
+A claim in the worker's message is never proof.
 
 The person asked: {goal}
 
@@ -382,7 +453,7 @@ Answer with JSON only:
 def _steps_text(log: List[Dict[str, Any]], limit: int = 5000) -> str:
     rows = []
     for i, e in enumerate(log, 1):
-        what = e["args"].get("command") or e["args"].get("filepath") or e["args"].get("query") or json.dumps(e["args"], default=str)[:160]
+        what = e["args"].get("command") or e["args"].get("filepath") or e["args"].get("query") or e["args"].get("url") or json.dumps(e["args"], default=str)[:160]
         status = "FAILED" if e["failed"] else "ok"
         if e.get("exit") is not None:
             status += f", exit {e['exit']}"
@@ -392,10 +463,22 @@ def _steps_text(log: List[Dict[str, Any]], limit: int = 5000) -> str:
     return text[-limit:]
 
 
-async def done_check(goal: str, log: List[Dict[str, Any]], final: str) -> Dict[str, Any]:
+FINISHED = {
+    "computer": "Finished means: everything the person asked for is done, AND something was run whose output proves it works\n"
+                "(a version printed, an import that worked, the program's own output, a page that answered).\n"
+                "For a server or web page, proof is the page's content fetched and shown in an output; \"the port is open\" or\n"
+                "\"it's listening\" is not proof.",
+    "web": "Finished means: every part of what the person asked for is covered by pages the worker actually read (web_scrape\n"
+           "outputs), and the worker's last message gives them that information. Search results alone are not reading the\n"
+           "websites. A page that was blocked or empty doesn't count: another source for the same thing does.",
+}
+
+
+async def done_check(goal: str, log: List[Dict[str, Any]], final: str, kind: str = "computer") -> Dict[str, Any]:
     if not log:
         return {"done": False, "missing": "Nothing has been run yet. Do the job with the tools.", "needs_person": False}
-    prompt = CHECK.format(goal=goal, steps=_steps_text(log), final=(final or "(none)")[:800])
+    prompt = CHECK.format(finished=FINISHED.get(kind, FINISHED["computer"]), goal=goal, steps=_steps_text(log),
+                          final=(final or "(none)")[:800])
     try:
         reply = await llm_service.chat_completion(messages=[{"role": "user", "content": prompt}], temperature=0.0,
                                                   max_tokens=JSON_MIN_TOKENS, think=False, task="work_check")
@@ -486,25 +569,34 @@ def _say_ready(r: Dict[str, Any]) -> str:
     return " — ".join(parts)
 
 
-def _final_text(answer: str, verdict: Optional[Dict[str, Any]], goal: str, left: str, stopped: str) -> str:
+def _final_text(answer: str, verdict: Optional[Dict[str, Any]], goal: str, left: str, stopped: str,
+                kind: str = "computer", waiting: bool = False) -> str:
     text = (answer or "").strip()
     if stopped:
         text = (text + "\n\n" if text else "") + stopped
-    elif verdict and verdict.get("done") and verdict.get("proof"):
+    elif verdict and verdict.get("done") and verdict.get("proof") and kind == "computer" and "**Checked:**" not in text:
         text += f"\n\n**Checked:** {str(verdict['proof']).strip()[:300]}"
-    return text + "\n\n" + MARK + json.dumps({"goal": goal[:600], "left": left[:600]}) + " -->"
+    note = {"goal": goal[:600], "left": left[:600]}
+    if kind != "computer":
+        note["kind"] = kind
+    if waiting:
+        note["waiting"] = True
+    return text + "\n\n" + MARK + json.dumps(note) + " -->"
 
 
 async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str, Any], execute_tool,
                  spoken: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
     goal = decision["goal"]
+    kind = decision.get("kind") or "computer"
     started = time.time()
 
-    # Ready first: what's here, and can this model do it at all?
-    yield {"type": "status", "content": "Checking what this computer has…"}
-    yield {"type": "tool_call", "name": "xod_readiness", "args": {}, "id": "work_ready"}
+    # Ready first: what's here, and can this model do it at all? (Reading the web only needs the model check.)
+    if kind == "computer":
+        yield {"type": "status", "content": "Checking what this computer has…"}
+        yield {"type": "tool_call", "name": "xod_readiness", "args": {}, "id": "work_ready"}
     ready = await readiness()
-    yield {"type": "tool_result", "name": "xod_readiness", "id": "work_ready", "summary": _say_ready(ready), "data": ready}
+    if kind == "computer":
+        yield {"type": "tool_result", "name": "xod_readiness", "id": "work_ready", "summary": _say_ready(ready), "data": ready}
     if ready["blockers"]:
         why = "; ".join(ready["blockers"])
         yield {"type": "content", "content": f"I can't do this one yet: {why}."}
@@ -512,10 +604,10 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         return
 
     from app.agent.tools import TOOL_DEFINITIONS
-    tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in TOOLS]
+    tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in (WEB_TOOLS if kind == "web" else TOOLS)]
     try:
         from app.services import capabilities
-        if not capabilities._browser():
+        if kind == "computer" and not capabilities._browser():
             tools = [t for t in tools if t["function"]["name"] != "web_search"]
     except Exception:
         pass
@@ -536,9 +628,13 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         logger.debug(f"team off: {e}")
     allowed = {t["function"]["name"] for t in tools}
     from app import platform_info
-    system = SYSTEM.format(now=time.strftime("%A %B %d, %Y, %I:%M %p"), ready=_ready_text(ready),
-                           shell=(SHELL_WIN + "\n" + platform_info.SHELL_NOTE) if WIN else SHELL_MAC) + team_note
-    if ready["notes"]:
+    now = time.strftime("%A %B %d, %Y, %I:%M %p")
+    if kind == "web":
+        system = WEB_SYSTEM.format(now=now) + team_note
+    else:
+        system = SYSTEM.format(now=now, ready=_ready_text(ready),
+                               shell=(SHELL_WIN + "\n" + platform_info.SHELL_NOTE) if WIN else SHELL_MAC) + team_note
+    if ready["notes"] and kind == "computer":
         system += "\nKeep in mind: " + "; ".join(ready["notes"]) + "."
     if spoken:
         system += "\nYour final reply will be read aloud: two short sentences."
@@ -599,10 +695,10 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 convo.append({"role": "user", "content": "(Note from Xod, not from the person) Nothing has been run yet, so nothing "
                                                          "is done. Use the tools to do the job now."})
                 continue
-            yield {"type": "status", "content": "Checking it really works…"}
+            yield {"type": "status", "content": "Checking it really works…" if kind == "computer" else "Checking nothing's missing…"}
             ccid = f"work_check_{checks}"
             yield {"type": "tool_call", "name": "xod_self_check", "args": {"goal": goal[:200]}, "id": ccid}
-            verdict = await done_check(goal, log, content)
+            verdict = await done_check(goal, log, content, kind)
             yield {"type": "tool_result", "name": "xod_self_check", "id": ccid, "data": verdict,
                    "summary": ("✓ Works: " + str(verdict.get("proof") or "the steps succeeded")[:120]) if verdict.get("done") else
                               ("Needs you: " + str(verdict.get("why") or "")[:120]) if verdict.get("needs_person") else
@@ -700,5 +796,6 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         answer = "Here's where it got to:\n" + "\n".join(
             f"- {'✗' if e['failed'] else '✓'} `{str(e['args'].get('command') or e['args'].get('filepath') or e['name'])[:120]}`"
             for e in log[-8:])
-    yield {"type": "content", "content": _final_text(answer, verdict, goal, left, stopped)}
+    yield {"type": "content", "content": _final_text(answer, verdict, goal, left, stopped, kind,
+                                                     waiting=bool(verdict and verdict.get("needs_person") and not verdict.get("done")))}
     yield {"type": "done"}

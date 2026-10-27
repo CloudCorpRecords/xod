@@ -374,6 +374,19 @@ def _page_name(title: str, url: str) -> str:
     return urllib.parse.urlparse(url or "").netloc or url or "this page"
 
 
+# A site's own "you look like a bot" page (adidas: "403 Forbidden … Reference Error", a "submit" button that never
+# lets you in). detect_captcha only knows the usual widgets, so the mission pressed that button three times.
+_BOT_WALL_RE = re.compile(r"\b(?:403 forbidden|access denied|access to this page has been denied|request (?:was )?blocked|"
+                          r"verify (?:that )?you(?:'re| are) (?:a )?human|are you a robot|unusual traffic|bot (?:check|detection|protection)|"
+                          r"pardon our interruption|reference (?:error|#)|press (?:&|and) hold|checking your browser)\b", re.I)
+
+
+def _bot_wall(title: str, page_md: str) -> bool:
+    """The page is a site's block page, not the site."""
+    text = f"{title or ''}\n{page_md or ''}"
+    return len(page_md or "") < 3000 and bool(_BOT_WALL_RE.search(text))
+
+
 def load_site_tips(site: str) -> List[str]:
     try:
         with open(SITE_NOTES_PATH, "r", encoding="utf-8") as f:
@@ -3828,6 +3841,7 @@ class BrowserSandboxService:
         self.latest_mission = mission_record
         profile = load_user_profile()
         sites_seen: List[str] = []
+        walled_sites: List[str] = []           # sites that answered with a bot-check / block page
         try:
             from app.services.llm import llm_service as _llm
             _ep = _llm.get_endpoint_info()
@@ -3937,6 +3951,14 @@ class BrowserSandboxService:
             page_key = (self.current_url, len(page_md))
             if page_key != last_page_key:
                 page_offset, last_page_key = 0, page_key
+            walled = _bot_wall(self.current_title, page_md)
+            if walled and site not in walled_sites:
+                walled_sites.append(site)
+                record("blocked_site", False, f"{site or 'This site'} answered with a bot-check page; not trying to get past it.", site,
+                       status="failed")
+                history.append(f"NOTE: {site or 'this site'} blocks automated visits (its bot-check / block page is showing). "
+                               "Never press its buttons or fill its fields. Get what's still needed from another site, or "
+                               "finish with what you have and say plainly that this site was blocked.")
             page_chunk = page_md[page_offset: page_offset + MISSION_PAGE_CHUNK]
             more_text = len(page_md) > page_offset + MISSION_PAGE_CHUNK
             tabs_block = await self._tabs_block()
@@ -4233,6 +4255,13 @@ class BrowserSandboxService:
                     sentinel.flagged(_page_name(self.current_title, self.current_url), next(iter(page_traps.values())), f"Blocked a step that used {used[0]}.")
                     history.append("NOTE: " + note + " Do only what the GOAL says.")
                     continue
+
+            # --- A block page: never press or fill anything on it --------------------------
+            if walled and action in ("click", "choose", "type", "select", "check", "uncheck", "press_key", "hover", "log_in"):
+                queued.clear()
+                record(action, False, "Not done: that's the site's bot-check page.", plan.get("index"), status="failed")
+                history.append("NOTE: not done, that is the bot-check page. Navigate to another site or finish.")
+                continue
 
             # --- Never type or pick an answer the user didn't give ------------------------
             if action in ("type", "select", "choose") and element and not _looks_like_search_box(element) \

@@ -721,7 +721,11 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                         hits = r.get("results") or []
                         return not hits or all((h or {}).get("title") == "Search Error" for h in hits if isinstance(h, dict))
                     return False
-                if react_hop == 1 and not has_observable_errors and audit_trail and \
+                # Something was made or changed (a file written, a command run): "it ran" isn't "it's done", so look again.
+                did_work = any(re.match(r"(?:fs_(?:write|create|move|organize)|computer_(?:run_command|write_file|edit_file|start_job|"
+                                        r"manage_file|batch_organize))", str(t.get("tool") or t.get("name") or ""))
+                               for t in audit_trail)
+                if react_hop == 1 and not has_observable_errors and audit_trail and not did_work and \
                         not any(_empty(t.get("result")) for t in audit_trail):
                     break
 
@@ -732,7 +736,9 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                         "content": (
                             "You are Xod's ReAct Deliberator & Gap Analyzer.\n"
                             "Review the user query, recent tool observations, and determine if an additional corrective tool call is needed.\n"
-                            "If the user query is already fully answered, return JSON: {\"action\": \"conclude\", \"reasoning\": \"Goal achieved.\"}\n"
+                            "If the user query is already fully answered (or, for a job, every part of it is done and shown to work), "
+                            "return JSON: {\"action\": \"conclude\", \"reasoning\": \"Goal achieved.\"}\n"
+                            "A file that was written but never run, an empty file, or a folder with nothing in it is not done.\n"
                             "If a follow-up action or error recovery is needed, return JSON:\n"
                             "{\n"
                             "  \"action\": \"tool_call\",\n"

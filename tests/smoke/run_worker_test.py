@@ -280,6 +280,94 @@ evs, answer = asyncio.run(run("install the from-text tool"))
 r = results(evs, "computer_run_command")
 check("…and the worker runs it", r and "from-text" in (r[0]["data"].get("stdout") or ""), r)
 
+# ------------------------------------------------------------------ W16 jobs said in plain words, and replies that carry one on
+print("W16 plain-words jobs, offers, answers")
+
+
+def kind(q, hist=()):
+    r = worker.route(q, [*hist, {"role": "user", "content": q}])
+    return r and r.get("kind")
+
+
+for q in ("in ~/x make a python script that gets the top 5 Hacker News stories and saves them to hn.csv, then run it",
+          "write a cron job that backs up my Documents every night"):
+    check(f"a job on the computer: {q[:50]}", kind(q) == "computer", kind(q))
+for q in ("go look for things thats trending and try to go thru websites about ti and bring me the info afeter",
+          "dig into the links from that article and tell me what they say"):
+    check(f"reading the web: {q[:50]}", kind(q) == "web", kind(q))
+for q in ("make me a 3d game in this folder", "how do I write a script that renames files?", "hi", "what's trending today?"):
+    check(f"not the worker: {q}", worker.route(q, [{"role": "user", "content": q}]) is None)
+asked = [{"role": "user", "content": "make a scraper"},
+         {"role": "assistant", "content": 'Which site? <!-- xod-work:{"goal": "make a scraper", "left": "which site", "waiting": true} -->'}]
+r = worker.route("hacker news", [*asked, {"role": "user", "content": "hacker news"}])
+check("the answer to its question carries the job on", r and r["goal"] == "make a scraper" and r["extra"] == "hacker news", r)
+r = worker.route("start!", [*asked, {"role": "user", "content": "start!"}])
+check("'start!' carries it on too", r and r["goal"] == "make a scraper" and r["extra"] == "", r)
+finished = [{"role": "user", "content": "make a scraper"},
+            {"role": "assistant", "content": 'Done. <!-- xod-work:{"goal": "make a scraper", "left": ""} -->'}]
+check("'start!' after a finished job isn't a re-run", worker.route("start!", [*finished, {"role": "user", "content": "start!"}]) is None)
+check("…but 'try again' still is", bool(worker.route("try again", [*finished, {"role": "user", "content": "try again"}])))
+offer = [{"role": "user", "content": "can you install the github cli"},
+         {"role": "assistant", "content": "Homebrew isn't installed, so `brew install gh` failed. Want me to install Homebrew first?"}]
+r = worker.route("yes", [*offer, {"role": "user", "content": "yes"}])
+check("'yes' to its own offer does the job instead of asking again", r and "install the github cli" in r["goal"]
+      and "install Homebrew first" in r["goal"] and r["kind"] == "computer", r)
+dig = [{"role": "user", "content": "whats trending"}, {"role": "assistant", "content": "Here's what's trending. Want me to dig deeper into any of these?"}]
+check("'sure' to 'dig deeper?' reads the web", kind("sure", dig) == "web", kind("sure", dig))
+other = [{"role": "user", "content": "make a game"}, {"role": "assistant", "content": 'Want me to add a score? <!-- xod-build:{"path": "/x"} -->'}]
+check("an offer from another lane (the builder) stays with it", worker.route("yes", [*other, {"role": "user", "content": "yes"}]) is None)
+chat = [{"role": "user", "content": "tell me a joke"}, {"role": "assistant", "content": "Why did the chicken cross the road? Want me to tell another?"}]
+check("an offer that isn't work isn't a job", worker.route("yes", [*chat, {"role": "user", "content": "yes"}]) is None)
+
+# Reading the web: only web tools, the done-check sends it back until it has read the pages, and the reply remembers it.
+offered, pages = [], {"https://example.com/a": "Story A: chips are getting faster."}
+
+
+async def web_tool(name, args):
+    if name == "web_search":
+        return {"results": [{"title": "Story A", "url": "https://example.com/a"}]}
+    if name == "web_scrape":
+        return {"url": args["url"], "title": "A", "content": pages.get(args["url"], ""), "length": 30}
+    return {"success": False, "error": f"{name} wasn't expected"}
+
+
+async def fake_deliberate_tools(messages, tools=None, **kw):
+    offered.append(sorted(t["function"]["name"] for t in tools or []))
+    async for ev in fake_deliberate(messages, tools, **kw):
+        yield ev
+
+
+async def run_web(query):
+    msgs = [{"role": "user", "content": query}]
+    decision = worker.route(query, msgs)
+    evs = []
+    async for ev in worker.stream(query, msgs, decision, web_tool):
+        evs.append(ev)
+    return evs, "".join(e.get("content", "") for e in evs if e["type"] == "content")
+
+
+worker.llm_service.deliberate_stream = fake_deliberate_tools
+fresh([("tool", "web_search", {"query": "trending tech"}), ("say", "Story A is trending."),
+       ("tool", "web_scrape", {"url": "https://example.com/a"}), ("say", "Chips are getting faster ([A](https://example.com/a)).")],
+      [{"done": False, "missing": "Read the story pages, not just the search results."}, {"done": True, "proof": "read example.com/a"}])
+evs, answer = asyncio.run(run_web("go through the websites about what's trending in tech and bring me the info"))
+worker.llm_service.deliberate_stream = fake_deliberate
+check("only web tools are offered", offered and "computer_run_command" not in offered[0] and "web_scrape" in offered[0], offered[:1])
+check("no 'checking what this computer has' step", not results(evs, "xod_readiness"))
+check("'not done' sent it back to read the page", [e["name"] for e in results(evs) if e["name"] != "xod_self_check"] == ["web_search", "web_scrape"])
+check("the answer is what the page said, and the job is remembered as web",
+      "Chips are getting faster" in answer and '"kind": "web"' in answer, answer[-200:])
+check("…with no 'Checked:' line under the sources", "**Checked:**" not in answer, answer[-200:])
+
+fresh([("tool", "computer_run_command", {"command": "echo ready"}), ("say", "Which site should it scrape?")],
+      [{"done": False, "needs_person": True, "why": "choose which site to scrape"}])
+evs, answer = asyncio.run(run("write a scraper script and run it", [{"role": "user", "content": "hi"}]))
+check("a job waiting on the person's choice is remembered as waiting", '"waiting": true' in answer, answer[-200:])
+
+from app.services.browser_sandbox import _bot_wall  # noqa: E402
+check("a site's 403 block page is a bot wall", _bot_wall("adidas", "HTTP 403 Forbidden. Reference Error: 0.911c1602"))
+check("a normal page isn't", not _bot_wall("Nike Running Shoes", "Pegasus 42 $145 " * 40))
+
 # ------------------------------------------------------------------ W13 stopping a job stops what it started
 print("W13 stopping a background job")
 import socket  # noqa: E402
