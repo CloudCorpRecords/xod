@@ -9,7 +9,9 @@ Muse's own protocol). Each job is one Muse session in a folder:
   approvals             Muse asks before running things (its approval mode decides what): each request becomes a
                         Crew approval, shown on the Crew board, in the approvals history and on the phone; Xod's
                         safety check looks first and adds its warning. Your decision goes back to Muse; nothing
-                        is ever approved automatically.
+                        is approved automatically unless you switch on "Approve everything Muse asks"
+                        (services/muse_app.py) — and even then, a request Xod's safety check flags, or a
+                        protected write, still waits for you. Each auto-approval is logged.
   questions             Muse's questions for you, the same way, answered by picking an option or writing.
 
 Claude Code jobs (services/claude_native.py) work the same way on the board: one `claude -p` per job over its
@@ -507,6 +509,11 @@ def _safety(command: str, what: str) -> str:
     return ""
 
 
+def _auto_ok(warning: str, protected: bool = False) -> bool:
+    """Auto-approve may proceed only with no safety warning and no protected write."""
+    return not warning and not protected
+
+
 async def _on_request(method: str, p: Dict[str, Any]) -> None:
     j = _job_for(p)
     if not j:
@@ -531,6 +538,15 @@ async def _on_request(method: str, p: Dict[str, Any]) -> None:
             agent_log.approval_opened(f"crew-{aid}", "crew", "Muse", f"{j['title'][:60]}: {what}"[:200], warning)
         except Exception:
             pass
+        from app.services import muse_app
+        if muse_app.enabled() and _auto_ok(warning, a["protected"]):
+            try:
+                await decide(j["id"], aid, "once", auto=True)
+                return
+            except CrewError as e:
+                logger.warning(f"Couldn't approve {what!r} for you: {e}")
+        elif muse_app.enabled():
+            logger.info(f"Auto-approve held for {what!r}: safety warning or protected write; waiting for you.")
         _notify_phone(j, f"Muse ({j['title'][:60]}) wants to {what}." + (f"\nSafety check: {warning}" if warning else "")
                       + "\nOpen Xod → Crew to approve or deny.")
         _save()
@@ -559,8 +575,9 @@ def _notify_phone(j: Dict[str, Any], text: str) -> None:
         pass
 
 
-async def decide(jid: str, approval_id: str, decision: str = "once") -> Dict[str, Any]:
-    """Your decision on one of Muse's approvals: once, session (for the rest of this job) or deny."""
+async def decide(jid: str, approval_id: str, decision: str = "once", auto: bool = False) -> Dict[str, Any]:
+    """Your decision on one of Muse's approvals: once, session (for the rest of this job) or deny. auto: Xod made it
+    for you because "Approve everything Muse asks" is on."""
     j = job(jid)
     a = j["approvals"].get(approval_id)
     if not a or a["state"] != "waiting":
@@ -569,7 +586,7 @@ async def decide(jid: str, approval_id: str, decision: str = "once") -> Dict[str
     if not want:
         raise CrewError("Decide once, session or deny.")
     if j["agent"] == "claude":
-        return await _claude_decide(j, a, decision)
+        return await _claude_decide(j, a, decision, auto=auto)
     choice = next((c for c in a["choices"] if c["decision"] == want[0] and (want[1] is None or c["scope"] == want[1])), None) \
         or next((c for c in a["choices"] if c["decision"] == want[0]), None) \
         or (next((c for c in a["choices"] if str(c["decision"]).startswith("denied")), None) if decision == "deny" else None)
@@ -583,10 +600,13 @@ async def decide(jid: str, approval_id: str, decision: str = "once") -> Dict[str
     a["state"] = "approved" if decision != "deny" else "denied"
     try:
         from app.services import agent_log
-        agent_log.approval_decided(f"crew-{approval_id}", "allowed" if decision != "deny" else "declined")
+        agent_log.approval_decided(f"crew-{approval_id}", ("allowed by Xod" if auto else "allowed") if decision != "deny" else "declined")
     except Exception:
         pass
-    _step(j, "you", ("Approved" if decision != "deny" else "Denied") + f": {a['what']}" + (" (for this job)" if decision == "session" else ""))
+    if auto:
+        _step(j, "xod", f"Approved for you (Approve everything Muse asks is on): {a['what']}")
+    else:
+        _step(j, "you", ("Approved" if decision != "deny" else "Denied") + f": {a['what']}" + (" (for this job)" if decision == "session" else ""))
     if not any(x["state"] == "waiting" for x in j["approvals"].values()) and not any(x["state"] == "waiting" for x in j["questions"].values()):
         j["status"] = "working"
     _save()
@@ -914,13 +934,22 @@ async def _claude_request(j: Optional[Dict[str, Any]], m: Dict[str, Any]) -> Non
         agent_log.approval_opened(f"crew-{rid}", "crew", "Claude Code", f"{j['title'][:60]}: {what}"[:200], warning)
     except Exception:
         pass
+    from app.services import muse_app
+    if muse_app.enabled() and _auto_ok(warning):
+        try:
+            await decide(j["id"], rid, "once", auto=True)
+            return
+        except CrewError as e:
+            logger.warning(f"Couldn't approve {what!r} for you: {e}")
+    elif muse_app.enabled():
+        logger.info(f"Auto-approve held for {what!r}: safety warning; waiting for you.")
     _notify_phone(j, f"Claude Code ({j['title'][:60]}) wants to {what}." + (f"\nSafety check: {warning}" if warning else "")
                   + "\nOpen Xod → Crew to approve or deny.")
     _save()
     _emit(j, {"type": "approval", "approval": a})
 
 
-async def _claude_decide(j: Dict[str, Any], a: Dict[str, Any], decision: str) -> Dict[str, Any]:
+async def _claude_decide(j: Dict[str, Any], a: Dict[str, Any], decision: str, auto: bool = False) -> Dict[str, Any]:
     r = _runs.get(j["id"])
     if not (r and r.running()):
         a["state"] = "dropped"
@@ -938,10 +967,13 @@ async def _claude_decide(j: Dict[str, Any], a: Dict[str, Any], decision: str) ->
     a["state"] = "approved" if decision != "deny" else "denied"
     try:
         from app.services import agent_log
-        agent_log.approval_decided(f"crew-{a['id']}", "allowed" if decision != "deny" else "declined")
+        agent_log.approval_decided(f"crew-{a['id']}", ("allowed by Xod" if auto else "allowed") if decision != "deny" else "declined")
     except Exception:
         pass
-    _step(j, "you", ("Approved" if decision != "deny" else "Denied") + f": {a['what']}" + (" (for this job)" if decision == "session" else ""))
+    if auto:
+        _step(j, "xod", f"Approved for you (Approve everything Muse asks is on): {a['what']}")
+    else:
+        _step(j, "you", ("Approved" if decision != "deny" else "Denied") + f": {a['what']}" + (" (for this job)" if decision == "session" else ""))
     if not any(x["state"] == "waiting" for x in j["approvals"].values()) and not any(x["state"] == "waiting" for x in j["questions"].values()):
         j["status"] = "working"
     _save()

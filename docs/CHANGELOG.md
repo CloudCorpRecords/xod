@@ -14,6 +14,9 @@
 - After writing a file or running a command, Xod looks again at whether the job is really done: a file that was never run, or an empty one, isn't.
 - A site that shows a bot-check page is skipped, not fought with: Xod gets the rest from other sites and says which one blocked it.
 
+**Approve everything Muse asks** (Crew → the switch under Start the job)
+- On: Xod approves requests in its Muse and Claude Code Crew jobs, and presses **Allow** on the Muse app's Needs review cards. A request Xod's safety check flags (for example download-and-run, `sudo`, or a destructive delete), or a protected write, is not auto-approved — it still waits for you. It does this through macOS Accessibility, so it doesn't move your mouse, but Xod needs Accessibility access; Crew says so under the switch when that's missing. Each approval is logged in the approvals history with what was asked. Off by default; switch it off and requests wait for you again.
+
 **Security**
 - pypdf (reading PDFs you attach) 6.21.1 → 6.21.2, which fixes 3 problems published this week (CVE-2026-115572, -115580, -115585). PDFs can come from anywhere, so update if you open PDFs in Xod.
 

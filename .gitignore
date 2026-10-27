@@ -116,3 +116,7 @@ marketing/
 # --- Demo filming (demo/run.py): its own data folder and what the practice site received ---
 demo/.data/
 demo/careers/received/
+
+# --- AI handoff (local working file between AI tools; not published) ---
+docs/AI_HANDOFF.md
+docs/AI_HANDOFF.lock

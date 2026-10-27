@@ -7,7 +7,7 @@
   const DOT = { starting: "bg-sky-400 animate-pulse", working: "bg-emerald-400 animate-pulse", waiting: "bg-amber-400 animate-pulse",
                 done: "bg-emerald-600", failed: "bg-red-400", stopped: "bg-zinc-600", interrupted: "bg-zinc-400" };
   const WORD = { starting: "starting", working: "working", waiting: "needs you", done: "done", failed: "failed", stopped: "stopped", interrupted: "paused" };
-  const ICON = { tool: "⚙", says: "💬", asks: "✋", you: "🙋", status: "•", error: "⚠" };
+  const ICON = { tool: "⚙", says: "💬", asks: "✋", you: "🙋", xod: "✅", status: "•", error: "⚠" };
   let root = null, current = null, timer = null, chip = null;
   let listOnly = false;          // a narrow window showing the list instead of the open job
   const WHO = { claude: "Claude Code", muse: "Muse" };
@@ -115,6 +115,7 @@
 
   async function refresh() {
     if (!root || root.classList.contains("hidden")) return;
+    refreshAutoApprove();
     const d = await api("/api/crew");
     const jobs = d.jobs || [];
     if (current && !jobs.some((j) => j.id === current)) current = null;
@@ -162,6 +163,8 @@
                 <label class="flex items-center gap-1.5 text-[11px] text-zinc-400" title="In a git repository the job gets a branch and folder of its own; you merge it when you're happy."><input type="checkbox" data-c-isolate checked> Its own copy (git projects)</label>
                 <button data-c="start" class="w-full px-2 py-1.5 rounded-md bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Start the job</button>
                 <p data-c-note class="text-[11px] text-zinc-400"></p>
+                <label class="flex items-center gap-1.5 text-[11px] text-zinc-400" title="Xod presses Allow for you on Muse and Claude Code approvals in Crew jobs and on the Muse app's Needs review cards (needs Accessibility access). Requests Xod's safety check flags, and protected writes, still wait for you. Each one is logged in the approvals history."><input type="checkbox" data-c-autoapprove> Approve everything Muse and Claude Code ask</label>
+                <p data-c-autoapprove-note class="text-[11px] text-amber-300 hidden"></p>
                 <details data-c-tools class="text-[11px] text-zinc-400"><summary class="cursor-pointer hover:text-zinc-200">Muse's tools for jobs</summary>
                   <p class="mt-1">Each one Muse starts before a job begins (all of yours took minutes), so jobs get only the ones you tick.</p>
                   <div data-c-toolbox class="mt-1 max-h-40 overflow-y-auto grid grid-cols-2 gap-x-2"></div></details>
@@ -176,6 +179,7 @@
     }
     root.classList.remove("hidden");
     loadTools();
+    loadAutoApprove();
     refresh();
     clearInterval(timer);
     timer = setInterval(refresh, 1500);
@@ -216,6 +220,32 @@
       if (r.success) { current = r.job.id; root.querySelector("[data-c-task]").value = ""; }
       refresh();
     }
+  }
+
+  function showAutoApprove(st) {
+    const box = root.querySelector("[data-c-autoapprove]");
+    if (box && document.activeElement !== box) box.checked = !!st.on;
+    const note = root.querySelector("[data-c-autoapprove-note]");
+    if (note) { note.textContent = st.accessibility_error || ""; note.classList.toggle("hidden", !st.accessibility_error); }
+  }
+
+  async function loadAutoApprove() {
+    const box = root.querySelector("[data-c-autoapprove]");
+    if (!box) return;
+    showAutoApprove(await api("/api/crew/settings/auto-approve"));
+    box.onchange = async () => {
+      const r = await api("/api/crew/settings/auto-approve", { on: box.checked });
+      box.checked = !!r.on;
+      showAutoApprove(r);
+      if (typeof showToast === "function") showToast(r.accessibility_error || (r.on ? "Xod now approves everything Muse and Claude Code ask (except ones its safety check flags), and logs each one." : "Muse and Claude Code approvals wait for you again."));
+    };
+  }
+
+  // The watcher can hit (or clear) a problem seconds after the switch is flipped, so the note under
+  // it is refreshed with the panel — not only when Crew is opened or the switch is toggled.
+  async function refreshAutoApprove() {
+    if (!root || !root.querySelector("[data-c-autoapprove]")) return;
+    showAutoApprove(await api("/api/crew/settings/auto-approve"));
   }
 
   async function loadTools() {

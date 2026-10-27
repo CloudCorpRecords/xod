@@ -2071,6 +2071,29 @@ async def crew_set_muse_tools(req: CrewTools):
     return crew.set_muse_tools(req.names)
 
 
+class CrewAutoApprove(BaseModel):
+    on: bool
+
+
+@app.get("/api/crew/settings/auto-approve")
+async def crew_auto_approve():
+    """Whether Xod approves everything Muse asks (its own Muse jobs and the Muse app's cards), and the last one."""
+    from app.services import muse_app
+    return muse_app.status()
+
+
+@app.post("/api/crew/settings/auto-approve")
+async def crew_set_auto_approve(req: CrewAutoApprove):
+    from app.services import muse_app
+    return muse_app.set_enabled(req.on)
+
+
+@app.on_event("startup")
+async def _watch_muse_app():
+    from app.services import muse_app
+    muse_app.start()
+
+
 @app.get("/api/crew/{jid}")
 async def crew_job(jid: str):
     from app.services import crew
