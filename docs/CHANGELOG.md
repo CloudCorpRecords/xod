@@ -1,6 +1,6 @@
 # Changelog
 
-## Next
+## 0.9.3
 
 **Better answers, from real chats**
 - "Have Muse check my PRs" starts the job right away. Work that isn't in one project (your GitHub, PRs across repos) starts from your home folder, instead of Xod hunting for folders or asking which repo. Xod says a job has started and where to watch it, and never calls it done before it is.
@@ -15,7 +15,9 @@
 - A site that shows a bot-check page is skipped, not fought with: Xod gets the rest from other sites and says which one blocked it.
 
 **Approve everything Muse asks** (Crew → the switch under Start the job)
-- On: Xod approves requests in its Muse and Claude Code Crew jobs, and presses **Allow** on the Muse app's Needs review cards. A request Xod's safety check flags (for example download-and-run, `sudo`, or a destructive delete), or a protected write, is not auto-approved — it still waits for you. It does this through macOS Accessibility, so it doesn't move your mouse, but Xod needs Accessibility access; Crew says so under the switch when that's missing. Each approval is logged in the approvals history with what was asked. Off by default; switch it off and requests wait for you again.
+- On: Xod approves requests in its Muse and Claude Code Crew jobs, and presses the approving button on the Muse app's cards: **Always allow for this recipient** (or site) when a card offers it, then **Allow all once**, **Send**, or **Allow**. A request Xod's safety check flags (for example download-and-run, `sudo`, or a destructive delete), or a protected write, is not auto-approved in Crew jobs — it still waits for you. It does this through macOS Accessibility, so it doesn't move your mouse, but Xod needs Accessibility access; Crew says so under the switch when that's missing. Off by default; switch it off and requests wait for you again.
+- The Muse app watcher no longer polls: macOS tells Xod the moment Muse's window changes, so a card is handled within a couple of seconds. If a pressed card is still showing a few seconds later it is pressed again (up to 3 tries), so one that looks the same as the last can't stall the agent overnight.
+- Every card is logged once in the approvals history with its type, the button pressed, and — for Gmail — the From, To, Subject and attachments, plus anything it couldn't press and why. At 8 AM, if anything happened overnight, one summary says what was approved, which recipients are now always-allowed, and what was not pressed.
 
 **Security**
 - pypdf (reading PDFs you attach) 6.21.1 → 6.21.2, which fixes 3 problems published this week (CVE-2026-115572, -115580, -115585). PDFs can come from anywhere, so update if you open PDFs in Xod.
