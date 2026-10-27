@@ -61,6 +61,7 @@ jobs:
           python tests/smoke/run_home_post_test.py
           python tests/smoke/run_local_servers_test.py
           python tests/smoke/run_desktop_test.py
+          python tests/smoke/run_muse_app_test.py
           python tests/smoke/run_agent_clis_test.py
           python tests/smoke/run_terminal_command_test.py
           python tests/smoke/run_terminals_edge_test.py

@@ -130,7 +130,7 @@ def approval_opened(pid: str, kind: str, app: str, title: str, detail: str = "")
         from app.services import activity
         with _conn() as c:
             c.execute("INSERT OR REPLACE INTO agent_approvals VALUES (?,?,?,?,?,?,?,?,?)",
-                      (pid, time.time(), kind, app[:80], title[:200], (detail or "")[:400], activity.origin.get(), "waiting", None))
+                      (pid, time.time(), kind, app[:80], title[:200], (detail or "")[:2000], activity.origin.get(), "waiting", None))
     except Exception as e:
         logger.debug(f"approval not recorded: {e}")
 

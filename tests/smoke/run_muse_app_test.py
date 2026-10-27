@@ -52,6 +52,7 @@ class FakeAX:
 
     def perform(self, el, action):
         el.pressed = (action == "AXPress")
+        el.presses = getattr(el, "presses", 0) + (1 if el.pressed else 0)
         return 0 if el.pressed else -1
 
 
@@ -71,7 +72,8 @@ def main():
     check("a pending card is found by reading the tree", seen == {"running": True, "approved": [
         {"title": "Approval request for Browser",
          "what": "Allow Tree to upload this file using Browser? Tree wants to upload a file to jobs.lever.co.",
-         "pressed": False}]}, str(seen))
+         "pressed": False, "button": "Allow", "reason": "", "type": "Browser",
+         "from": "", "to": "", "subject": "", "attachments": []}]}, str(seen))
     check("reading does not press", allow.pressed is False)
     pressed = muse_app._scan(True)
     check("pressing uses AXPress on the Allow button", pressed["approved"][0]["pressed"] is True and allow.pressed)
@@ -94,6 +96,143 @@ def main():
     check("a timeout shows the timeout", "timed out" in real and "needs Accessibility" not in real, real)
     noax = muse_app._describe_error(PermissionError("Xod needs Accessibility access to press Allow"))
     check("a permission failure shows the Accessibility fix", "Accessibility" in noax, noax)
+
+    print("M4 which button: Always-allow > Send > Allow, never Deny")
+    send, always, dont = El("AXButton", "Send"), El("AXButton", "Always allow for this recipient"), El("AXButton", "Don't send")
+    gmail = El("AXGroup", "Approval request for Gmail", [
+        El("AXStaticText", "From: Tree <tree@example.com>"), El("AXStaticText", "To: hiring@example.com"),
+        El("AXStaticText", "Subject: Your application"), El("AXStaticText", "Attachments: cv.pdf"),
+        send, always, dont])
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [gmail])]))
+    muse_app._muse_pid = lambda: 4242
+    got = muse_app._scan(True)["approved"][0]
+    check("a Gmail card: the always-allow button is pressed, and only that",
+          got["button"] == "Always allow for this recipient" and always.pressed and not send.pressed and not dont.pressed, str(got))
+    check("…its type and fields are read", got["type"] == "Gmail" and got["to"] == "hiring@example.com"
+          and got["subject"] == "Your application" and got["attachments"] == ["cv.pdf"], str(got))
+    send2, dont2 = El("AXButton", "Send"), El("AXButton", "Don't send")
+    gmail2 = El("AXGroup", "Approval request for Gmail", [El("AXStaticText", "To: a@b.co"), send2, dont2])
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [gmail2])]))
+    got = muse_app._scan(True)["approved"][0]
+    check("a Gmail card with only Send: Send is pressed", got["button"] == "Send" and send2.pressed and not dont2.pressed, str(got))
+    deny = El("AXButton", "Deny")
+    card3 = El("AXGroup", "Approval request for Browser", [El("AXStaticText", "Allow a download?"), deny])
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [card3])]))
+    got = muse_app._scan(True)["approved"][0]
+    check("a card with only Deny: nothing pressed, and the reason says so",
+          got["pressed"] is False and got["button"] is None and "Deny" in got["reason"] and not deny.pressed, str(got))
+    check("button choice in order, never the negative ones",
+          muse_app._pick_button(["Send", "Always allow for this recipient", "Don't send"]) == "Always allow for this recipient"
+          and muse_app._pick_button(["Allow", "Send"]) == "Send"
+          and muse_app._pick_button(["Deny", "Don't send"]) is None
+          and muse_app._pick_button(["Always allow everything", "Allow"]) == "Allow")
+
+    allow2 = El("AXButton", "Allow")
+    card4 = El("AXGroup", "Approval request for Browser", [El("AXStaticText", "Allow an upload?"), allow2])
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [card4])]))
+    muse_app.DRY_RUN = True
+    got = muse_app._scan(True)["approved"][0]
+    muse_app.DRY_RUN = False
+    check("dry run (XOD_MUSE_APP_DRY_RUN): reads the card, presses nothing, says why",
+          got["pressed"] is False and "dry run" in got["reason"] and not allow2.pressed, str(got))
+
+    print("M5 the morning-after log: fields, one row ever, summary counts")
+    from app.services import agent_log
+    card = {"title": "Approval request for Gmail", "type": "Gmail", "button": "Always allow for this recipient",
+            "pressed": True, "reason": "", "from": "tree@example.com", "to": "hiring@example.com",
+            "subject": "Your application", "attachments": ["cv.pdf"],
+            "what": "From: tree@example.com To: hiring@example.com Subject: Your application Attachments: cv.pdf"}
+    check("a pressed Gmail card is logged once", muse_app._log(card) is True)
+    muse_app._state["present"] = set()  # a restart forgets the in-memory set; the DB must still say no
+    check("…and not again after a restart", muse_app._log(card) is False)
+    rows = [r for r in agent_log.approvals(50) if r["kind"] == "muse_app"]
+    check("the row holds type, button, To, Subject and the full text",
+          len(rows) == 1 and "type: Gmail" in rows[0]["detail"] and "button: Always allow for this recipient" in rows[0]["detail"]
+          and "to: hiring@example.com" in rows[0]["detail"] and "subject: Your application" in rows[0]["detail"]
+          and "cv.pdf" in rows[0]["detail"] and rows[0]["decision"] == "allowed by Xod", str(rows)[:400])
+    muse_app._log({"title": "Approval request for Browser", "type": "Browser", "button": None, "pressed": False,
+                   "reason": "only a Deny button", "what": "Allow a download from example.com?"})
+    s = muse_app.build_summary(0)
+    check("the summary counts by type, lists always-allowed and the not-pressed",
+          s["count"] == 1 and s["by_type"] == {"Gmail": 1} and s["always_allowed"] == ["hiring@example.com"]
+          and any("Browser" in n and "Deny" in n for n in s["not_pressed"]), str(s))
+
+    print("M6 the observer: bursts become one scan, off stops it, a new pid re-attaches")
+    import time as _time
+    hits = []
+    deb = muse_app._Debouncer(0.05, lambda: hits.append(1))
+    for _ in range(10):
+        deb.call()
+    _time.sleep(0.2)
+    check("10 events in a burst -> one scan", hits == [1], str(hits))
+    made = []
+
+    class FakeObs:
+        def __init__(self, pid):
+            self.pid, self.stopped = pid, False
+        def stop(self):
+            self.stopped = True
+    muse_app._observer_factory = lambda pid, on_event: made.append(FakeObs(pid)) or made[-1]
+    muse_app.set_enabled(True)  # the observer only runs while the switch is on (no loop here, so no watcher starts)
+    muse_app._sync_observer(111)
+    muse_app._sync_observer(111)
+    check("same pid: observer attached once", len(made) == 1 and muse_app._state["observer_pid"] == 111)
+    muse_app._sync_observer(222)
+    check("Muse restarts: old observer stopped, new one attached",
+          len(made) == 2 and made[0].stopped and muse_app._state["observer_pid"] == 222)
+    muse_app._sync_observer(None)
+    check("switch off / Muse gone: observer stopped", made[1].stopped and muse_app._state.get("observer") is None)
+
+    print("M7 never twice: an already-pressed card, and two scans at once")
+    allow3 = El("AXButton", "Allow")
+    card5 = El("AXGroup", "Approval request for Browser", [El("AXStaticText", "Allow Tree to upload notes.txt?"), allow3])
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [card5])]))
+    muse_app._muse_pid = lambda: 4242
+    first = muse_app._scan(True)["approved"][0]
+    again = muse_app._scan(True, skip_ids={muse_app._card_id(first)})["approved"][0]
+    check("a card still on screen after being pressed is not pressed again",
+          again["pressed"] is False and "already pressed" in again["reason"] and allow3.presses == 1, str(again))
+
+    import asyncio as _asyncio
+
+    async def concurrent():
+        calls, active = [], {"n": 0, "max": 0}
+        real = muse_app._scan
+
+        def slow(press, skip_ids=None):
+            active["n"] += 1
+            active["max"] = max(active["max"], active["n"])
+            calls.append(1)
+            import time as _t
+            _t.sleep(0.3)
+            active["n"] -= 1
+            return {"running": True, "approved": []}
+        muse_app._scan = slow
+        try:
+            await _asyncio.gather(muse_app.scan_once(), muse_app.scan_once())
+        finally:
+            muse_app._scan = real
+        return calls, active["max"]
+    calls, max_active = _asyncio.run(concurrent())
+    check("two scans starting together: never at once, and one follow-up scan is queued",
+          len(calls) == 2 and max_active == 1, f"calls={len(calls)} max_active={max_active}")
+
+    allow4 = El("AXButton", "Allow")
+    card6 = El("AXGroup", "Approval request for Browser", [El("AXStaticText", "Allow Tree to upload notes2.txt?"), allow4])
+    with_card = El("AXApplication", "Muse", [El("AXWindow", "Muse", [card6])])
+    without_card = El("AXApplication", "Muse", [El("AXWindow", "Muse", [])])
+
+    async def sequence():
+        muse_app._ax_api = lambda: FakeAX(with_card)
+        await muse_app.scan_once()
+        await muse_app.scan_once()          # still on screen: must not press again
+        muse_app._ax_api = lambda: FakeAX(without_card)
+        await muse_app.scan_once()          # it went away
+        muse_app._ax_api = lambda: FakeAX(with_card)
+        await muse_app.scan_once()          # an identical card back again: a new card, press it
+    _asyncio.run(sequence())
+    check("an identical card that went away and came back is pressed again (but never while it sits there)",
+          allow4.presses == 2, f"presses={allow4.presses}")
 
     print("M3 switching off clears the old warning")
     muse_app._state["error"] = "old warning"

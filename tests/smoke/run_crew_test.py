@@ -142,7 +142,7 @@ async def main():
     calls = []
     fake_scan = {"running": True, "approved": [{"title": "Approval request for Browser", "pressed": True,
                  "what": "Allow Tree to upload this file using Browser? Tree wants to upload a file to jobs.lever.co."}]}
-    muse_app._scan = lambda press: (calls.append(press), fake_scan)[1]
+    muse_app._scan = lambda press, skip_ids=None: (calls.append(press), fake_scan)[1]
     try:
         cards = await muse_app.scan_once()
     finally:
@@ -151,7 +151,7 @@ async def main():
     hist = agent_log.approvals(20)
     check("…and logs each one with what it asked", any("jobs.lever.co" in (h.get("title") or "") and h.get("decision") == "allowed by Xod" and h.get("app") == "Muse app" for h in hist), str(hist[:2])[:300])
     check("…counted on the switch's status", muse_app.status()["approved"] == 1 and "lever" in muse_app.status()["last"]["what"])
-    muse_app._scan = lambda press: fake_scan
+    muse_app._scan = lambda press, skip_ids=None: fake_scan
     try:
         cards2 = await muse_app.scan_once()
     finally:

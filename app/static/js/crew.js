@@ -237,7 +237,7 @@
       const r = await api("/api/crew/settings/auto-approve", { on: box.checked });
       box.checked = !!r.on;
       showAutoApprove(r);
-      if (typeof showToast === "function") showToast(r.accessibility_error || (r.on ? "Xod now approves everything Muse and Claude Code ask (except ones its safety check flags), and logs each one." : "Muse and Claude Code approvals wait for you again."));
+      if (typeof showToast === "function") showToast(r.accessibility_error || (r.on ? "Xod now approves everything Muse and Claude Code ask, and logs each one. (In Crew jobs, ones its safety check flags still wait for you; Muse app cards are approved as they appear.)" : "Muse and Claude Code approvals wait for you again."));
     };
   }
 
