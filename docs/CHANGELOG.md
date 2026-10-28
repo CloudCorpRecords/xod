@@ -1,6 +1,11 @@
 # Changelog
 
-## Next
+## 0.9.7
+
+**Your phone, from anywhere**
+- A paired phone app can chat with this Xod and see its tasks, routines and goals, memory, reports and project files, over Agent Mail. Xod only answers phones you paired on this computer's screen, and only shares the files a project lists.
+- Pair over Bluetooth, from the Pair a phone panel. The phone pairs only after you tap it there.
+- A paired phone reaches this Xod away from home over Tailscale. The pairing code lists every route to this computer, and phones paired earlier learn them automatically.
 
 **Muse approvals that need Muse in front**
 - Some Muse cards (taking a screenshot of your screen above all) only take a press, or only show their buttons, while Muse's window is in front. Before, Xod pressed Allow three times, the card stayed, and it expired. Now, when a pressed card is still showing, or a card shows no buttons, Xod brings Muse forward for that one look, presses, and puts the app you were in back in front. It also looks again 4.5 seconds after a press instead of waiting for the 30-second check.
