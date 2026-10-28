@@ -46,6 +46,7 @@ SECRET_PATTERNS = [
 # Example values in forms and docs: tmrr_xxxxxxxx, sk-...your-key..., AAAAAAAA…
 PLACEHOLDER = re.compile(r"(x{6,}|X{6,}|(.)\2{9,}|your|example|placeholder|dummy|test)", re.I)
 
+SERVICE_ACCOUNTS = {"runner", "root", "admin", "administrator", "user", "ubuntu", "ec2-user", "vagrant", "docker", "jenkins", "buildkite", "circleci"}
 NAME_OK = re.compile(r"(?!)")   # files allowed to carry your name: none
 SKIP_CONTENT = re.compile(r"\.(png|jpe?g|gif|ico|icns|woff2?|ttf|otf|webp|mp4|mp3|wav|pdf|lock)$|package-lock\.json$")
 
@@ -72,6 +73,10 @@ def main() -> int:
         pass
     if len(user) >= 4:
         names.add(user)
+    # A build machine's account ("runner" on GitHub) isn't a person, and is often an ordinary word in the code.
+    if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+        names = set()
+    names = {n for n in names if n.lower() not in SERVICE_ACCOUNTS}
     name_res = [re.compile(rf"(?<![A-Za-z]){re.escape(n)}(?![A-Za-z])", re.I) for n in names]
     problems = []
     this_file = os.path.relpath(__file__)
