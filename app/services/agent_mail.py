@@ -588,6 +588,12 @@ async def _receive(ident: mc.Identity, my_address: str, envelope: Dict[str, Any]
                        1 if status == "new" else 0, problem, msg.get("in_reply_to"), "mail", time.time()))
         except sqlite3.IntegrityError:
             return None     # the same message twice
+    if status == "new" and (msg.get("subject") or "") == "hello":
+        try:
+            from app.services import phone_mcp
+            phone_mcp.record_hello(sender, json.loads(msg.get("text") or "{}"))
+        except Exception:
+            pass
     return {"id": row_id, "peer": sender, "subject": msg.get("subject") or "", "text": msg.get("text") or "",
             "status": status, "trust": trust, "kind": kind}
 

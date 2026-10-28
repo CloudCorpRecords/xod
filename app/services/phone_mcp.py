@@ -142,6 +142,15 @@ def pair_phone(address: str, nickname: str = "") -> Dict[str, Any]:
                              "capabilities": st["phones"].get(address, {}).get("capabilities") or {},
                              "last_seen": st["phones"].get(address, {}).get("last_seen")}
     _save(st)
+    try:
+        with agent_mail._db() as db:
+            rows = db.execute("SELECT text FROM mail_messages WHERE direction='in' AND peer=? AND status='new' "
+                              "AND subject='hello' ORDER BY created_at DESC LIMIT 1", (address,)).fetchall()
+        if rows:
+            record_hello(address, json.loads(rows[0]["text"] or "{}"))
+            st = _load()
+    except Exception:
+        pass
     return {"success": True, "phone": st["phones"][address]}
 
 
