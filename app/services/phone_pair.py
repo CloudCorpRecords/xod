@@ -17,16 +17,23 @@ one other way in, and only while Xod is showing the QR.
 
 Reaching home: the post-office URL in the QR is Tailscale when present,
 else the same-network (.local) name, else the shared relay Agent Mail was
-set up with. The mail itself is end-to-end encrypted either way.
+set up with. The QR also lists every route to this computer's own post
+office (home_post.routes(): .local name, LAN IP, Tailscale name and IP);
+the phone keeps them all and uses whichever answers, so a phone paired at
+home keeps working on mobile data when Tailscale is on both. Phones paired
+before routes existed learn them over mail (phone_api "link.routes"), which
+is sealed and signed, never from the unauthenticated post office itself.
+The mail itself is end-to-end encrypted either way.
 """
 import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.paths import DATA_DIR
 
@@ -63,15 +70,31 @@ def post_office_url() -> str:
     domain = cfg.get("domain") or ""
     if cfg.get("home"):
         ts = home_post.tailscale()
-        if ts:
+        if ts and not os.environ.get("XOD_POST_ROUTES"):
             return f"http://{ts['name']}:{home_post.PORT}"
-        return f"http://{home_post.local_name()}.local:{home_post.PORT}"
+        return (home_post.routes() or [f"http://{home_post.local_name()}.local:{home_post.PORT}"])[0]
     if domain:
         return agent_mail.relay_base(domain)
     nets = [n for n in home_post.networks() if n.get("domain")]
     if nets:
         return f"http://{nets[0]['domain']}"
     return f"http://{home_post.local_name()}.local:{home_post.PORT}"
+
+
+def routes() -> List[str]:
+    """Every way a paired phone can reach its mailbox, starting with the QR's post office. Only this computer's own
+    post office has more than one; a shared relay is reached at its one name."""
+    from app.services import agent_mail, home_post
+    first = post_office_url()
+    more = home_post.routes() if agent_mail._config().get("home") else []
+    return list(dict.fromkeys([first] + more))
+
+
+def reach() -> Dict[str, Any]:
+    """What the phone screens say about reaching this computer: its routes and whether any works away from home."""
+    from app.services import home_post
+    r = routes()
+    return {"routes": r, "away": home_post.reaches_away(r), "tailscale": bool(home_post.tailscale())}
 
 
 def create_offer() -> Dict[str, Any]:
@@ -86,11 +109,11 @@ def create_offer() -> Dict[str, Any]:
         _save({"code_hash": _hash(code), "expires_at": expires, "created_at": time.time()})
     payload = {"v": 1, "kind": "xod-phone-pair", "post_office": post_office_url(),
                "computer": st.get("address"), "safety": st.get("safety_number"),
-               "code": code, "expires_at": int(expires)}
+               "code": code, "expires_at": int(expires), "routes": routes()}
     text = json.dumps(payload, separators=(",", ":"))
     return {"success": True, "payload": payload, "qr_text": text, "qr_svg": qr_svg(text),
             "safety": st.get("safety_number"), "computer": st.get("address"),
-            "post_office": payload["post_office"], "expires_at": int(expires)}
+            "post_office": payload["post_office"], "expires_at": int(expires), **reach()}
 
 
 def qr_svg(text: str) -> Optional[str]:

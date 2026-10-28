@@ -159,7 +159,10 @@
       if (!r.success) { box.innerHTML = `<p class="text-[12px] text-red-300">${esc(r.error || "Couldn't make a QR.")}</p>`; return; }
       box.innerHTML = `<div class="bg-white p-2 rounded-lg w-fit">${r.qr_svg || ""}</div>
         <p class="text-[12px] text-zinc-300">Scan this in the Xod phone app. Safety number: <span class="font-mono text-white">${esc(r.safety || "")}</span></p>
-        <p class="text-[11px] text-zinc-500">Expires ${esc(new Date(r.expires_at * 1000).toLocaleTimeString())}. If pairing doesn't finish, make a new QR.</p>`;
+        <p class="text-[11px] text-zinc-500">Expires ${esc(new Date(r.expires_at * 1000).toLocaleTimeString())}. If pairing doesn't finish, make a new QR.</p>
+        <p class="text-[11px] text-zinc-500">${r.away
+          ? "Away from home, the phone reaches this computer over Tailscale: keep Tailscale on, on both."
+          : "The phone reaches this computer on the same Wi-Fi only. To use it from anywhere, install Tailscale (free) on this computer and the phone, signed in to the same account."}</p>`;
       return;
     }
     if (a === "blescan") {

@@ -268,8 +268,15 @@ def _summary(args: Dict[str, Any]) -> Dict[str, Any]:
             "goals": len([g for g in goals.list_all() if g.get("status") == "active"])}
 
 
+async def _routes(args: Dict[str, Any]) -> Dict[str, Any]:
+    """How the phone can reach this computer (phone_pair.routes()): it keeps them for when it leaves home. Sent here,
+    sealed and signed, rather than read from the post office, which anyone on the way could answer for."""
+    from app.services import phone_pair
+    return await asyncio.to_thread(phone_pair.reach)
+
+
 OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
-    "summary": _summary,
+    "summary": _summary, "link.routes": _routes,
     "chat.sessions": _sessions, "chat.history": _history, "chat.send": _chat,
     "tasks.list": _tasks, "tasks.get": _task_get, "tasks.create": _task_create, "tasks.act": _task_act,
     "routines.list": _routines, "routines.act": _routine_act, "goals.act": _goal_act,
