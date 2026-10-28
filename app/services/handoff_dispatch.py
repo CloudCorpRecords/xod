@@ -9,6 +9,8 @@ starts a Crew job for Muse in that repo itself, so nobody has to copy the note a
   limits     before starting, Xod reads Muse's usage (services/agent_usage.py) and waits for the reset when it's
              used up; a job that still fails with 429 / "quota exhausted" waits the same way. Neither counts as a
              failed try
+  local only the file must not be tracked by git (a pulled commit must never hand Muse work); a tracked one is
+             skipped, once logged
   rules      the job reads the handoff, does the items for Muse Code, runs the tests it touches, leaves the work
              uncommitted (you approve every commit, push and release) and appends its own section when done
 
@@ -20,6 +22,7 @@ import hashlib
 import json
 import logging
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -128,6 +131,16 @@ def quota_reset(error: str) -> Optional[float]:
     return time.time() + QUOTA_WAIT_SEC
 
 
+def tracked_by_git(repo: str) -> bool:
+    """True when the repo's handoff file is committed to git (then it isn't acted on)."""
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "ls-files", "--error-unmatch", "docs/AI_HANDOFF.md"],
+                           capture_output=True, text=True, timeout=10)
+        return r.returncode != 1      # 0: tracked; 1: definitely not tracked; anything else (not a repo, git error): not safe
+    except (OSError, subprocess.TimeoutExpired):
+        return True      # can't tell: treat it as not safe to act on
+
+
 def _key(sec: Dict[str, Any]) -> str:
     return hashlib.sha256(f"{sec['line']}\n{sec['heading']}\n{sec['body']}".encode()).hexdigest()[:16]
 
@@ -139,6 +152,16 @@ async def check(repo: str) -> Optional[Dict[str, Any]]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
+        return None
+    if await asyncio.to_thread(tracked_by_git, repo):
+        # A tracked file arrives with every `git pull`: someone else's commit could hand Muse work, which (with
+        # auto-approve on) means running their instructions. Only a local, untracked handoff file is acted on.
+        state = _load_state()
+        if not (state.get(repo) or {}).get("refused_tracked"):
+            state[repo] = {**(state.get(repo) or {}), "refused_tracked": True}
+            _save_state(state)
+            logger.warning(f"handoff for {repo}: docs/AI_HANDOFF.md is tracked by git, so Xod won't act on it. "
+                           "Add it to .gitignore (and `git rm --cached` it) to use the handoff here.")
         return None
     pending = work_for_muse(text)
     if not pending:

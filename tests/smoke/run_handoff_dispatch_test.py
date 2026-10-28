@@ -138,6 +138,19 @@ async def main():
     jobs[j3["id"]]["status"] = "done"
     hf.write_text(hf.read_text() + section("Muse Code (muse-wonder-1.0)", "- none"))
 
+    print("H3d only a local handoff file")
+    hf.write_text(hf.read_text() + section("Claude Code (claude-opus-5-5)", "- Muse Code: from a pull."))
+    n0 = len(started)
+    subprocess.run(["git", "-C", str(repo), "add", "-f", "docs/AI_HANDOFF.md"], check=True)
+    check("the file tracked by git: nothing starts", await hd.check(str(repo)) is None and len(started) == n0)
+    check("…and it's noted once", hd._load_state()[str(repo)].get("refused_tracked") is True)
+    subprocess.run(["git", "-C", str(repo), "rm", "-q", "--cached", "docs/AI_HANDOFF.md"], check=True)
+    j4 = await hd.check(str(repo))
+    check("untracked again: the work is handed over", j4 is not None and len(started) == n0 + 1)
+    jobs[j4["id"]]["status"] = "done"
+    hf.write_text(hf.read_text() + section("Muse Code (muse-wonder-1.0)", "- none"))
+    check("a folder git can't read counts as not safe", hd.tracked_by_git(str(TMP / "nowhere")) is True)
+
     print("H4 the setting")
     check("no repos until you add one", hd.repos() == [])
     hd.start = lambda: None

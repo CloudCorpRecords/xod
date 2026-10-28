@@ -2,6 +2,11 @@
 
 ## Next
 
+**Security pass**
+- The desktop app runs on Electron 44.10 (fixes a certificate-trust problem in 44.7), and two build-only packages are updated: `npm audit` and `pip-audit` find nothing.
+- The handoff only acts on a local `docs/AI_HANDOFF.md`. When the file is committed to git, Xod doesn't act on it, because a pulled commit must never hand Muse work.
+- Website audits (tech stack, traffic) check HTTPS certificates again. A site with a broken certificate is still audited, and the result says `tls_certificate: not valid: <reason>` instead of hiding it.
+
 **Phones, staying awake, and the card watcher on Windows**
 - Pair an Android phone by scanning one QR in Xod ("Pair a phone" in Your phone): the phone is set up and paired in one step, no USB cable. The code inside works once and expires in 10 minutes, and both screens show the same safety number.
 - Xod can reach paired phones through a phone MCP server (phone_list, phone_send, phone_ask, phone_open_app, phone_screen_read, phone_screen_tap, phone_location, plus background tools for SMS, notifications, calendar, contacts, network fetch, background apps and files). The action names Xod sends and the phone handles are one shared contract (`docs/phone_actions.json`), so the two can't drift apart. Permissions live on the phone: a capability switched off there answers "not allowed on this phone", anything that sends or changes things asks on the phone, and every call is logged on both sides. Approvals and Crew questions can be answered from the phone too.
