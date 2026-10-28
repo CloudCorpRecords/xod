@@ -28,7 +28,7 @@ ddgs==9.16.0                 # keyless web search (no API key needed)
 soupsieve>=3.0.1
 
 # Agent browser (Chrome DevTools Protocol)
-websockets==17.2
+websockets==17.3
 
 # Documents
 pypdf==6.21.2
