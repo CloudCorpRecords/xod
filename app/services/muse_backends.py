@@ -146,6 +146,41 @@ class MacBackend:
     def observer(self, pid: int, on_event: Callable[[], None]):
         return MacObserver(pid, on_event)
 
+    def bring_forward(self, pid: int) -> Optional[int]:
+        """Puts Muse in front (unhidden, its window unminimized), for a card it only answers there. Returns the
+        pid of the app that was in front, for put_back; None when Muse already was, or it can't be done."""
+        try:
+            import AppKit
+            front = AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
+            prev = int(front.processIdentifier()) if front is not None else None
+            if prev == pid:
+                return None
+            from ApplicationServices import AXUIElementSetAttributeValue
+            ax = MacAX()
+            for w in ax.attr(ax.create_app(pid), "AXWindows") or []:
+                if ax.attr(w, "AXMinimized"):
+                    AXUIElementSetAttributeValue(w, "AXMinimized", False)
+            app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+            if app is None:
+                return None
+            app.unhide()
+            app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+            return prev
+        except Exception:
+            return None
+
+    def put_back(self, prev: Optional[int]) -> None:
+        """The app that was in front before bring_forward goes back in front."""
+        if not prev:
+            return
+        try:
+            import AppKit
+            app = AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(prev)
+            if app is not None:
+                app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+        except Exception:
+            pass
+
 
 # ------------------------------------------------------------------ Windows (UI Automation)
 

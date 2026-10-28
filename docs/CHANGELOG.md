@@ -1,5 +1,15 @@
 # Changelog
 
+## Next
+
+**Muse approvals that need Muse in front**
+- Some Muse cards (taking a screenshot of your screen above all) only take a press, or only show their buttons, while Muse's window is in front. Before, Xod pressed Allow three times, the card stayed, and it expired. Now, when a pressed card is still showing, or a card shows no buttons, Xod brings Muse forward for that one look, presses, and puts the app you were in back in front. It also looks again 4.5 seconds after a press instead of waiting for the 30-second check.
+- An expired card is logged as "expired before Xod got to it", not as a failure.
+
+**Checking that Xod picks the right tool**
+- A new eval suite, `devices` (16 requests: send a file to your phone, hand a task to another computer, what's using your CPU, click Allow on screen …), is scored by exact tool. Run it with `.venv/bin/python -m app.services.evals --suite devices`. It runs only the router and planner, so nothing happens, and costs a few cents on a hosted model.
+- Questions about this computer that say "right now" ("what's using all my CPU right now?", "what are you working on in the background right now?") go to the planner instead of a web search. The planner is also told that work for another computer goes there through `xod_machines` (send_task), and that only `task_status` says whether that work is done.
+
 ## 0.9.6
 
 **Security pass**

@@ -1347,7 +1347,9 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"\b(files?|folders?|director(y|ies)|desktop|downloads folder|my downloads|documents folder|finder|terminal|shell|command line|"
         r"script|run (this|the|a|my)|install|uninstall|ports?\b|process(es)?\b|kill|clipboard|screenshot|screen ?shot|"
         r"open (the |my )?(app|file|folder|website|site|page|link)|launch|my mac|this mac|my computer|my laptop|"
-        r"(this|my) (pc|computer|machine|laptop|desktop computer)('?s)?|ip address|disk space|free space|(using|uses|use) (the most |a lot of |so much )?(memory|ram|cpu)|"
+        r"(this|my) (pc|computer|machine|laptop|desktop computer)('?s)?|ip address|disk space|free space|(using|uses|use|eating|hogging) (up )?(the most |a lot of |so much |all (of )?(my |the )?|my )?(memory|ram|cpu)|"
+        r"(are you|you're|you are) (working on|doing|running|busy)|in the background|"
+        r"my (phone|iphone|ipad|other (computers?|macs?|pcs?|laptops?)|xods?)|"
         r"organi[sz]e|clean ?up|tidy|rename|delete|trash|move (the|my|these|this)|edit (the|my|this)|"
         r"repo(sitory)?|workspace|codebase|my project|this project|"
         r"browser|log ?in|sign ?(up|in)|apply (for|to)|fill (out|in)|submit|book (a|me|the)|order|buy|add to cart|check ?out|"
@@ -2503,7 +2505,7 @@ TOOL ECOSYSTEM:
    - memory_search: Search your memory of past chats, finished tasks and what you know about the user. Understands time ("last week", "in September"). Args: {{"query": "...", "when": "optional, e.g. yesterday"}}
    - xod_tasks: Your own background tasks and routines: list them, or the full details and result of one. Args: {{"action": "list|get", "task": "title words or id"}}
    - tailscale_files: Files to and from the user's own devices (phone, other computers) over Tailscale. Use this, not the terminal, to send a file to their phone. Args: {{"action": "devices|send|receive", "path": "file to send", "device": "device name from devices", "folder": "optional, for receive"}}
-   - xod_machines: The user's other computers running Xod (over their Tailscale sign-in): list them, open the one-click sign-in so this Xod joins them, hand one of them a task (it runs there after the user approves it on that computer), or check that task. Args: {{"action": "list|sign_in|send_task|task_status", "machine": "name from list", "task": "what to do there", "ref": "from send_task"}}
+   - xod_machines: The user's other computers running Xod (over their Tailscale sign-in): list them, open the one-click sign-in so this Xod joins them, hand one of them a task (it runs there after the user approves it on that computer), or check that task. When they ask for something done on another of their computers ("on my other computer", "have the desktop do it", a machine by name), send_task it there; don't do it on this one. Whether a task given to another computer is done is task_status (xod_tasks and computer_list_jobs are only this computer's). Args: {{"action": "list|sign_in|send_task|task_status", "machine": "name from list", "task": "what to do there", "ref": "from send_task"}}
 
 2. Controlled Workspace ({workspace_info}):
    - fs_list_workspace_files: Explore workspace directory tree.

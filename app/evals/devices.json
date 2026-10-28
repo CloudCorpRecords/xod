@@ -1,0 +1,24 @@
+{
+ "title": "Your devices (files, other Xods, this computer)",
+ "about": "Requests about the person's own devices: sending files to their phone and other computers, their other Xods, and looking after this computer, checked against what Xod's router and planner decide, with the This Mac connector connected. Scored by tool: want is the tool (tool.action) that should come first; never: tools that must not appear. Moving files to a device must use tailscale_files, not the shell.",
+ "mac_connected": true,
+ "by_tool": true,
+ "cases": [
+  {"id": "send-to-phone", "q": "send ~/Desktop/report.pdf to my iphone", "want": ["tailscale_files.send", "tailscale_files.devices"], "never": ["computer_run_command", "computer_start_job"]},
+  {"id": "send-find-first", "q": "send the newest screenshot on my desktop to my phone", "want": ["computer_find_files", "computer_list_directory", "computer_run_command", "tailscale_files.devices", "tailscale_files.send"], "note": "Finding the file with ls is fine; the send itself must be tailscale_files."},
+  {"id": "which-devices", "q": "what devices can I send files to?", "want": ["tailscale_files.devices"]},
+  {"id": "get-from-phone", "q": "I just sent a photo from my phone, grab it", "want": ["tailscale_files.receive", "tailscale_files.devices"], "never": ["computer_run_command"]},
+  {"id": "list-xods", "q": "which of my computers have Xod running?", "want": ["xod_machines.list", "xod_machines"]},
+  {"id": "connect-xods", "q": "sign me in so my computers can find each other", "want": ["xod_machines.sign_in", "xod_machines.list"]},
+  {"id": "hand-to-laptop", "q": "have my other computer clean up its own Downloads folder", "want": ["xod_machines.send_task", "xod_machines.list"], "never": ["computer_batch_organize", "computer_manage_file"]},
+  {"id": "laptop-done", "q": "did my other computer finish the task I sent it?", "want": ["xod_machines.task_status", "xod_machines.list", "xod_tasks.list"]},
+  {"id": "cpu-hog", "q": "what's using all my CPU right now?", "want": ["computer_inspect_system"]},
+  {"id": "port-3000", "q": "what's running on port 3000? kill it", "want": ["computer_inspect_port"]},
+  {"id": "open-app", "q": "open Spotify", "want": ["desktop_open_app", "computer_open_item", "open_app", "apps_open"]},
+  {"id": "click-allow", "q": "there's an Allow button on my screen, click it", "want": ["desktop_look", "desktop_click", "computer_run_applescript"]},
+  {"id": "your-work", "q": "what are you working on in the background right now?", "want": ["xod_tasks.list", "computer_list_jobs"]},
+  {"id": "health", "q": "is everything in Xod working ok?", "want": ["xod_doctor"]},
+  {"id": "tidy-downloads", "q": "organize my Downloads folder", "want": ["computer_batch_organize", "computer_list_directory"], "never": ["xod_machines.send_task"]},
+  {"id": "control-hello", "q": "hey, thanks for the help earlier", "want": ["answer"], "control": true}
+ ]
+}

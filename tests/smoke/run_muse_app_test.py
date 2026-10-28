@@ -60,6 +60,8 @@ class FakeAX:
 
 def main():
     from app.services import muse_app
+    muse_app._bring_forward = lambda: None      # never move a real app's window from a test
+    muse_app._put_back = lambda prev: None
 
     print("M1 in-process AX walk (no osascript)")
     allow = El("AXButton", "Allow")
@@ -386,6 +388,51 @@ def main():
     muse_app._ax_api, muse_app._muse_pid = saved_ax, saved_pid
     check("the neutral core presses Allow on a fake Windows UIA tree (InvokePattern)",
           got["button"] == "Allow" and got["pressed"] and allow_raw.invoked, str(got)[:200])
+
+    print("M12 a card Muse only answers with its window in front (the screenshot cards)")
+    fronts = []
+    muse_app._bring_forward = lambda: fronts.append("forward") or 99
+    muse_app._put_back = lambda prev: fronts.append(("back", prev))
+    muse_app.FRONT_SETTLE = 0.01
+    expired = El("AXGroup", "Approval request for Take screenshot", [
+        El("AXStaticText", "This approval has expired. Allow Tree to take a screenshot?"), El("AXButton", "Allow")])
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [expired])]))
+    got = muse_app._scan(True)["approved"][0]
+    check("an expired card isn't pressed, and says it expired", not got["pressed"] and "expired" in got["reason"]
+          and not expired.children[1].pressed, str(got))
+
+    allow8 = El("AXButton", "Allow")
+    card8 = El("AXGroup", "Approval request for Take screenshot", [El("AXStaticText", "Allow Tree to take a screenshot of your screen?"), allow8])
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [card8])]))
+
+    async def repress():
+        muse_app.REPRESS_AFTER = 0.05
+        try:
+            await muse_app.scan_once()       # press 1, Muse left where it was
+            n0 = list(fronts)
+            await _asyncio.sleep(0.1)
+            await muse_app.scan_once()       # still showing: Muse comes forward for press 2, then goes back
+            return n0
+        finally:
+            muse_app.REPRESS_AFTER = 4.0
+    n0 = _asyncio.run(repress())
+    check("a press that didn't take: the next press brings Muse forward, then puts your app back",
+          n0 == [] and fronts == ["forward", ("back", 99)] and allow8.presses == 2, f"{n0} {fronts} {allow8.presses}")
+
+    fronts.clear()
+    hidden_card = El("AXGroup", "Approval request for Threads Messages", [
+        El("AXStaticText", "Allow Tree to send this message on Threads?"), El("AXButton", "Hide details")])
+    allow9 = El("AXButton", "Allow")
+    real_forward = muse_app._bring_forward
+    muse_app._bring_forward = lambda: (fronts.append("forward"), hidden_card.children.append(allow9))[0] or 99
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [hidden_card])]))
+    before = len(agent_log.approvals(500))
+    cards = _asyncio.run(muse_app.scan_once())
+    rows = agent_log.approvals(500)[:len(agent_log.approvals(500)) - before]
+    check("a card showing no buttons: Muse comes forward, its Allow is pressed in the same look, logged once",
+          allow9.pressed and fronts == ["forward", ("back", 99)] and len(rows) == 1 and rows[0]["decision"] == "allowed by Xod"
+          and "front" in rows[0]["detail"], f"{fronts} {[(r['decision'], r['detail'][:80]) for r in rows]}")
+    muse_app._bring_forward = real_forward
 
     print("M3 switching off clears the old warning")
     muse_app._state["error"] = "old warning"

@@ -19,6 +19,11 @@ Every card seen is logged once, ever (a hash of the card in the approvals DB sur
 the full card text is in the row's detail. A card it may not press is logged too, with the reason. At 8 AM,
 if anything happened, one summary notification and one history entry say what was approved overnight.
 
+Muse only takes some presses (the screenshot cards above all), and only shows some cards' buttons, while its
+window is in front. So when a pressed card is still showing, or a card shows no buttons, Xod brings Muse forward for
+that one look, presses, and puts the app you were in back in front: about a second, and only then. An expired card
+is logged as expired and never pressed.
+
 Test mode: XOD_MUSE_APP_DRY_RUN=1 makes scans read-only (nothing is ever pressed), so the switch and the
 UI can be click-tested without touching real cards.
 """
@@ -47,6 +52,7 @@ BURST_DELAYS = (0.25, 1.0, 2.5)
 SCAN_TIMEOUT = 10.0  # a healthy in-process walk takes well under a second; this only guards a stuck tree
 REPRESS_AFTER = 4.0   # a pressed card should be gone; one still showing after this is a new showing (or a failed press)
 MAX_PRESS_TRIES = 3   # ...and after this many presses of one showing, stop and log it as failed
+FRONT_SETTLE = 0.6    # after bringing Muse forward (or before putting the other app back): let the window settle
 SUMMARY_HOUR = 8
 DRY_RUN = bool(os.environ.get("XOD_MUSE_APP_DRY_RUN"))
 
@@ -191,6 +197,19 @@ def _muse_pid():
     return b.pid() if b else None
 
 
+def _bring_forward() -> Optional[int]:
+    """Muse in front, for a card it only answers there; the app that was in front, for _put_back."""
+    b, pid = _backends.backend(), _muse_pid()
+    f = getattr(b, "bring_forward", None)
+    return f(pid) if f and pid else None
+
+
+def _put_back(prev: Optional[int]) -> None:
+    f = getattr(_backends.backend(), "put_back", None)
+    if f and prev:
+        f(prev)
+
+
 def _label(ax, el) -> str:
     for name in ("AXTitle", "AXDescription", "AXValue"):
         value = ax.attr(el, name)
@@ -286,7 +305,9 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
                     chosen = chosen2
             entry = {"title": title, "what": what, "pressed": False, "button": chosen, "reason": "",
                      "type": _card_type(title), **_card_fields(what, texts)}
-            if chosen is not None and press and _card_id(entry) in (skip_ids or set()):
+            if "approval has expired" in what.lower():
+                entry["button"], entry["reason"] = None, "expired before Xod got to it"
+            elif chosen is not None and press and _card_id(entry) in (skip_ids or set()):
                 entry["reason"] = "already pressed: not pressing again"
             elif chosen is None:
                 labs = [l for l in buttons if l.lower() in ("deny", "don't send", "deny all")]
@@ -507,10 +528,34 @@ async def scan_once() -> List[Dict[str, Any]]:
             skip = {pid for pid, m in marks.items()
                     if m["tries"] >= MAX_PRESS_TRIES or now - m["last"] < REPRESS_AFTER}
             capped = {pid for pid, m in marks.items() if m["tries"] >= MAX_PRESS_TRIES}
-            res = await asyncio.to_thread(_scan, True, skip)
+            fronted = _state.setdefault("fronted", set())
+            showing = _state.get("present_ids") or set()
+            repress = {pid for pid in showing if pid in marks and pid not in skip}
+            unanswerable = (_state.get("no_button_ids") or set()) - fronted
+            prev, moved = None, False
+            if (repress or unanswerable) and not DRY_RUN:
+                # Muse sometimes only takes a press, or only shows a card's buttons, with its window in front
+                # (the screenshot cards above all). Bring it forward for this look, then put back what was there.
+                fronted |= repress | unanswerable
+                prev = await asyncio.to_thread(_bring_forward)
+                moved = prev is not None
+                if moved:
+                    await asyncio.sleep(FRONT_SETTLE)
+            try:
+                res = await asyncio.to_thread(_scan, True, skip)
+            finally:
+                if moved:
+                    await asyncio.sleep(FRONT_SETTLE)
+                    await asyncio.to_thread(_put_back, prev)
             cards = res.get("approved") or []
+            no_button = {_card_id(c) for c in cards if c.get("button") is None and str(c.get("reason", "")).startswith("no button")}
+            if no_button - fronted and not moved and not DRY_RUN and not any(c.get("pressed") for c in cards):
+                _state["no_button_ids"] = no_button       # look again at once with Muse in front, before logging it
+                continue
             keys = {(c.get("title") or "", c.get("what") or "") for c in cards}
             for c in cards:
+                if moved and c.get("pressed"):
+                    c["reason"] = "brought Muse to the front to press it"
                 cid = _card_id(c)
                 if c.get("pressed"):
                     _state["pressed_ids"].add(cid)
@@ -524,11 +569,18 @@ async def scan_once() -> List[Dict[str, Any]]:
                     _log(c)
             _state["present"] = keys
             _state["present_ids"] = {_card_id(c) for c in cards}
+            _state["no_button_ids"] = no_button
             for pid in [pid for pid in marks if pid not in _state["present_ids"]]:
                 marks.pop(pid, None)          # the showing ended; an identical card later is a new showing
                 _state["fail_logged"].discard(pid)
+            fronted &= _state["present_ids"]
             _state["primed"] = True
             _state["error"] = None
+            loop = _state.get("loop")
+            if loop is not None and any(c.get("pressed") for c in cards):
+                # a pressed card should be gone by then; if it isn't, the next look presses again (with Muse in
+                # front), well before the 30s backstop and before Muse lets the card expire
+                loop.call_later(REPRESS_AFTER + 0.5, _fire_scan)
             if not _state.get("scan_again"):
                 return cards
 
