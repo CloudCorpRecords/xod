@@ -2780,6 +2780,26 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "tailscale_files",
+            "description": "Move files between this computer and the person's own devices (phone, other computers) over Tailscale. "
+                           "devices: which devices can take a file and which are online. send: one file to one device (the "
+                           "person approves it on a card first). receive: take the files their devices sent to this computer "
+                           "into ~/Downloads/Xod (or a folder).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["devices", "send", "receive"]},
+                    "path": {"type": "string", "description": "For send: the file on this computer."},
+                    "device": {"type": "string", "description": "For send: the device's name, as devices lists it."},
+                    "folder": {"type": "string", "description": "For receive: where to put the files (default ~/Downloads/Xod)."}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "memory_store",
             "description": "Permanently stores a memory into the SQLite vector memory vault (e.g. user coding preferences, architectural patterns, lessons learned, or project facts).",
             "parameters": {
@@ -3159,6 +3179,39 @@ def _desktop_setup_card(a: Dict[str, Any]) -> Dict[str, Any]:
     return held
 
 
+_send_grants: set = set()
+
+
+async def _taildrop_tool(a: Dict[str, Any]) -> Dict[str, Any]:
+    """Files to and from the person's devices (services/taildrop.py). A send leaves this computer, so it always waits
+    for the person's OK on a card; the card's approval runs it."""
+    from app.services import sentinel, taildrop
+    act = (a.get("action") or "devices").lower()
+    try:
+        if act == "devices":
+            found = await asyncio.to_thread(taildrop.devices)
+            return {"success": True, "devices": found, "count": len(found)}
+        if act == "receive":
+            got = await asyncio.to_thread(taildrop.receive, a.get("folder") or "")
+            return {"success": True, **got, "count": len(got["files"])}
+        if act != "send":
+            return {"success": False, "error": f"Unknown action '{act}': devices, send or receive."}
+        token = a.pop("_grant", None)
+        if token and token in _send_grants:
+            _send_grants.discard(token)
+            return {"success": True, **await asyncio.to_thread(taildrop.send, a.get("path") or "", a.get("device") or "")}
+        plan = await asyncio.to_thread(taildrop.check_send, a.get("path") or "", a.get("device") or "")
+    except taildrop.TaildropError as e:
+        return {"success": False, "error": str(e)}
+    t = uuid.uuid4().hex
+    _send_grants.add(t)
+    mb = plan["size"] / 1024 ** 2
+    held = sentinel.hold("tailscale_files", {"action": "send", "path": plan["file"], "device": plan["device"], "_grant": t},
+                         {"rule": "taildrop_send", "why": f"Xod wants to send {plan['name']} ({mb:.1f} MB) to {plan['device']} over Tailscale."})
+    held["args"] = {"action": "send", "path": plan["file"], "device": plan["device"]}
+    return held
+
+
 def _agent_from_request(ac) -> str:
     """The terminal agent the person named in this request, or the only one installed."""
     from app.services import sentinel
@@ -3439,6 +3492,8 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         return await _desktop(name, dict(arguments or {}))
     if name == "desktop_setup":
         return _desktop_setup_card(dict(arguments or {}))
+    if name == "tailscale_files":
+        return await _taildrop_tool(dict(arguments or {}))
     if name in CLI_TOOLS or name in LEGACY_AGENT_TOOLS:
         return await _cli_agents(name, dict(arguments or {}))
     if name in ("agent_mail_send", "agent_mail_inbox"):
@@ -4572,6 +4627,11 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
     if any(k in q for k in ["broken", "not working", "isn't working", "doesn't work", "fix yourself", "health", "diagnose",
                              "what's wrong", "whats wrong", "keeps failing", "self heal", "self-heal", "check yourself", "stuck"]):
         affinities.append("xod_doctor")
+
+    # Files to and from the person's own devices
+    if any(k in q for k in ["taildrop", "tailscale", "to my phone", "to my iphone", "to my android", "from my phone",
+                             "my devices", "airdrop", "send it to my", "send this to my", "send the file to"]):
+        affinities.append("tailscale_files")
 
     # Local Workspace & Computer Filesystem affinities
     if active_workspace_path or any(k in q for k in ["file", "files", "folder", "folders", "code", "read", "write", "search", "workspace", "project", "dir", "directory", "directories", "script", "readme", "config", "env", "inspect", "audit", "check", "move", "organize", "create folder", "mkdir", "directory tree", "file tree", "folder tree", "edit", "update", "patch"]):

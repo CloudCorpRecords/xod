@@ -69,6 +69,7 @@ jobs:
           python tests/smoke/run_crew_test.py
           python tests/smoke/run_handoff_dispatch_test.py
           python tests/smoke/run_agent_usage_test.py
+          python tests/smoke/run_taildrop_test.py
           python tests/smoke/run_tls_fetch_test.py
           python tests/smoke/run_evals_test.py
           python tests/smoke/run_mac_abilities_test.py
