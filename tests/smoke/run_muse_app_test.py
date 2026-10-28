@@ -320,6 +320,73 @@ def main():
     check("no button inside the card: Xod looks in the card's panel and presses Send there",
           got["button"] == "Send" and send_out.pressed, str(got)[:200])
 
+    print("M11 keep-awake + lock state, and the Windows UIA backend over a fake tree")
+    from app.services import power, muse_backends
+    class FakeAwake(power._AwakeBackend):
+        def __init__(self): super().__init__(); self.starts = 0; self.stops = 0
+        def start(self): self.starts += 1; self.held = True; return True
+        def stop(self): self.stops += 1; self.held = False
+    fake_awake = FakeAwake()
+    power._state["backend"], saved_reasons = fake_awake, dict(power._state["reasons"])
+    power._state["reasons"] = {}
+    power.acquire("auto-approve"); power.acquire("auto-approve"); power.acquire("crew job")
+    check("keep-awake: held once for the first reason, reasons listed", fake_awake.starts == 1
+          and power.status()["awake_held"] and power.held_reasons() == ["auto-approve", "crew job"], str(power.status()))
+    power.release("auto-approve")
+    check("keep-awake: still held while a Crew job runs", fake_awake.stops == 0 and power.status()["awake_held"])
+    power.ensure("crew job", False)
+    check("keep-awake: released when idle", fake_awake.stops == 1 and not power.status()["awake_held"])
+    power.acquire("auto-approve")
+    held_status = muse_app.status()
+    check("watcher status reports power's real awake state while held (never None)",
+          held_status.get("awake") is True and held_status.get("awake_held") is True, str(held_status))
+    power.release("auto-approve")
+
+    class FailingAwake(power._AwakeBackend):
+        def start(self): return False
+    power._state["backend"] = FailingAwake()
+    power.acquire("auto-approve")
+    check("power status is the backend's real state (a failed assertion is not held)",
+          power.status()["awake_held"] is False, str(power.status()))
+    power.release("auto-approve")
+    power._state["backend"], power._state["reasons"] = None, saved_reasons
+    locked = power.is_locked()
+    check("lock state reads on this Mac (bool, never a password anywhere)", locked in (True, False), repr(locked))
+    st = muse_app.status()
+    check("watcher status carries backend, awake and locked", st.get("backend") in ("mac_ax", "win_uia", None)
+          and "awake_held" in st and "locked" in st, str(st))
+
+    class Raw:
+        def __init__(self, name, ctype, kids=()):
+            self.CurrentName, self.CurrentControlType, self.kids = name, ctype, list(kids)
+            self.invoked = False
+        def GetCurrentPattern(self, pid_):
+            return self if pid_ == muse_backends.UIA_InvokePattern else None
+        def QueryInterface(self, iface):
+            return self
+        def Invoke(self):
+            self.invoked = True
+    class Walker:
+        def GetFirstChildElement(self, raw): return raw.kids[0] if raw.kids else None
+        def GetNextSiblingElement(self, raw): return getattr(raw, "next_sib", None)
+        def GetParentElement(self, raw): return getattr(raw, "parent_raw", None)
+    allow_raw = Raw("Allow", 50000)
+    card_raw = Raw("Approval request for Browser", 50026, [Raw("Allow an upload?", 50020), allow_raw])
+    root_raw = Raw("Muse", 50032, [card_raw])
+    for parent in (root_raw, card_raw):
+        for i, k in enumerate(parent.kids):
+            k.parent_raw = parent
+            k.next_sib = parent.kids[i + 1] if i + 1 < len(parent.kids) else None
+    win = muse_backends.WinAX(automation=object(), walker=Walker(), app_root=root_raw)
+    check("Windows backend is picked on win32, Mac backend here", muse_backends.backend("win32").name == "win_uia"
+          and muse_backends.backend("darwin").name == "mac_ax" and muse_backends.backend("linux") is None)
+    saved_ax, saved_pid = muse_app._ax_api, muse_app._muse_pid
+    muse_app._ax_api, muse_app._muse_pid = lambda: win, lambda: 777
+    got = muse_app._scan(True)["approved"][0]
+    muse_app._ax_api, muse_app._muse_pid = saved_ax, saved_pid
+    check("the neutral core presses Allow on a fake Windows UIA tree (InvokePattern)",
+          got["button"] == "Allow" and got["pressed"] and allow_raw.invoked, str(got)[:200])
+
     print("M3 switching off clears the old warning")
     muse_app._state["error"] = "old warning"
     muse_app.set_enabled(False)

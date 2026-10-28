@@ -1,5 +1,37 @@
 # Changelog
 
+## Next
+
+**Security pass**
+- The desktop app runs on Electron 44.10 (fixes a certificate-trust problem in 44.7), and two build-only packages are updated: `npm audit` and `pip-audit` find nothing.
+- The handoff only acts on a local `docs/AI_HANDOFF.md`. When the file is committed to git, Xod doesn't act on it, because a pulled commit must never hand Muse work.
+- Website audits (tech stack, traffic) check HTTPS certificates again. A site with a broken certificate is still audited, and the result says `tls_certificate: not valid: <reason>` instead of hiding it.
+- Typing into other apps goes where it's meant to: Xod puts text straight into the focused field when the app allows it (no keystrokes, no clipboard), re-checks the app is still in front right before a paste and before Return, and stops (saying which app took focus) instead of typing into the wrong window. It waits while you're using the keyboard or mouse.
+
+**Your Xods: sign in once**
+- One click (Your Xods → Sign in) opens Tailscale's sign-in, where you pick Google, Microsoft, GitHub or Apple. Every computer signed in with the same account finds the other Xods, online or not, and ones shared with you are marked. Xod keeps no accounts of its own. Ask Xod about "my other Xods", or use the xod_machines tool.
+- Each Xod is findable through a small read-only listener on its Tailscale address only (port 8791). It answers with the computer's name and OS, nothing else. Turn it off with "Let my other Xods find this computer".
+- Hand a task to another of your Xods ("on my laptop, …", or xod_machines send_task). It never runs by itself: it shows as an approval card on that computer (and your phone), and only your Approve puts it in that computer's task inbox. The sender can see whether it was approved, how it's going, and its result. Only devices signed in to your own account can hand work over; Tailscale vouches for who is calling, so shared machines and other people's devices are refused.
+
+**Files to and from your devices**
+- Xod moves files between this computer and your own devices over Tailscale (tailscale_files): it lists which devices can take a file and which are online, sends one file to one of them, and takes what your phone or other computers sent into `~/Downloads/Xod` without overwriting anything. A send is checked first (the file exists, is under 4 GB, the device is yours and online), then goes straight through, like the Muse card approvals. Turn on the setting `taildrop_ask_first` to get an approval card before each send instead, including a `tailscale file cp` run from the terminal.
+
+**Phones, staying awake, and the card watcher on Windows**
+- Pair an Android phone by scanning one QR in Xod ("Pair a phone" in Your phone): the phone is set up and paired in one step, no USB cable. The code inside works once and expires in 10 minutes, and both screens show the same safety number.
+- Xod can reach paired phones through a phone MCP server (phone_list, phone_send, phone_ask, phone_open_app, phone_screen_read, phone_screen_tap, phone_location, plus background tools for SMS, notifications, calendar, contacts, network fetch, background apps and files). The action names Xod sends and the phone handles are one shared contract (`docs/phone_actions.json`), so the two can't drift apart. Permissions live on the phone: a capability switched off there answers "not allowed on this phone", anything that sends or changes things asks on the phone, and every call is logged on both sides. Approvals and Crew questions can be answered from the phone too.
+- If Tailscale is installed but not signed in, Xod now says so ("open it and sign in") instead of offering no way for agents elsewhere to reach this computer.
+- While "Approve everything" is on or a Crew job runs, Xod keeps the display awake so the computer doesn't lock mid-job; Crew shows it, and phone_list reports whether the screen is locked. Xod never types your login password anywhere.
+- The Muse approval-card watcher is split into a shared core and per-OS backends, with a Windows (UI Automation) backend next to the Mac one, so approving cards can work on Windows too.
+
+**Muse jobs start again, and Muse picks up its own work**
+- Muse jobs from Xod failed at once ("mcpServers does not match the supported shape") when a connected app like GitHub was shared with them: newer Muse wants each shared app to say how it connects, and Xod to ask for that when it starts Muse. Xod does both now, so jobs start and still get GitHub.
+- When another AI leaves work for Muse Code in a repo's `docs/AI_HANDOFF.md`, Xod starts a Muse job for it by itself, so nobody has to copy the note across. It's on for the repos you list (for now through Xod's API, `/api/crew/settings/handoff-dispatch`; a Crew switch comes next). Each note starts one job, a running job is never doubled, a failed one is tried again later (twice at most), and Muse leaves its work uncommitted for you to approve.
+- When Muse is out of usage, Xod waits until the reset time its error gives, then hands the work over again, without counting that as a failed try.
+- iPhone, through your Mac: Xod can read and tap your iPhone in macOS iPhone Mirroring while the phone stays locked (Mac only, off until you switch it on in Your phone). It pauses while you're using your iPhone.
+- Xod reads how much of Muse's subscription is left (`muse usage`) and waits for the reset instead of starting a job that would fail. The quota is shared across Muse's models, so switching models doesn't get around it.
+- Pick the Muse model per job: a default, and a cheaper one (for example muse-spark-1.3) for handed-over work, or for every job once your weekly allowance passes a level you choose.
+- Crew has a **Loop** panel: whether work is being handed to Muse, each repo's last job and its model, when the next one can start, Muse's usage with reset times, auto-approve, and whether the display is kept awake.
+
 ## 0.9.5
 
 **Approve everything: quicker, and harder to miss a card**

@@ -113,9 +113,52 @@
     refresh();
   }
 
+  const when = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  function usageLine(u) {
+    if (!u || !u.available) return "Muse isn't installed.";
+    if (u.error) return `Muse usage: couldn't read it (${esc(u.error)})`;
+    const part = (name, x) => x ? `${name} ${Math.round(x.used)}%` + (x.resets_at ? ` (resets ${x.used >= 100 ? when(x.resets_at) : "later"})` : "") : "";
+    const txt = [part("window", u.window), part("weekly", u.weekly)].filter(Boolean).join(" · ");
+    return (u.out ? `<span class="text-amber-300">Muse is out of usage until ${u.until ? when(u.until) : "its reset"}.</span> ` : "") + `Muse usage: ${txt || "unknown"}`;
+  }
+
+  let modelsLoaded = false;
+  async function refreshLoop() {
+    const body = root.querySelector("[data-c-loop-body]");
+    const box = root.querySelector("[data-c-loop]");
+    if (!body || !box || !box.open) return;
+    const L = await api("/api/crew/loop");
+    if (!L || L.success === false) { body.textContent = "Couldn't read the loop."; return; }
+    const rows = (L.repos || []).map((r) => {
+      const j = r.last_job;
+      const job = j ? `${esc(j.status)}${j.steps ? `, ${j.steps} steps` : ""}${j.model ? ` on ${esc(j.model)}` : ""}` : "nothing handed over yet";
+      const next = r.next_start ? ` · next start ${when(r.next_start)}` : "";
+      return `<div><b class="text-zinc-200">${esc(r.name)}</b>: ${job}${next}</div>`;
+    }).join("");
+    body.innerHTML = `<div>${L.handoff_on ? "On" : "Off (no repos watched)"}${L.auto_approve && L.auto_approve.on ? " · auto-approve on" : ""}${L.auto_approve && L.auto_approve.awake_held ? " · keeping the display awake" : ""}</div>`
+      + `<div>${usageLine(L.usage)}</div>` + rows;
+    if (!modelsLoaded && L.models) {
+      modelsLoaded = true;
+      root.querySelector("[data-c-model-default]").value = L.models.default || "";
+      root.querySelector("[data-c-model-cheap]").value = L.models.cheap || "";
+      root.querySelector("[data-c-model-handoff]").checked = (L.models.cheap_for || []).includes("handoff");
+      root.querySelector("[data-c-model-weekly]").value = L.models.cheap_above_weekly ?? "";
+      root.querySelector("[data-c-model-save]").onclick = async () => {
+        const w = root.querySelector("[data-c-model-weekly]").value.trim();
+        const r = await api("/api/crew/settings/models", {
+          default: root.querySelector("[data-c-model-default]").value, cheap: root.querySelector("[data-c-model-cheap]").value,
+          cheap_for: root.querySelector("[data-c-model-handoff]").checked ? ["handoff"] : [],
+          ...(w === "" ? { clear_cheap_above_weekly: true } : { cheap_above_weekly: Number(w) }),
+        });
+        if (typeof showToast === "function") showToast(r.success ? "Saved: new Muse jobs use these models." : r.error);
+      };
+    }
+  }
+
   async function refresh() {
     if (!root || root.classList.contains("hidden")) return;
     refreshAutoApprove();
+    refreshLoop();
     const d = await api("/api/crew");
     const jobs = d.jobs || [];
     if (current && !jobs.some((j) => j.id === current)) current = null;
@@ -168,6 +211,15 @@
                 <details data-c-tools class="text-[11px] text-zinc-400"><summary class="cursor-pointer hover:text-zinc-200">Muse's tools for jobs</summary>
                   <p class="mt-1">Each one Muse starts before a job begins (all of yours took minutes), so jobs get only the ones you tick.</p>
                   <div data-c-toolbox class="mt-1 max-h-40 overflow-y-auto grid grid-cols-2 gap-x-2"></div></details>
+                <details data-c-loop class="text-[11px] text-zinc-400" open><summary class="cursor-pointer hover:text-zinc-200">Loop: work handed to Muse</summary>
+                  <div data-c-loop-body class="mt-1 space-y-1"></div>
+                  <div class="mt-2 space-y-1">
+                    <div class="flex items-center gap-1"><span class="w-20 shrink-0">Model</span><input data-c-model-default class="flex-1 min-w-0 bg-surface-700 text-zinc-200 rounded px-1.5 py-0.5" placeholder="Muse's default"></div>
+                    <div class="flex items-center gap-1"><span class="w-20 shrink-0">Cheaper model</span><input data-c-model-cheap class="flex-1 min-w-0 bg-surface-700 text-zinc-200 rounded px-1.5 py-0.5" placeholder="e.g. muse-spark-1.3"></div>
+                    <label class="flex items-center gap-1.5"><input type="checkbox" data-c-model-handoff> Use the cheaper model for handed-over work</label>
+                    <div class="flex items-center gap-1"><span>…and for every job once the weekly allowance is at</span><input data-c-model-weekly type="number" min="0" max="100" class="w-12 bg-surface-700 text-zinc-200 rounded px-1 py-0.5" placeholder="off">%</div>
+                    <button data-c-model-save class="px-2 py-0.5 rounded bg-surface-700 text-zinc-200 hover:bg-surface-600">Save models</button>
+                  </div></details>
               </div>
             </div>
             <div data-c-detail class="flex-1 min-w-0 flex flex-col"></div>
@@ -226,7 +278,14 @@
     const box = root.querySelector("[data-c-autoapprove]");
     if (box && document.activeElement !== box) box.checked = !!st.on;
     const note = root.querySelector("[data-c-autoapprove-note]");
-    if (note) { note.textContent = st.accessibility_error || ""; note.classList.toggle("hidden", !st.accessibility_error); }
+    if (note) {
+      const bits = [];
+      if (st.accessibility_error) bits.push(st.accessibility_error);
+      else if (st.on && st.awake_held) bits.push("Staying awake while this is on, so the computer doesn't lock mid-job.");
+      if (st.on && st.locked) bits.push("Screen is locked: cards are still read; a press while locked is unproven.");
+      note.textContent = bits.join(" ");
+      note.classList.toggle("hidden", !bits.length);
+    }
   }
 
   async function loadAutoApprove() {

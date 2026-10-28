@@ -53,6 +53,10 @@ class FakeMac:
         d._app_at = lambda pt: self.front
         d.front_app = lambda: self.front
         d._focused_is_password = lambda: self.password_focus
+        self.ax_ok = False                     # the focused field takes text through Accessibility (False: paste)
+        d._ax_insert = lambda t: (self.events.append(("ax", t)) or True) if self.ax_ok else False
+        self.busy = False                      # the person is using the keyboard or mouse
+        d._user_active = lambda: self.busy
         # Sealed: no real event, Apple Event or app launch can leave this test.
         d._post = lambda ev: self.events.append(("event",))
         self.clipboard = "your own clipboard"
@@ -442,6 +446,45 @@ async def main() -> None:
     check("a window you closed is forgotten", len(desktop.owned_windows()) == 1, str(desktop.owned_windows()))
     desktop.subprocess.run = real_sprun
     desktop._osa, desktop._running, desktop.open_terminal_with = fake.osa, (lambda bundle: False), (lambda *a, **k: {"window": 0})
+
+    print("D12 typing goes only where it was meant to")
+    desktop._allow("com.apple.Notes")
+    desktop._state["left_at"], desktop._state["stop"] = None, False
+    fake.front = {"name": "Notes", "bundle": "com.apple.Notes", "pid": 42}
+    fake.events.clear(); fake.ax_ok = True
+    r = await desktop.type_text("hello there")
+    check("a field that takes text directly: no clipboard, no keys", r.get("success") and ("ax", "hello there") in fake.events
+          and not any(e[0] in ("clip", "key") for e in fake.events) and "directly" in r.get("did", r.get("summary", str(r))), str(fake.events))
+    fake.events.clear(); fake.ax_ok = False
+    real_front = desktop.front_app
+    seq = iter([{"name": "Notes", "bundle": "com.apple.Notes", "pid": 42}, {"name": "Slack", "bundle": "com.tinyspeck.slackmacgap", "pid": 77}])
+    desktop.front_app = lambda: next(seq, {"name": "Slack", "bundle": "com.tinyspeck.slackmacgap", "pid": 77})
+    try:
+        await desktop.type_text("secret plans")
+        stopped = False
+    except DesktopError as e:
+        stopped = "Slack came to the front" in str(e)
+    check("another app comes forward before the paste: Xod stops, nothing pasted", stopped and ("key", "cmd+v") not in fake.events, str(fake.events))
+    check("…and your clipboard is put back", fake.clipboard == "your own clipboard", fake.clipboard)
+    fake.events.clear(); fake.ax_ok = True
+    seq2 = iter([{"name": "Notes", "bundle": "com.apple.Notes", "pid": 42}])
+    desktop.front_app = lambda: next(seq2, {"name": "Slack", "bundle": "com.tinyspeck.slackmacgap", "pid": 77})
+    try:
+        await desktop.type_text("send it", enter=True)
+        stopped = False
+    except DesktopError as e:
+        stopped = "Slack" in str(e)
+    check("…or before Return: Xod stops and never presses it", stopped and ("key", "return") not in fake.events, str(fake.events))
+    desktop.front_app = real_front
+    fake.events.clear(); fake.busy = True
+    desktop.QUIET_WAIT_SEC = 1.0
+    try:
+        await desktop.type_text("later")
+        waited = False
+    except DesktopError as e:
+        waited = "using the keyboard or mouse" in str(e)
+    check("you're typing or clicking: Xod waits, then says so instead of typing", waited and not any(e[0] in ("ax", "clip", "key") for e in fake.events), str(fake.events))
+    fake.busy = False; fake.ax_ok = False; desktop.QUIET_WAIT_SEC = 20.0
 
     print("D8 this Mac's real front window (read only; only with XOD_LIVE_SCREEN=1)")
     if os.environ.get("XOD_LIVE_SCREEN") != "1":

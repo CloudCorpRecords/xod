@@ -609,6 +609,8 @@ async def _start_task_worker():
     asyncio.create_task(local_servers.idle_loop())   # stops the built-in engine after a while unused
     from app.services import phone
     phone.start()                           # the linked phone (Telegram), if there is one
+    from app.services import phone_mcp
+    phone_mcp.start_bridge()                # Approvals/Crew questions to a paired Android phone, if one is paired
 
 
 class ModelRef(BaseModel):
@@ -729,6 +731,69 @@ async def phone_test():
     return {"success": bool(ok), "error": None if ok else "Not linked yet, or Telegram couldn't be reached."}
 
 
+@app.get("/api/phone/pair-offer")
+async def phone_pair_offer():
+    """A fresh 'Pair a phone' QR (10-minute, one-time code) for the Android app to scan."""
+    from app.services import phone_pair
+    return phone_pair.create_offer()
+
+
+@app.post("/api/phone/pair-offer/cancel")
+async def phone_pair_offer_cancel():
+    from app.services import phone_pair
+    phone_pair.cancel()
+    return {"success": True}
+
+
+@app.get("/api/phones")
+async def phones_list():
+    """Paired Android phones (over Agent Mail), their capability switches, and this computer's lock/awake."""
+    from app.services import phone_mcp
+    return phone_mcp.phone_list()
+
+
+class PhonePairRequest(BaseModel):
+    address: str
+    nickname: Optional[str] = ""
+
+
+@app.post("/api/phones/pair")
+async def phones_pair(req: PhonePairRequest):
+    """Marks a phone that paired on its own screen as reachable (its keys must already be pinned)."""
+    from app.services import phone_mcp
+    return phone_mcp.pair_phone(req.address, req.nickname or "")
+
+
+@app.delete("/api/phones/{address}")
+async def phones_unpair(address: str):
+    from app.services import phone_mcp
+    return {"success": phone_mcp.unpair_phone(address)}
+
+
+@app.get("/api/phones/iphone-mirroring")
+async def phones_iphone_mirroring():
+    """iPhone Mirroring (Mac only): whether it's switched on, and plainly if it's paused."""
+    from app.services import iphone_mirror
+    return iphone_mirror.status()
+
+
+class MirrorToggle(BaseModel):
+    on: bool
+
+
+@app.post("/api/phones/iphone-mirroring")
+async def phones_set_iphone_mirroring(req: MirrorToggle):
+    from app.services import iphone_mirror
+    return iphone_mirror.set_enabled(req.on)
+
+
+@app.get("/api/phones/log")
+async def phones_log(limit: int = 100):
+    """Every phone MCP call Xod made (the phone app shows its own side too)."""
+    from app.services import phone_mcp
+    return {"calls": phone_mcp.audit_log(limit)}
+
+
 @app.get("/api/mcp")
 async def mcp_status_endpoint():
     from app.services.mcp_client import mcp_hub
@@ -741,9 +806,10 @@ async def mcp_self_config_endpoint(request: Request):
     import sys as _sys
     from app.paths import APP_ROOT
     port = request.url.port or 8000
-    return {"config": {"mcpServers": {"xod": {
-        "command": _sys.executable, "args": ["-m", "app.mcp_server"], "cwd": str(APP_ROOT),
-        "env": {"XOD_URL": f"http://127.0.0.1:{port}"}}}}}
+    return {"config": {"mcpServers": {
+        "xod": {"command": _sys.executable, "args": ["-m", "app.mcp_server"], "cwd": str(APP_ROOT),
+                "env": {"XOD_URL": f"http://127.0.0.1:{port}"}},
+        "xod-phone": {"command": _sys.executable, "args": ["-m", "app.phone_mcp"], "cwd": str(APP_ROOT)}}}}
 
 
 @app.post("/api/mcp/servers")
@@ -2088,10 +2154,123 @@ async def crew_set_auto_approve(req: CrewAutoApprove):
     return muse_app.set_enabled(req.on)
 
 
+class HandoffRepos(BaseModel):
+    repos: List[str]
+
+
+@app.get("/api/crew/settings/handoff-dispatch")
+async def crew_handoff_dispatch():
+    """The repos whose docs/AI_HANDOFF.md Xod watches, and the Muse jobs it started from them."""
+    from app.services import handoff_dispatch
+    return handoff_dispatch.status()
+
+
+@app.post("/api/crew/settings/handoff-dispatch")
+async def crew_set_handoff_dispatch(req: HandoffRepos):
+    from app.services import handoff_dispatch
+    return handoff_dispatch.set_repos(req.repos)
+
+
+@app.get("/api/crew/usage")
+async def crew_usage(refresh: bool = False):
+    """How much of Muse's subscription is left (window and weekly, with reset times), from `muse usage`."""
+    from app.services import agent_usage
+    return await asyncio.to_thread(agent_usage.muse, refresh)
+
+
+class CrewModels(BaseModel):
+    default: Optional[str] = None
+    cheap: Optional[str] = None
+    cheap_for: Optional[List[str]] = None
+    cheap_above_weekly: Optional[int] = None
+    clear_cheap_above_weekly: Optional[bool] = False
+
+
+@app.get("/api/crew/settings/models")
+async def crew_models():
+    from app.services import crew
+    return crew.models()
+
+
+@app.post("/api/crew/settings/models")
+async def crew_set_models(req: CrewModels):
+    from app.services import crew
+    try:
+        above = None if req.clear_cheap_above_weekly else (req.cheap_above_weekly if req.cheap_above_weekly is not None else "unchanged")
+        return {"success": True, **crew.set_models(req.default, req.cheap, req.cheap_for, above)}
+    except crew.CrewError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/crew/loop")
+async def crew_loop():
+    """Everything about the background loop in one place: is it handing work over, to which repos, what each repo's
+    last job did and when the next can start, Muse's usage, which model jobs get, approvals, and the display."""
+    import time as _t
+    from app.services import agent_usage, crew, handoff_dispatch, muse_app
+    hd = handoff_dispatch.status()
+    repos = []
+    for r in hd["repos"]:
+        st = hd["dispatched"].get(r) or {}
+        job = None
+        if st.get("job"):
+            try:
+                j = crew.job(st["job"])
+                job = {"id": j["id"], "status": j["status"], "steps": len(j.get("steps") or []), "model": j.get("model") or "",
+                       "error": j.get("error"), "started": j.get("started")}
+            except crew.CrewError:
+                job = {"id": st["job"], "status": "gone"}
+        wait = st.get("wait_until") or 0
+        repos.append({"repo": r, "name": r.rstrip("/").split("/")[-1], "last_job": job, "handed_over": st.get("heading"),
+                      "next_start": wait if wait > _t.time() else None, "tries": st.get("tries", 0)})
+    return {"handoff_on": bool(hd["repos"]), "repos": repos, "usage": await asyncio.to_thread(agent_usage.muse),
+            "models": crew.models(), "auto_approve": muse_app.status()}
+
+
+@app.on_event("startup")
+async def _watch_handoffs():
+    from app.services import handoff_dispatch
+    if handoff_dispatch.repos():
+        handoff_dispatch.start()
+
+
 @app.on_event("startup")
 async def _watch_muse_app():
     from app.services import muse_app
     muse_app.start()
+
+
+_xod_network_task = None
+
+
+@app.on_event("startup")
+async def _xod_network():
+    global _xod_network_task
+    from app.services import xod_network
+    _xod_network_task = asyncio.get_running_loop().create_task(xod_network.run_forever())
+
+
+@app.get("/api/xods")
+async def xods_list():
+    """Your Xods: Tailscale sign-in state, and the other Xods on your tailnet."""
+    from app.services import xod_network
+    st = await asyncio.to_thread(xod_network.status)
+    return {"success": True, "status": st, **(await xod_network.find() if st.get("signed_in") else {"xods": []})}
+
+
+@app.post("/api/xods/sign-in")
+async def xods_sign_in():
+    """One click: opens Tailscale's sign-in page (Google, Microsoft, GitHub or Apple)."""
+    from app.services import xod_network
+    return await asyncio.to_thread(xod_network.sign_in)
+
+
+@app.post("/api/xods/findable")
+async def xods_findable(body: Dict[str, Any]):
+    from app.services import xod_network
+    from app.services.storage import set_setting
+    set_setting(xod_network.FINDABLE_SETTING, "on" if body.get("on") else "off")
+    return {"success": True, "findable": await xod_network.sync_beacon()}
 
 
 @app.get("/api/crew/{jid}")

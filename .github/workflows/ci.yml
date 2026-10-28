@@ -47,6 +47,7 @@ jobs:
           python tests/smoke/run_platform_smoke.py
           python tests/smoke/run_cloud_thinking_test.py
           python tests/smoke/run_phone_test.py
+          python tests/smoke/run_phone_mcp_test.py
           python tests/smoke/run_vision_test.py
           python tests/smoke/run_models_test.py
           python tests/smoke/run_worker_test.py
@@ -66,6 +67,11 @@ jobs:
           python tests/smoke/run_terminal_command_test.py
           python tests/smoke/run_terminals_edge_test.py
           python tests/smoke/run_crew_test.py
+          python tests/smoke/run_handoff_dispatch_test.py
+          python tests/smoke/run_agent_usage_test.py
+          python tests/smoke/run_taildrop_test.py
+          python tests/smoke/run_xod_network_test.py
+          python tests/smoke/run_tls_fetch_test.py
           python tests/smoke/run_evals_test.py
           python tests/smoke/run_mac_abilities_test.py
           python tests/smoke/run_keychain_test.py

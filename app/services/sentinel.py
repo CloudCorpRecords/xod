@@ -66,6 +66,7 @@ _INJECTION_RE = re.compile(
     r"keys|tokens|contacts|emails|data|conversation)\b[^.]{0,40}\bto\b|BEGIN (?:SYSTEM|ADMIN) (?:MESSAGE|PROMPT)", re.I)
 _REMOTE_RUN_RE = re.compile(r"(?:curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|;]*\|\s*(?:sh|bash|zsh|iex|Invoke-Expression|python)\b|"
                             r"\biex\s*\(\s*(?:iwr|irm|New-Object\s+Net\.WebClient)", re.I)
+_TAILDROP_SEND_RE = re.compile(r"\btailscale(?:\.exe)?\\?[\"']?\s+file\s+cp\b(?![^|;&\n]*--targets)", re.I)
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _URL = re.compile(r"https?://[^\s\"'<>)\]]+", re.I)
@@ -117,7 +118,7 @@ def note_user(text: str) -> None:
 # ------------------------------------------------------------------ the review
 # The four agent tools: only what hands an agent work (or types into a session) runs anything.
 _AGENT_RUN_ACTIONS = {"agent_job": {"", "start", "new", "message", "steer", "send"}, "agent_ask": None,
-                      "agent_terminal": {"start", "send"}, "agent_setup": {"install"}}
+                      "agent_terminal": {"start", "send"}, "agent_setup": {"install"}, "xod_machines": {"send_task"}}
 
 
 def _kind(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) -> Optional[str]:
@@ -178,6 +179,11 @@ def _mentioned(target: str, asked: str) -> bool:
     return bool(h) and h in a
 
 
+def _taildrop_ask_first() -> bool:
+    from app.services import taildrop
+    return taildrop.ask_first()
+
+
 def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) -> Optional[Dict[str, Any]]:
     """None when it can go ahead; else {"why": …, "rule": …}: hold it for the person's OK."""
     st = _state()
@@ -216,6 +222,10 @@ def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) ->
             if t in u or (h and h in u) or (d and d[-10:] in re.sub(r"\D", "", u)):
                 what = "address" if "@" in t else ("link" if t.startswith("http") else "contact")
                 return {"rule": "not_from_you", "why": f"The {what} {t[:80]} came from something it read, not from you."}
+
+    # with taildrop_ask_first on, a file sent to a device from the terminal waits for a card, like tailscale_files' sends
+    if kind == "run" and _TAILDROP_SEND_RE.search(text) and _taildrop_ask_first():
+        return {"rule": "taildrop_send", "why": "It would send a file off this computer to a device over Tailscale."}
 
     # not asked
     name = tool.split("__")[-1]

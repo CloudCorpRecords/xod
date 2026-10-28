@@ -188,11 +188,11 @@ class TrafficIntelService:
         start_time = asyncio.get_event_loop().time()
 
         try:
-            async with httpx.AsyncClient(
+            from app.services import tls_fetch
+            async with tls_fetch.client(
                 timeout=timeout,
                 follow_redirects=True,
                 headers=self.default_headers,
-                verify=False
             ) as client:
                 res = await client.get(url)
                 end_time = asyncio.get_event_loop().time()
@@ -229,6 +229,7 @@ class TrafficIntelService:
                 return {
                     "reachable": True,
                     "status_code": res.status_code,
+                    "tls_certificate": client.tls_note,
                     "final_url": str(res.url),
                     "redirect_count": len(res.history),
                     "redirect_chain": redirect_chain,
