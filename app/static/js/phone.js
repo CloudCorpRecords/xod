@@ -75,7 +75,10 @@
             set up and paired in one step. The code inside works once and expires in 10 minutes. Compare the safety number on
             both screens. The phone always shows it's connected, nothing hidden.</p>
           <div id="phPairBox"></div>
-          <button data-ph="pairag" class="${primary}">Pair a phone</button>
+          <div class="flex flex-wrap gap-2">
+            <button data-ph="pairag" class="${primary}">Pair a phone</button>
+            <button data-ph="blescan" class="${quiet}">Pair over Bluetooth</button>
+          </div>
           <div id="phPhones"></div>
         </div>
       </section>`;
@@ -157,6 +160,26 @@
       box.innerHTML = `<div class="bg-white p-2 rounded-lg w-fit">${r.qr_svg || ""}</div>
         <p class="text-[12px] text-zinc-300">Scan this in the Xod phone app. Safety number: <span class="font-mono text-white">${esc(r.safety || "")}</span></p>
         <p class="text-[11px] text-zinc-500">Expires ${esc(new Date(r.expires_at * 1000).toLocaleTimeString())}. If pairing doesn't finish, make a new QR.</p>`;
+      return;
+    }
+    if (a === "blescan") {
+      const box = document.getElementById("phPairBox");
+      box.innerHTML = '<p class="text-[12px] text-zinc-400">Looking for phones nearby… (open the Xod phone app and tap "Pair nearby")</p>';
+      const r = await api("/api/phone/ble/scan");
+      if (!r.success) { box.innerHTML = `<p class="text-[12px] text-red-300">${esc(r.error || "Bluetooth didn't work.")}</p>`; return; }
+      box.innerHTML = r.phones.length
+        ? `<p class="text-[12px] text-zinc-300">Phones nearby:</p>` + r.phones.map((p) =>
+            `<button data-ph="blepair" data-id="${esc(p.id)}" class="${quiet} block">${esc(p.name)} <span class="text-zinc-500">${esc(p.id)}</span></button>`).join("")
+        : '<p class="text-[12px] text-zinc-400">No phone found. On the phone, open Xod and tap "Pair nearby", then try again.</p>';
+      return;
+    }
+    if (a === "blepair") {
+      const box = document.getElementById("phPairBox");
+      box.innerHTML = '<p class="text-[12px] text-zinc-400">Sending the pairing offer over Bluetooth…</p>';
+      const r = await api("/api/phone/ble/pair", "POST", { id: el.dataset.id });
+      box.innerHTML = r.success
+        ? `<p class="text-[12px] text-zinc-300">Tap <b>Pair</b> on your phone. Safety number: <span class="font-mono text-white">${esc(r.safety || "")}</span>: check the phone shows the same.</p>`
+        : `<p class="text-[12px] text-red-300">${esc(r.error || "Couldn't send it.")}</p>`;
       return;
     }
     const unpair = e.target.closest("[data-ph-unpair]");

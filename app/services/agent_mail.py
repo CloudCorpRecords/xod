@@ -588,6 +588,13 @@ async def _receive(ident: mc.Identity, my_address: str, envelope: Dict[str, Any]
                        1 if status == "new" else 0, problem, msg.get("in_reply_to"), "mail", time.time()))
         except sqlite3.IntegrityError:
             return None     # the same message twice
+    if status == "new" and (msg.get("subject") or "") == "xod api":     # the phone app asking (services/phone_api.py)
+        from app.services import phone_api
+        logger.info(f"Agent Mail: a request from the phone app ({sender})")
+        task = asyncio.get_running_loop().create_task(phone_api.handle(sender, msg, row_id))
+        _api_tasks.add(task)
+        task.add_done_callback(_api_done)
+        return None
     if status == "new" and (msg.get("subject") or "") == "hello":
         try:
             from app.services import phone_mcp
@@ -732,6 +739,21 @@ def _notify(title: str, text: str) -> None:
 # ---------------------------------------------------------------- background
 
 _task: Optional[asyncio.Task] = None
+_api_tasks: set = set()        # phone requests being answered (kept referenced until done)
+_wake: Optional[asyncio.Event] = None
+_loop_ref: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _api_done(task: asyncio.Task) -> None:
+    _api_tasks.discard(task)
+    if not task.cancelled() and task.exception():
+        logger.warning(f"Agent Mail: answering the phone app failed: {task.exception()!r}")
+
+
+def wake() -> None:
+    """Mail just arrived at this computer's own post office: check now instead of at the next poll. Any thread."""
+    if _wake is not None and _loop_ref is not None:
+        _loop_ref.call_soon_threadsafe(_wake.set)
 
 
 async def _loop() -> None:
@@ -749,10 +771,16 @@ async def _loop() -> None:
                 _reply_with_task_results()
         except Exception as e:
             logger.warning(f"Agent Mail check failed: {e}")
-        await asyncio.sleep(POLL_SECONDS)
+        try:
+            await asyncio.wait_for(_wake.wait(), POLL_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        _wake.clear()
 
 
 def start() -> None:
-    global _task
+    global _task, _wake, _loop_ref
     if _task is None or _task.done():
-        _task = asyncio.get_running_loop().create_task(_loop())
+        _loop_ref = asyncio.get_running_loop()
+        _wake = asyncio.Event()
+        _task = _loop_ref.create_task(_loop())

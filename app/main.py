@@ -738,6 +738,20 @@ async def phone_pair_offer():
     return phone_pair.create_offer()
 
 
+@app.get("/api/phone/ble/scan")
+async def phone_ble_scan():
+    """Phones nearby with 'Pair nearby' open in the Xod app."""
+    from app.services import phone_ble
+    return await phone_ble.find()
+
+
+@app.post("/api/phone/ble/pair")
+async def phone_ble_pair(body: Dict[str, Any]):
+    """Hands a fresh pairing offer to that phone over Bluetooth; the phone pairs on the person's tap."""
+    from app.services import phone_ble
+    return await phone_ble.offer_to(str(body.get("id") or ""))
+
+
 @app.post("/api/phone/pair-offer/cancel")
 async def phone_pair_offer_cancel():
     from app.services import phone_pair

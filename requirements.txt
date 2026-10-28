@@ -77,3 +77,4 @@ pyobjc-framework-CoreLocation==12.2.2; sys_platform == "darwin"            # whe
 pyobjc-framework-MapKit==12.2.2; sys_platform == "darwin"                 # Apple Maps search, no key
 comtypes==1.4.14; sys_platform == "win32"               # Windows UI Automation card watcher (services/muse_backends.py)
 qrcode==8.2                                             # "Pair a phone" QR (services/phone_pair.py), SVG output, no Pillow needed
+bleak==3.0.2                                            # "Pair over Bluetooth" (services/phone_ble.py): finds the phone and hands it the offer

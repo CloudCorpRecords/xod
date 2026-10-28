@@ -63,8 +63,10 @@ class Ack(BaseModel):
     ids: List[str]
 
 
-def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Callable[[str], bool]] = None) -> FastAPI:
-    """The post office. domain() is the domain addresses get at registration (this Xod's chosen network name)."""
+def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Callable[[str], bool]] = None,
+             on_mail: Optional[Callable[[str], None]] = None) -> FastAPI:
+    """The post office. domain() is the domain addresses get at registration (this Xod's chosen network name).
+    on_mail(name) is told each time mail is left for a name here (this Xod checks at once instead of at its next poll)."""
     app = FastAPI(title="Xod Post Office (this computer)", version="1", docs_url=None, redoc_url=None, openapi_url=None)
     lock = threading.Lock()
     hits: Dict[str, deque] = defaultdict(deque)
@@ -193,6 +195,11 @@ def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Cal
                 raise HTTPException(507, "That mailbox is full.")
             mid = uuid.uuid4().hex
             c.execute("INSERT INTO mail VALUES (?,?,?,?)", (mid, name, raw, time.time()))
+        if on_mail:
+            try:
+                on_mail(name)
+            except Exception:
+                pass
         return {"id": mid}
 
     @app.get("/v1/mail")

@@ -148,8 +148,12 @@ async def start(dom: str) -> Dict[str, Any]:
     import uvicorn
     from app.services.post_office import make_app
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    from app.services import phone_pair
-    app = make_app(str(DB_PATH), domain, pair_code_ok=phone_pair.consume_code)
+    from app.services import agent_mail, phone_pair
+
+    def on_mail(name: str) -> None:      # mail for this Xod itself (e.g. the phone app asking): pick it up now
+        if name == (agent_mail._config().get("name") or ""):
+            agent_mail.wake()
+    app = make_app(str(DB_PATH), domain, pair_code_ok=phone_pair.consume_code, on_mail=on_mail)
     try:
         with socket.socket() as s:       # is the port free? (uvicorn would only log the failure)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
