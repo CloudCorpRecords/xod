@@ -2503,7 +2503,7 @@ TOOL ECOSYSTEM:
    - memory_search: Search your memory of past chats, finished tasks and what you know about the user. Understands time ("last week", "in September"). Args: {{"query": "...", "when": "optional, e.g. yesterday"}}
    - xod_tasks: Your own background tasks and routines: list them, or the full details and result of one. Args: {{"action": "list|get", "task": "title words or id"}}
    - tailscale_files: Files to and from the user's own devices (phone, other computers) over Tailscale. Use this, not the terminal, to send a file to their phone. Args: {{"action": "devices|send|receive", "path": "file to send", "device": "device name from devices", "folder": "optional, for receive"}}
-   - xod_machines: The user's other computers running Xod (over their Tailscale sign-in): list them, or open the one-click sign-in so this Xod joins them. Args: {{"action": "list|sign_in"}}
+   - xod_machines: The user's other computers running Xod (over their Tailscale sign-in): list them, open the one-click sign-in so this Xod joins them, hand one of them a task (it runs there after the user approves it on that computer), or check that task. Args: {{"action": "list|sign_in|send_task|task_status", "machine": "name from list", "task": "what to do there", "ref": "from send_task"}}
 
 2. Controlled Workspace ({workspace_info}):
    - fs_list_workspace_files: Explore workspace directory tree.

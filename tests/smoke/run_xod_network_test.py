@@ -5,6 +5,8 @@ Your Xods (services/xod_network.py, /api/xods, the xod_machines tool), with a st
   - signed in: the beacon answers only "I'm a Xod" with the machine name, on the address it was given
   - find() lists online devices that answer as Xods, marks other accounts' as shared, counts the rest, and remembers
     a Xod that's offline later
+  - a task from another of your Xods only becomes an approval card; Approve puts it in the task inbox, Decline drops it
+  - another account's device is refused, and a made-up grant does nothing
   - not findable: the beacon stops
   .venv/bin/python tests/smoke/run_xod_network_test.py
 """
@@ -35,6 +37,8 @@ import sys
 a = sys.argv[1:]
 if a[:1] == ["status"]:
     print(open({str(STATE)!r}).read())
+elif a[:1] == ["whois"]:
+    print(open({str(TMP / "who.json")!r}).read())
 elif a[:1] == ["login"]:
     print("To authenticate, visit:\\n\\n\\thttps://login.tailscale.com/a/abc123\\n", flush=True)
     import time; time.sleep(30)
@@ -102,7 +106,41 @@ async def main():
     check("xod_machines lists them", res.get("status", {}).get("signed_in") is True and "xods" in res, str(res)[:300])
     check("the tool is defined", any(t["function"]["name"] == "xod_machines" for t in tools.TOOL_DEFINITIONS))
 
-    print("N5 not findable")
+    print("N5 handing over a task")
+    from app.services.task_queue import task_queue
+    from app.services.mcp_client import mcp_hub
+    task_queue._kick = lambda: None           # queue it, don't run it
+    state(running=True, peers=[peer("laptop", "127.0.0.1")])
+    who = TMP / "who.json"
+    who.write_text(json.dumps({"Node": {"ComputedName": "intruder"}, "UserProfile": {"ID": 2}}))
+    r = await tools.execute_tool("xod_machines", {"action": "send_task", "machine": "laptop", "task": "list my downloads"})
+    check("another account's device is refused", r.get("success") is False and "own devices" in r.get("error", ""), str(r))
+    check("…and no card was made", not mcp_hub.pending)
+    who.write_text(json.dumps({"Node": {"ComputedName": "laptop"}, "UserProfile": {"ID": 1}}))
+    before = len(task_queue.list())
+    r = await tools.execute_tool("xod_machines", {"action": "send_task", "machine": "laptop", "task": "list my downloads"})
+    ref = r.get("ref")
+    check("your own device's task waits for your OK", r.get("success") and r.get("status") == "waiting_for_ok" and len(mcp_hub.pending) == 1, str(r))
+    check("…nothing is in the task inbox yet", len(task_queue.list()) == before)
+    st = await tools.execute_tool("xod_machines", {"action": "task_status", "machine": "laptop", "ref": ref})
+    check("its status says waiting for your OK", st.get("status") == "waiting_for_ok", str(st))
+    forged = await tools.execute_tool("xod_network_accept", {"ref": ref, "_grant": "made-up"})
+    check("a made-up grant does nothing", forged.get("success") is False and len(task_queue.list()) == before)
+    card = next(iter(mcp_hub.pending.values()))
+    check("the card says who wants what", "on desk" in card["why"] and "list my downloads" in card["why"], card["why"])
+    done = await mcp_hub.approve(card["id"])
+    check("Approve puts it in the task inbox", done.get("success") and len(task_queue.list()) == before + 1, str(done))
+    st = await tools.execute_tool("xod_machines", {"action": "task_status", "machine": "laptop", "ref": ref})
+    check("…and the sender sees it queued", st.get("status") == "queued" and st.get("title") == "list my downloads", str(st))
+    r2 = await tools.execute_tool("xod_machines", {"action": "send_task", "machine": "laptop", "task": "second one"})
+    mcp_hub.decline(next(iter(mcp_hub.pending)))
+    st = await tools.execute_tool("xod_machines", {"action": "task_status", "machine": "laptop", "ref": r2.get("ref")})
+    check("Decline drops it, and the sender sees that", st.get("status") == "declined" and len(task_queue.list()) == before + 1, str(st))
+    who.write_text(json.dumps({"Node": {"ComputedName": "intruder"}, "UserProfile": {"ID": 2}}))
+    st = await tools.execute_tool("xod_machines", {"action": "task_status", "machine": "laptop", "ref": ref})
+    check("another account can't read it", st.get("success") is False, str(st))
+
+    print("N6 not findable")
     set_setting(xn.FINDABLE_SETTING, "off")
     check("turning findable off stops the beacon", await xn.sync_beacon() is False and await xn._probe("127.0.0.1") is None)
 

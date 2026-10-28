@@ -2802,10 +2802,17 @@ TOOL_DEFINITIONS = [
             "name": "xod_machines",
             "description": "The person's other computers running Xod, found over their Tailscale sign-in. list: whether this "
                            "computer is signed in and which Xods it can see (online or not). sign_in: open Tailscale's one-click "
-                           "sign-in page (Google, Microsoft, GitHub or Apple) so this Xod joins the others.",
+                           "sign-in page (Google, Microsoft, GitHub or Apple) so this Xod joins the others. send_task: hand a "
+                           "task to another of their Xods; it runs there once they approve it on that computer's card. "
+                           "task_status: whether it was approved, how it's going, and its result.",
             "parameters": {
                 "type": "object",
-                "properties": {"action": {"type": "string", "enum": ["list", "sign_in"]}},
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "sign_in", "send_task", "task_status"]},
+                    "machine": {"type": "string", "description": "For send_task / task_status: the other Xod's name, as list shows it."},
+                    "task": {"type": "string", "description": "For send_task: what that Xod should do, in full."},
+                    "ref": {"type": "string", "description": "For task_status: the ref send_task returned."}
+                },
                 "required": ["action"]
             }
         }
@@ -3507,10 +3514,22 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         return _desktop_setup_card(dict(arguments or {}))
     if name == "tailscale_files":
         return await _taildrop_tool(dict(arguments or {}))
+    if name == "xod_network_accept":    # only from an approved card: its grant is never shown to the model
+        from app.services import xod_network
+        a = arguments or {}
+        return await asyncio.to_thread(xod_network.accept, a.get("ref") or "", a.get("_grant") or "")
     if name == "xod_machines":
         from app.services import xod_network
-        if (arguments or {}).get("action") == "sign_in":
+        a = arguments or {}
+        if a.get("action") == "sign_in":
             return await asyncio.to_thread(xod_network.sign_in)
+        if a.get("action") in ("send_task", "task_status"):
+            try:
+                if a["action"] == "send_task":
+                    return {"success": True, **await xod_network.send_task(a.get("machine") or "", a.get("task") or "")}
+                return {"success": True, **await xod_network.task_status(a.get("machine") or "", a.get("ref") or "")}
+            except xod_network.NetworkError as e:
+                return {"success": False, "error": str(e)}
         st = await asyncio.to_thread(xod_network.status)
         return {"success": True, "status": st, **(await xod_network.find() if st.get("signed_in") else {"xods": []})}
     if name in CLI_TOOLS or name in LEGACY_AGENT_TOOLS:
@@ -4653,7 +4672,8 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
         affinities.append("tailscale_files")
 
     # The person's other Xods
-    if any(k in q for k in ["other xod", "my xods", "xod machines", "other computers", "my computers", "my machines",
+    if any(k in q for k in ["other xod", "my xods", "xod machines", "other computers", "my computers", "my machines", "on my laptop",
+                             "on my desktop", "on my other", "on the other computer",
                              "sign in to tailscale", "log in to tailscale", "tailscale login", "other machines"]):
         affinities.append("xod_machines")
 

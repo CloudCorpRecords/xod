@@ -118,7 +118,7 @@ def note_user(text: str) -> None:
 # ------------------------------------------------------------------ the review
 # The four agent tools: only what hands an agent work (or types into a session) runs anything.
 _AGENT_RUN_ACTIONS = {"agent_job": {"", "start", "new", "message", "steer", "send"}, "agent_ask": None,
-                      "agent_terminal": {"start", "send"}, "agent_setup": {"install"}}
+                      "agent_terminal": {"start", "send"}, "agent_setup": {"install"}, "xod_machines": {"send_task"}}
 
 
 def _kind(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) -> Optional[str]:
