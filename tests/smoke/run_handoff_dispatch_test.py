@@ -44,9 +44,9 @@ async def main():
     hf = repo / "docs" / "AI_HANDOFF.md"
     started, jobs = [], {}
 
-    async def fake_start(task, folder="", title="", approval_mode=None, agent="", isolate=None):
+    async def fake_start(task, folder="", title="", approval_mode=None, agent="", isolate=None, kind=""):
         jid = f"j{len(started) + 1}"
-        started.append({"task": task, "folder": folder, "agent": agent, "isolate": isolate, "title": title})
+        started.append({"task": task, "folder": folder, "agent": agent, "isolate": isolate, "title": title, "kind": kind})
         jobs[jid] = {"id": jid, "status": "working"}
         return jobs[jid]
 
@@ -56,6 +56,9 @@ async def main():
         return jobs[jid]
 
     crew.start, crew.job = fake_start, fake_job
+    from app.services import agent_usage
+    usage = {"out": False, "until": None}
+    agent_usage.muse = lambda refresh=False: dict(usage)     # never the real `muse usage` in a test
 
     print("H1 whose turn it is")
     hf.write_text(HEAD + section("Muse Code (muse-wonder-1.0)", "- none"))
@@ -70,6 +73,7 @@ async def main():
     check("work for Muse Code starts one Muse job", j is not None and len(started) == 1, str(started))
     s = started[0] if started else {}
     check("…in that repo, in the folder itself", s.get("agent") == "muse" and s.get("folder") == str(repo) and s.get("isolate") is False)
+    check("…as a 'handoff' job (so it can get the cheaper model)", s.get("kind") == "handoff")
     check("…told where the new work starts and not to commit or push",
           "add the QR pairing" not in s.get("task", "") and "## 2026-10-27 - Claude Code (claude-opus-5-5) -> next AI" in s.get("task", "")
           and "do not commit, push" in s.get("task", ""), s.get("task", "")[:300])
@@ -119,6 +123,19 @@ async def main():
     check("…and the wait didn't use up a retry", hd._load_state()[str(repo)]["tries"] == tries_before, str(hd._load_state()[str(repo)]))
     check("a usage limit with no reset time waits a while", abs(hd.quota_reset("429 Too Many Requests") - (__import__("time").time() + hd.QUOTA_WAIT_SEC)) < 5)
     jobs[j2["id"]]["status"] = "done"
+    hf.write_text(hf.read_text() + section("Muse Code (muse-wonder-1.0)", "- none"))
+
+    print("H3c usage checked before starting")
+    hf.write_text(hf.read_text() + section("Claude Code (claude-opus-5-5)", "- Muse Code: the clipboard."))
+    n0 = len(started)
+    usage.update(out=True, until=4102444800.0)
+    check("Muse at 100%: no job starts", await hd.check(str(repo)) is None and len(started) == n0)
+    check("…and it waits for the reset Muse reported", hd._load_state()[str(repo)].get("wait_until") == 4102444800.0)
+    usage.update(out=False, until=None)
+    st = hd._load_state(); st[str(repo)]["wait_until"] = 0; hd._save_state(st)
+    j3 = await hd.check(str(repo))
+    check("usage back: the job starts", j3 is not None and len(started) == n0 + 1)
+    jobs[j3["id"]]["status"] = "done"
     hf.write_text(hf.read_text() + section("Muse Code (muse-wonder-1.0)", "- none"))
 
     print("H4 the setting")

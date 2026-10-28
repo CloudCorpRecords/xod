@@ -157,8 +157,10 @@ class MuseHost:
 
     # ------------------------------------------------------------------ the protocol, as Xod uses it
     async def start_session(self, workspace: str, approval_mode: Optional[str] = None,
-                            mcp_servers: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                            mcp_servers: Optional[Dict[str, Any]] = None, model: str = "") -> Dict[str, Any]:
         p: Dict[str, Any] = {"workspaceRoot": workspace}
+        if model:
+            p["modelId"] = model
         if approval_mode:
             p["approvalMode"] = approval_mode
         if mcp_servers:

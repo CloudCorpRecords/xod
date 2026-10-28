@@ -6,8 +6,9 @@ starts a Crew job for Muse in that repo itself, so nobody has to copy the note a
   whose turn after Muse Code's last section, a section by someone else that names "Muse Code" is work for Muse
   once       each such section starts at most one job (its heading and place are remembered in the data folder);
              a job that failed is tried again later, at most RETRIES times; a running job is never doubled
-  limits     when Muse is out of usage (a 429 / "quota exhausted" error), Xod waits until the reset time the
-             error gives (or QUOTA_WAIT_SEC when it gives none) and doesn't count that as a failed try
+  limits     before starting, Xod reads Muse's usage (services/agent_usage.py) and waits for the reset when it's
+             used up; a job that still fails with 429 / "quota exhausted" waits the same way. Neither counts as a
+             failed try
   rules      the job reads the handoff, does the items for Muse Code, runs the tests it touches, leaves the work
              uncommitted (you approve every commit, push and release) and appends its own section when done
 
@@ -168,10 +169,18 @@ async def check(repo: str) -> Optional[Dict[str, Any]]:
                 return None      # this work was handed over and finished
             if not out_of_usage and (mine.get("tries", 0) > RETRIES or time.time() - mine.get("at", 0) < RETRY_AFTER_SEC):
                 return None
+    from app.services import agent_usage
+    usage = await asyncio.to_thread(agent_usage.muse)
+    if usage.get("out"):             # check first, instead of starting a job that fails on its first step
+        until = usage.get("until") or time.time() + QUOTA_WAIT_SEC
+        state[repo] = {**mine, "wait_until": until, "waited_for": mine.get("job")}
+        _save_state(state)
+        logger.info(f"handoff for {repo}: Muse is out of usage; starting at {time.strftime('%H:%M', time.localtime(until))}")
+        return None
     same = mine.get("key") == key
     tries = (mine.get("tries", 0) + (0 if out_of_usage else 1)) if same else 1
     try:
-        j = await crew.start(TASK.format(heading=newest["heading"]), folder=repo, agent="muse", isolate=False,
+        j = await crew.start(TASK.format(heading=newest["heading"]), folder=repo, agent="muse", isolate=False, kind="handoff",
                              title=f"Handoff: work for Muse Code ({len(pending)} section{'s' if len(pending) != 1 else ''})")
     except crew.CrewError as e:
         logger.warning(f"handoff for {repo}: couldn't start Muse: {e}")

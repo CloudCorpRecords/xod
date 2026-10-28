@@ -14,6 +14,9 @@
 - When another AI leaves work for Muse Code in a repo's `docs/AI_HANDOFF.md`, Xod starts a Muse job for it by itself, so nobody has to copy the note across. It's on for the repos you list (for now through Xod's API, `/api/crew/settings/handoff-dispatch`; a Crew switch comes next). Each note starts one job, a running job is never doubled, a failed one is tried again later (twice at most), and Muse leaves its work uncommitted for you to approve.
 - When Muse is out of usage, Xod waits until the reset time its error gives, then hands the work over again, without counting that as a failed try.
 - iPhone, through your Mac: Xod can read and tap your iPhone in macOS iPhone Mirroring while the phone stays locked (Mac only, off until you switch it on in Your phone). It pauses while you're using your iPhone.
+- Xod reads how much of Muse's subscription is left (`muse usage`) and waits for the reset instead of starting a job that would fail. The quota is shared across Muse's models, so switching models doesn't get around it.
+- Pick the Muse model per job: a default, and a cheaper one (for example muse-spark-1.3) for handed-over work, or for every job once your weekly allowance passes a level you choose.
+- Crew has a **Loop** panel: whether work is being handed to Muse, each repo's last job and its model, when the next one can start, Muse's usage with reset times, auto-approve, and whether the display is kept awake.
 
 ## 0.9.5
 

@@ -2171,6 +2171,62 @@ async def crew_set_handoff_dispatch(req: HandoffRepos):
     return handoff_dispatch.set_repos(req.repos)
 
 
+@app.get("/api/crew/usage")
+async def crew_usage(refresh: bool = False):
+    """How much of Muse's subscription is left (window and weekly, with reset times), from `muse usage`."""
+    from app.services import agent_usage
+    return await asyncio.to_thread(agent_usage.muse, refresh)
+
+
+class CrewModels(BaseModel):
+    default: Optional[str] = None
+    cheap: Optional[str] = None
+    cheap_for: Optional[List[str]] = None
+    cheap_above_weekly: Optional[int] = None
+    clear_cheap_above_weekly: Optional[bool] = False
+
+
+@app.get("/api/crew/settings/models")
+async def crew_models():
+    from app.services import crew
+    return crew.models()
+
+
+@app.post("/api/crew/settings/models")
+async def crew_set_models(req: CrewModels):
+    from app.services import crew
+    try:
+        above = None if req.clear_cheap_above_weekly else (req.cheap_above_weekly if req.cheap_above_weekly is not None else "unchanged")
+        return {"success": True, **crew.set_models(req.default, req.cheap, req.cheap_for, above)}
+    except crew.CrewError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/crew/loop")
+async def crew_loop():
+    """Everything about the background loop in one place: is it handing work over, to which repos, what each repo's
+    last job did and when the next can start, Muse's usage, which model jobs get, approvals, and the display."""
+    import time as _t
+    from app.services import agent_usage, crew, handoff_dispatch, muse_app
+    hd = handoff_dispatch.status()
+    repos = []
+    for r in hd["repos"]:
+        st = hd["dispatched"].get(r) or {}
+        job = None
+        if st.get("job"):
+            try:
+                j = crew.job(st["job"])
+                job = {"id": j["id"], "status": j["status"], "steps": len(j.get("steps") or []), "model": j.get("model") or "",
+                       "error": j.get("error"), "started": j.get("started")}
+            except crew.CrewError:
+                job = {"id": st["job"], "status": "gone"}
+        wait = st.get("wait_until") or 0
+        repos.append({"repo": r, "name": r.rstrip("/").split("/")[-1], "last_job": job, "handed_over": st.get("heading"),
+                      "next_start": wait if wait > _t.time() else None, "tries": st.get("tries", 0)})
+    return {"handoff_on": bool(hd["repos"]), "repos": repos, "usage": await asyncio.to_thread(agent_usage.muse),
+            "models": crew.models(), "auto_approve": muse_app.status()}
+
+
 @app.on_event("startup")
 async def _watch_handoffs():
     from app.services import handoff_dispatch

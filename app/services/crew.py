@@ -28,7 +28,7 @@ import logging
 import re
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.paths import DATA_DIR
 from app.services import worktrees
@@ -238,8 +238,58 @@ def default_agent() -> str:
     return "claude" if agent_clis.which("claude") or not agent_clis.which("muse") else "muse"
 
 
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+MODELS_SETTING = "crew_muse_models"
+
+
+def models() -> Dict[str, Any]:
+    """Which Muse model jobs get: default (all jobs; empty = Muse's own default), cheap (for routine work), cheap_for
+    (kinds of job that use it, e.g. "handoff") and cheap_above_weekly (use it for every job once the weekly allowance
+    is at least this %; None = never)."""
+    from app.services.storage import get_setting
+    try:
+        cfg = json.loads(get_setting(MODELS_SETTING, "") or "{}")
+    except ValueError:
+        cfg = {}
+    return {"default": cfg.get("default") or "", "cheap": cfg.get("cheap") or "",
+            "cheap_for": [k for k in cfg.get("cheap_for") or [] if isinstance(k, str)],
+            "cheap_above_weekly": cfg.get("cheap_above_weekly")}
+
+
+def set_models(default: Optional[str] = None, cheap: Optional[str] = None, cheap_for: Optional[List[str]] = None,
+               cheap_above_weekly: Any = "unchanged") -> Dict[str, Any]:
+    from app.services.storage import set_setting
+    cfg = models()
+    for k, v in (("default", default), ("cheap", cheap)):
+        if v is not None:
+            v = v.strip()
+            if v and not MODEL_RE.match(v):
+                raise CrewError(f"'{v}' doesn't look like a model id (e.g. muse-spark-1.3).")
+            cfg[k] = v
+    if cheap_for is not None:
+        cfg["cheap_for"] = sorted({k.strip() for k in cheap_for if k.strip()})
+    if cheap_above_weekly != "unchanged":
+        cfg["cheap_above_weekly"] = None if cheap_above_weekly in (None, "") else max(0, min(100, int(cheap_above_weekly)))
+    set_setting(MODELS_SETTING, json.dumps(cfg))
+    return cfg
+
+
+def pick_model(kind: str = "") -> Tuple[str, str]:
+    """(model, why) for a new Muse job of this kind. Empty model = Muse's own default."""
+    cfg = models()
+    if cfg["cheap"]:
+        if kind and kind in cfg["cheap_for"]:
+            return cfg["cheap"], f"the cheaper model for {kind} jobs"
+        if cfg["cheap_above_weekly"] is not None:
+            from app.services import agent_usage
+            weekly = (agent_usage.muse().get("weekly") or {}).get("used")
+            if weekly is not None and weekly >= cfg["cheap_above_weekly"]:
+                return cfg["cheap"], f"the cheaper model: weekly usage is at {weekly:.0f}%"
+    return cfg["default"], ("your default model" if cfg["default"] else "")
+
+
 async def start(task: str, folder: str = "", title: str = "", approval_mode: Optional[str] = None, agent: str = "",
-                isolate: Optional[bool] = None) -> Dict[str, Any]:
+                isolate: Optional[bool] = None, kind: str = "") -> Dict[str, Any]:
     """Hands a task to a coding agent (Claude Code or Muse) in a folder. Returns the job at once; it works in the background.
     In a git repository the job works in its own copy (a worktree on a branch of its own), so jobs never collide and
     nothing reaches your checkout until you merge it; isolate=False works in the folder itself."""
@@ -278,7 +328,9 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
         asyncio.create_task(_claude_start(j, j["task"]))
         _save()
         return _view(j)
-    _step(j, "status", "Starting Muse" + (" (the first job waits while it starts its tools)" if not (_host["host"] and _host["host"].running()) else ""))
+    j["model"], why = await asyncio.to_thread(pick_model, kind)
+    _step(j, "status", "Starting Muse" + (f" on {j['model']} ({why})" if j["model"] else "")
+          + (" (the first job waits while it starts its tools)" if not (_host["host"] and _host["host"].running()) else ""))
     asyncio.create_task(_run_start(j, approval_mode))
     _save()
     return _view(j)
@@ -291,7 +343,7 @@ async def _run_start(j: Dict[str, Any], approval_mode: Optional[str]) -> None:
         # Optional: a connected app that's down mustn't stop the job from starting.
         shared = {name: {"transport": "streamableHttp", "url": c["url"], "mode": "optional",
                          "headers": {"Authorization": f"Bearer {c['token']}"}} for name, c in _shared().items()}
-        s = await h.start_session(j["folder"], approval_mode=approval_mode, mcp_servers=shared or None)
+        s = await h.start_session(j["folder"], approval_mode=approval_mode, mcp_servers=shared or None, model=j.get("model") or "")
         j["session_id"] = s["sessionId"]
         _by_session[s["sessionId"]] = j["id"]
         _step(j, "status", "Muse is working on it")
