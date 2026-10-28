@@ -2088,6 +2088,30 @@ async def crew_set_auto_approve(req: CrewAutoApprove):
     return muse_app.set_enabled(req.on)
 
 
+class HandoffRepos(BaseModel):
+    repos: List[str]
+
+
+@app.get("/api/crew/settings/handoff-dispatch")
+async def crew_handoff_dispatch():
+    """The repos whose docs/AI_HANDOFF.md Xod watches, and the Muse jobs it started from them."""
+    from app.services import handoff_dispatch
+    return handoff_dispatch.status()
+
+
+@app.post("/api/crew/settings/handoff-dispatch")
+async def crew_set_handoff_dispatch(req: HandoffRepos):
+    from app.services import handoff_dispatch
+    return handoff_dispatch.set_repos(req.repos)
+
+
+@app.on_event("startup")
+async def _watch_handoffs():
+    from app.services import handoff_dispatch
+    if handoff_dispatch.repos():
+        handoff_dispatch.start()
+
+
 @app.on_event("startup")
 async def _watch_muse_app():
     from app.services import muse_app

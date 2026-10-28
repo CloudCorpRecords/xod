@@ -1,5 +1,11 @@
 # Changelog
 
+## Next
+
+**Muse jobs start again, and Muse picks up its own work**
+- Muse jobs from Xod failed at once ("mcpServers does not match the supported shape") when a connected app like GitHub was shared with them: newer Muse wants each shared app to say how it connects, and Xod to ask for that when it starts Muse. Xod does both now, so jobs start and still get GitHub.
+- When another AI leaves work for Muse Code in a repo's `docs/AI_HANDOFF.md`, Xod starts a Muse job for it by itself, so nobody has to copy the note across. It's on for the repos you list (for now through Xod's API, `/api/crew/settings/handoff-dispatch`; a Crew switch comes next). Each note starts one job, a running job is never doubled, a failed one is tried again later (twice at most), and Muse leaves its work uncommitted for you to approve.
+
 ## 0.9.5
 
 **Approve everything: quicker, and harder to miss a card**

@@ -355,6 +355,7 @@ async def main():
     log = (TMP / "state" / "muse-serve.log").read_text()
     starts = [l for l in log.splitlines() if l.startswith("got session/start")]
     check("a Muse job gets GitHub too (in its session, over the protocol)", mj["status"] == "done" and '"github"' in starts[-1] and "Bearer" in starts[-1], starts[-1][:300])
+    check("…in the shape Muse accepts (it names its transport), so the job starts", '"transport": "streamableHttp"' in starts[-1] and mj["status"] == "done", starts[-1][:300])
     connectors.share_with_agents(False)
     j = await crew.wait((await crew.start("MCP", str(work), agent="claude"))["id"], 15)
     check("sharing off: jobs don't get it", "mcp: none" in j["answer"], j["answer"])

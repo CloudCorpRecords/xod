@@ -60,7 +60,9 @@ class MuseHost:
                                                          stderr=asyncio.subprocess.PIPE, limit=16 * 1024 * 1024)
         self._reader = asyncio.create_task(self._read())
         asyncio.create_task(self._read_stderr())
-        self.info = await self.call("initialize", {"clientInfo": CLIENT}, timeout=timeout)
+        # sessionMcp: without it Muse refuses a session that carries Xod's shared connectors (GitHub)
+        self.info = await self.call("initialize", {"clientInfo": CLIENT,
+                                                   "capabilities": {"requestedCapabilities": ["sessionMcp"]}}, timeout=timeout)
         await self._send({"jsonrpc": "2.0", "method": "initialized", "params": {}})    # the handshake's last step
         return self.info
 

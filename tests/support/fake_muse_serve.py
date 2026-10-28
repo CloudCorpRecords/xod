@@ -22,6 +22,7 @@ out_lock = threading.Lock()
 pending = {}                 # approval / question id -> threading.Event and result
 interrupted = set()
 initialized = {"v": False}
+granted = {"v": []}
 sessions = {}
 cursor = {"n": 0}
 
@@ -148,7 +149,7 @@ def main():
         mid, method, p = msg.get("id"), msg.get("method"), msg.get("params") or {}
         if method is None:                       # a receipt for one of our requests
             continue
-        log("got", method, json.dumps(p)[:300])
+        log("got", method, json.dumps(p)[:1000])
 
         def ok(result):
             send({"jsonrpc": "2.0", "id": mid, "result": result})
@@ -156,7 +157,9 @@ def main():
         def err(code, text):
             send({"jsonrpc": "2.0", "id": mid, "error": {"code": code, "message": text}})
         if method == "initialize":
-            ok({"serverInfo": {"name": "muse", "version": "fake"}})
+            asked = ((p.get("capabilities") or {}).get("requestedCapabilities") or [])
+            granted["v"] = [c for c in asked if c in ("sessionMcp",)]
+            ok({"serverInfo": {"name": "muse", "version": "fake"}, "grantedCapabilities": granted["v"]})
             continue
         if method == "initialized":
             initialized["v"] = True
@@ -168,6 +171,15 @@ def main():
             err(-32602, f"invalid {method} commandId: expected UUIDv7")
             continue
         if method == "session/start":
+            bad = [n for n, c in ((p.get("config") or {}).get("mcpServers") or {}).items()
+                   if not isinstance(c, dict) or not ((c.get("transport") == "stdio" and c.get("command"))
+                                                      or (c.get("transport") == "streamableHttp" and c.get("url")))]
+            if bad:       # the real Muse refuses the whole session, as here (seen live with Muse 1.4.13)
+                err(-32602, "invalid session/start config: mcpServers does not match the supported shape")
+                continue
+            if (p.get("config") or {}).get("mcpServers") and "sessionMcp" not in granted["v"]:
+                err(-32602, "session MCP configuration requires the sessionMcp capability")
+                continue
             sid = str(uuid.uuid4())
             sessions[sid] = {"said": [], "busy": False, "root": p.get("workspaceRoot")}
             note("session/started", {"session": {"sessionId": sid, "status": "idle"}})

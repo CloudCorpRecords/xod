@@ -66,6 +66,7 @@ jobs:
           python tests/smoke/run_terminal_command_test.py
           python tests/smoke/run_terminals_edge_test.py
           python tests/smoke/run_crew_test.py
+          python tests/smoke/run_handoff_dispatch_test.py
           python tests/smoke/run_evals_test.py
           python tests/smoke/run_mac_abilities_test.py
           python tests/smoke/run_keychain_test.py

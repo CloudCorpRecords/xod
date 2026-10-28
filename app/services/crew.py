@@ -287,7 +287,10 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
 async def _run_start(j: Dict[str, Any], approval_mode: Optional[str]) -> None:
     try:
         h = await _muse()
-        shared = {name: {"url": c["url"], "headers": {"Authorization": f"Bearer {c['token']}"}} for name, c in _shared().items()}
+        # Muse's session config is a closed union: each server names its transport, or session/start is refused.
+        # Optional: a connected app that's down mustn't stop the job from starting.
+        shared = {name: {"transport": "streamableHttp", "url": c["url"], "mode": "optional",
+                         "headers": {"Authorization": f"Bearer {c['token']}"}} for name, c in _shared().items()}
         s = await h.start_session(j["folder"], approval_mode=approval_mode, mcp_servers=shared or None)
         j["session_id"] = s["sessionId"]
         _by_session[s["sessionId"]] = j["id"]
