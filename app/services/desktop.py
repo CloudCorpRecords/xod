@@ -656,6 +656,56 @@ def _command_check(text: str) -> Optional[Dict[str, Any]]:
     return refused("computer_run_command", {"command": text})
 
 
+TEXT_ROLES = {"AXTextField", "AXTextArea", "AXComboBox", "AXSearchField"}
+QUIET_SEC = 2.0          # you used the keyboard or mouse this recently: Xod waits before typing
+QUIET_WAIT_SEC = 20.0    # ...for at most this long, then says so instead of grabbing the keyboard
+
+
+def _ax_insert(text: str) -> bool:
+    """Puts the text at the cursor of the focused field through Accessibility (its selected text is replaced, as typing
+    would), with no key events and no clipboard, so it lands in that field even if another window comes forward. True
+    only when the field's value reads back with the text in it; False leaves everything as it was (paste is next)."""
+    import ApplicationServices as AS
+    el = _ax(AS.AXUIElementCreateSystemWide(), "AXFocusedUIElement")
+    if el is None or _ax(el, "AXRole") not in TEXT_ROLES or _ax(el, "AXSubrole") == "AXSecureTextField":
+        return False
+    before = _ax(el, "AXValue")
+    if not isinstance(before, str):
+        return False
+    if AS.AXUIElementSetAttributeValue(el, "AXSelectedText", text) != 0:
+        return False
+    after = _ax(el, "AXValue")
+    return isinstance(after, str) and after != before and text in after
+
+
+def _user_active() -> bool:
+    """You (not Xod) pressed a key or moved the mouse in the last QUIET_SEC seconds."""
+    try:
+        import Quartz
+        idle = Quartz.CGEventSourceSecondsSinceLastEventType(Quartz.kCGEventSourceStateCombinedSessionState,
+                                                             Quartz.kCGAnyInputEventType)
+    except Exception:
+        return False
+    xod_ago = time.time() - (_state.get("left_time") or 0)
+    return idle < QUIET_SEC and xod_ago > idle + 0.5          # the last input came after Xod's own last action
+
+
+async def _wait_for_quiet() -> None:
+    end = time.time() + QUIET_WAIT_SEC
+    while await asyncio.to_thread(_user_active):
+        if time.time() > end:
+            raise DesktopError("You're using the keyboard or mouse, so Xod didn't type. It goes on when you stop, or say continue.")
+        await asyncio.sleep(0.5)
+
+
+def _same_front(app: Dict[str, Any]) -> None:
+    """Typing goes only into the app it was meant for: if another one came to the front, stop before a key leaves Xod."""
+    now = front_app()
+    if now.get("pid") != app.get("pid"):
+        raise DesktopError(f"{now.get('name') or 'Another app'} came to the front, so Xod stopped typing "
+                           f"(it was typing into {app.get('name') or 'another app'}). Nothing went into {now.get('name') or 'it'}.")
+
+
 async def type_text(text: str, element: Any = None, enter: bool = False) -> Dict[str, Any]:
     import Quartz
     _ready()
@@ -679,12 +729,21 @@ async def type_text(text: str, element: Any = None, enter: bool = False) -> Dict
         no = _command_check(text)
         if no:
             return no
-    await asyncio.to_thread(_type_now, text, enter)
+    await _wait_for_quiet()
+    how = "directly"
+    if not text or not await asyncio.to_thread(_ax_insert, text):
+        how = "by paste"
+        await asyncio.to_thread(_type_now, text, False, app)
+    if enter:
+        await asyncio.sleep(0.8)          # apart from the text, or full-screen terminal agents take it as part of a paste
+        await asyncio.to_thread(_same_front, app)
+        await asyncio.to_thread(_press, ["return"])
+        _mark_left()
     shown = text if len(text) <= 60 else text[:57] + "…"
-    return _did(f"typed \"{shown}\"" + (" and pressed Return" if enter else ""), app)
+    return _did(f"typed \"{shown}\" {how}" + (" and pressed Return" if enter else ""), app)
 
 
-def _type_now(text: str, enter: bool) -> None:
+def _type_now(text: str, enter: bool, app: Optional[Dict[str, Any]] = None) -> None:
     """Types it into what's focused. Pasted (your clipboard is put back right after): apps take a paste reliably, where
     synthetic key events for each letter are dropped by some (Notes did) and arrive as a "paste" in others anyway.
     Return is pressed on its own afterwards, so full-screen terminal agents (Muse, Claude Code) submit instead of
@@ -693,11 +752,19 @@ def _type_now(text: str, enter: bool) -> None:
         saved = _clipboard_get()
         _clipboard_set(text)
         time.sleep(0.05)
+        try:
+            if app:
+                _same_front(app)
+        except DesktopError:
+            _clipboard_set(saved) if saved is not None else None
+            raise
         _press(["cmd", "v"])
         time.sleep(0.35)
         _clipboard_set(saved) if saved is not None else None
     if enter:
         time.sleep(0.8)          # apart from the paste, or full-screen terminal agents take it as part of it
+        if app:
+            _same_front(app)
         _press(["return"])
     _mark_left()
 

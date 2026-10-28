@@ -6,6 +6,7 @@
 - The desktop app runs on Electron 44.10 (fixes a certificate-trust problem in 44.7), and two build-only packages are updated: `npm audit` and `pip-audit` find nothing.
 - The handoff only acts on a local `docs/AI_HANDOFF.md`. When the file is committed to git, Xod doesn't act on it, because a pulled commit must never hand Muse work.
 - Website audits (tech stack, traffic) check HTTPS certificates again. A site with a broken certificate is still audited, and the result says `tls_certificate: not valid: <reason>` instead of hiding it.
+- Typing into other apps goes where it's meant to: Xod puts text straight into the focused field when the app allows it (no keystrokes, no clipboard), re-checks the app is still in front right before a paste and before Return, and stops (saying which app took focus) instead of typing into the wrong window. It waits while you're using the keyboard or mouse.
 
 **Phones, staying awake, and the card watcher on Windows**
 - Pair an Android phone by scanning one QR in Xod ("Pair a phone" in Your phone): the phone is set up and paired in one step, no USB cable. The code inside works once and expires in 10 minutes, and both screens show the same safety number.
