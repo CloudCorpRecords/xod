@@ -2,8 +2,8 @@
 File transfer with Tailscale (services/taildrop.py, the tailscale_files tool), with a stand-in `tailscale` program so
 nothing real is sent:
   - devices are read from `file cp --targets`, offline ones marked
-  - a send is checked first (file exists, under 4 GB, device known and online) and waits for an approval card
-  - only the card's approval sends it; a made-up grant does nothing
+  - a send is checked first (file exists, under 4 GB, device known and online), then goes straight through
+  - with taildrop_ask_first on, it waits for an approval card: only the card's approval sends it, a made-up grant does nothing
   - receive takes waiting files into a folder
   .venv/bin/python tests/smoke/run_taildrop_test.py
 """
@@ -73,7 +73,13 @@ async def main():
             check(f"{why} is refused", True)
     check("checking sends nothing", not any(c.startswith("file cp /") or "100.64" in c for c in calls()), str(calls()))
 
-    print("T3 the tool waits for the person")
+    print("T3 sending")
+    direct = await tools._taildrop_tool({"action": "send", "path": str(f), "device": "phone-one"})
+    check("by default a send goes straight through", direct.get("sent") is True and not direct.get("needs_approval"), str(direct))
+    CALLS.unlink()
+
+    print("T3b with ask-first on, the tool waits for the person")
+    taildrop.set_ask_first(True)
     res = await tools._taildrop_tool({"action": "send", "path": str(f), "device": "phone"})
     check("a send comes back as an approval card", res.get("needs_approval") is True and res.get("approval_id"), str(res))
     check("…and nothing was sent yet", not any("100.64.0.1:" in c for c in calls()))
@@ -93,7 +99,7 @@ async def main():
     check("devices through the tool", listed.get("count") == 2)
     check("the tool is defined", any(t["function"]["name"] == "tailscale_files" for t in tools.TOOL_DEFINITIONS))
 
-    print("T5 a send from the terminal waits too")
+    print("T5 a send from the terminal waits too, with ask-first on")
     from app.services import sentinel
     sentinel.begin([{"role": "user", "content": "send report.pdf to my phone over tailscale"}])
     cp = "/Applications/Tailscale.app/Contents/MacOS/Tailscale file cp /tmp/report.pdf 100.64.0.1:"
@@ -103,6 +109,8 @@ async def main():
                               or {}).get("rule") == "taildrop_send")
     check("listing devices isn't held", sentinel.review("computer_run_command", {"command": "tailscale file cp --targets"}) is None)
     check("taking files in isn't held", sentinel.review("computer_run_command", {"command": "tailscale file get ~/Downloads"}) is None)
+    taildrop.set_ask_first(False)
+    check("with ask-first off, a terminal send isn't held", sentinel.review("computer_run_command", {"command": cp}) is None)
 
 
 asyncio.run(main())

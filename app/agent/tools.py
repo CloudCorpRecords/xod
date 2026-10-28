@@ -2782,8 +2782,7 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "tailscale_files",
             "description": "Move files between this computer and the person's own devices (phone, other computers) over Tailscale. "
-                           "devices: which devices can take a file and which are online. send: one file to one device (the "
-                           "person approves it on a card first). receive: take the files their devices sent to this computer "
+                           "devices: which devices can take a file and which are online. send: one file to one device. receive: take the files their devices sent to this computer "
                            "into ~/Downloads/Xod (or a folder).",
             "parameters": {
                 "type": "object",
@@ -3183,8 +3182,8 @@ _send_grants: set = set()
 
 
 async def _taildrop_tool(a: Dict[str, Any]) -> Dict[str, Any]:
-    """Files to and from the person's devices (services/taildrop.py). A send leaves this computer, so it always waits
-    for the person's OK on a card; the card's approval runs it."""
+    """Files to and from the person's devices (services/taildrop.py). Sends to their own devices go straight through;
+    with taildrop_ask_first on, a send waits for their OK on a card and the card's approval runs it."""
     from app.services import sentinel, taildrop
     act = (a.get("action") or "devices").lower()
     try:
@@ -3197,7 +3196,7 @@ async def _taildrop_tool(a: Dict[str, Any]) -> Dict[str, Any]:
         if act != "send":
             return {"success": False, "error": f"Unknown action '{act}': devices, send or receive."}
         token = a.pop("_grant", None)
-        if token and token in _send_grants:
+        if (token and token in _send_grants) or not taildrop.ask_first():
             _send_grants.discard(token)
             return {"success": True, **await asyncio.to_thread(taildrop.send, a.get("path") or "", a.get("device") or "")}
         plan = await asyncio.to_thread(taildrop.check_send, a.get("path") or "", a.get("device") or "")

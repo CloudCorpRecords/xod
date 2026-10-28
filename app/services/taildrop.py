@@ -6,7 +6,8 @@ Only devices on the person's own tailnet can be targets, and Tailscale itself de
   tailscale file cp <file> <ip>:         send one file
   tailscale file get --conflict=rename   take what was sent to this computer, without overwriting anything
 
-A send leaves the computer, so the tool asks first (an approval card); this module only does the work.
+Sends to the person's own devices go straight through, like the Muse card approvals. With the setting
+taildrop_ask_first on, the tool asks first with an approval card instead.
 """
 import os
 import subprocess
@@ -17,8 +18,21 @@ MAX_BYTES = 4 * 1024 ** 3
 INBOX = Path.home() / "Downloads" / "Xod"
 
 
+ASK_SETTING = "taildrop_ask_first"
+
+
 class TaildropError(Exception):
     pass
+
+
+def ask_first() -> bool:
+    from app.services.storage import get_setting
+    return get_setting(ASK_SETTING, "off") == "on"
+
+
+def set_ask_first(on: bool) -> None:
+    from app.services.storage import set_setting
+    set_setting(ASK_SETTING, "on" if on else "off")
 
 
 def cli() -> str:

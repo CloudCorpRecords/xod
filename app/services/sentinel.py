@@ -179,6 +179,11 @@ def _mentioned(target: str, asked: str) -> bool:
     return bool(h) and h in a
 
 
+def _taildrop_ask_first() -> bool:
+    from app.services import taildrop
+    return taildrop.ask_first()
+
+
 def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) -> Optional[Dict[str, Any]]:
     """None when it can go ahead; else {"why": …, "rule": …}: hold it for the person's OK."""
     st = _state()
@@ -218,8 +223,8 @@ def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) ->
                 what = "address" if "@" in t else ("link" if t.startswith("http") else "contact")
                 return {"rule": "not_from_you", "why": f"The {what} {t[:80]} came from something it read, not from you."}
 
-    # a file sent to a device from the terminal waits for a card, like tailscale_files' sends
-    if kind == "run" and _TAILDROP_SEND_RE.search(text):
+    # with taildrop_ask_first on, a file sent to a device from the terminal waits for a card, like tailscale_files' sends
+    if kind == "run" and _TAILDROP_SEND_RE.search(text) and _taildrop_ask_first():
         return {"rule": "taildrop_send", "why": "It would send a file off this computer to a device over Tailscale."}
 
     # not asked
