@@ -8,6 +8,10 @@
 - Website audits (tech stack, traffic) check HTTPS certificates again. A site with a broken certificate is still audited, and the result says `tls_certificate: not valid: <reason>` instead of hiding it.
 - Typing into other apps goes where it's meant to: Xod puts text straight into the focused field when the app allows it (no keystrokes, no clipboard), re-checks the app is still in front right before a paste and before Return, and stops (saying which app took focus) instead of typing into the wrong window. It waits while you're using the keyboard or mouse.
 
+**Your Xods: sign in once**
+- One click (Your Xods → Sign in) opens Tailscale's sign-in, where you pick Google, Microsoft, GitHub or Apple. Every computer signed in with the same account finds the other Xods, online or not, and ones shared with you are marked. Xod keeps no accounts of its own. Ask Xod about "my other Xods", or use the xod_machines tool.
+- Each Xod is findable through a small read-only listener on its Tailscale address only (port 8791). It answers with the computer's name and OS, nothing else. Turn it off with "Let my other Xods find this computer".
+
 **Files to and from your devices**
 - Xod moves files between this computer and your own devices over Tailscale (tailscale_files): it lists which devices can take a file and which are online, sends one file to one of them, and takes what your phone or other computers sent into `~/Downloads/Xod` without overwriting anything. A send is checked first (the file exists, is under 4 GB, the device is yours and online), then goes straight through, like the Muse card approvals. Turn on the setting `taildrop_ask_first` to get an approval card before each send instead, including a `tailscale file cp` run from the terminal.
 

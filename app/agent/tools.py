@@ -2799,6 +2799,20 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "xod_machines",
+            "description": "The person's other computers running Xod, found over their Tailscale sign-in. list: whether this "
+                           "computer is signed in and which Xods it can see (online or not). sign_in: open Tailscale's one-click "
+                           "sign-in page (Google, Microsoft, GitHub or Apple) so this Xod joins the others.",
+            "parameters": {
+                "type": "object",
+                "properties": {"action": {"type": "string", "enum": ["list", "sign_in"]}},
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "memory_store",
             "description": "Permanently stores a memory into the SQLite vector memory vault (e.g. user coding preferences, architectural patterns, lessons learned, or project facts).",
             "parameters": {
@@ -3493,6 +3507,12 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         return _desktop_setup_card(dict(arguments or {}))
     if name == "tailscale_files":
         return await _taildrop_tool(dict(arguments or {}))
+    if name == "xod_machines":
+        from app.services import xod_network
+        if (arguments or {}).get("action") == "sign_in":
+            return await asyncio.to_thread(xod_network.sign_in)
+        st = await asyncio.to_thread(xod_network.status)
+        return {"success": True, "status": st, **(await xod_network.find() if st.get("signed_in") else {"xods": []})}
     if name in CLI_TOOLS or name in LEGACY_AGENT_TOOLS:
         return await _cli_agents(name, dict(arguments or {}))
     if name in ("agent_mail_send", "agent_mail_inbox"):
@@ -4631,6 +4651,11 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
     if any(k in q for k in ["taildrop", "tailscale", "to my phone", "to my iphone", "to my android", "from my phone",
                              "my devices", "airdrop", "send it to my", "send this to my", "send the file to"]):
         affinities.append("tailscale_files")
+
+    # The person's other Xods
+    if any(k in q for k in ["other xod", "my xods", "xod machines", "other computers", "my computers", "my machines",
+                             "sign in to tailscale", "log in to tailscale", "tailscale login", "other machines"]):
+        affinities.append("xod_machines")
 
     # Local Workspace & Computer Filesystem affinities
     if active_workspace_path or any(k in q for k in ["file", "files", "folder", "folders", "code", "read", "write", "search", "workspace", "project", "dir", "directory", "directories", "script", "readme", "config", "env", "inspect", "audit", "check", "move", "organize", "create folder", "mkdir", "directory tree", "file tree", "folder tree", "edit", "update", "patch"]):

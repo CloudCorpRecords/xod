@@ -2240,6 +2240,39 @@ async def _watch_muse_app():
     muse_app.start()
 
 
+_xod_network_task = None
+
+
+@app.on_event("startup")
+async def _xod_network():
+    global _xod_network_task
+    from app.services import xod_network
+    _xod_network_task = asyncio.get_running_loop().create_task(xod_network.run_forever())
+
+
+@app.get("/api/xods")
+async def xods_list():
+    """Your Xods: Tailscale sign-in state, and the other Xods on your tailnet."""
+    from app.services import xod_network
+    st = await asyncio.to_thread(xod_network.status)
+    return {"success": True, "status": st, **(await xod_network.find() if st.get("signed_in") else {"xods": []})}
+
+
+@app.post("/api/xods/sign-in")
+async def xods_sign_in():
+    """One click: opens Tailscale's sign-in page (Google, Microsoft, GitHub or Apple)."""
+    from app.services import xod_network
+    return await asyncio.to_thread(xod_network.sign_in)
+
+
+@app.post("/api/xods/findable")
+async def xods_findable(body: Dict[str, Any]):
+    from app.services import xod_network
+    from app.services.storage import set_setting
+    set_setting(xod_network.FINDABLE_SETTING, "on" if body.get("on") else "off")
+    return {"success": True, "findable": await xod_network.sync_beacon()}
+
+
 @app.get("/api/crew/{jid}")
 async def crew_job(jid: str):
     from app.services import crew
