@@ -96,6 +96,31 @@ async def main():
     hf.write_text(hf.read_text() + section("Muse Code (muse-wonder-1.0)", "- none"))
     check("once Muse writes back, there's no work left", await hd.check(str(repo)) is None)
 
+    print("H3b out of usage")
+    hf.write_text(hf.read_text() + section("Claude Code (claude-opus-5-5)", "- Muse Code: read the texts."))
+    j = await hd.check(str(repo))
+    n0 = len(started)
+    real_err = ("API error 429 [request_id=b4ebed53]: Subscription quota exhausted. "
+                "Your usage window resets at 2099-10-28T04:28:14Z. (rate_limit_error)")
+    jobs[j["id"]].update(status="failed", error=real_err)
+    check("a usage-limit error is read, with its reset time", hd.quota_reset(real_err) and hd.quota_reset(real_err) > 4000000000)
+    check("…and other errors aren't", hd.quota_reset("boom: file not found") is None)
+    await hd.check(str(repo))
+    st = hd._load_state()[str(repo)]
+    check("out of usage: no new job, waits until the reset", len(started) == n0 and st.get("wait_until", 0) > 4000000000, str(st))
+    st["at"] -= hd.RETRY_AFTER_SEC + 1
+    hd._save_state({**hd._load_state(), str(repo): st})
+    check("…not even after the usual retry delay", await hd.check(str(repo)) is None and len(started) == n0)
+    tries_before = st["tries"]
+    st["wait_until"] = 0
+    hd._save_state({**hd._load_state(), str(repo): st})
+    j2 = await hd.check(str(repo))
+    check("after the reset: the same work starts again", j2 is not None and len(started) == n0 + 1)
+    check("…and the wait didn't use up a retry", hd._load_state()[str(repo)]["tries"] == tries_before, str(hd._load_state()[str(repo)]))
+    check("a usage limit with no reset time waits a while", abs(hd.quota_reset("429 Too Many Requests") - (__import__("time").time() + hd.QUOTA_WAIT_SEC)) < 5)
+    jobs[j2["id"]]["status"] = "done"
+    hf.write_text(hf.read_text() + section("Muse Code (muse-wonder-1.0)", "- none"))
+
     print("H4 the setting")
     check("no repos until you add one", hd.repos() == [])
     hd.start = lambda: None

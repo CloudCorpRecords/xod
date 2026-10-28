@@ -6,12 +6,15 @@ starts a Crew job for Muse in that repo itself, so nobody has to copy the note a
   whose turn after Muse Code's last section, a section by someone else that names "Muse Code" is work for Muse
   once       each such section starts at most one job (its heading and place are remembered in the data folder);
              a job that failed is tried again later, at most RETRIES times; a running job is never doubled
+  limits     when Muse is out of usage (a 429 / "quota exhausted" error), Xod waits until the reset time the
+             error gives (or QUOTA_WAIT_SEC when it gives none) and doesn't count that as a failed try
   rules      the job reads the handoff, does the items for Muse Code, runs the tests it touches, leaves the work
              uncommitted (you approve every commit, push and release) and appends its own section when done
 
 Checked every TICK_SEC while Xod runs; a job's approvals go through Crew like any other job's.
 """
 import asyncio
+import datetime as dt
 import hashlib
 import json
 import logging
@@ -29,7 +32,10 @@ STATE_FILE = DATA_DIR / "handoff_dispatch.json"
 TICK_SEC = 60
 RETRIES = 2
 RETRY_AFTER_SEC = 600
+QUOTA_WAIT_SEC = 1800
 MUSE = "Muse Code"
+_QUOTA_RE = re.compile(r"\b429\b|quota|rate[_ ]limit|usage (?:limit|window)", re.I)
+_RESET_RE = re.compile(r"resets? at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)", re.I)
 
 TASK = (
     "You are Muse Code, the one who writes the code in this repo. Another AI left work for you in docs/AI_HANDOFF.md.\n"
@@ -108,6 +114,19 @@ def work_for_muse(text: str) -> List[Dict[str, Any]]:
             if MUSE.lower() not in s["author"].lower() and MUSE.lower() in (s["heading"] + "\n" + s["body"]).lower()]
 
 
+def quota_reset(error: str) -> Optional[float]:
+    """When a job's error says the agent is out of usage: the time it resets (or a while from now). Else None."""
+    if not error or not _QUOTA_RE.search(error):
+        return None
+    m = _RESET_RE.search(error)
+    if m:
+        try:
+            return dt.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp() + 60
+        except ValueError:
+            pass
+    return time.time() + QUOTA_WAIT_SEC
+
+
 def _key(sec: Dict[str, Any]) -> str:
     return hashlib.sha256(f"{sec['line']}\n{sec['heading']}\n{sec['body']}".encode()).hexdigest()[:16]
 
@@ -127,6 +146,9 @@ async def check(repo: str) -> Optional[Dict[str, Any]]:
     key = _key(newest)
     state = _load_state()
     mine = state.get(repo) or {}
+    if time.time() < mine.get("wait_until", 0):
+        return None              # Muse is out of usage until then: any job would fail the same way
+    out_of_usage = False
     if mine.get("job"):
         try:
             prev = crew.job(mine["job"])
@@ -134,12 +156,20 @@ async def check(repo: str) -> Optional[Dict[str, Any]]:
             prev = None
         if prev and prev["status"] in ("starting", "working", "waiting"):
             return None          # Muse is still on it (maybe on older work; it reads the whole file)
+        reset = quota_reset(str((prev or {}).get("error") or "")) if prev and prev["status"] != "done" else None
+        if reset and not mine.get("waited_for") == mine["job"]:
+            state[repo] = {**mine, "wait_until": reset, "waited_for": mine["job"]}
+            _save_state(state)
+            logger.info(f"handoff for {repo}: Muse is out of usage; trying again at {time.strftime('%H:%M', time.localtime(reset))}")
+            return None
+        out_of_usage = mine.get("waited_for") == mine["job"]
         if mine.get("key") == key:
             if not prev or prev["status"] == "done":
                 return None      # this work was handed over and finished
-            if mine.get("tries", 0) > RETRIES or time.time() - mine.get("at", 0) < RETRY_AFTER_SEC:
+            if not out_of_usage and (mine.get("tries", 0) > RETRIES or time.time() - mine.get("at", 0) < RETRY_AFTER_SEC):
                 return None
-    tries = (mine.get("tries", 0) + 1) if mine.get("key") == key else 1
+    same = mine.get("key") == key
+    tries = (mine.get("tries", 0) + (0 if out_of_usage else 1)) if same else 1
     try:
         j = await crew.start(TASK.format(heading=newest["heading"]), folder=repo, agent="muse", isolate=False,
                              title=f"Handoff: work for Muse Code ({len(pending)} section{'s' if len(pending) != 1 else ''})")

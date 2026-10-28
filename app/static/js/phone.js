@@ -66,11 +66,66 @@
       </section>`;
   }
 
+  function androidView() {
+    return `
+      <section class="space-y-3">
+        <div class="task-card space-y-2">
+          <p class="task-title">Pair an Android phone (Xod app)</p>
+          <p class="text-[12px] text-zinc-400">For the Xod phone app (not Telegram): Xod shows a QR, the phone scans it and is
+            set up and paired in one step. The code inside works once and expires in 10 minutes. Compare the safety number on
+            both screens. The phone always shows it's connected, nothing hidden.</p>
+          <div id="phPairBox"></div>
+          <button data-ph="pairag" class="${primary}">Pair a phone</button>
+          <div id="phPhones"></div>
+        </div>
+      </section>`;
+  }
+
+  function iphoneView() {
+    return `
+      <section class="space-y-3">
+        <div class="task-card space-y-2">
+          <p class="task-title">iPhone through Mirroring (Mac only)</p>
+          <p class="text-[12px] text-zinc-400">Xod reads and taps your iPhone in the iPhone Mirroring window.
+            Off unless you switch it on. If you unlock your iPhone, Mirroring pauses and Xod says so.</p>
+          <label class="flex items-start gap-2 text-[12px] text-zinc-300">
+            <input type="checkbox" data-ph="mirror" class="mt-0.5">
+            <span>Let Xod use iPhone Mirroring</span></label>
+          <p id="phMirrorMsg" class="text-[11px] text-zinc-500"></p>
+        </div>
+      </section>`;
+  }
+
+  async function loadMirror() {
+    const cb = document.querySelector('[data-ph="mirror"]'), msg = document.getElementById("phMirrorMsg");
+    if (!cb) return;
+    try {
+      const d = await api("/api/phones/iphone-mirroring");
+      cb.checked = !!d.enabled;
+      if (msg) msg.textContent = d.message || "";
+    } catch (e) { /* panel still works */ }
+  }
+
+  async function loadPhones() {
+    const box = document.getElementById("phPhones");
+    if (!box) return;
+    try {
+      const d = await api("/api/phones");
+      const mac = d.computer || {};
+      box.innerHTML = `<p class="text-[11px] text-zinc-500">This computer: ${mac.locked === true ? "screen locked" : mac.locked === false ? "screen awake" : "lock unknown"}${mac.awake_held ? " · staying awake" : ""}</p>` +
+        ((d.phones || []).length ? d.phones.map((ph) => `<p class="text-[12px] text-zinc-300">${esc(ph.nickname || ph.address)} <span class="text-zinc-500">${esc(ph.address)}</span>
+          ${ph.online ? '<span class="text-emerald-300">online</span>' : '<span class="text-zinc-500">last seen ' + (ph.last_seen ? new Date(ph.last_seen * 1000).toLocaleString() : "never") + "</span>"}
+          <button data-ph-unpair="${esc(ph.address)}" class="${quiet}">Unpair</button></p>`).join("")
+        : '<p class="text-[12px] text-zinc-500">No Android phone paired yet.</p>');
+    } catch (e) { /* the panel still works without it */ }
+  }
+
   async function render() {
     const body = document.getElementById("phoneBody");
     if (!body) return;
     try { st = await api("/api/phone"); } catch (e) { body.innerHTML = `<p class="text-red-300 text-[12px]">Couldn't reach Xod.</p>`; return; }
-    body.innerHTML = !st.connected ? connectView() : !st.paired ? pairView() : linkedView();
+    body.innerHTML = (!st.connected ? connectView() : !st.paired ? pairView() : linkedView()) + androidView() + iphoneView();
+    loadPhones(); loadMirror();
     clearInterval(poll);
     if (st.connected && !st.paired) poll = setInterval(async () => {       // pairing happens on the phone: notice it here
       const now = await api("/api/phone").catch(() => null);
@@ -94,9 +149,29 @@
       await api("/api/phone/disconnect", "POST");
       return render();
     }
+    if (a === "pairag") {
+      const box = document.getElementById("phPairBox");
+      box.innerHTML = '<p class="text-[12px] text-zinc-400">Making a QR…</p>';
+      const r = await api("/api/phone/pair-offer");
+      if (!r.success) { box.innerHTML = `<p class="text-[12px] text-red-300">${esc(r.error || "Couldn't make a QR.")}</p>`; return; }
+      box.innerHTML = `<div class="bg-white p-2 rounded-lg w-fit">${r.qr_svg || ""}</div>
+        <p class="text-[12px] text-zinc-300">Scan this in the Xod phone app. Safety number: <span class="font-mono text-white">${esc(r.safety || "")}</span></p>
+        <p class="text-[11px] text-zinc-500">Expires ${esc(new Date(r.expires_at * 1000).toLocaleTimeString())}. If pairing doesn't finish, make a new QR.</p>`;
+      return;
+    }
+    const unpair = e.target.closest("[data-ph-unpair]");
+    if (unpair) {
+      await api("/api/phones/" + encodeURIComponent(unpair.dataset.phUnpair), "DELETE");
+      return render();
+    }
     if (a === "test") {
       const r = await api("/api/phone/test", "POST");
       return showToast(r.success ? "Sent: check your phone" : r.error);
+    }
+    if (a === "mirror" && e.type === "change") {
+      const r = await api("/api/phones/iphone-mirroring", "POST", { on: el.checked });
+      const msg = document.getElementById("phMirrorMsg");
+      if (msg) msg.textContent = r.message || "";
     }
     if (a === "notify" && e.type === "change") {
       await api("/api/phone/notify", "POST", { all_tasks: el.checked });

@@ -2,9 +2,18 @@
 
 ## Next
 
+**Phones, staying awake, and the card watcher on Windows**
+- Pair an Android phone by scanning one QR in Xod ("Pair a phone" in Your phone): the phone is set up and paired in one step, no USB cable. The code inside works once and expires in 10 minutes, and both screens show the same safety number.
+- Xod can reach paired phones through a phone MCP server (phone_list, phone_send, phone_ask, phone_open_app, phone_screen_read, phone_screen_tap, phone_location, plus background tools for SMS, notifications, calendar, contacts, network fetch, background apps and files). The action names Xod sends and the phone handles are one shared contract (`docs/phone_actions.json`), so the two can't drift apart. Permissions live on the phone: a capability switched off there answers "not allowed on this phone", anything that sends or changes things asks on the phone, and every call is logged on both sides. Approvals and Crew questions can be answered from the phone too.
+- If Tailscale is installed but not signed in, Xod now says so ("open it and sign in") instead of offering no way for agents elsewhere to reach this computer.
+- While "Approve everything" is on or a Crew job runs, Xod keeps the display awake so the computer doesn't lock mid-job; Crew shows it, and phone_list reports whether the screen is locked. Xod never types your login password anywhere.
+- The Muse approval-card watcher is split into a shared core and per-OS backends, with a Windows (UI Automation) backend next to the Mac one, so approving cards can work on Windows too.
+
 **Muse jobs start again, and Muse picks up its own work**
 - Muse jobs from Xod failed at once ("mcpServers does not match the supported shape") when a connected app like GitHub was shared with them: newer Muse wants each shared app to say how it connects, and Xod to ask for that when it starts Muse. Xod does both now, so jobs start and still get GitHub.
 - When another AI leaves work for Muse Code in a repo's `docs/AI_HANDOFF.md`, Xod starts a Muse job for it by itself, so nobody has to copy the note across. It's on for the repos you list (for now through Xod's API, `/api/crew/settings/handoff-dispatch`; a Crew switch comes next). Each note starts one job, a running job is never doubled, a failed one is tried again later (twice at most), and Muse leaves its work uncommitted for you to approve.
+- When Muse is out of usage, Xod waits until the reset time its error gives, then hands the work over again, without counting that as a failed try.
+- iPhone, through your Mac: Xod can read and tap your iPhone in macOS iPhone Mirroring while the phone stays locked (Mac only, off until you switch it on in Your phone). It pauses while you're using your iPhone.
 
 ## 0.9.5
 

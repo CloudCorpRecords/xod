@@ -68,8 +68,18 @@ def set_enabled(on: bool) -> Dict[str, Any]:
     if on and not was:
         set_setting("muse_auto_approve_since", str(time.time()))
     if on:
+        try:
+            from app.services import power
+            power.acquire("auto-approve")
+        except Exception:
+            pass
         start()
     else:
+        try:
+            from app.services import power
+            power.release("auto-approve")
+        except Exception:
+            pass
         _stop_observer()
         _state["error"] = None  # a warning from when it was on must not linger
         _state["warned"] = False
@@ -77,9 +87,17 @@ def set_enabled(on: bool) -> Dict[str, Any]:
 
 
 def status() -> Dict[str, Any]:
-    return {"on": enabled(), "approved": _state["count"], "last": _state["last"],
-            "accessibility_error": _state.get("error") if enabled() else None,
-            "dry_run": DRY_RUN}
+    out = {"on": enabled(), "approved": _state["count"], "last": _state["last"],
+           "accessibility_error": _state.get("error") if enabled() else None,
+           "dry_run": DRY_RUN, "backend": (_backends.backend().name if _backends.backend() else None)}
+    try:
+        from app.services import power
+        pst = power.status()
+        out.update({"awake": pst["awake_held"], "awake_held": pst["awake_held"],
+                    "awake_reasons": pst["awake_reasons"], "locked": pst["locked"]})
+    except Exception:
+        out.update({"awake": None, "awake_held": False, "awake_reasons": [], "locked": None})
+    return out
 
 
 def _describe_error(e: Exception) -> str:
@@ -153,48 +171,27 @@ def _card_fields(what: str, texts: Optional[List[str]] = None) -> Dict[str, Any]
     return out
 
 
-# ------------------------------------------------------------------ reading the Muse app (in-process AX)
-class _AX:
-    """The slice of ApplicationServices used here, so tests can stand in a fake tree."""
+# ------------------------------------------------------------------ reading Muse's app (backend tree walk)
+# The card rules below are platform-neutral. Reading/pressing real windows lives in
+# services/muse_backends.py: mac_ax (Accessibility) and win_uia (UI Automation).
+from app.services import muse_backends as _backends  # noqa: E402
 
-    def __init__(self):
-        from ApplicationServices import (AXIsProcessTrusted, AXUIElementCopyAttributeValue,
-                                          AXUIElementCreateApplication, AXUIElementPerformAction,
-                                          AXUIElementSetMessagingTimeout)
-        self._trusted, self._copy = AXIsProcessTrusted, AXUIElementCopyAttributeValue
-        self._create, self._perform = AXUIElementCreateApplication, AXUIElementPerformAction
-        self._set_timeout = AXUIElementSetMessagingTimeout
-
-    def trusted(self) -> bool:
-        return bool(self._trusted())
-
-    def create_app(self, pid: int):
-        app = self._create(pid)
-        try:
-            self._set_timeout(app, 3.0)  # one stuck element must not hang the whole scan
-        except Exception:
-            pass
-        return app
-
-    def attr(self, el, name):
-        err, value = self._copy(el, name, None)
-        return value if err == 0 else None
-
-    def perform(self, el, action) -> int:
-        return int(self._perform(el, action))
+_AX = _backends.MacAX  # compat alias; real code goes through _ax_api()
 
 
-def _ax_api() -> _AX:
-    return _AX()
+def _ax_api():
+    b = _backends.backend()
+    if b is None:
+        raise RuntimeError("The Muse card watcher doesn't run on this platform.")
+    return b.ax_api()
 
 
-def _muse_pid() -> Optional[int]:
-    r = subprocess.run(["pgrep", "-x", "Muse"], capture_output=True, text=True, timeout=5)
-    pids = (r.stdout or "").split()
-    return int(pids[0]) if pids else None
+def _muse_pid():
+    b = _backends.backend()
+    return b.pid() if b else None
 
 
-def _label(ax: _AX, el) -> str:
+def _label(ax, el) -> str:
     for name in ("AXTitle", "AXDescription", "AXValue"):
         value = ax.attr(el, name)
         if value:
@@ -448,69 +445,12 @@ class _Debouncer:
             self._timer = None
 
 
-class _Observer:
-    """An AXObserver on Muse's pid, in its own thread with a CFRunLoop. Listen-only: it never presses;
-    it just calls on_event, and the scan that follows does the pressing."""
-
-    NOTIFICATIONS = ("AXCreated", "AXUIElementDestroyed", "AXLayoutChanged", "AXValueChanged",
-                     "AXTitleChanged", "AXFocusedUIElementChanged", "AXFocusedWindowChanged", "AXWindowCreated")
-
-    def __init__(self, pid: int, on_event: Callable[[], None]):
-        self.pid, self._stop = pid, threading.Event()
-        self._thread = threading.Thread(target=self._run, args=(on_event,), daemon=True, name="xod-muse-observer")
-        self._thread.start()
-
-    def _run(self, on_event) -> None:
-        try:
-            import objc
-            from ApplicationServices import (AXObserverAddNotification, AXObserverCreate,
-                                             AXObserverGetRunLoopSource, AXUIElementCreateApplication)
-            from CoreFoundation import (CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopRunInMode,
-                                        kCFRunLoopDefaultMode)
-
-            watched = []
-
-            def subscribe(el):
-                try:
-                    if any(el is w for w in watched):
-                        return
-                    watched.append(el)
-                    for name in self.NOTIFICATIONS:
-                        AXObserverAddNotification(obs, el, name, None)
-                except Exception:
-                    pass
-
-            @objc.callbackFor(AXObserverCreate)
-            def cb(observer, element, notification, refcon):
-                if str(notification) == "AXWindowCreated":
-                    subscribe(element)
-                on_event()
-
-            err, obs = AXObserverCreate(self.pid, cb, None)
-            if err != 0:
-                logger.warning(f"couldn't watch the Muse app (AXObserver {err}); the backstop scan still runs")
-                return
-            app = AXUIElementCreateApplication(self.pid)
-            subscribe(app)
-            try:
-                from ApplicationServices import AXUIElementCopyAttributeValue
-                err2, windows = AXUIElementCopyAttributeValue(app, "AXWindows", None)
-                for w in (windows if err2 == 0 and windows else []):
-                    subscribe(w)
-            except Exception:
-                pass
-            CFRunLoopAddSource(CFRunLoopGetCurrent(), AXObserverGetRunLoopSource(obs), kCFRunLoopDefaultMode)
-            while not self._stop.is_set():
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, False)
-        except Exception as e:
-            logger.warning(f"Muse app observer stopped ({e}); the backstop scan still runs")
-
-    def stop(self) -> None:
-        self._stop.set()
+_Observer = _backends.MacObserver  # compat alias; real code goes through _observer_factory()
 
 
 def _observer_factory(pid: int, on_event: Callable[[], None]):
-    return _Observer(pid, on_event)
+    b = _backends.backend()
+    return b.observer(pid, on_event) if b else None
 
 
 def _stop_observer() -> None:
@@ -540,7 +480,7 @@ def _sync_observer(pid: Optional[int]) -> None:
             loop.call_soon_threadsafe(_schedule_burst)
 
     _state["observer"] = _observer_factory(pid, on_event)
-    _state["observer_pid"] = pid
+    _state["observer_pid"] = pid if _state["observer"] is not None else None
 
 
 # ------------------------------------------------------------------ the watcher
@@ -628,6 +568,11 @@ async def _watch() -> None:
         _state["debouncer"] = _Debouncer(DEBOUNCE_SEC, _fire_scan)
     while True:
         try:
+            try:
+                from app.services import power
+                power.sync_crew()
+            except Exception:
+                pass
             if enabled():
                 pid = await asyncio.to_thread(_muse_pid)
                 _sync_observer(pid)
@@ -646,8 +591,8 @@ async def _watch() -> None:
 
 
 def start() -> None:
-    if sys.platform != "darwin":
-        return
+    if _backends.backend() is None:
+        return  # no card watcher on this platform (Linux): Crew approvals still work in Xod
     try:
         asyncio.get_running_loop()
     except RuntimeError:

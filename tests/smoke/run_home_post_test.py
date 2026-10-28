@@ -209,8 +209,25 @@ print(json.dumps({'status': r[0], 'problem': r[1]}))""")
         nets = dana.api("GET", "/api/mail/networks")
         kinds = [n["kind"] for n in nets.get("networks", [])]
         check("it offers this network (<name>.local)", any(n["kind"] == "network" and n["domain"].endswith(f".local:{dana.post}") for n in nets.get("networks", [])), str(nets))
-        check("…and Tailscale, or how to get it", "tailscale" in kinds or "tailscale_missing" in kinds, str(kinds))
+        check("…and Tailscale, or how to get it", "tailscale" in kinds or "tailscale_missing" in kinds or "tailscale_signin" in kinds, str(kinds))
         from app.services import home_post
+        real_ts, real_cli, real_name = home_post.tailscale, home_post._tailscale_cli, home_post.local_name
+        try:
+            home_post.local_name = lambda: "macbook"
+            home_post.tailscale = lambda: {"name": "macbook.tail1234.ts.net", "ip": "100.1.2.3"}
+            home_post._tailscale_cli = lambda: "/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+            ks = [n["kind"] for n in home_post.networks()]
+            check("networks: Tailscale running -> tailscale (no sign-in/missing hint)", ks[0] == "tailscale" and "tailscale_signin" not in ks and "tailscale_missing" not in ks, str(ks))
+            home_post.tailscale = lambda: None
+            signin = [n for n in home_post.networks() if n["kind"] == "tailscale_signin"]
+            check("networks: Tailscale installed but not signed in -> tailscale_signin",
+                  len(signin) == 1 and signin[0]["label"] == "Tailscale is installed: open it and sign in" and not signin[0]["domain"],
+                  str(home_post.networks()))
+            home_post._tailscale_cli = lambda: ""
+            ks = [n["kind"] for n in home_post.networks()]
+            check("networks: Tailscale not installed -> tailscale_missing", "tailscale_missing" in ks and "tailscale_signin" not in ks, str(ks))
+        finally:
+            home_post.tailscale, home_post._tailscale_cli, home_post.local_name = real_ts, real_cli, real_name
         check("private networks use plain HTTP; the internet doesn't", all(home_post.is_private_host(h) for h in
               ("macbook.local", "mac.tail1234.ts.net", "192.168.1.20", "10.0.0.5", "100.101.102.103"))
               and not any(home_post.is_private_host(h) for h in ("post.example.com", "8.8.8.8")))

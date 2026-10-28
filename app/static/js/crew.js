@@ -226,7 +226,14 @@
     const box = root.querySelector("[data-c-autoapprove]");
     if (box && document.activeElement !== box) box.checked = !!st.on;
     const note = root.querySelector("[data-c-autoapprove-note]");
-    if (note) { note.textContent = st.accessibility_error || ""; note.classList.toggle("hidden", !st.accessibility_error); }
+    if (note) {
+      const bits = [];
+      if (st.accessibility_error) bits.push(st.accessibility_error);
+      else if (st.on && st.awake_held) bits.push("Staying awake while this is on, so the computer doesn't lock mid-job.");
+      if (st.on && st.locked) bits.push("Screen is locked: cards are still read; a press while locked is unproven.");
+      note.textContent = bits.join(" ");
+      note.classList.toggle("hidden", !bits.length);
+    }
   }
 
   async function loadAutoApprove() {

@@ -39,6 +39,10 @@ jobs:
         run: python tests/smoke/run_windows_tools_test.py
       - name: Xod on your phone (stand-in Telegram)
         run: python tests/smoke/run_phone_test.py
+      - name: Phone MCP and pairing (fake phone, platform-neutral core)
+        run: python tests/smoke/run_phone_mcp_test.py
+      - name: Muse card watcher core on a fake Windows UIA tree
+        run: python tests/smoke/run_muse_app_test.py
       - name: Eyes for models that can't see (stand-in Ollama)
         run: python tests/smoke/run_vision_test.py
       - name: Models, scores, what works and connecting (stand-in Ollama)

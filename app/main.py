@@ -609,6 +609,8 @@ async def _start_task_worker():
     asyncio.create_task(local_servers.idle_loop())   # stops the built-in engine after a while unused
     from app.services import phone
     phone.start()                           # the linked phone (Telegram), if there is one
+    from app.services import phone_mcp
+    phone_mcp.start_bridge()                # Approvals/Crew questions to a paired Android phone, if one is paired
 
 
 class ModelRef(BaseModel):
@@ -729,6 +731,69 @@ async def phone_test():
     return {"success": bool(ok), "error": None if ok else "Not linked yet, or Telegram couldn't be reached."}
 
 
+@app.get("/api/phone/pair-offer")
+async def phone_pair_offer():
+    """A fresh 'Pair a phone' QR (10-minute, one-time code) for the Android app to scan."""
+    from app.services import phone_pair
+    return phone_pair.create_offer()
+
+
+@app.post("/api/phone/pair-offer/cancel")
+async def phone_pair_offer_cancel():
+    from app.services import phone_pair
+    phone_pair.cancel()
+    return {"success": True}
+
+
+@app.get("/api/phones")
+async def phones_list():
+    """Paired Android phones (over Agent Mail), their capability switches, and this computer's lock/awake."""
+    from app.services import phone_mcp
+    return phone_mcp.phone_list()
+
+
+class PhonePairRequest(BaseModel):
+    address: str
+    nickname: Optional[str] = ""
+
+
+@app.post("/api/phones/pair")
+async def phones_pair(req: PhonePairRequest):
+    """Marks a phone that paired on its own screen as reachable (its keys must already be pinned)."""
+    from app.services import phone_mcp
+    return phone_mcp.pair_phone(req.address, req.nickname or "")
+
+
+@app.delete("/api/phones/{address}")
+async def phones_unpair(address: str):
+    from app.services import phone_mcp
+    return {"success": phone_mcp.unpair_phone(address)}
+
+
+@app.get("/api/phones/iphone-mirroring")
+async def phones_iphone_mirroring():
+    """iPhone Mirroring (Mac only): whether Rene switched it on, and plainly if it's paused."""
+    from app.services import iphone_mirror
+    return iphone_mirror.status()
+
+
+class MirrorToggle(BaseModel):
+    on: bool
+
+
+@app.post("/api/phones/iphone-mirroring")
+async def phones_set_iphone_mirroring(req: MirrorToggle):
+    from app.services import iphone_mirror
+    return iphone_mirror.set_enabled(req.on)
+
+
+@app.get("/api/phones/log")
+async def phones_log(limit: int = 100):
+    """Every phone MCP call Xod made (the phone app shows its own side too)."""
+    from app.services import phone_mcp
+    return {"calls": phone_mcp.audit_log(limit)}
+
+
 @app.get("/api/mcp")
 async def mcp_status_endpoint():
     from app.services.mcp_client import mcp_hub
@@ -741,9 +806,10 @@ async def mcp_self_config_endpoint(request: Request):
     import sys as _sys
     from app.paths import APP_ROOT
     port = request.url.port or 8000
-    return {"config": {"mcpServers": {"xod": {
-        "command": _sys.executable, "args": ["-m", "app.mcp_server"], "cwd": str(APP_ROOT),
-        "env": {"XOD_URL": f"http://127.0.0.1:{port}"}}}}}
+    return {"config": {"mcpServers": {
+        "xod": {"command": _sys.executable, "args": ["-m", "app.mcp_server"], "cwd": str(APP_ROOT),
+                "env": {"XOD_URL": f"http://127.0.0.1:{port}"}},
+        "xod-phone": {"command": _sys.executable, "args": ["-m", "app.phone_mcp"], "cwd": str(APP_ROOT)}}}}
 
 
 @app.post("/api/mcp/servers")

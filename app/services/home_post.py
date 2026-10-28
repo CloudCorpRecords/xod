@@ -96,6 +96,8 @@ def networks() -> List[Dict[str, Any]]:
     if name:
         out.append({"kind": "network", "domain": f"{name}.local:{PORT}",
                     "label": "This network: agents on the same Wi-Fi or office network"})
+    if not ts and _tailscale_cli():
+        out.append({"kind": "tailscale_signin", "domain": "", "label": "Tailscale is installed: open it and sign in"})
     if not ts and not _tailscale_cli():
         out.append({"kind": "tailscale_missing", "domain": "", "label": "For agents elsewhere, install Tailscale (free): tailscale.com/download"})
     return out
@@ -146,7 +148,8 @@ async def start(dom: str) -> Dict[str, Any]:
     import uvicorn
     from app.services.post_office import make_app
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    app = make_app(str(DB_PATH), domain)
+    from app.services import phone_pair
+    app = make_app(str(DB_PATH), domain, pair_code_ok=phone_pair.consume_code)
     try:
         with socket.socket() as s:       # is the port free? (uvicorn would only log the failure)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

@@ -47,6 +47,7 @@ jobs:
           python tests/smoke/run_platform_smoke.py
           python tests/smoke/run_cloud_thinking_test.py
           python tests/smoke/run_phone_test.py
+          python tests/smoke/run_phone_mcp_test.py
           python tests/smoke/run_vision_test.py
           python tests/smoke/run_models_test.py
           python tests/smoke/run_worker_test.py

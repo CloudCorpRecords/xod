@@ -14,8 +14,9 @@ ROOT = Path(__file__).resolve().parents[2]
 os.environ.setdefault("XOD_DATA_DIR", str(Path(tempfile.mkdtemp(prefix="xod-scanprobe-")) / "data"))
 sys.path.insert(0, str(ROOT))
 
-from app.services import muse_app  # noqa: E402
+from app.services import muse_app, power  # noqa: E402
 
+print(f"screen locked: {power.is_locked()}  (AXPress while locked is what a real card must prove)")
 t = time.time()
 res = muse_app._scan(False)
 elapsed = time.time() - t
