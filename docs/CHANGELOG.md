@@ -1,6 +1,6 @@
 # Changelog
 
-## Next
+## 0.9.6
 
 **Security pass**
 - The desktop app runs on Electron 44.10 (fixes a certificate-trust problem in 44.7), and two build-only packages are updated: `npm audit` and `pip-audit` find nothing.
