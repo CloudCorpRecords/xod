@@ -32,31 +32,31 @@ def check(name, ok, detail=""):
 
 def main():
     P = home_post.PORT
-    home_post.local_name = lambda: "rene-pc"
+    home_post.local_name = lambda: "home-pc"
     home_post.lan_ip = lambda: "192.168.1.20"
     home_post.tailscale = lambda: None
     r = home_post.routes()
-    check("home network routes", r == [f"http://rene-pc.local:{P}", f"http://192.168.1.20:{P}"], r)
+    check("home network routes", r == [f"http://home-pc.local:{P}", f"http://192.168.1.20:{P}"], r)
     check("no Tailscale: phones work on this Wi-Fi only", not home_post.reaches_away(r))
 
-    home_post.tailscale = lambda: {"name": "rene-pc.tail1234.ts.net", "ip": "100.101.1.2"}
+    home_post.tailscale = lambda: {"name": "home-pc.tail1234.ts.net", "ip": "100.101.1.2"}
     r = home_post.routes()
-    check("Tailscale's name and address follow", r[2:] == [f"http://rene-pc.tail1234.ts.net:{P}", f"http://100.101.1.2:{P}"], r)
+    check("Tailscale's name and address follow", r[2:] == [f"http://home-pc.tail1234.ts.net:{P}", f"http://100.101.1.2:{P}"], r)
     check("with Tailscale: works away from home", home_post.reaches_away(r))
     check("a Tailscale address alone counts", home_post.reaches_away([f"http://100.101.1.2:{P}"]))
     check("https counts", home_post.reaches_away(["https://post.example.com"]))
     check("a LAN address doesn't", not home_post.reaches_away([f"http://10.0.0.5:{P}"]))
 
-    os.environ["XOD_POST_ROUTES"] = "https://home.example.com/, http://rene-pc.local:9000"
-    check("XOD_POST_ROUTES replaces them", home_post.routes() == ["https://home.example.com", "http://rene-pc.local:9000"])
+    os.environ["XOD_POST_ROUTES"] = "https://home.example.com/, http://home-pc.local:9000"
+    check("XOD_POST_ROUTES replaces them", home_post.routes() == ["https://home.example.com", "http://home-pc.local:9000"])
     os.environ.pop("XOD_POST_ROUTES")
 
     # Hosting its own post office: the QR's post office first (Tailscale's name when on), then every other route.
-    cfg = {"home": {"domain": f"rene-pc.local:{P}"}, "domain": f"rene-pc.local:{P}", "address": f"rene@rene-pc.local:{P}"}
+    cfg = {"home": {"domain": f"home-pc.local:{P}"}, "domain": f"home-pc.local:{P}", "address": f"you@home-pc.local:{P}"}
     agent_mail._config = lambda: cfg
     agent_mail.status = lambda: {"set_up": True, "address": cfg["address"], "safety_number": "12345 67890"}
     pr = phone_pair.routes()
-    check("phone_pair: post office first, no repeats", pr[0] == f"http://rene-pc.tail1234.ts.net:{P}" and len(pr) == len(set(pr)) == 4, pr)
+    check("phone_pair: post office first, no repeats", pr[0] == f"http://home-pc.tail1234.ts.net:{P}" and len(pr) == len(set(pr)) == 4, pr)
     offer = phone_pair.create_offer()
     payload = json.loads(offer["qr_text"])
     check("the QR carries the routes", payload.get("routes") == pr and payload["post_office"] == pr[0], payload)
@@ -67,7 +67,7 @@ def main():
     check("the phone app can ask for them", out.get("ok") and out["data"]["routes"] == pr and out["data"]["away"] is True, out)
 
     # A shared relay: one name, no extra routes.
-    cfg.update(home=None, domain="post.example.com", address="rene@post.example.com")
+    cfg.update(home=None, domain="post.example.com", address="you@post.example.com")
     check("a shared relay has just its one", phone_pair.routes() == ["https://post.example.com"], phone_pair.routes())
 
     failed = [n for n, ok in results if not ok]
