@@ -3,7 +3,7 @@ Keeping this computer awake, and knowing whether its screen is locked.
 
 While "Approve everything" is on, or a Crew job is running, Xod holds a
 "keep the display awake" assertion so the computer doesn't lock from idle
-halfway through the night (that's what left Rene approving cards hourly).
+halfway through the night (which leaves someone approving cards by hand all night).
 The assertion is ref-counted by reason: the last reason to go away releases
 it. It shows in Crew (through muse_app.status) and in phone_list.
 

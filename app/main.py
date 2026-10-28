@@ -772,7 +772,7 @@ async def phones_unpair(address: str):
 
 @app.get("/api/phones/iphone-mirroring")
 async def phones_iphone_mirroring():
-    """iPhone Mirroring (Mac only): whether Rene switched it on, and plainly if it's paused."""
+    """iPhone Mirroring (Mac only): whether it's switched on, and plainly if it's paused."""
     from app.services import iphone_mirror
     return iphone_mirror.status()
 

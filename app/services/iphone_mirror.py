@@ -1,19 +1,19 @@
 """
 An iPhone through macOS iPhone Mirroring (Mac only).
 
-The Mac shows Rene's iPhone in the 'iPhone Mirroring' app window. Xod reads
+The Mac shows your iPhone in the 'iPhone Mirroring' app window. Xod reads
 that window with the same Accessibility walk the Muse card watcher uses
 (services/muse_backends.py: MacAX), and taps by pressing the element under
 a point (AXUIElementCopyElementAtPosition + AXPress), falling back to no
-press at all rather than moving Rene's real mouse. Reading also returns a
+press at all rather than moving your real mouse. Reading also returns a
 screenshot of just that window (screencapture -R on its bounds), so a model
 can see the phone as well as read its text.
 
 Rules:
-- Off unless Rene switches it on (setting 'iphone_mirroring', default off).
+- Off unless you switch it on (setting 'iphone_mirroring', default off).
   phone_mcp refuses mirror calls while it's off.
 - Mac only. On Windows/Linux every call says so plainly.
-- When Rene unlocks/uses his iPhone, Mirroring pauses and shows text like
+- When you unlock or use the iPhone, Mirroring pauses and shows text like
   'iPhone in Use'. status()/read_screen() say that plainly ('paused: your
   iPhone is unlocked/in use') instead of returning an empty screen.
 - No password is ever typed, and secure fields are never read for values.

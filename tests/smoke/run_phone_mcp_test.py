@@ -55,18 +55,18 @@ async def main():
     check("pairing a phone that never paired (no pinned contact) is refused", not r["success"], str(r))
 
     real_status = agent_mail.status
-    agent_mail.status = lambda: {"set_up": True, "address": "rene@mac.local:8790", "safety_number": "123 456"}
+    agent_mail.status = lambda: {"set_up": True, "address": "sam@mac.local:8790", "safety_number": "123 456"}
     offer = phone_pair.create_offer()
     agent_mail.status = real_status
     check("a QR offer holds post office, computer, safety number and a code",
-          offer["success"] and offer["payload"]["computer"] == "rene@mac.local:8790"
+          offer["success"] and offer["payload"]["computer"] == "sam@mac.local:8790"
           and offer["payload"]["safety"] == "123 456" and bool(offer["payload"]["code"])
           and "<svg" in (offer["qr_svg"] or ""), str(offer)[:200])
     code = offer["payload"]["code"]
     check("the code checks out, is consumed once, then never again",
           phone_pair.check_code(code) and phone_pair.consume_code(code) and not phone_pair.check_code(code)
           and not phone_pair.consume_code(code))
-    agent_mail.status = lambda: {"set_up": True, "address": "rene@mac.local:8790", "safety_number": "1"}
+    agent_mail.status = lambda: {"set_up": True, "address": "sam@mac.local:8790", "safety_number": "1"}
     offer2 = phone_pair.create_offer()
     agent_mail.status = real_status
     st = phone_pair._load()
@@ -74,7 +74,7 @@ async def main():
     phone_pair._save(st)
     check("an expired QR code is refused", not phone_pair.check_code(offer2["payload"]["code"])
           and not phone_pair.consume_code(offer2["payload"]["code"]))
-    agent_mail.status = lambda: {"set_up": True, "address": "rene@mac.local:8790", "safety_number": "1"}
+    agent_mail.status = lambda: {"set_up": True, "address": "sam@mac.local:8790", "safety_number": "1"}
     offer_race = phone_pair.create_offer()
     agent_mail.status = real_status
     race_code, race_results = offer_race["payload"]["code"], []
@@ -92,7 +92,7 @@ async def main():
 
     from app.services import mail_crypto as mc
     from app.services.post_office import make_app
-    agent_mail.status = lambda: {"set_up": True, "address": "rene@mac.local:8790", "safety_number": "1"}
+    agent_mail.status = lambda: {"set_up": True, "address": "sam@mac.local:8790", "safety_number": "1"}
     offer3 = phone_pair.create_offer()
     agent_mail.status = real_status
     app = make_app(str(TMP / "po.db"), lambda: "mac.local:8790", pair_code_ok=phone_pair.consume_code)
@@ -116,7 +116,7 @@ async def main():
     with agent_mail._db() as c:
         c.execute("INSERT OR REPLACE INTO mail_contacts (address, sign_pub, box_pub, safety, trust, first_seen, updated_at) "
                   "VALUES (?,?,?,?,?,?,?)", ("phone@mac.local:8790", "sig", "box", "123 456", "mine", time.time(), time.time()))
-    r = phone_mcp.pair_phone("phone@mac.local:8790", "Rene's phone")
+    r = phone_mcp.pair_phone("phone@mac.local:8790", "Sam's phone")
     check("a phone whose keys are pinned as mine pairs", r["success"], str(r))
     phone_mcp.record_hello("phone@mac.local:8790", {"capabilities": {"apps": True, "screen": False}, "battery": 82})
     out = await phone_mcp.call_tool("phone_open_app", address="phone@mac.local:8790", app="Maps")
@@ -209,7 +209,7 @@ async def main():
     iphone_mirror._injected.update({"pid": 4242, "screenshot": lambda: "data:image/png;base64,AA=="})
     paused_ax = FakeMirrorAX(El("AXWindow", "", [El("AXStaticText", "iPhone in Use"), El("AXButton", "OK")]))
     out = iphone_mirror.read_screen(ax=paused_ax)
-    check("mirroring paused because Rene unlocked his iPhone: said plainly",
+    check("mirroring paused because the iPhone was unlocked: said plainly",
           not out["success"] and out.get("paused") and "unlocked" in out["error"], str(out))
     live_ax = FakeMirrorAX(El("AXWindow", "", [El("AXStaticText", "Messages"), El("AXButton", "Send")]))
     out = iphone_mirror.read_screen(ax=live_ax)

@@ -41,7 +41,7 @@ TASK = (
     "You are Muse Code, the one who writes the code in this repo. Another AI left work for you in docs/AI_HANDOFF.md.\n"
     "1. Read the sections after your own last section (headings containing \"Muse Code\" are yours).\n"
     "2. Do every open item addressed to Muse Code there, most urgent first. Run the tests for what you change.\n"
-    "3. Leave your work uncommitted: do not commit, push, merge, tag or release (Rene approves each of those).\n"
+    "3. Leave your work uncommitted: do not commit, push, merge, tag or release (the person who owns the repo approves each of those).\n"
     "4. When done or blocked, append one section to docs/AI_HANDOFF.md in its format (\"## <date> - Muse Code -> next AI\" "
     "with Changed, Verified as command -> observed result, Decisions, Open, Questions for the other AI). "
     "Use the ai-handoff tools if you have them.\n"

@@ -5,7 +5,7 @@ one for you, through macOS Accessibility (pressed directly, so it works whatever
 never moves your mouse).
 
 Which button, in order: "Always allow for this recipient" (or "…for this site"), then "Send", then "Allow".
-Never "Deny" or "Don't send". An always-allow press is one Rene chose: it sends this one and stops future
+Never "Deny" or "Don't send". An always-allow press is one you chose: it sends this one and stops future
 cards for that recipient/site, and the log says so, so he can undo it in Muse.
 
 Xod doesn't poll every few seconds: macOS tells it the moment Muse's window changes (an Accessibility

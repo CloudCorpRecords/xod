@@ -58,7 +58,7 @@ def main():
                 time.sleep(0.2)
 
         print("M1 the request goes to Agent Mail")
-        r = as_xod("rene", """
+        r = as_xod("sam", """
 q = 'can you set up agent mail'
 names = [t['function']['name'] for t in tools.select_tools_for_query(q)]
 print(json.dumps({'routed': operator.route(q), 'tools': names}))""")
@@ -66,23 +66,23 @@ print(json.dumps({'routed': operator.route(q), 'tools': names}))""")
         check("…and the chat gets the setup tool", "agent_mail_setup" in r.get("tools", []), str(r.get("tools")))
 
         print("M2 setting it up")
-        r = as_xod("rene", "print(json.dumps({'on': 'agent-mail' in packs.enabled()}))")
+        r = as_xod("sam", "print(json.dumps({'on': 'agent-mail' in packs.enabled()}))")
         check("Agent Mail is on for a new install", r.get("on") is True, str(r))
         # (with no post office named, the setup hosts on this computer: tests/smoke/run_home_post_test.py)
-        r = as_xod("rene", f"""
-r = asyncio.run(tools.execute_tool('agent_mail_setup', {{'name': 'rene', 'relay': '{relay}'}}))
+        r = as_xod("sam", f"""
+r = asyncio.run(tools.execute_tool('agent_mail_setup', {{'name': 'sam', 'relay': '{relay}'}}))
 print(json.dumps(r))""")
-        check("with a relay, it claims the address", r.get("success") and r.get("address") == f"rene@{relay}", str(r)[:200])
-        r = as_xod("rene", "print(json.dumps(asyncio.run(tools.execute_tool('agent_mail_setup', {}))))")
-        check("asked again, it says it's already set up", r.get("already") and r.get("address") == f"rene@{relay}", str(r)[:200])
-        r = as_xod("dana", f"print(json.dumps(asyncio.run(tools.execute_tool('agent_mail_setup', {{'name': 'rene', 'relay': '{relay}'}}))))")
+        check("with a relay, it claims the address", r.get("success") and r.get("address") == f"sam@{relay}", str(r)[:200])
+        r = as_xod("sam", "print(json.dumps(asyncio.run(tools.execute_tool('agent_mail_setup', {}))))")
+        check("asked again, it says it's already set up", r.get("already") and r.get("address") == f"sam@{relay}", str(r)[:200])
+        r = as_xod("dana", f"print(json.dumps(asyncio.run(tools.execute_tool('agent_mail_setup', {{'name': 'sam', 'relay': '{relay}'}}))))")
         check("someone else can't take a name that's claimed", not r.get("success"), str(r)[:200])
 
         print("M3 mail between two Xods")
         as_xod("dana", f"print(json.dumps(asyncio.run(tools.execute_tool('agent_mail_setup', {{'name': 'dana', 'relay': '{relay}'}}))))")
-        r = as_xod("dana", f"print(json.dumps(asyncio.run(agent_mail.send('rene@{relay}', 'Hi Rene, can your agent send me the report?'))))")
+        r = as_xod("dana", f"print(json.dumps(asyncio.run(agent_mail.send('sam@{relay}', 'Hi Sam, can your agent send me the report?'))))")
         check("dana's Xod sends", r.get("success"), str(r)[:200])
-        r = as_xod("rene", "print(json.dumps(asyncio.run(tools.execute_tool('agent_mail_inbox', {}))))")
+        r = as_xod("sam", "print(json.dumps(asyncio.run(tools.execute_tool('agent_mail_inbox', {}))))")
         msgs = r.get("messages") or []
         check("it arrives in Requests (dana isn't a contact yet), marked as from another agent",
               any(m["box"] == "requests" and m["from"] == f"dana@{relay}" and "the report" in m["message"] for m in msgs), str(msgs)[:300])
