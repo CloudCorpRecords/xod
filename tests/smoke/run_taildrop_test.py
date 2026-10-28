@@ -93,6 +93,17 @@ async def main():
     check("devices through the tool", listed.get("count") == 2)
     check("the tool is defined", any(t["function"]["name"] == "tailscale_files" for t in tools.TOOL_DEFINITIONS))
 
+    print("T5 a send from the terminal waits too")
+    from app.services import sentinel
+    sentinel.begin([{"role": "user", "content": "send report.pdf to my phone over tailscale"}])
+    cp = "/Applications/Tailscale.app/Contents/MacOS/Tailscale file cp /tmp/report.pdf 100.64.0.1:"
+    hit = sentinel.review("computer_run_command", {"command": cp})
+    check("`tailscale file cp` in the terminal is held", (hit or {}).get("rule") == "taildrop_send", str(hit))
+    check("…on Windows too", (sentinel.review("computer_run_command", {"command": '"C:\\Program Files\\Tailscale\\tailscale.exe" file cp a.txt phone:'})
+                              or {}).get("rule") == "taildrop_send")
+    check("listing devices isn't held", sentinel.review("computer_run_command", {"command": "tailscale file cp --targets"}) is None)
+    check("taking files in isn't held", sentinel.review("computer_run_command", {"command": "tailscale file get ~/Downloads"}) is None)
+
 
 asyncio.run(main())
 failed = [n for n, ok in results if not ok]
