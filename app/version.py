@@ -1,2 +1,2 @@
 # Xod's version. Keep it equal to electron/package.json (scripts/check_release.py checks).
-VERSION = "0.9.8"
+VERSION = "0.9.9"
