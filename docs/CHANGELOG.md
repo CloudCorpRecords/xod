@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.8
+
+**Muse approvals only while you're away**
+- The Muse approvals switch has three positions: Off, Always, and Only when I'm away. Away presses Muse's cards only while your screen is locked or you haven't typed or clicked for 5 minutes, so Muse never comes to the front while you're working. Cards that came in meanwhile are handled as soon as you leave.
+- Pause it for an hour (it comes back as it was) or resume it, from Crew, from the new Muse approvals menu in the menu bar or tray, from the phone app, or by asking Xod ("pause the Muse approvals for an hour", "only approve Muse when I'm away", "is auto-approve on?").
+- Turning approvals on from chat only goes ahead when your own message asked for it. If something Xod read tries to turn them on, the change waits as an approval card. Turning them off or pausing never waits. A change made from chat or the phone sends you a notification.
+- Requests inside Crew jobs follow the switch, not whether you're there: they're answered inside Xod and never take the screen.
+
+**Phone pairing that finishes on both sides**
+- A phone that pairs with a QR code or over Bluetooth is now recorded on this computer as your phone, with the exact keys it paired with. Before, the phone showed "Paired" while this computer ignored its requests until you marked it as yours by hand in Agent Mail.
+- The phone app (update it too) has a Muse approvals card on its Tasks tab.
+
 ## 0.9.7
 
 **Your phone, from anywhere**
