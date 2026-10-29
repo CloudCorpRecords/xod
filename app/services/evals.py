@@ -196,11 +196,13 @@ async def _route(agent, query: str) -> str:
     from app.services.llm import llm_service
     if not agent._fast_lane_ok(query, False, False, None):
         return "plan"
-    if agent._FRESH_RE.search(query):
+    if agent._FRESH_RE.search(query) and not agent._PERSONAL_RE.search(query):
         return "web"
     msgs = agent.router_messages(query, [])
     head = ""
-    stream = llm_service.stream_chat_completion(messages=msgs, temperature=0.2, max_tokens=200, think=False, task="router")
+    thinks = agent._router_thinks()
+    stream = llm_service.stream_chat_completion(messages=msgs, temperature=0.2, max_tokens=2400 if thinks else 200,
+                                                think=None if thinks else False, task="router")
     try:
         async for ch in stream:
             if ch.get("type") == "error":

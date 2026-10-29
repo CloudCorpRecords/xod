@@ -1391,7 +1391,10 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         "Reply with the one word:\nTOOLS\n\n"
         "3. Otherwise answer it yourself right away: directly and briefly (a few sentences), in Markdown. This "
         "includes questions about your past chats and your own work when the message comes with notes from your "
-        "memory or your task list: answer from those notes (say when things happened), don't search the web.\n\n"
+        "memory or your task list: answer from those notes (say when things happened), don't search the web. "
+        "A question about the user's own day, work, files, projects or devices, or about this computer (its apps, "
+        "what's installed or signed in, what's running), that came with no such notes is TOOLS: you can look, so "
+        "never search the web for it and never guess.\n\n"
         "Examples:\n"
         "User: Compare the pricing of Figma and Sketch\nSEARCH: Figma pricing plans | Sketch pricing plans\n"
         "User: who won the Lakers game last night\nSEARCH: Lakers game result last night\n"
@@ -1407,6 +1410,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"best\b.{0,60}\b(to buy|for|under|right now|in 20\d\d)|top \d+|compare|comparison|vs\.?|versus|reviews?|"
         r"who won|score[sd]?|results?|standings|weather|forecast|rain|snow|temperature|tomorrow|yesterday|last night|stock|share price|release date|"
         r"when (is|does|will)|open(ing)? hours|20(2[5-9]|3\d))\b", re.I)
+    _PERSONAL_RE = re.compile(r"\b(i|i'?m|i'?ve|me|my|mine|we|our|us|you|your)\b(?!\s+(?:can|could)\s+(?:buy|get))", re.I)
     _REFERS_BACK_RE = re.compile(r"\b(it|that|this|those|these|them|they|he|she|the (first|second|last|other) one)\b", re.I)
     # An answer that says it changed something on the computer (only tools can): "I have added the line to todo.txt".
     _CLAIMS_DONE_RE = re.compile(
@@ -1433,7 +1437,12 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"worked|planned|picked|chose|compared)|you (found|said|told|made|built|recommended|suggested|wrote|sent|gave)|"
         r"that (article|link|report|list|game|app|site|video|recipe|idea|thing|place|plan|email|doc|company|product|job) "
         r"(you|we|i)|what was (that|the)|did (we|you|i) ever|have (we|you|i) (ever|already)|in (january|february|march|april|"
-        r"may|june|july|august|september|october|november|december)|our (last|previous) (chat|conversation))\b", re.I)
+        r"may|june|july|august|september|october|november|december)|our (last|previous) (chat|conversation)|"
+        # "what did I work on today?", "what have we done this week?": your own day, not the news
+        r"what (did|have|had) (i|we|you) (do|done|work|worked|been|build|built|get|got|finish|finished|ask|asked|talk|talked)\b"
+        r"(?!.{0,40}\b(tomorrow|next)\b)|"
+        r"(what|anything) (i|we) (did|worked on|built|finished|asked|talked about)|my (day|week) so far|"
+        r"(recap|summari[sz]e|sum up) (my|our|the) (day|week|today|morning|chats?|work))\b", re.I)
 
     async def _recall_for(self, query: str, messages: List[Dict[str, Any]]) -> AsyncGenerator[Dict[str, Any], None]:
         """Sets self._memory_context for this turn (past episodes, Xod's own work, its notebook) and shows the lookup."""
@@ -1536,6 +1545,14 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         return [{"role": "system", "content": f"{prompt}\n\nToday is {cls._today()}." + (f"\n{note}" if note else "")}, *turns,
                 {"role": "user", "content": query + extra}]
 
+    @staticmethod
+    def _router_thinks() -> bool:
+        try:
+            from app.services.storage import get_setting
+            return get_setting("router_think", "on") != "off"
+        except Exception:
+            return True
+
     async def _stream_fast_lane(self, query: str, messages: List[Dict[str, Any]],
                                 evidence_board: EvidenceBoard) -> AsyncGenerator[Dict[str, Any], None]:
         """Yields chat events, or a single {"type": "_fast_declined"} (before anything visible)
@@ -1545,7 +1562,10 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         # A follow-up rewritten as a standalone request stands on its own: it can be searched directly.
         full = getattr(self, "_understood", "") or query
         stands_alone = bool(getattr(self, "_understood", "")) or not (has_history and self._REFERS_BACK_RE.search(query))
-        if self._FRESH_RE.search(full) and stands_alone \
+        # The fresh-news shortcut skips the router, so it's only for questions about the world. Anything about the person
+        # or Xod ("what did I work on today", "is my build done yet") goes to the router, which decides how much to think.
+        personal = bool(self._PERSONAL_RE.search(full))
+        if self._FRESH_RE.search(full) and stands_alone and not personal \
                 and not getattr(self, "_memory_context", ""):    # "what did we talk about yesterday" is memory, not news
             async for ev in self._fast_search_and_answer(full, [full], messages, evidence_board):
                 yield ev
@@ -1560,10 +1580,14 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             router_msgs[-1]["content"] += "\n\n" + self._memory_context
         if getattr(self, "_lessons", ""):
             router_msgs[-1]["content"] += "\n\n" + self._lessons
+        # Getting the route right matters more than a fast first word: the router may think (models that can), unless
+        # it's a spoken conversation or the person switched it off (setting router_think = off).
+        spoken = getattr(self, "spoken", False)
+        think_first = not spoken and self._router_thinks()
         stream = llm_service.stream_chat_completion(
             messages=router_msgs,
-            temperature=0.2, max_tokens=300 if getattr(self, "spoken", False) else 900,
-            think=False, task="router")
+            temperature=0.2, max_tokens=300 if spoken else (2400 if think_first else 900),
+            think=None if think_first else False, task="router")
         try:
             async for ch in stream:
                 kind = ch.get("type")

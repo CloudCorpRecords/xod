@@ -20,6 +20,7 @@
   {"id": "health", "q": "is everything in Xod working ok?", "want": ["xod_doctor"]},
   {"id": "tidy-downloads", "q": "organize my Downloads folder", "want": ["computer_batch_organize", "computer_list_directory"], "never": ["xod_machines.send_task"]},
   {"id": "control-hello", "q": "hey, thanks for the help earlier", "want": ["answer"], "control": true},
+  {"id": "my-day", "q": "What did I work on today?", "want": ["memory_search", "xod_tasks", "xod_tasks.list", "computer_run_command", "answer"], "never": ["web_search", "tavily_search", "you_search", "omni_deep_search"], "note": "Your own day: Xod's memory and tasks (or git), never the web."},
   {"id": "muse-pause", "q": "pause the muse approvals for an hour", "want": ["muse_approvals.pause"]},
   {"id": "muse-off", "q": "stop auto approving muse stuff, I want to click them myself", "want": ["muse_approvals.off"]},
   {"id": "muse-away", "q": "only approve muse's cards when I'm not at my computer", "want": ["muse_approvals.away"]},
