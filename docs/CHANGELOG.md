@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.9
+
+**What Xod knows about you, on every computer you use**
+- Turn on "Share what Xod knows about you with my other computers" in Your Xods, then "Share with" another of your computers and approve the card there. Facts about you (your name, work, preferences…) then show up on both: never chats, files, notes, settings or keys. It's off until you turn it on.
+- Only your own computers can take part: each one is checked against your Tailscale sign-in and the keys approved on the card, and what they send is sealed for the computer that asked. A reinstalled computer has to be approved again.
+- Forgetting a fact on one forgets it on all of them, even one that was switched off at the time. "Remove what came from" a computer drops its facts on this one only.
+- Chats you start from the phone are marked as coming from the phone, and what Xod learns in them says so.
+
+**Switch models from anywhere**
+- From the phone app, or from another of your computers ("switch my laptop to LM Studio"), you can see which AI model a computer uses and switch it to another one it already offers. Nothing new can be added from outside (no keys, no server addresses), and the computer shows a notification saying who switched it.
+
 ## 0.9.8
 
 **Muse approvals only while you're away**
