@@ -15,6 +15,7 @@ it. It runs while you're signed in and the setting xod_findable isn't "off":
   POST /v1/tasks            {request, from}: a task from another of your Xods
   GET  /v1/tasks/{ref}      whether it was approved, and how the task is going
   /v1/memory/*              shared memory between your Xods (services/memory_sync.py)
+  GET/POST /v1/models       this Xod's model choices, and switching between them (services/remote_models.py)
 A handed task never runs by itself: it becomes an approval card on this computer (in the chat and on the phone), and
 only the person's Approve puts it in the task inbox. Cards are made only for devices signed in to the same account as
 this one: Tailscale vouches for who is on the other end of each connection (`tailscale whois`), so a shared machine or
@@ -225,6 +226,22 @@ async def task_status(machine: str, ref: str) -> Dict[str, Any]:
     return {"machine": x["name"], **await _call("GET", x["ip"], f"/v1/tasks/{ref}")}
 
 
+async def machine_models(machine: str) -> Dict[str, Any]:
+    """Another of your Xods' model choices (remote_models.choices there)."""
+    x = await _target(machine)
+    return {"machine": x["name"], **await _call("GET", x["ip"], "/v1/models")}
+
+
+async def machine_use_model(machine: str, provider: str, model: str, by: str = "") -> Dict[str, Any]:
+    """Switches another of your Xods to one of its own model choices."""
+    x = await _target(machine)
+    me = (await asyncio.to_thread(status)).get("name") or socket.gethostname()
+    r = await _call("POST", x["ip"], "/v1/models", {"provider": provider, "model": model, "by": by or f"your Xod on {me}"})
+    if not r.get("success"):
+        raise NetworkError(r.get("error") or "It didn't switch.")
+    return {"machine": x["name"], **r}
+
+
 # ---------------------------------------------------------------- the beacon
 
 def findable() -> bool:
@@ -324,6 +341,27 @@ async def _start_beacon(ip: str) -> None:
             raise HTTPException(403, str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+    # The model this Xod uses (services/remote_models.py): your own devices only, and only what it already offers.
+    @app.get("/v1/models")
+    async def models_here(request: Request) -> Dict[str, Any]:
+        if not (await asyncio.to_thread(_caller, request.client.host))["same_account"]:
+            raise HTTPException(403, "Only your own devices can see this Xod's models.")
+        from app.services import remote_models
+        return await remote_models.choices()
+
+    @app.post("/v1/models")
+    async def models_use(request: Request) -> Dict[str, Any]:
+        who = await asyncio.to_thread(_caller, request.client.host)
+        if not who["same_account"]:
+            raise HTTPException(403, "Only your own devices can switch this Xod's model.")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Send JSON.")
+        from app.services import remote_models
+        by = re.sub(r"[^\w .-]", "", str((body or {}).get("by") or f"your Xod on {who['host']}"))[:80]
+        return await remote_models.use(str(body.get("provider") or ""), str(body.get("model") or ""), by)
 
     # Shared memory (services/memory_sync.py): same account, then signed by the keys approved on the card.
     @app.post("/v1/memory/hello")

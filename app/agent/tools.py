@@ -2824,12 +2824,15 @@ TOOL_DEFINITIONS = [
                            "computer is signed in and which Xods it can see (online or not). sign_in: open Tailscale's one-click "
                            "sign-in page (Google, Microsoft, GitHub or Apple) so this Xod joins the others. send_task: hand a "
                            "task to another of their Xods; it runs there once they approve it on that computer's card. "
-                           "task_status: whether it was approved, how it's going, and its result.",
+                           "task_status: whether it was approved, how it's going, and its result. models: which AI models "
+                           "that computer can use and which it's on. set_model: switch it to one of those.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "sign_in", "send_task", "task_status"]},
-                    "machine": {"type": "string", "description": "For send_task / task_status: the other Xod's name, as list shows it."},
+                    "action": {"type": "string", "enum": ["list", "sign_in", "send_task", "task_status", "models", "set_model"]},
+                    "machine": {"type": "string", "description": "For send_task / task_status / models / set_model: the other Xod's name, as list shows it."},
+                    "provider": {"type": "string", "description": "For set_model: the provider, exactly as models listed it."},
+                    "model": {"type": "string", "description": "For set_model: the model, exactly as models listed it."},
                     "task": {"type": "string", "description": "For send_task: what that Xod should do, in full."},
                     "ref": {"type": "string", "description": "For task_status: the ref send_task returned."}
                 },
@@ -3565,6 +3568,14 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         a = arguments or {}
         if a.get("action") == "sign_in":
             return await asyncio.to_thread(xod_network.sign_in)
+        if a.get("action") in ("models", "set_model"):
+            try:
+                if a["action"] == "models":
+                    return {"success": True, **await xod_network.machine_models(a.get("machine") or "")}
+                return {"success": True, **await xod_network.machine_use_model(a.get("machine") or "", a.get("provider") or "",
+                                                                                a.get("model") or "")}
+            except xod_network.NetworkError as e:
+                return {"success": False, "error": str(e)}
         if a.get("action") in ("send_task", "task_status"):
             try:
                 if a["action"] == "send_task":

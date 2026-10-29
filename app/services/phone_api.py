@@ -299,6 +299,44 @@ def _muse_set(args: Dict[str, Any]) -> Dict[str, Any]:
     return _muse({})
 
 
+async def _models(args: Dict[str, Any]) -> Dict[str, Any]:
+    """This computer's model choices (remote_models), or another of your Xods' when args has "machine"."""
+    from app.services import remote_models, xod_network
+    if args.get("machine"):
+        try:
+            return await xod_network.machine_models(str(args["machine"]))
+        except xod_network.NetworkError as e:
+            raise ApiError(str(e))
+    return await remote_models.choices()
+
+
+async def _models_use(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import remote_models, xod_network
+    provider, model = str(args.get("provider") or ""), str(args.get("model") or "")
+    if not provider or not model:
+        raise ApiError("Which model? Pick one from the list.")
+    if args.get("machine"):
+        try:
+            return await xod_network.machine_use_model(str(args["machine"]), provider, model, "your phone")
+        except xod_network.NetworkError as e:
+            raise ApiError(str(e))
+    r = await remote_models.use(provider, model, "your phone")
+    if not r.get("success"):
+        raise ApiError(r.get("error") or "Couldn't switch.")
+    return {**r, **await remote_models.choices()}
+
+
+async def _machines(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Your other Xods this computer can see (for the phone's model picker)."""
+    from app.services import xod_network
+    st = await asyncio.to_thread(xod_network.status)
+    if not st.get("signed_in"):
+        return {"signed_in": False, "me": st.get("name"), "xods": []}
+    f = await xod_network.find()
+    return {"signed_in": True, "me": f.get("me"), "xods": [{k: x.get(k) for k in ("name", "host", "os", "online")}
+                                                            for x in f.get("xods") or [] if x.get("same_account")]}
+
+
 OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "summary": _summary, "link.routes": _routes,
     "chat.sessions": _sessions, "chat.history": _history, "chat.send": _chat,
@@ -307,6 +345,7 @@ OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "memory.search": _memory, "reports.list": _reports, "reports.read": _report_read,
     "files.projects": _projects, "files.read": _file_read,
     "muse.status": _muse, "muse.set": _muse_set,
+    "models.list": _models, "models.use": _models_use, "machines.list": _machines,
 }
 
 
