@@ -90,6 +90,36 @@ def _kill_own_browser(port_too: bool = False) -> int:
     psutil.wait_procs(list(victims.values()), timeout=3)
     return len(victims)
 
+
+# Ends a headless Chrome once the Xod that started it is gone, however it went (quit, crash, a test run ending).
+# Nobody can see a headless Chrome, but the Mac counts it as Chrome running: clicking Chrome's icon then opens
+# nothing. The start time guards against the pid being reused by something else.
+_WATCH = """import sys, time, psutil
+xod, pid = int(sys.argv[1]), int(sys.argv[2])
+try:
+    chrome = psutil.Process(pid)
+    born = chrome.create_time()
+    while psutil.pid_exists(xod) and chrome.is_running():
+        time.sleep(2)
+    if chrome.is_running() and chrome.create_time() == born:
+        chrome.terminate()
+        try:
+            chrome.wait(5)
+        except psutil.TimeoutExpired:
+            chrome.kill()
+except psutil.Error:
+    pass
+"""
+
+
+def _end_with_xod(proc: subprocess.Popen) -> None:
+    try:
+        flags = {"creationflags": 0x08000000} if os.name == "nt" else {"start_new_session": True}   # no console window
+        subprocess.Popen([sys.executable, "-c", _WATCH, str(os.getpid()), str(proc.pid)],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **flags)
+    except Exception as e:
+        logger.warning(f"Could not watch the background browser: {e}")
+
 BOOTSTRAP_SCRIPT = """
 (() => {
     // 1. Comprehensive Anti-Detection, Stealth Evasions & Bot Fingerprint Masking
@@ -770,6 +800,8 @@ class BrowserSandboxService:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
+        if self.headless:
+            _end_with_xod(self.proc)
 
         # Wait up to 5 seconds for DevTools to become available
         for _ in range(25):
