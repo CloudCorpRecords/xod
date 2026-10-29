@@ -114,6 +114,12 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
+    # Where a chat was started: desktop, or phone (the paired phone app, through phone_api)
+    try:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN source TEXT NOT NULL DEFAULT 'desktop'")
+    except sqlite3.OperationalError:
+        pass
+
     # 7. Persistent Long-Term Vector Memories Table
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS memories (
@@ -224,15 +230,17 @@ def get_all_settings() -> Dict[str, str]:
 # -------------------------------------------------------------
 # SESSIONS STORAGE
 # -------------------------------------------------------------
-def create_session(title: str = "New Research Session", persona: str = "ultimate_researcher") -> Dict[str, Any]:
+def create_session(title: str = "New Research Session", persona: str = "ultimate_researcher",
+                   source: str = "desktop") -> Dict[str, Any]:
     session_id = f"sess_{uuid.uuid4().hex[:12]}"
     now = time.time()
+    source = source if source in ("desktop", "phone") else "desktop"
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO sessions (id, title, persona, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)
-    """, (session_id, title, persona, now, now))
+        INSERT INTO sessions (id, title, persona, created_at, updated_at, source)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (session_id, title, persona, now, now, source))
     conn.commit()
     conn.close()
     return {
@@ -240,14 +248,15 @@ def create_session(title: str = "New Research Session", persona: str = "ultimate
         "title": title,
         "persona": persona,
         "created_at": now,
-        "updated_at": now
+        "updated_at": now,
+        "source": source
     }
 
 def list_sessions() -> List[Dict[str, Any]]:
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT s.id, s.title, s.persona, s.created_at, s.updated_at,
+        SELECT s.id, s.title, s.persona, s.created_at, s.updated_at, s.source,
                COUNT(m.id) as message_count
         FROM sessions s
         LEFT JOIN messages m ON s.id = m.session_id
@@ -263,7 +272,8 @@ def list_sessions() -> List[Dict[str, Any]]:
             "persona": row["persona"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
-            "message_count": row["message_count"]
+            "message_count": row["message_count"],
+            "source": row["source"] or "desktop"
         }
         for row in rows
     ]

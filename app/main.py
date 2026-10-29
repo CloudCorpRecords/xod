@@ -166,6 +166,7 @@ class ChatRequest(BaseModel):
     active_workspace_path: Optional[str] = None
     attached_document: Optional[Dict[str, Any]] = None
     voice: Optional[bool] = None   # asked out loud in a conversation: answer in a spoken style
+    source: Optional[str] = None   # "phone": sent from the paired phone app (phone_api); tags the chat and what it learns
 
 class CreateSessionRequest(BaseModel):
     title: Optional[str] = "New Research Session"
@@ -1590,7 +1591,8 @@ async def chat_endpoint(request: ChatRequest):
 
     if not session_id or not get_session(session_id):
         title = prompt_preview[:35] + ("..." if len(prompt_preview) > 35 else "")
-        session = create_session(title=title, persona=request.persona or "ultimate_researcher")
+        session = create_session(title=title, persona=request.persona or "ultimate_researcher",
+                                 source="phone" if request.source == "phone" else "desktop")
         session_id = session["id"]
         is_new_session = True
     else:
@@ -1634,7 +1636,7 @@ async def chat_endpoint(request: ChatRequest):
             learn_wanted = user_memory.worth_a_look(said) or bool(user_memory.FORGET_ALL_RE.match(said))
             local_model = llm_service.get_endpoint_info().get("provider") in ("lm_studio", "ollama", "xod", "local") and not route.endpoint
             if learn_wanted and not local_model:
-                learn_turn = user_memory.start_learning(said)
+                learn_turn = user_memory.start_learning(said, via="phone" if request.source == "phone" else "")
         except Exception as e:
             logger.debug(f"memory: {e}")
 
@@ -1698,7 +1700,7 @@ async def chat_endpoint(request: ChatRequest):
                 # a local one starts now. Either way the page asks for the result and shows it when it's in.
                 try:
                     if learn_turn is None:
-                        learn_turn = user_memory.start_learning(said)
+                        learn_turn = user_memory.start_learning(said, via="phone" if request.source == "phone" else "")
                     else:
                         task = user_memory._turns.get(learn_turn, {}).get("task")
                         if task is not None:
@@ -2274,6 +2276,39 @@ async def _xod_network():
     global _xod_network_task
     from app.services import xod_network
     _xod_network_task = asyncio.get_running_loop().create_task(xod_network.run_forever())
+
+
+@app.on_event("startup")
+async def _memory_sync():
+    from app.services import memory_sync
+    memory_sync._state["task"] = asyncio.get_running_loop().create_task(memory_sync.run_forever())
+
+
+@app.get("/api/memory-sync")
+async def memory_sync_status():
+    """Shared memory across your Xods: on or off, the computers it shares with, and what came in lately."""
+    from app.services import memory_sync
+    return memory_sync.status()
+
+
+@app.post("/api/memory-sync")
+async def memory_sync_set(body: Dict[str, Any]):
+    """{on}: switch it; {share: machine}: ask that Xod to share; {stop|remove: key}: stop sharing / drop what came from it."""
+    from app.services import memory_sync
+    try:
+        if "on" in body:
+            memory_sync.set_enabled(bool(body["on"]))
+        if body.get("share"):
+            r = await memory_sync.share_with(str(body["share"]))
+            return {"success": True, **r, **memory_sync.status()}
+        if body.get("stop"):
+            memory_sync.stop_sharing(str(body["stop"]))
+        if body.get("remove"):
+            n = memory_sync.remove_received(str(body["remove"]))
+            return {"success": True, "removed": n, **memory_sync.status()}
+    except memory_sync.SyncError as e:
+        return {"success": False, "error": str(e), **memory_sync.status()}
+    return {"success": True, **memory_sync.status()}
 
 
 @app.get("/api/xods")

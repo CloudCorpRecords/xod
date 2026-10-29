@@ -14,10 +14,16 @@ Where facts come from, always recorded per fact:
 Everything lives in about_you.json in Xod's data folder, on this Mac. Every fact can be edited or forgotten,
 and learning from chats can be switched off. Passwords, keys and card numbers are never kept.
 
+Shared with your other computers (memory_sync.py, off by default): every add, edit and forget here goes in a small
+change log (about_you_changes.json) that your other Xods pull from; merge() applies theirs. Forgets leave a tombstone
+for 90 days, so a computer that was offline can't bring a forgotten fact back. Facts that came from another computer
+say so in their source ("you said, on laptop"), and they're checked again (secrets, length, topic) before they're kept.
+
 How it's used: core_note() is a short block (the key facts first) in every system prompt, in a stable order so
 the model server can keep it cached; relevant(query) adds the other facts that match a question.
 """
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -35,7 +41,12 @@ from app.paths import DATA_DIR
 logger = logging.getLogger("xod.user_memory")
 
 PATH = Path(DATA_DIR) / "about_you.json"
+CHANGES_PATH = Path(DATA_DIR) / "about_you_changes.json"
 _lock = threading.RLock()
+MAX_CHANGES = 2000
+TOMBSTONE_DAYS = 90
+# Who said it, for facts learned in this turn: "phone" when the chat came from the paired phone (main.chat_endpoint).
+VIA = contextvars.ContextVar("user_memory_via", default="")
 
 TOPICS = ["identity", "work", "location", "people", "projects", "interests", "preferences", "routines", "other"]
 # One fact per key: a new one replaces the old ("works at Acme" -> "works at Globex").
@@ -100,6 +111,159 @@ def _clean(text: str) -> str:
     return t[:1].upper() + t[1:240] if t else ""
 
 
+# ------------------------------------------------------------------------------------- the change log (for sharing)
+
+def _load_changes() -> Dict[str, Any]:
+    try:
+        d = json.loads(CHANGES_PATH.read_text())
+        return {"seq": int(d.get("seq") or 0), "changes": list(d.get("changes") or [])}
+    except (OSError, ValueError):
+        return {"seq": 0, "changes": []}
+
+
+def _log(op: str, **data: Any) -> None:
+    """One local change, for your other computers to pull (memory_sync). Called under _lock."""
+    c = _load_changes()
+    c["seq"] += 1
+    c["changes"].append({"seq": c["seq"], "op": op, "at": time.time(), **data})
+    c["changes"] = c["changes"][-MAX_CHANGES:]
+    CHANGES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CHANGES_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(c))
+    os.replace(tmp, CHANGES_PATH)
+    try:
+        os.chmod(CHANGES_PATH, 0o600)
+    except OSError:
+        pass
+    try:
+        from app.services import memory_sync
+        memory_sync.nudge(poke=True)
+    except Exception:
+        pass
+
+
+def changes_since(seq: int) -> Dict[str, Any]:
+    """{seq, changes, complete}: this computer's own changes after seq. On a first pull, or when the log was trimmed
+    past seq, it's a full copy instead (complete False): every fact first kept here as a put, plus the forgets."""
+    with _lock:
+        c = _load_changes()
+        out = [x for x in c["changes"] if x["seq"] > seq]
+        # A first pull (seq 0) is always a full copy: facts kept before sharing existed were never logged.
+        complete = seq > 0 and (not c["changes"] or seq >= c["changes"][0]["seq"] - 1)
+        if not complete:
+            d = load()
+            out = [{"seq": c["seq"], "op": "put", "fact": _shareable(f)} for f in d["facts"] if not f.get("received_from")]
+            out += [{"seq": c["seq"], "op": "forget", "id": i, "at": t} for i, t in (d.get("tombstones") or {}).items()]
+            if d.get("cleared_at"):
+                out.append({"seq": c["seq"], "op": "clear", "at": d["cleared_at"]})
+        return {"seq": c["seq"], "changes": out, "complete": complete}
+
+
+def _shareable(f: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: f.get(k) for k in ("id", "text", "topic", "key", "added", "updated", "pinned", "via", "origin")}
+
+
+def _tombstone(d: Dict[str, Any], fact_id: str, at: float) -> None:
+    t = d.setdefault("tombstones", {})
+    t[fact_id] = max(at, t.get(fact_id) or 0)
+    cutoff = time.time() - TOMBSTONE_DAYS * 86400
+    d["tombstones"] = {k: v for k, v in t.items() if v >= cutoff}
+
+
+def _origin() -> str:
+    try:
+        import socket
+        return socket.gethostname().split(".")[0][:60]
+    except Exception:
+        return ""
+
+
+def merge(changes: List[Dict[str, Any]], from_host: str) -> Dict[str, Any]:
+    """Applies another computer's changes here. Nothing received is logged again (no echoes): each computer
+    pulls from each of the others. Returns {"kept": [...], "forgot": [...], "skipped": n}."""
+    out: Dict[str, Any] = {"kept": [], "forgot": [], "skipped": 0}
+    host = (from_host or "another computer")[:60]
+    with _lock:
+        d = load()
+        for ch in changes or []:
+            op = ch.get("op")
+            if op == "clear":
+                at = float(ch.get("at") or 0)
+                if at > (d.get("cleared_at") or 0):
+                    d["cleared_at"] = at
+                    gone = [f for f in d["facts"] if (f.get("updated") or 0) <= at]
+                    d["facts"] = [f for f in d["facts"] if (f.get("updated") or 0) > at]
+                    out["forgot"] += [f["text"] for f in gone]
+                continue
+            if op == "forget":
+                fid, at = str(ch.get("id") or ""), float(ch.get("at") or 0)
+                if not fid:
+                    continue
+                _tombstone(d, fid, at)
+                hit = next((f for f in d["facts"] if f["id"] == fid), None)
+                if hit and (hit.get("updated") or 0) <= at:
+                    d["facts"].remove(hit)
+                    out["forgot"].append(hit["text"])
+                continue
+            if op != "put" or not isinstance(ch.get("fact"), dict):
+                out["skipped"] += 1
+                continue
+            f = ch["fact"]
+            text = _clean(f.get("text"))
+            fid, upd = str(f.get("id") or ""), float(f.get("updated") or 0)
+            if (not re.fullmatch(r"f[0-9a-f]{6,32}", fid) or not text or len(text) < 3 or SECRET_RE.search(text)
+                    or upd > time.time() + 300):
+                out["skipped"] += 1
+                continue
+            if (d.get("tombstones") or {}).get(fid, 0) >= upd or (d.get("cleared_at") or 0) >= upd:
+                continue    # forgotten here after that version was written
+            topic = f.get("topic") if f.get("topic") in TOPICS else "other"
+            key = f.get("key") if f.get("key") in KEYS else None
+            via = f.get("via") if f.get("via") in ("chat", "phone", "mac", "you edited") else "chat"
+            origin = str(f.get("origin") or host)[:60]
+            source = f"you said, on {origin}" if via == "chat" else ("from your phone, via " + origin if via == "phone"
+                                                                    else f"{via}, on {origin}")
+            mine = next((x for x in d["facts"] if x["id"] == fid), None) \
+                or next((x for x in d["facts"] if key and x.get("key") == key), None) \
+                or next((x for x in d["facts"] if _same(x["text"], text)), None)
+            if mine:
+                if mine["id"] != fid and not (key and mine.get("key") == key and not _same(mine["text"], text)):
+                    # The same fact said on two computers: both settle on the smaller id, whichever copy is newer,
+                    # so a forget of it reaches both.
+                    if fid < mine["id"]:
+                        old_id = mine["id"]
+                        mine["id"] = fid
+                        _tombstone(d, old_id, time.time())
+                    fid = mine["id"]
+                newer = upd > (mine.get("updated") or 0) or (upd == (mine.get("updated") or 0) and origin > str(mine.get("origin") or ""))
+                if not newer:
+                    continue
+                if key and mine.get("key") == key and not _same(mine["text"], text):
+                    d.setdefault("past", []).append({"text": mine["text"], "key": key, "topic": mine["topic"],
+                                                     "from": mine.get("added"), "until": upd, "source": mine.get("source")})
+                    d["past"] = d["past"][-100:]
+                mine.update(id=fid, text=text, topic=topic, key=key, updated=upd, source=source, via=via, origin=origin,
+                            received_from=host, pinned=bool(mine.get("pinned") or f.get("pinned")))
+                out["kept"].append(text)
+            else:
+                d["facts"].append({"id": fid, "text": text, "topic": topic, "key": key, "source": source,
+                                   "added": float(f.get("added") or upd), "updated": upd, "used": 0,
+                                   "pinned": bool(f.get("pinned")), "via": via, "origin": origin, "received_from": host})
+                out["kept"].append(text)
+        save(d)
+    return out
+
+
+def remove_received(from_host: str) -> int:
+    """'Remove what came from Laptop': drops those facts here only (not a forget everywhere)."""
+    with _lock:
+        d = load()
+        n = len(d["facts"])
+        d["facts"] = [f for f in d["facts"] if f.get("received_from") != from_host]
+        save(d)
+        return n - len(d["facts"])
+
+
 def add(text: str, topic: str = "other", key: Optional[str] = None, source: str = "you said",
         pinned: bool = False) -> Optional[Dict[str, Any]]:
     """Keeps a fact (or refreshes the same one). Returns it, or None if it was empty or looked like a secret."""
@@ -131,15 +295,28 @@ def add(text: str, topic: str = "other", key: Optional[str] = None, source: str 
             if key:
                 hit["key"] = key
             hit["pinned"] = hit.get("pinned") or pinned
+            if changed:
+                hit.update(via=_via(source), origin=_origin())
+                hit.pop("received_from", None)
             fact = hit
         else:
             fact = {"id": "f" + uuid.uuid4().hex[:10], "text": text, "topic": topic, "key": key, "source": source,
-                    "added": now, "updated": now, "used": 0, "pinned": pinned}
+                    "added": now, "updated": now, "used": 0, "pinned": pinned, "via": _via(source), "origin": _origin()}
             facts.append(fact)
         save(d)
+        if fresh:
+            _log("put", fact=_shareable(fact))
     if key == "name":
         _sync_name(text)
     return {**fact, "_new": fresh}
+
+
+def _via(source: str) -> str:
+    if "phone" in (source or ""):
+        return "phone"
+    if source == "you edited":
+        return "you edited"
+    return "chat" if (source or "").startswith("you") else "mac"
 
 
 def _sync_name(text: str) -> None:
@@ -167,8 +344,10 @@ def edit(fact_id: str, text: str) -> Optional[Dict[str, Any]]:
         f = next((f for f in d["facts"] if f["id"] == fact_id), None)
         if not f:
             return None
-        f.update(text=text, updated=time.time(), source="you edited")
+        f.update(text=text, updated=time.time(), source="you edited", via="you edited", origin=_origin())
+        f.pop("received_from", None)
         save(d)
+        _log("put", fact=_shareable(f))
     if f.get("key") == "name":
         _sync_name(text)
     return f
@@ -179,8 +358,13 @@ def forget(fact_id: str) -> bool:
         d = load()
         n = len(d["facts"])
         d["facts"] = [f for f in d["facts"] if f["id"] != fact_id]
+        gone = len(d["facts"]) < n
+        if gone:
+            now = time.time()
+            _tombstone(d, fact_id, now)
+            _log("forget", id=fact_id, at=now)
         save(d)
-        return len(d["facts"]) < n
+        return gone
 
 
 def forget_matching(what: str) -> List[str]:
@@ -192,11 +376,13 @@ def forget_matching(what: str) -> List[str]:
     gone = []
     with _lock:
         d = load()
-        keep = []
+        keep, now = [], time.time()
         for f in d["facts"]:
             fw = _norm(f["text"])
             if (f.get("key") in keys) or (words and len(words & fw) / max(1, len(words)) >= 0.6):
                 gone.append(f["text"])
+                _tombstone(d, f["id"], now)
+                _log("forget", id=f["id"], at=now)
             else:
                 keep.append(f)
         d["facts"] = keep
@@ -209,7 +395,9 @@ def forget_all() -> int:
         d = load()
         n = len(d["facts"])
         d["facts"] = []
+        d["cleared_at"] = time.time()
         save(d)
+        _log("clear", at=d["cleared_at"])
         return n
 
 
@@ -317,8 +505,9 @@ def worth_a_look(text: str) -> bool:
 _turns: Dict[str, Dict[str, Any]] = {}
 
 
-def start_learning(text: str) -> str:
-    """Learns from this message in the background. Returns a turn id the page can ask about (turn_result)."""
+def start_learning(text: str, via: str = "") -> str:
+    """Learns from this message in the background. Returns a turn id the page can ask about (turn_result).
+    via: "phone" when the message came from the paired phone (its facts say so)."""
     tid = uuid.uuid4().hex[:12]
     _turns[tid] = {"done": False}
     if len(_turns) > 50:
@@ -326,6 +515,7 @@ def start_learning(text: str) -> str:
             _turns.pop(k, None)
 
     async def run():
+        VIA.set(via)
         try:
             got = await learn_from_message(text)
         except Exception as e:
@@ -377,7 +567,8 @@ async def learn_from_message(text: str, session_id: str = "") -> Dict[str, Any]:
         if not isinstance(item, dict):
             continue
         key = item.get("key") if item.get("key") not in (None, "null", "") else None
-        f = add(str(item.get("fact") or ""), str(item.get("topic") or "other"), key, source="you said")
+        f = add(str(item.get("fact") or ""), str(item.get("topic") or "other"), key,
+                source="you said, from your phone" if VIA.get() == "phone" else "you said")
         if f and f.get("_new"):          # only what's new or changed, not what it already knew
             out["learned"].append({"id": f["id"], "text": f["text"]})
     return out

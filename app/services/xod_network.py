@@ -14,6 +14,7 @@ it. It runs while you're signed in and the setting xod_findable isn't "off":
   GET  /.well-known/xod     this computer's name and OS, nothing else
   POST /v1/tasks            {request, from}: a task from another of your Xods
   GET  /v1/tasks/{ref}      whether it was approved, and how the task is going
+  /v1/memory/*              shared memory between your Xods (services/memory_sync.py)
 A handed task never runs by itself: it becomes an approval card on this computer (in the chat and on the phone), and
 only the person's Approve puts it in the task inbox. Cards are made only for devices signed in to the same account as
 this one: Tailscale vouches for who is on the other end of each connection (`tailscale whois`), so a shared machine or
@@ -323,6 +324,37 @@ async def _start_beacon(ip: str) -> None:
             raise HTTPException(403, str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+    # Shared memory (services/memory_sync.py): same account, then signed by the keys approved on the card.
+    @app.post("/v1/memory/hello")
+    async def memory_hello(request: Request) -> Dict[str, Any]:
+        from app.services import memory_sync
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Send JSON.")
+        try:
+            return await asyncio.to_thread(memory_sync.receive_hello, request.client.host, body if isinstance(body, dict) else {})
+        except PermissionError as e:
+            raise HTTPException(403, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/v1/memory/changes")
+    async def memory_changes(request: Request, since: int = 0) -> Dict[str, Any]:
+        from app.services import memory_sync
+        try:
+            return await asyncio.to_thread(memory_sync.serve_changes, request.client.host, dict(request.headers), since)
+        except PermissionError as e:
+            raise HTTPException(403, str(e))
+
+    @app.post("/v1/memory/poke")
+    async def memory_poke(request: Request) -> Dict[str, Any]:
+        from app.services import memory_sync
+        try:
+            return await asyncio.to_thread(memory_sync.poked, request.client.host, dict(request.headers))
+        except PermissionError as e:
+            raise HTTPException(403, str(e))
 
     @app.get("/v1/tasks/{ref}")
     async def handed_status(ref: str, request: Request) -> Dict[str, Any]:

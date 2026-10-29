@@ -3534,6 +3534,10 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         return _desktop_setup_card(dict(arguments or {}))
     if name == "tailscale_files":
         return await _taildrop_tool(dict(arguments or {}))
+    if name == "memory_sync_accept":    # only from an approved card, like xod_network_accept
+        from app.services import memory_sync
+        a = arguments or {}
+        return await asyncio.to_thread(memory_sync.accept, a.get("key") or "", a.get("_grant") or "")
     if name == "xod_network_accept":    # only from an approved card: its grant is never shown to the model
         from app.services import xod_network
         a = arguments or {}

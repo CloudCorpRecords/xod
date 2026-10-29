@@ -44,7 +44,39 @@
         <label class="flex items-start gap-2 text-[12px] text-zinc-300">
           <input type="checkbox" data-xn="findable" ${r.findable ? "checked" : ""} class="mt-0.5">
           <span>Let my other Xods find this computer</span></label>
+        ${memoryView(r)}
       </section>`;
+  }
+
+  // Shared memory (services/memory_sync.py): facts about you, shared only with computers you approved on both ends.
+  function memoryView(r) {
+    const m = r.memory || {};
+    const ago = (t) => { if (!t) return "never"; const s = Math.round(Date.now() / 1000 - t); return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; };
+    const state = { paired: "sharing", waiting: "waiting for your OK on that computer", asked: "asked to share: approve the card here" };
+    const peers = (m.peers || []).map((p) => `
+      <li class="text-[12px] space-y-0.5">
+        <div class="flex items-center gap-2"><span class="text-white">${esc(p.name || p.host)}</span>
+          <span class="text-zinc-500">${esc(state[p.state] || p.state)}${p.state === "paired" ? ` · synced ${ago(p.last_sync)}` : ""}</span></div>
+        ${p.error ? `<div class="text-amber-300">${esc(p.error)}</div>` : ""}
+        <div class="flex gap-2"><button data-xn="mstop" data-key="${esc(p.sign_pub)}" class="${quiet} !px-2 !py-0.5">Stop sharing</button>
+          <button data-xn="mremove" data-key="${esc(p.sign_pub)}" class="${quiet} !px-2 !py-0.5">Remove what came from it</button></div>
+      </li>`).join("");
+    const sharing = new Set((m.peers || []).map((p) => p.host));
+    const offer = (r.xods || []).filter((x) => x.same_account && x.online && !sharing.has(x.host)).map((x) =>
+      `<button data-xn="mshare" data-host="${esc(x.host)}" class="${quiet} !px-2 !py-0.5">Share with ${esc(x.name)}</button>`).join("");
+    const log = (m.log || []).slice(0, 5).map((l) => `<li>${esc(l.text)} · ${ago(l.at)}</li>`).join("");
+    return `
+      <div class="task-card space-y-2 mt-2">
+        <label class="flex items-start gap-2 text-[12px] text-zinc-300">
+          <input type="checkbox" data-xn="memory" ${m.on ? "checked" : ""} class="mt-0.5">
+          <span><span class="text-white font-semibold">Share what Xod knows about you with my other computers</span><br>
+            Facts only (your name, work, preferences…), never chats or files. Each computer has to approve it.
+            Forgetting a fact on one forgets it on all of them.</span></label>
+        ${m.on ? `${peers ? `<ul class="space-y-2">${peers}</ul>` : ""}
+          ${offer ? `<div class="flex flex-wrap gap-1">${offer}</div>` : (peers ? "" : `<p class="text-[11px] text-zinc-500">Turn this on on your other computer too, then share with it here.</p>`)}
+          ${log ? `<ul class="text-[11px] text-zinc-500 space-y-0.5">${log}</ul>` : ""}` : ""}
+        <p id="xnMemMsg" class="text-[12px] text-zinc-400"></p>
+      </div>`;
   }
 
   async function render() {
@@ -52,6 +84,8 @@
     if (!body) return;
     let r;
     try { r = await api("/api/xods"); } catch { body.innerHTML = '<p class="text-[12px] text-red-300">Xod didn\'t answer.</p>'; return; }
+    try { r.memory = await api("/api/memory-sync"); } catch { r.memory = null; }
+    if (body.contains(document.activeElement) && document.activeElement.dataset.xn) return;   // don't redraw under a click
     const st = r.status || {};
     body.innerHTML = st.signed_in ? listView(r) : signInView(st);
   }
@@ -73,6 +107,17 @@
     if (a === "findable" && e.type === "change") {
       await api("/api/xods/findable", "POST", { on: el.checked });
     }
+    const mem = async (body) => {
+      const r = await api("/api/memory-sync", "POST", body);
+      await render();
+      const msg = document.getElementById("xnMemMsg");
+      if (msg) msg.textContent = r.error || r.message || (r.removed !== undefined ? `Removed ${r.removed} fact${r.removed === 1 ? "" : "s"}.` : "");
+    };
+    if (a === "memory" && e.type === "change") return mem({ on: el.checked });
+    if (e.type !== "click") return;
+    if (a === "mshare") { el.disabled = true; el.textContent = "Asking…"; return mem({ share: el.dataset.host }); }
+    if (a === "mstop") return mem({ stop: el.dataset.key });
+    if (a === "mremove") return mem({ remove: el.dataset.key });
   }
 
   window.openXodsPanel = () => {

@@ -52,7 +52,8 @@ def allowed(sender: str) -> bool:
 def _sessions(args: Dict[str, Any]) -> Dict[str, Any]:
     from app.services.storage import list_sessions
     return {"sessions": [{"id": s["id"], "title": s.get("title") or "Chat", "updated_at": s.get("updated_at"),
-                          "message_count": s.get("message_count") or 0} for s in list_sessions()[:40]]}
+                          "message_count": s.get("message_count") or 0, "source": s.get("source") or "desktop"}
+                         for s in list_sessions()[:40]]}
 
 
 def _history(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -77,7 +78,8 @@ async def _chat(args: Dict[str, Any]) -> Dict[str, Any]:
     if sid and get_session(sid):
         history = [{"role": m["role"], "content": m["content"]} for m in get_session_messages(sid)
                    if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()][-20:]
-    resp = await main.chat_endpoint(main.ChatRequest(messages=history + [{"role": "user", "content": text}], session_id=sid))
+    resp = await main.chat_endpoint(main.ChatRequest(messages=history + [{"role": "user", "content": text}], session_id=sid,
+                                                     source="phone"))
     reply, tools, error = "", [], None
     async for chunk in resp.body_iterator:
         for line in (chunk.decode() if isinstance(chunk, bytes) else chunk).splitlines():
