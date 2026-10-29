@@ -248,6 +248,55 @@ def is_locked() -> Optional[bool]:
     return None
 
 
+def _mac_idle() -> Optional[float]:
+    try:
+        from Quartz import CGEventSourceSecondsSinceLastEventType
+        # HID system state, any input event (kCGAnyInputEventType is ~0): keyboard, mouse, trackpad.
+        return float(CGEventSourceSecondsSinceLastEventType(1, 0xFFFFFFFF))
+    except Exception:
+        pass
+    try:  # fallback: IOHIDSystem's HIDIdleTime, in nanoseconds
+        out = subprocess.run(["/usr/sbin/ioreg", "-c", "IOHIDSystem", "-d", "4", "-a"],
+                             capture_output=True, timeout=5).stdout
+        stack = [plistlib.loads(out)]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                if "HIDIdleTime" in node:
+                    return node["HIDIdleTime"] / 1e9
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+    except Exception:
+        pass
+    return None
+
+
+def _win_idle() -> Optional[float]:
+    try:
+        import ctypes
+
+        class LASTINPUTINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+        info = LASTINPUTINFO()
+        info.cbSize = ctypes.sizeof(info)
+        if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+            return None
+        return ((ctypes.windll.kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000.0
+    except Exception:
+        return None
+
+
+def idle_seconds() -> Optional[float]:
+    """Seconds since the last key press, click or mouse move on this computer; None when it can't be read."""
+    if sys.platform == "darwin":
+        return _mac_idle()
+    if sys.platform == "win32":
+        return _win_idle()
+    return None
+
+
 def status() -> Dict[str, Any]:
     reasons = held_reasons()
     # The backend's real state, not just that a reason was recorded: if the

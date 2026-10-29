@@ -11,6 +11,7 @@ Differences from a public relay:
 """
 import base64
 import json
+import logging
 import re
 import sqlite3
 import threading
@@ -22,6 +23,8 @@ from typing import Any, Callable, Dict, List, Optional
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
+
+logger = logging.getLogger("xod.post_office")
 
 MAX_ENVELOPE = 256 * 1024
 MAILBOX_LIMIT = 500
@@ -64,9 +67,12 @@ class Ack(BaseModel):
 
 
 def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Callable[[str], bool]] = None,
-             on_mail: Optional[Callable[[str], None]] = None) -> FastAPI:
+             on_mail: Optional[Callable[[str], None]] = None,
+             on_paired: Optional[Callable[[str, str, str], None]] = None) -> FastAPI:
     """The post office. domain() is the domain addresses get at registration (this Xod's chosen network name).
-    on_mail(name) is told each time mail is left for a name here (this Xod checks at once instead of at its next poll)."""
+    on_mail(name) is told each time mail is left for a name here (this Xod checks at once instead of at its next poll).
+    on_paired(address, sign_pub, box_pub) is told when a phone registered with a live pairing code, with the exact
+    keys its signed registration carried, so this Xod can pin them as the person's phone."""
     app = FastAPI(title="Xod Post Office (this computer)", version="1", docs_url=None, redoc_url=None, openapi_url=None)
     lock = threading.Lock()
     hits: Dict[str, deque] = defaultdict(deque)
@@ -156,6 +162,11 @@ def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Cal
                 c.execute("UPDATE names SET box_pub=?, domain=?, updated_at=? WHERE name=?", (reg.box_pub, dom, now, name))
             else:
                 c.execute("INSERT INTO names VALUES (?,?,?,?,?,?)", (name, reg.sign_pub, reg.box_pub, dom, now, now))
+        if remote_pair and on_paired:
+            try:
+                on_paired(f"{name}@{dom}", reg.sign_pub, reg.box_pub)
+            except Exception as e:
+                logger.warning(f"post office: pairing {name} didn't finish here: {e}")
         return {"address": f"{name}@{dom}", "name": name, "domain": dom}
 
     @app.get("/v1/names/{name}")

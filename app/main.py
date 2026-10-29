@@ -2152,7 +2152,10 @@ async def crew_set_muse_tools(req: CrewTools):
 
 
 class CrewAutoApprove(BaseModel):
-    on: bool
+    on: Optional[bool] = None
+    mode: Optional[str] = None            # off | always | away | pause | resume
+    pause_minutes: Optional[float] = None
+    away_minutes: Optional[int] = None
 
 
 @app.get("/api/crew/settings/auto-approve")
@@ -2165,7 +2168,16 @@ async def crew_auto_approve():
 @app.post("/api/crew/settings/auto-approve")
 async def crew_set_auto_approve(req: CrewAutoApprove):
     from app.services import muse_app
-    return muse_app.set_enabled(req.on)
+    if req.away_minutes is not None:
+        muse_app.set_away_minutes(req.away_minutes)
+    if req.mode:
+        try:
+            return muse_app.set_mode(req.mode, req.pause_minutes)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    if req.on is not None:
+        return muse_app.set_enabled(req.on)
+    return muse_app.status()
 
 
 class HandoffRepos(BaseModel):

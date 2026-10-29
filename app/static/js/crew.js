@@ -135,7 +135,7 @@
       const next = r.next_start ? ` · next start ${when(r.next_start)}` : "";
       return `<div><b class="text-zinc-200">${esc(r.name)}</b>: ${job}${next}</div>`;
     }).join("");
-    body.innerHTML = `<div>${L.handoff_on ? "On" : "Off (no repos watched)"}${L.auto_approve && L.auto_approve.on ? " · auto-approve on" : ""}${L.auto_approve && L.auto_approve.awake_held ? " · keeping the display awake" : ""}</div>`
+    body.innerHTML = `<div>${L.handoff_on ? "On" : "Off (no repos watched)"}${L.auto_approve && L.auto_approve.on ? (L.auto_approve.mode === "away" ? " · auto-approve when you're away" : " · auto-approve on") : (L.auto_approve && L.auto_approve.paused_until ? " · auto-approve paused" : "")}${L.auto_approve && L.auto_approve.awake_held ? " · keeping the display awake" : ""}</div>`
       + `<div>${usageLine(L.usage)}</div>` + rows;
     if (!modelsLoaded && L.models) {
       modelsLoaded = true;
@@ -206,7 +206,18 @@
                 <label class="flex items-center gap-1.5 text-[11px] text-zinc-400" title="In a git repository the job gets a branch and folder of its own; you merge it when you're happy."><input type="checkbox" data-c-isolate checked> Its own copy (git projects)</label>
                 <button data-c="start" class="w-full px-2 py-1.5 rounded-md bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Start the job</button>
                 <p data-c-note class="text-[11px] text-zinc-400"></p>
-                <label class="flex items-center gap-1.5 text-[11px] text-zinc-400" title="Xod presses Allow for you on Muse and Claude Code approvals in Crew jobs and on the Muse app's Needs review cards (needs Accessibility access). Requests Xod's safety check flags, and protected writes, still wait for you. Each one is logged in the approvals history."><input type="checkbox" data-c-autoapprove> Approve everything Muse and Claude Code ask</label>
+                <div class="space-y-1 text-[11px] text-zinc-400" title="Xod presses Allow for you on Muse and Claude Code approvals in Crew jobs and on the Muse app's Needs review cards (needs Accessibility access). Only when I'm away: Muse's cards are pressed only while the screen is locked or you haven't typed or clicked for a few minutes, so Muse never takes the screen while you work. Requests Xod's safety check flags, and protected writes, still wait for you. Each one is logged in the approvals history. You can also just tell Xod: &quot;pause Muse approvals for an hour&quot;.">
+                  <div>Approve what Muse and Claude Code ask</div>
+                  <div class="flex items-center gap-1">
+                    <select data-c-autoapprove class="flex-1 min-w-0 bg-surface-700 text-zinc-200 rounded-md px-1.5 py-1 text-[11px]">
+                      <option value="off">Off (every card waits for me)</option>
+                      <option value="away">Only when I'm away</option>
+                      <option value="always">Always</option>
+                    </select>
+                    <button data-c-autoapprove-pause class="shrink-0 px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600 hidden">Pause 1h</button>
+                  </div>
+                  <div data-c-autoapprove-state class="text-zinc-500"></div>
+                </div>
                 <p data-c-autoapprove-note class="text-[11px] text-amber-300 hidden"></p>
                 <details data-c-tools class="text-[11px] text-zinc-400"><summary class="cursor-pointer hover:text-zinc-200">Muse's tools for jobs</summary>
                   <p class="mt-1">Each one Muse starts before a job begins (all of yours took minutes), so jobs get only the ones you tick.</p>
@@ -274,9 +285,26 @@
     }
   }
 
+  function autoApproveState(st) {
+    if (st.paused_until) {
+      const mins = Math.max(1, Math.round((st.paused_until * 1000 - Date.now()) / 60000));
+      return `Paused for ${mins} more min.`;
+    }
+    if (st.mode === "away") return st.pressing_now ? `You're away (${(st.you && st.you.why) || "idle"}): pressing cards.` : `Waiting: ${(st.you && st.you.why) || "you're here"}. Cards are pressed after ${st.away_minutes} min idle or when the screen locks.`;
+    if (st.mode === "always") return "Pressing every card as it appears.";
+    return "";
+  }
+
   function showAutoApprove(st) {
     const box = root.querySelector("[data-c-autoapprove]");
-    if (box && document.activeElement !== box) box.checked = !!st.on;
+    if (box && document.activeElement !== box) box.value = st.mode || (st.on ? "always" : "off");
+    const pause = root.querySelector("[data-c-autoapprove-pause]");
+    if (pause) {
+      pause.classList.toggle("hidden", (st.mode || "off") === "off");
+      pause.textContent = st.paused_until ? "Resume" : "Pause 1h";
+    }
+    const state = root.querySelector("[data-c-autoapprove-state]");
+    if (state) state.textContent = autoApproveState(st);
     const note = root.querySelector("[data-c-autoapprove-note]");
     if (note) {
       const bits = [];
@@ -288,16 +316,23 @@
     }
   }
 
+  async function setAutoApprove(body) {
+    const r = await api("/api/crew/settings/auto-approve", body);
+    if (!r || !r.mode) { showAutoApprove(await api("/api/crew/settings/auto-approve")); return; }
+    showAutoApprove(r);
+    const said = { off: "Muse and Claude Code approvals wait for you again.",
+                   always: "Xod now approves everything Muse and Claude Code ask, and logs each one. (In Crew jobs, ones its safety check flags still wait for you.)",
+                   away: `Xod approves Muse's cards only while you're away (screen locked or ${r.away_minutes} min idle). Crew jobs' requests are approved as they come.` };
+    if (typeof showToast === "function") showToast(r.accessibility_error || (r.paused_until ? autoApproveState(r) + " Then it comes back on." : said[r.mode]));
+  }
+
   async function loadAutoApprove() {
     const box = root.querySelector("[data-c-autoapprove]");
     if (!box) return;
     showAutoApprove(await api("/api/crew/settings/auto-approve"));
-    box.onchange = async () => {
-      const r = await api("/api/crew/settings/auto-approve", { on: box.checked });
-      box.checked = !!r.on;
-      showAutoApprove(r);
-      if (typeof showToast === "function") showToast(r.accessibility_error || (r.on ? "Xod now approves everything Muse and Claude Code ask, and logs each one. (In Crew jobs, ones its safety check flags still wait for you; Muse app cards are approved as they appear.)" : "Muse and Claude Code approvals wait for you again."));
-    };
+    box.onchange = () => setAutoApprove({ mode: box.value });
+    const pause = root.querySelector("[data-c-autoapprove-pause]");
+    if (pause) pause.onclick = () => setAutoApprove(pause.textContent === "Resume" ? { mode: "resume" } : { mode: "pause", pause_minutes: 60 });
   }
 
   // The watcher can hit (or clear) a problem seconds after the switch is flipped, so the note under

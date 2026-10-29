@@ -14,6 +14,13 @@ within a couple of seconds of appearing. A slow scan every 30s is the backstop i
 The observer follows Muse across restarts and stops when the switch is off. The scan itself walks the
 Accessibility tree in-process with pyobjc; driving System Events per element took ~25s a scan.
 
+The switch has three positions: off, always, and away. Away presses cards only while you're away from the
+computer (its screen is locked, or nothing was typed or clicked for away_minutes()), so Muse is never brought
+forward while you're working; cards that came in meanwhile are handled the moment you leave. Any position can be
+paused for a while (it comes back as it was), and chat and the phone can change it (muse_approvals tool,
+phone_api muse.*), which sends a notification. Crew jobs' own requests follow the switch, not your presence:
+they're answered inside Xod and never take the screen.
+
 Every card seen is logged once, ever (a hash of the card in the approvals DB survives restarts): its type
 ("Approval request for Gmail" → Gmail), the button pressed, and for Gmail the From/To/Subject/attachments;
 the full card text is in the row's detail. A card it may not press is logged too, with the reason. At 8 AM,
@@ -54,6 +61,10 @@ REPRESS_AFTER = 4.0   # a pressed card should be gone; one still showing after t
 MAX_PRESS_TRIES = 3   # ...and after this many presses of one showing, stop and log it as failed
 FRONT_SETTLE = 0.6    # after bringing Muse forward (or before putting the other app back): let the window settle
 SUMMARY_HOUR = 8
+MODES = ("off", "always", "away")
+PAUSE_SETTING = "muse_auto_approve_paused_until"
+AWAY_SETTING = "muse_away_minutes"
+DEFAULT_AWAY_MIN = 5
 DRY_RUN = bool(os.environ.get("XOD_MUSE_APP_DRY_RUN"))
 
 _state: Dict[str, Any] = {"task": None, "warned": False, "last": None, "count": 0, "error": None,
@@ -62,17 +73,115 @@ _state: Dict[str, Any] = {"task": None, "warned": False, "last": None, "count": 
                           "loop": None, "backstop_at": 0.0}
 
 
-def enabled() -> bool:
+def mode() -> str:
+    """off, always, or away (only while you're away from this computer). Stored as off/on/away, so an older Xod
+    reading the same settings sees 'away' as off rather than as always."""
     from app.services.storage import get_setting
-    return get_setting(SETTING, "off") == "on"
+    v = get_setting(SETTING, "off")
+    return "always" if v == "on" else (v if v in MODES else "off")
+
+
+def paused_until() -> float:
+    """When a pause ends (epoch seconds), or 0 when it isn't paused."""
+    from app.services.storage import get_setting
+    try:
+        t = float(get_setting(PAUSE_SETTING, "0") or 0)
+    except ValueError:
+        return 0.0
+    return t if t > time.time() else 0.0
+
+
+def away_minutes() -> int:
+    from app.services.storage import get_setting
+    try:
+        return max(1, min(240, int(get_setting(AWAY_SETTING, str(DEFAULT_AWAY_MIN)) or DEFAULT_AWAY_MIN)))
+    except ValueError:
+        return DEFAULT_AWAY_MIN
+
+
+def enabled() -> bool:
+    """The switch is on (always or away) and not paused: Xod watches Muse and approves Crew jobs' requests."""
+    return mode() != "off" and not paused_until()
+
+
+def user_away() -> Dict[str, Any]:
+    """Whether you're away from this computer: its screen is locked, or nothing was typed or clicked for
+    away_minutes(). When neither can be read, you're taken to be here (nothing is pressed on a guess)."""
+    from app.services import power
+    locked, idle = power.is_locked(), power.idle_seconds()
+    if locked:
+        return {"away": True, "why": "the screen is locked", "idle_sec": idle}
+    if idle is not None and idle >= away_minutes() * 60:
+        return {"away": True, "why": f"no typing or clicks for {int(idle // 60)} min", "idle_sec": idle}
+    return {"away": False, "why": "you're using this computer" if idle is not None else "can't tell if you're here",
+            "idle_sec": idle}
+
+
+def _check_active() -> bool:
+    """Press Muse's cards now? Always mode: yes. Away mode: only while you're away. Cached briefly, since the
+    observer thread asks too and the lock check runs ioreg."""
+    if not enabled():
+        _state["away_now"] = None
+        return False
+    if mode() == "always":
+        return True
+    _state["away_now"] = user_away()
+    _state["away_at"] = time.time()
+    return bool(_state["away_now"]["away"])
+
+
+def active() -> bool:
+    if mode() == "away" and enabled() and time.time() - (_state.get("away_at") or 0) < 2.0 and _state.get("away_now"):
+        return bool(_state["away_now"]["away"])
+    return _check_active()
+
+
+def set_mode(new: str, pause_minutes: Optional[float] = None, by: str = "you") -> Dict[str, Any]:
+    """Switch to off / always / away, or pause it for a while (pause_minutes, then it comes back as it was).
+    'resume' ends a pause. by is who asked (you in the app, chat, phone): a change from chat or the phone
+    sends a notification, so a switch nobody at the computer touched never goes unnoticed."""
+    from app.services.storage import set_setting
+    new = {"on": "always", "true": "always", "false": "off"}.get(str(new).lower(), str(new).lower())
+    before = mode() if enabled() else ("paused" if paused_until() else "off")
+    if new == "pause":
+        mins = max(1.0, min(24 * 60.0, float(pause_minutes or 60)))
+        set_setting(PAUSE_SETTING, str(time.time() + mins * 60))
+    elif new == "resume":
+        set_setting(PAUSE_SETTING, "0")
+    elif new in MODES:
+        was_on = mode() != "off"
+        set_setting(SETTING, {"always": "on"}.get(new, new))
+        set_setting(PAUSE_SETTING, "0")
+        if new != "off" and not was_on:
+            set_setting("muse_auto_approve_since", str(time.time()))
+    else:
+        raise ValueError(f"Muse approvals can be off, always, away, pause or resume, not '{new}'.")
+    _state["changed"] = {"to": new, "by": by, "at": time.time()}
+    _state["away_at"] = 0.0
+    if by != "you":
+        try:
+            from app.services.task_queue import notify
+            notify("Muse approvals", f"{describe(status())} (changed from {by})")
+        except Exception:
+            pass
+    logger.info(f"Muse approvals: {before} → {new} (by {by})")
+    return _apply()
+
+
+def set_away_minutes(minutes: int) -> Dict[str, Any]:
+    from app.services.storage import set_setting
+    set_setting(AWAY_SETTING, str(max(1, min(240, int(minutes)))))
+    _state["away_at"] = 0.0
+    return status()
 
 
 def set_enabled(on: bool) -> Dict[str, Any]:
-    from app.services.storage import get_setting, set_setting
-    was = enabled()
-    set_setting(SETTING, "on" if on else "off")
-    if on and not was:
-        set_setting("muse_auto_approve_since", str(time.time()))
+    return set_mode("always" if on else "off")
+
+
+def _apply() -> Dict[str, Any]:
+    """Make the watcher and the keep-awake hold match the switch."""
+    on = enabled()
     if on:
         try:
             from app.services import power
@@ -93,9 +202,14 @@ def set_enabled(on: bool) -> Dict[str, Any]:
 
 
 def status() -> Dict[str, Any]:
-    out = {"on": enabled(), "approved": _state["count"], "last": _state["last"],
+    m, until = mode(), paused_until()
+    out = {"on": enabled(), "mode": m, "paused_until": until or None, "away_minutes": away_minutes(),
+           "pressing_now": active(), "changed": _state.get("changed"),
+           "approved": _state["count"], "last": _state["last"],
            "accessibility_error": _state.get("error") if enabled() else None,
            "dry_run": DRY_RUN, "backend": (_backends.backend().name if _backends.backend() else None)}
+    if m == "away" and not until:
+        out["you"] = user_away()
     try:
         from app.services import power
         pst = power.status()
@@ -104,6 +218,22 @@ def status() -> Dict[str, Any]:
     except Exception:
         out.update({"awake": None, "awake_held": False, "awake_reasons": [], "locked": None})
     return out
+
+
+def describe(st: Dict[str, Any]) -> str:
+    """One line for chat, the phone and notifications."""
+    if st.get("paused_until"):
+        left = max(1, int((st["paused_until"] - time.time()) // 60))
+        back = "always" if st["mode"] == "always" else "only while you're away"
+        return f"Muse approvals are paused for {left} more min, then back to {back}."
+    if st["mode"] == "off":
+        return "Muse approvals are off: every card waits for you."
+    if st["mode"] == "always":
+        return "Muse approvals are on: Xod presses Allow on every card."
+    you = st.get("you") or {}
+    now = "pressing them now (" + you.get("why", "you're away") + ")" if st.get("pressing_now") \
+        else "waiting while " + you.get("why", "you're here")
+    return f"Muse approvals are on only while you're away ({st['away_minutes']} min idle or the screen locked): {now}."
 
 
 def _describe_error(e: Exception) -> str:
@@ -586,6 +716,8 @@ async def scan_once() -> List[Dict[str, Any]]:
 
 
 async def _run_scan() -> None:
+    if not active():
+        return  # paused, off, or away mode while you're at the computer
     try:
         await scan_once()
         _state["warned"] = False
@@ -598,7 +730,7 @@ async def _run_scan() -> None:
 
 def _fire_scan() -> None:
     loop = _state.get("loop")
-    if loop is not None and enabled():
+    if loop is not None and active():
         asyncio.run_coroutine_threadsafe(_run_scan(), loop)
 
 
@@ -606,7 +738,7 @@ def _schedule_burst() -> None:
     """On the event loop: cancel the pending burst and schedule BURST_DELAYS looks. Each look is
     the cheap AX walk; the scan lock keeps them one at a time."""
     loop = _state.get("loop")
-    if loop is None or not enabled():
+    if loop is None or not active():
         return
     for h in _state.get("burst_handles") or []:
         h.cancel()
@@ -628,11 +760,16 @@ async def _watch() -> None:
             if enabled():
                 pid = await asyncio.to_thread(_muse_pid)
                 _sync_observer(pid)
-                if time.time() - _state["backstop_at"] >= BACKSTOP_SEC:
+                now_active = await asyncio.to_thread(_check_active)
+                if now_active and not _state.get("was_active"):
+                    _state["backstop_at"] = 0.0  # you just left (or it was switched on): look at once
+                _state["was_active"] = now_active
+                if now_active and time.time() - _state["backstop_at"] >= BACKSTOP_SEC:
                     _state["backstop_at"] = time.time()
                     await _run_scan()
                     await asyncio.to_thread(_maybe_summary)
             else:
+                _state["was_active"] = False
                 _stop_observer()
         except Exception as e:
             _state["error"] = _describe_error(e)

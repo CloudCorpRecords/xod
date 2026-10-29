@@ -2780,6 +2780,26 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "muse_approvals",
+            "description": "The switch for approving the Muse app's cards (and Muse/Claude Code requests in Crew jobs) for the person. "
+                           "status: how it's set and whether it's pressing now. off: every card waits for them. always: press every card. "
+                           "away: press only while they're away from this computer (screen locked, or no typing or clicks for away_minutes), "
+                           "so Muse never takes the screen while they work. pause: off for `minutes`, then back as it was. resume: end a pause. "
+                           "A change made here sends them a notification.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["status", "off", "always", "away", "pause", "resume"]},
+                    "minutes": {"type": "number", "description": "For pause: how long (default 60)."},
+                    "away_minutes": {"type": "integer", "description": "For away: how many idle minutes count as away (default 5)."}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "tailscale_files",
             "description": "Move files between this computer and the person's own devices (phone, other computers) over Tailscale. "
                            "devices: which devices can take a file and which are online. send: one file to one device. receive: take the files their devices sent to this computer "
@@ -3518,6 +3538,24 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         from app.services import xod_network
         a = arguments or {}
         return await asyncio.to_thread(xod_network.accept, a.get("ref") or "", a.get("_grant") or "")
+    if name == "muse_approvals":
+        from app.services import muse_app
+        a = arguments or {}
+        act = str(a.get("action") or "status").lower()
+        try:
+            if a.get("away_minutes"):
+                await asyncio.to_thread(muse_app.set_away_minutes, int(a["away_minutes"]))
+            if act == "status":
+                st = await asyncio.to_thread(muse_app.status)
+            else:
+                from app.services import activity
+                who = str(activity.origin.get() or "chat").split(":")[0]
+                who = {"task": "a task", "routine": "a routine"}.get(who, who)
+                st = await asyncio.to_thread(muse_app.set_mode, act, a.get("minutes"), who)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        return {"success": True, "summary": muse_app.describe(st),
+                **{k: st.get(k) for k in ("mode", "paused_until", "away_minutes", "pressing_now", "approved", "accessibility_error")}}
     if name == "xod_machines":
         from app.services import xod_network
         a = arguments or {}
@@ -4665,6 +4703,10 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
     if any(k in q for k in ["broken", "not working", "isn't working", "doesn't work", "fix yourself", "health", "diagnose",
                              "what's wrong", "whats wrong", "keeps failing", "self heal", "self-heal", "check yourself", "stuck"]):
         affinities.append("xod_doctor")
+
+    # The Muse approvals switch
+    if any(k in q for k in ["muse", "approval", "approve", "auto-approve", "autoapprove", "auto approve"]):
+        affinities.append("muse_approvals")
 
     # Files to and from the person's own devices
     if any(k in q for k in ["taildrop", "tailscale", "to my phone", "to my iphone", "to my android", "from my phone",

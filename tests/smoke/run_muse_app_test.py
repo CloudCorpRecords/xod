@@ -434,6 +434,82 @@ def main():
           and "front" in rows[0]["detail"], f"{fronts} {[(r['decision'], r['detail'][:80]) for r in rows]}")
     muse_app._bring_forward = real_forward
 
+    print("M13 off / always / away, pause, and changing it from chat or the phone")
+    from app.services import power, phone_api, sentinel, task_queue
+    from app.services.storage import get_setting
+    you = {"locked": False, "idle": 10.0}
+    real_locked, real_idle, real_notify = power.is_locked, power.idle_seconds, task_queue.notify
+    power.is_locked, power.idle_seconds = (lambda: you["locked"]), (lambda: you["idle"])
+    told = []
+    task_queue.notify = lambda title, msg: told.append(msg)
+    looks = []
+    real_scan_once = muse_app.scan_once
+
+    async def counted_scan():
+        looks.append(1)
+        return []
+    muse_app.scan_once = counted_scan
+    try:
+        muse_app.set_mode("always")
+        check("always is stored as 'on', so an older Xod reading the same settings still sees it on",
+              get_setting(muse_app.SETTING) == "on" and muse_app.mode() == "always")
+        muse_app.set_mode("away")
+        check("away is stored as 'away', which an older Xod reads as off (never as always)",
+              get_setting(muse_app.SETTING) == "away" and muse_app.enabled())
+        _asyncio.run(muse_app._run_scan())
+        check("away, while you're using the computer: no look, nothing pressed, Muse never comes forward",
+              not muse_app.active() and looks == [], f"{looks} {muse_app.status()}")
+        you["idle"] = 6 * 60.0
+        muse_app._state["away_at"] = 0.0
+        _asyncio.run(muse_app._run_scan())
+        check("away, after 5 min with no typing or clicks: it looks and presses", muse_app.active() and looks == [1],
+              f"{looks} {muse_app.user_away()}")
+        you.update(idle=3.0, locked=True)
+        muse_app._state["away_at"] = 0.0
+        check("away, with the screen locked: it presses even right after the last click", muse_app.active(),
+              str(muse_app.user_away()))
+        you["locked"] = False
+        muse_app.set_away_minutes(1)
+        you["idle"] = 70.0
+        muse_app._state["away_at"] = 0.0
+        check("the idle time that counts as away can be changed", muse_app.active() and muse_app.away_minutes() == 1)
+        muse_app.set_away_minutes(5)
+        st = muse_app.set_mode("pause", 30)
+        check("pause: off for 30 min, then back as it was (still away)",
+              not muse_app.enabled() and st["paused_until"] and 29 * 60 < st["paused_until"] - time.time() <= 30 * 60
+              and st["mode"] == "away" and "paused" in muse_app.describe(st), str(st))
+        _asyncio.run(muse_app._run_scan())
+        check("paused: no look at all", looks == [1])
+        st = muse_app.set_mode("resume")
+        check("resume ends the pause", muse_app.enabled() and not st["paused_until"])
+        try:
+            muse_app.set_mode("sometimes")
+            check("an unknown position is refused", False)
+        except ValueError:
+            check("an unknown position is refused", True)
+        told.clear()
+        muse_app.set_mode("off", by="chat")
+        check("a change from chat sends a notification that says so", len(told) == 1 and "chat" in told[0], str(told))
+        out = _asyncio.run(phone_api.run("muse.set", {"mode": "away"}))
+        check("the phone can set it (muse.set) and gets the one-line state back",
+              out["ok"] and out["data"]["mode"] == "away" and "away" in out["data"]["summary"]
+              and any("your phone" in t for t in told), str(out))
+        out = _asyncio.run(phone_api.run("muse.status", {}))
+        check("the phone can read it (muse.status)", out["ok"] and out["data"]["mode"] == "away", str(out))
+        out = _asyncio.run(phone_api.run("muse.set", {"mode": "sometimes"}))
+        check("the phone gets a plain error for a bad position", not out["ok"] and "sometimes" in out["error"], str(out))
+        sentinel.begin([{"role": "user", "content": "summarize this web page for me"}])
+        check("turning approvals on when you didn't ask (an instruction in a page) waits for your OK",
+              (sentinel.review("muse_approvals", {"action": "always"}) or {}).get("rule") == "not_asked")
+        check("...but switching them off or pausing never waits",
+              sentinel.review("muse_approvals", {"action": "off"}) is None
+              and sentinel.review("muse_approvals", {"action": "pause", "minutes": 60}) is None)
+        sentinel.begin([{"role": "user", "content": "only approve muse stuff when I'm away from the computer"}])
+        check("turning them on when you asked goes ahead", sentinel.review("muse_approvals", {"action": "away"}) is None)
+    finally:
+        power.is_locked, power.idle_seconds, task_queue.notify = real_locked, real_idle, real_notify
+        muse_app.scan_once = real_scan_once
+
     print("M3 switching off clears the old warning")
     muse_app._state["error"] = "old warning"
     muse_app.set_enabled(False)

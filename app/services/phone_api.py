@@ -8,7 +8,7 @@ with REPLY_SUBJECT and {"request_id", "ok", "data" | "error"}. Neither shows up 
 Who may ask: only a phone paired in phone_mcp's registry whose mail checked out (signature and pinned keys), i.e.
 a phone that paired on its own screen and that you can see under Your phone. Anyone else is ignored, not answered.
 
-What it can do is the same as the desktop app: a chat turn runs the same agent (which still asks before sending,
+What it can do is the same as the desktop app (including the Muse approvals switch, muse.*): a chat turn runs the same agent (which still asks before sending,
 paying, posting or deleting), a task is a normal task. Files are limited to your projects' own files and Xod's
 reports; there is no way to name an arbitrary path on this computer.
 """
@@ -275,6 +275,28 @@ async def _routes(args: Dict[str, Any]) -> Dict[str, Any]:
     return await asyncio.to_thread(phone_pair.reach)
 
 
+def _muse(args: Dict[str, Any]) -> Dict[str, Any]:
+    """The Muse approvals switch (muse_app): status, and set {mode: off|always|away|pause|resume, minutes, away_minutes}."""
+    from app.services import muse_app
+    st = muse_app.status()
+    return {"summary": muse_app.describe(st), **{k: st.get(k) for k in
+            ("mode", "paused_until", "away_minutes", "pressing_now", "approved", "accessibility_error", "backend")}}
+
+
+def _muse_set(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import muse_app
+    if muse_app._backends.backend() is None:
+        raise ApiError("This computer can't approve the Muse app's cards (Mac and Windows only).")
+    try:
+        if args.get("away_minutes"):
+            muse_app.set_away_minutes(int(args["away_minutes"]))
+        if args.get("mode"):
+            muse_app.set_mode(str(args["mode"]), args.get("minutes"), by="your phone")
+    except (TypeError, ValueError) as e:
+        raise ApiError(str(e))
+    return _muse({})
+
+
 OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "summary": _summary, "link.routes": _routes,
     "chat.sessions": _sessions, "chat.history": _history, "chat.send": _chat,
@@ -282,6 +304,7 @@ OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "routines.list": _routines, "routines.act": _routine_act, "goals.act": _goal_act,
     "memory.search": _memory, "reports.list": _reports, "reports.read": _report_read,
     "files.projects": _projects, "files.read": _file_read,
+    "muse.status": _muse, "muse.set": _muse_set,
 }
 
 

@@ -95,7 +95,9 @@ async def main():
     agent_mail.status = lambda: {"set_up": True, "address": "sam@mac.local:8790", "safety_number": "1"}
     offer3 = phone_pair.create_offer()
     agent_mail.status = real_status
-    app = make_app(str(TMP / "po.db"), lambda: "mac.local:8790", pair_code_ok=phone_pair.consume_code)
+    finished = []
+    app = make_app(str(TMP / "po.db"), lambda: "mac.local:8790", pair_code_ok=phone_pair.consume_code,
+                   on_paired=lambda *a: finished.append(a))
     client = TestClient(app, client=("192.168.1.50", 5000))  # not this computer
     ident = mc.Identity.new()
     reg = mc.registration(ident, "phone")
@@ -106,6 +108,20 @@ async def main():
     ident2 = mc.Identity.new()
     rr = client.post("/v1/names", json={**mc.registration(ident2, "phone2"), "pair_code": offer3["payload"]["code"]})
     check("…and the same code a second time is refused (one-time)", rr.status_code == 403, str(rr.status_code))
+    check("…and only the code-verified registration finishes pairing here, with its exact keys",
+          finished == [("phone@mac.local:8790", reg["sign_pub"], reg["box_pub"])], str(finished))
+    phone_pair.paired("phone@mac.local:8790", reg["sign_pub"], reg["box_pub"])
+    from app.services import phone_api
+    check("a phone paired with the code is pinned as yours and listed, so its requests are answered",
+          agent_mail.contact("phone@mac.local:8790")["trust"] == "mine" and phone_api.allowed("phone@mac.local:8790")
+          and any(p["address"] == "phone@mac.local:8790" for p in phone_mcp.paired_phones()))
+    ident3 = mc.Identity.new()
+    phone_pair.paired("phone@mac.local:8790", ident3.sign_pub, ident3.box_pub)
+    check("re-pairing the same name with new keys (app reinstalled) pins the new keys",
+          agent_mail.contact("phone@mac.local:8790")["sign_pub"] == ident3.sign_pub)
+    phone_mcp.unpair_phone("phone@mac.local:8790")
+    with agent_mail._db() as c:
+        c.execute("DELETE FROM mail_contacts WHERE address=?", ("phone@mac.local:8790",))
 
     print("P2 the MCP calls: paired only, capability-gated, logged, keys pinned")
     fake = FakeTransport()

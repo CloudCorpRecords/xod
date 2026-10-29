@@ -19,6 +19,10 @@
   {"id": "your-work", "q": "what are you working on in the background right now?", "want": ["xod_tasks.list", "computer_list_jobs"]},
   {"id": "health", "q": "is everything in Xod working ok?", "want": ["xod_doctor"]},
   {"id": "tidy-downloads", "q": "organize my Downloads folder", "want": ["computer_batch_organize", "computer_list_directory"], "never": ["xod_machines.send_task"]},
-  {"id": "control-hello", "q": "hey, thanks for the help earlier", "want": ["answer"], "control": true}
+  {"id": "control-hello", "q": "hey, thanks for the help earlier", "want": ["answer"], "control": true},
+  {"id": "muse-pause", "q": "pause the muse approvals for an hour", "want": ["muse_approvals.pause"]},
+  {"id": "muse-off", "q": "stop auto approving muse stuff, I want to click them myself", "want": ["muse_approvals.off"]},
+  {"id": "muse-away", "q": "only approve muse's cards when I'm not at my computer", "want": ["muse_approvals.away"]},
+  {"id": "muse-status", "q": "is auto-approve on right now?", "want": ["muse_approvals.status", "muse_approvals"]}
  ]
 }

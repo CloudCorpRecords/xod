@@ -154,6 +154,22 @@ def consume_code(code: str) -> bool:
         return True
 
 
+def paired(address: str, sign_pub: str, box_pub: str) -> None:
+    """A phone registered with the live one-time code (from the QR it scanned, or the Bluetooth offer it accepted on
+    its own screen): pin the exact keys its signed registration carried as yours and list it as your phone, so its
+    requests are answered. Without this the phone believed it was paired while this computer ignored it."""
+    from app.services import agent_mail, phone_mcp
+    address = address.lower()
+    c = agent_mail.contact(address)
+    if c and (c.get("sign_pub"), c.get("box_pub")) != (sign_pub, box_pub):
+        with agent_mail._db() as db:     # the same name re-paired with new keys (the app was reinstalled)
+            db.execute("DELETE FROM mail_contacts WHERE address=?", (address,))
+    agent_mail._pin(address, sign_pub, box_pub, "mine")
+    agent_mail.set_contact(address, trust="mine")
+    phone_mcp.pair_phone(address, address.split("@")[0])
+    logger.info(f"phone_pair: {address} paired with this computer")
+
+
 def cancel() -> None:
     with _lock:
         _save({})
