@@ -3044,13 +3044,57 @@ def _expand_path_args(arguments: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+async def _with_signin_note(result: Any) -> Any:
+    """A sign-in page with no saved login: say so, with how the person signs in (phone or Take Over)."""
+    if isinstance(result, dict):
+        from app.services import browser_remote
+        note = await browser_remote.check_signin()
+        if note:
+            result = {**result, "sign_in_needed": note}
+    return result
+
+
+# Names models reach for that a tool calls something else.
+_ARG_ALIASES = {"computer_open_item": {"target": ("path", "url", "file", "app", "app_name", "item")}}
+
+
+def _alias_args(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    args = dict(arguments or {})
+    for key, alts in _ARG_ALIASES.get(name, {}).items():
+        if not args.get(key):
+            hit = next((a for a in alts if args.get(a)), None)
+            if hit:
+                args[key] = args.pop(hit) if hit != "app_name" else args[hit]
+    return args
+
+
+def _missing_required(name: str, arguments: Dict[str, Any]) -> List[str]:
+    """The required arguments a call left out (from the tool's own schema: Xod's, or an MCP server's)."""
+    schema = next((t["function"].get("parameters") for t in TOOL_DEFINITIONS if t["function"]["name"] == name), None)
+    if schema is None and name.startswith("mcp__"):
+        try:
+            from app.services.mcp_client import mcp_hub
+            _, t = mcp_hub._find(name)
+            schema = getattr(t, "inputSchema", None) if t else None
+        except Exception:
+            schema = None
+    required = (schema or {}).get("required") or [] if isinstance(schema, dict) else []
+    return [k for k in required if (arguments or {}).get(k) in (None, "", [], {})]
+
+
 async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None,
                        reviewed: bool = False) -> Dict[str, Any]:
     """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first.
     Sentinel (services/sentinel.py) looks at it first, against what the person asked; a hit waits for their OK
     (reviewed=True is that OK). What comes back from tools that read others' content is remembered for the next look."""
     from app.services import activity, sentinel
-    arguments = _expand_path_args(arguments)
+    arguments = _expand_path_args(_alias_args(name, arguments))
+    missing = _missing_required(name, arguments)
+    if missing:
+        # A call without what the tool needs only fails, or worse does something nobody asked for (a delete with no
+        # target, made while "seeing what works"): nothing runs, and the model is told what's missing.
+        return {"success": False, "error": f"{name} needs {', '.join(missing)}. Nothing was done. "
+                "If you don't know what the person wants here, ask them instead of trying tools."}
     if not reviewed:
         read_only = None
         if name.startswith("mcp__"):
@@ -3995,7 +4039,7 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
             return filesystem_service.organize_files(resolved_files, resolved_folder)
 
         elif name == "browser_navigate":
-            return await browser_sandbox_service.navigate(arguments["url"])
+            return await _with_signin_note(await browser_sandbox_service.navigate(arguments["url"]))
 
         elif name == "browser_click":
             return await browser_sandbox_service.click(arguments["target"])
@@ -4047,10 +4091,10 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
             )
 
         elif name == "browser_observe":
-            return await browser_sandbox_service.observe(
-                max_count=arguments.get("max_elements", 60),
-                filter=arguments.get("filter_type", "all")
-            )
+            return await _with_signin_note(await browser_sandbox_service.observe(
+                filter_type=arguments.get("filter_type") or None,
+                max_results=int(arguments.get("max_elements") or 60),
+            ))
 
         elif name == "browser_interact":
             return await browser_sandbox_service.interact_by_index(

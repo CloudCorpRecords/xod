@@ -125,6 +125,12 @@ def _save(st: Dict[str, Any]) -> None:
         logger.warning(f"phone_mcp: {e}")
 
 
+# What the phone app calls each switch (xod-android MainActivity CAPS), so "turn it on" names the right one.
+SWITCH_LABELS = {"messages": "Messages & approvals", "apps": "Apps", "location": "Location", "notifications": "Notifications",
+                 "calendar": "Calendar", "contacts": "Contacts", "screen": "Screen", "tap": "Tap", "sms": "SMS",
+                 "files": "Files", "network": "Network", "background_apps": "Background apps"}
+
+
 def pair_phone(address: str, nickname: str = "") -> Dict[str, Any]:
     """Marks an Agent Mail contact as a paired phone. The pairing itself happens on the
     phone (it pins this computer); here we only accept addresses whose keys are already
@@ -293,7 +299,10 @@ async def call_tool(tool: str, address: str = "", timeout: float = ASK_TIMEOUT, 
     caps = phone.get("capabilities") or {}
     if capability and caps.get(capability) is not True:  # off until the phone reports it switched on
         _audit({"tool": tool, "phone": phone["address"], "result": "not allowed on this phone"})
-        return {"success": False, "error": f"not allowed on this phone: '{capability}' is switched off in the phone app."}
+        label = SWITCH_LABELS.get(capability, capability)
+        return {"success": False, "switched_off": capability,
+                "error": f"not allowed on this phone: the '{label}' switch is off. Tell the person to turn it on in the Xod "
+                         f"app on their phone (Phone tab → {label}), then ask again."}
     payload = {"phone_action": action, "request_id": uuid.uuid4().hex, "needs_ok": needs_ok, **args}
     _audit({"tool": tool, "phone": phone["address"], "args": {k: str(v)[:120] for k, v in args.items()}})
     try:

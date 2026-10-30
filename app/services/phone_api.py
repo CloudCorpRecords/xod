@@ -74,6 +74,7 @@ async def _chat(args: Dict[str, Any]) -> Dict[str, Any]:
     if not text:
         raise ApiError("Say something first.")
     sid = str(args.get("session_id") or "") or None
+    started = time.time()
     history = []
     if sid and get_session(sid):
         history = [{"role": m["role"], "content": m["content"]} for m in get_session_messages(sid)
@@ -103,8 +104,12 @@ async def _chat(args: Dict[str, Any]) -> Dict[str, Any]:
                 error = ev.get("content") or "Something went wrong."
     if error and not reply.strip():
         raise ApiError(error)
-    from app.services import agent_mail
-    return {"session_id": sid, "reply": _clip(agent_mail.re_clean(reply), 12000), "tools": tools[:12]}
+    from app.services import agent_mail, browser_remote
+    out = {"session_id": sid, "reply": _clip(agent_mail.re_clean(reply), 12000), "tools": tools[:12]}
+    signin = browser_remote.signin_since(started)
+    if signin:
+        out["browser_signin"] = signin       # the phone shows "Sign in to <site>", which opens Take Over
+    return out
 
 
 # ---------------------------------------------------------------- tasks
@@ -337,6 +342,41 @@ async def _machines(args: Dict[str, Any]) -> Dict[str, Any]:
                                                             for x in f.get("xods") or [] if x.get("same_account")]}
 
 
+# ---------------------------------------------------------------- Take Over from the phone (services/browser_remote.py)
+
+async def _browser(args: Dict[str, Any], what: str) -> Dict[str, Any]:
+    from app.services import browser_remote as br
+    try:
+        if what == "screen":
+            return await br.screen()
+        if what == "tap":
+            return await br.tap(args.get("x", 0.5), args.get("y", 0.5))
+        if what == "type":
+            return await br.type_text(str(args.get("text") or ""), bool(args.get("enter")))
+        if what == "key":
+            return await br.key(str(args.get("key") or ""))
+        if what == "scroll":
+            return await br.scroll(str(args.get("direction") or "down"))
+        if what == "go":
+            return await br.go(str(args.get("url") or ""))
+        if what == "back":
+            return await br.back()
+        return br.done()
+    except ValueError as e:
+        raise ApiError(str(e))
+    except RuntimeError as e:
+        raise ApiError(f"Xod's browser isn't answering ({e}). Try again in a moment.")
+
+
+BROWSER_OPS = {f"browser.{w}": (lambda w: lambda a: _browser(a, w))(w)
+               for w in ("screen", "tap", "type", "key", "scroll", "go", "back", "done")}
+# Requests whose words aren't kept on the computer (a password typed into a sign-in page).
+SECRET_OPS = {"browser.type"}
+# Answers that are pictures of the screen: bigger than a chat answer, and not kept either.
+SCREEN_OPS = set(BROWSER_OPS) - {"browser.done"}
+MAX_SCREEN_REPLY = 150_000
+
+
 OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "summary": _summary, "link.routes": _routes,
     "chat.sessions": _sessions, "chat.history": _history, "chat.send": _chat,
@@ -346,6 +386,7 @@ OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "files.projects": _projects, "files.read": _file_read,
     "muse.status": _muse, "muse.set": _muse_set,
     "models.list": _models, "models.use": _models_use, "machines.list": _machines,
+    **BROWSER_OPS,
 }
 
 
@@ -368,19 +409,19 @@ async def run(op: str, args: Dict[str, Any]) -> Dict[str, Any]:
         return {"ok": False, "error": f"Xod on the computer hit a problem: {type(e).__name__}"}
 
 
-def encode(request_id: str, out: Dict[str, Any]) -> str:
+def encode(request_id: str, out: Dict[str, Any], limit: int = MAX_REPLY) -> str:
     """The answer as text, trimmed to fit one message (lists are shortened before anything is cut mid-way)."""
     body = {"request_id": request_id, **out}
     text = json.dumps(body, default=str, separators=(",", ":"))
     data = out.get("data")
-    while len(text) > MAX_REPLY and isinstance(data, dict):
+    while len(text) > limit and isinstance(data, dict):
         lists = [k for k, v in data.items() if isinstance(v, list) and len(v) > 1]
         if not lists:
             break
         biggest = max(lists, key=lambda k: len(json.dumps(data[k], default=str)))
         data[biggest] = data[biggest][: max(1, len(data[biggest]) // 2)]
         text = json.dumps(body, default=str, separators=(",", ":"))
-    if len(text) > MAX_REPLY:
+    if len(text) > limit:
         text = json.dumps({"request_id": request_id, "ok": False, "error": "The answer was too big to send to the phone."})
     return text
 
@@ -398,14 +439,23 @@ async def handle(sender: str, msg: Dict[str, Any], row_id: str) -> None:
     except ValueError:
         req = {}
     rid = str(req.get("request_id") or "")[:64]
+    op = str(req.get("op") or "")
+    if op in SECRET_OPS:
+        with agent_mail._db() as c:      # what was typed (often a password) isn't kept, only that something was
+            c.execute("UPDATE mail_messages SET text=? WHERE id=?", (json.dumps({"op": op, "request_id": rid, "args": "(hidden)"}), row_id))
     started = time.time()
-    out = await run(str(req.get("op") or ""), req.get("args") or {})
+    out = await run(op, req.get("args") or {})
     logger.info(f"phone_api: {req.get('op')} from {sender} -> {'ok' if out.get('ok') else out.get('error')} in {time.time() - started:.1f}s")
     try:
-        res = await agent_mail.send(sender, encode(rid, out), REPLY_SUBJECT, "reply", msg.get("thread"), msg.get("id"),
-                                    origin="phone-api")
+        screen = op in SCREEN_OPS
+        res = await agent_mail.send(sender, encode(rid, out, MAX_SCREEN_REPLY if screen else MAX_REPLY), REPLY_SUBJECT, "reply",
+                                    msg.get("thread"), msg.get("id"), origin="phone-api",
+                                    max_text=MAX_SCREEN_REPLY if screen else 20000)
         with agent_mail._db() as c:
             c.execute("UPDATE mail_messages SET status='api' WHERE direction='out' AND thread=? AND subject=? AND origin='phone-api'",
                       (res.get("thread"), REPLY_SUBJECT))
+            if screen:      # a picture of the page isn't worth keeping
+                c.execute("UPDATE mail_messages SET text='(a picture of Xod''s browser)' WHERE direction='out' AND thread=? "
+                          "AND subject=? AND origin='phone-api'", (res.get("thread"), REPLY_SUBJECT))
     except Exception as e:
         logger.warning(f"phone_api: couldn't answer {sender}: {e}")

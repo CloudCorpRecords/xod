@@ -33,7 +33,7 @@ async def main():
     PHONE, STRANGER = "phone@mac.local:8790", "eve@elsewhere.example"
     sent = []
 
-    async def fake_send(to, text, subject="", kind="message", thread=None, in_reply_to=None, msg_id=None, origin="you"):
+    async def fake_send(to, text, subject="", kind="message", thread=None, in_reply_to=None, msg_id=None, origin="you", max_text=20000):
         sent.append({"to": to, "text": text, "subject": subject, "kind": kind, "thread": thread, "in_reply_to": in_reply_to})
         return {"success": True, "thread": thread}
     agent_mail.send = fake_send

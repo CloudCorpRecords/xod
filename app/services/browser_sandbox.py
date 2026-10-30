@@ -4656,9 +4656,11 @@ class BrowserSandboxService:
                     f"Open the sign-up page (click element [{link['index']}] \"{(link.get('text') or '').strip()[:40]}\"), "
                     "type the profile email there, then use create_password."}
         if not creds:
+            from app.services import browser_remote
+            browser_remote.note_signin(self.current_url)
             return {"success": False, "needs_user": True,
-                    "error": f"I don't have a saved login for {site}. Log in once yourself with **Take Over** "
-                             "(I'll remember the session), or save a login for it, then ask me to continue."}
+                    "error": f"I don't have a saved login for {site}. Sign in once yourself, from the Xod app on your phone "
+                             "(Sign in) or here with **Take Over** (I'll remember the session), then ask me to continue."}
         user_idx, pw_idx = self._resolve_login_fields(plan)
         if pw_idx is None:
             return {"success": False, "error": "no password field on this page"}

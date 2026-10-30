@@ -335,15 +335,17 @@ def draft(to: Any, text: str, subject: str = "", kind: str = "message", thread: 
 
 
 async def send(to: Any, text: str, subject: str = "", kind: str = "message", thread: Optional[str] = None,
-               in_reply_to: Optional[str] = None, msg_id: Optional[str] = None, origin: str = "you") -> Dict[str, Any]:
-    """Seals and sends a message now (you pressed Send, or approved a draft)."""
+               in_reply_to: Optional[str] = None, msg_id: Optional[str] = None, origin: str = "you",
+               max_text: int = 20000) -> Dict[str, Any]:
+    """Seals and sends a message now (you pressed Send, or approved a draft). max_text is raised only for the phone
+    app's pictures of the browser (services/phone_api.py); one envelope still has to fit the post office's 256 KB."""
     cfg, ident = _config(), _identity()
     if not (cfg.get("address") and ident):
         raise MailError("Set up your agent address first (Agent Mail).")
     recips = _recipients(to)
     thread = thread or uuid.uuid4().hex[:16]
     msg_id = msg_id or uuid.uuid4().hex
-    message = {"id": msg_id, "thread": thread, "kind": kind, "subject": (subject or "")[:200], "text": text[:20000],
+    message = {"id": msg_id, "thread": thread, "kind": kind, "subject": (subject or "")[:200], "text": text[:max_text],
                "in_reply_to": in_reply_to, "recipients": recips, "sent_at": int(time.time())}
     sent, errors, queued = [], [], []
     for addr in recips:

@@ -139,8 +139,10 @@ def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Cal
     def register(reg: Registration, request: Request) -> Dict[str, Any]:
         # From this computer, or with a live one-time pairing code (phone_pair) that is
         # consumed only once the signed registration below has checked out.
-        remote_pair = ip(request) not in LOCAL
-        if remote_pair and not (reg.pair_code and pair_code_ok):
+        # A pairing code counts wherever the phone is: one on this computer's own network path (an emulator, a phone
+        # over USB) pairs the same way, or it would think it's paired while this computer ignores it.
+        by_code = bool(reg.pair_code and pair_code_ok)
+        if ip(request) not in LOCAL and not by_code:
             only_here(request)
         name = reg.name.lower()
         if not NAME_RE.match(name) or name in RESERVED:
@@ -151,7 +153,7 @@ def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Cal
             raise HTTPException(400, "The registration isn't signed by that key.")
         if len(_b64d(reg.sign_pub)) != 32 or len(_b64d(reg.box_pub)) != 32:
             raise HTTPException(400, "Bad keys.")
-        if remote_pair and not pair_code_ok(reg.pair_code):
+        if by_code and not pair_code_ok(reg.pair_code):
             raise HTTPException(403, "That pairing code has expired or was already used. Ask Xod for a new QR.")
         now, dom = time.time(), domain()
         with lock, db() as c:
@@ -162,7 +164,7 @@ def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Cal
                 c.execute("UPDATE names SET box_pub=?, domain=?, updated_at=? WHERE name=?", (reg.box_pub, dom, now, name))
             else:
                 c.execute("INSERT INTO names VALUES (?,?,?,?,?,?)", (name, reg.sign_pub, reg.box_pub, dom, now, now))
-        if remote_pair and on_paired:
+        if by_code and on_paired:
             try:
                 on_paired(f"{name}@{dom}", reg.sign_pub, reg.box_pub)
             except Exception as e:

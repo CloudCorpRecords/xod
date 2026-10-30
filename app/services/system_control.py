@@ -1548,9 +1548,12 @@ class SystemControlService:
         try:
             expanded = os.path.expanduser(target)
             cmd = ["open"]
-            if app_name:
-                cmd.extend(["-a", app_name])
-            cmd.append(expanded)
+            if not re.match(r"^[a-z][a-z0-9+.-]*://", target, re.I) and "/" not in target and not os.path.exists(expanded):
+                cmd.extend(["-a", app_name or target])      # a bare name ("Muse"): the app itself
+            else:
+                if app_name:
+                    cmd.extend(["-a", app_name])
+                cmd.append(expanded)
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,

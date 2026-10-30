@@ -110,6 +110,20 @@ async def main():
     check("…and the same code a second time is refused (one-time)", rr.status_code == 403, str(rr.status_code))
     check("…and only the code-verified registration finishes pairing here, with its exact keys",
           finished == [("phone@mac.local:8790", reg["sign_pub"], reg["box_pub"])], str(finished))
+    agent_mail.status = lambda: {"set_up": True, "address": "sam@mac.local:8790", "safety_number": "1"}
+    offer4 = phone_pair.create_offer()
+    agent_mail.status = real_status
+    here = TestClient(app, client=("127.0.0.1", 5000))     # an emulator or a phone over USB reaches it from here
+    ident4 = mc.Identity.new()
+    reg4 = mc.registration(ident4, "usbphone")
+    rr = here.post("/v1/names", json={**reg4, "pair_code": offer4["payload"]["code"]})
+    check("a phone pairing with the code from this computer's own network path is paired too (not just registered)",
+          rr.status_code == 200 and finished[-1] == ("usbphone@mac.local:8790", reg4["sign_pub"], reg4["box_pub"]), str(finished[-1:]))
+    rr = here.post("/v1/names", json={**mc.registration(mc.Identity.new(), "usbphone2"), "pair_code": offer4["payload"]["code"]})
+    check("…and its code is used up there as well", rr.status_code == 403, str(rr.status_code))
+    rr = here.post("/v1/names", json=mc.registration(mc.Identity.new(), "localname"))
+    check("…while a plain registration from this computer (no code) is still allowed and pairs nothing",
+          rr.status_code == 200 and finished[-1][0] == "usbphone@mac.local:8790")
     phone_pair.paired("phone@mac.local:8790", reg["sign_pub"], reg["box_pub"])
     from app.services import phone_api
     check("a phone paired with the code is pinned as yours and listed, so its requests are answered",

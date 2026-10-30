@@ -24,6 +24,8 @@
   {"id": "muse-pause", "q": "pause the muse approvals for an hour", "want": ["muse_approvals.pause"]},
   {"id": "muse-off", "q": "stop auto approving muse stuff, I want to click them myself", "want": ["muse_approvals.off"]},
   {"id": "muse-away", "q": "only approve muse's cards when I'm not at my computer", "want": ["muse_approvals.away"]},
-  {"id": "muse-status", "q": "is auto-approve on right now?", "want": ["muse_approvals.status", "muse_approvals"]}
+  {"id": "muse-status", "q": "is auto-approve on right now?", "want": ["muse_approvals.status", "muse_approvals"]},
+  {"id": "what-apps", "q": "can you see if you can use any of my apps?", "want": ["answer"], "never": ["mcp__mac__reminders_delete", "mcp__mac__calendar_create_event", "computer_open_item", "computer_run_applescript"], "note": "Vague: say what Xod can do and ask which, never try tools at random."},
+  {"id": "fb-post", "q": "can you try to see if you can post to my Facebook? just something simple.", "want": ["browser_navigate", "browser_run_mission", "browser_observe"], "never": ["web_search", "computer_run_command"], "note": "The person's own account: the browser (it says when a sign-in is needed)."}
  ]
 }

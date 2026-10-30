@@ -2573,7 +2573,7 @@ CONTEXT:
 
 DECISION RULES:
 - 'direct_answer': Greetings ('hi', 'hello'), conceptual questions, chitchat, or follow-ups answerable from context without tools.
-- 'execute_plan': External actions, web research, browser automation, terminal commands, file reading/editing, system telemetry, media synthesis.
+  Also a question about your abilities with no task in it ("what can you do?", "can you use my apps?"): say what you can do with this computer and their phone, in a few lines, and ask which they want; never try tools at random to find out. A named task, even phrased "can you try…" ("see if you can post to my Facebook", "open Muse"), is not that: do it.- 'execute_plan': External actions, web research, browser automation, terminal commands, file reading/editing, system telemetry, media synthesis.
 
 Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
 ```json
