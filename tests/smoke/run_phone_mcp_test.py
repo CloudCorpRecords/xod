@@ -178,7 +178,7 @@ async def main():
           sorted(phone_mcp.TOOLS) == ["phone_app_run", "phone_ask", "phone_calendar", "phone_contacts",
                                       "phone_fetch", "phone_file_read", "phone_files_list", "phone_location",
                                       "phone_notifications", "phone_open_app",
-                                      "phone_screen_read", "phone_screen_tap", "phone_send", "phone_sms_send",
+                                      "phone_screen_act", "phone_screen_read", "phone_screen_tap", "phone_send", "phone_sms_send",
                                       "phone_stop"], str(sorted(phone_mcp.TOOLS)))
     check("TOOLS matches the shared contract in docs/phone_actions.json (every action, capability, needs_tap)",
           phone_mcp.contract_mismatches() == [], str(phone_mcp.contract_mismatches()))

@@ -2781,21 +2781,30 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "phone",
-            "description": "The person's own phone, through the Xod app paired with this computer (Android): open an app on it, "
-                           "read or tap its screen, its location, notifications, calendar, contacts or files, send them a message "
-                           "or ask them a question with buttons, or stop what's running. 'My phone' means this phone. Each ability "
-                           "works only if its switch is on in the phone app (the answer says which to turn on); sending, texting and "
-                           "tapping ask on the phone first. status lists the paired phone, what's switched on, battery and when it "
-                           "was last seen. iPhones can't be controlled by apps at all (Apple doesn't allow it).",
+            "description": "The person's own phone, through the Xod app paired with this computer (Android). task: do a whole job "
+                           "in the phone's apps, which are already signed in (Facebook, TikTok, X, Instagram, ...): give the goal in "
+                           "the person's words; Xod opens the app, reads the screen, taps, types, scrolls and swipes until it's done. "
+                           "Use task for anything in an app beyond opening it. Also: open an app, read its screen (numbered), act "
+                           "(one step: do=tap|long_press|type|enter|scroll|swipe|back|home on target n), its location, notifications, "
+                           "calendar, contacts or files, send them a message or ask them a question with buttons, or stop what's "
+                           "running. 'My phone' means this phone. Each ability works only if its switch is on in the phone app (the "
+                           "answer says which to turn on); steps in apps ask on the phone unless 'Use my apps without asking' is on, "
+                           "and posting, sending, paying or deleting asks unless the person asked for exactly that. status lists the "
+                           "paired phone, what's switched on, battery and when it was last seen. iPhones can't be controlled by apps "
+                           "at all (Apple doesn't allow it).",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["status", "open_app", "screen_read", "tap", "location", "notifications",
+                    "action": {"type": "string", "enum": ["status", "task", "open_app", "screen_read", "act", "tap", "location", "notifications",
                                                          "calendar", "contacts", "files", "read_file", "message", "ask", "sms",
                                                          "run_hidden", "stop"]},
-                    "app": {"type": "string", "description": "open_app / run_hidden: the app's name as on the phone (\"Calculator\", \"YouTube\")"},
+                    "goal": {"type": "string", "description": "task: the whole job, in the person's words (\"post 'hello' on my Facebook\")"},
+                    "app": {"type": "string", "description": "open_app / run_hidden / task: the app's name as on the phone (\"Calculator\", \"TikTok\")"},
+                    "do": {"type": "string", "enum": ["tap", "long_press", "type", "enter", "scroll", "swipe", "back", "home"], "description": "act: the step"},
+                    "target": {"type": "integer", "description": "act: the element's number from screen_read"},
+                    "direction": {"type": "string", "description": "act scroll/swipe: up, down, left or right"},
                     "x": {"type": "integer"}, "y": {"type": "integer"},
-                    "text": {"type": "string", "description": "message / sms: what to say"},
+                    "text": {"type": "string", "description": "message / sms: what to say; act type: what to type"},
                     "to": {"type": "string", "description": "sms: the number"},
                     "question": {"type": "string"}, "options": {"type": "string", "description": "ask: buttons, comma separated"},
                     "query": {"type": "string", "description": "contacts: who"},
@@ -3084,15 +3093,16 @@ async def _with_signin_note(result: Any) -> Any:
 
 
 # The phone tool's actions -> the phone's own tools (services/phone_mcp.py) and the arguments each takes.
-_PHONE_ACTIONS = {"open_app": "phone_open_app", "screen_read": "phone_screen_read", "tap": "phone_screen_tap",
+_PHONE_ACTIONS = {"open_app": "phone_open_app", "screen_read": "phone_screen_read", "tap": "phone_screen_tap", "act": "phone_screen_act",
                   "location": "phone_location", "notifications": "phone_notifications", "calendar": "phone_calendar",
                   "contacts": "phone_contacts", "files": "phone_files_list", "read_file": "phone_file_read",
                   "message": "phone_send", "ask": "phone_ask", "sms": "phone_sms_send", "run_hidden": "phone_app_run",
                   "stop": "phone_stop"}
 _PHONE_ARGS = {"phone_open_app": ("app",), "phone_app_run": ("app",), "phone_screen_tap": ("x", "y"),
+               "phone_screen_act": ("do", "target", "x", "y", "text", "direction"),
                "phone_send": ("text",), "phone_ask": ("question", "options"), "phone_sms_send": ("to", "text"),
                "phone_contacts": ("query",), "phone_files_list": ("path",), "phone_file_read": ("path",)}
-_PHONE_REQUIRED = {"app", "x", "y", "text", "question", "to"}
+_PHONE_REQUIRED = {"app", "x", "y", "text", "question", "to", "do"}
 
 
 # Names models reach for that a tool calls something else.
@@ -3637,6 +3647,13 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         address = str(a.pop("phone", "") or "")
         if act == "status":
             return phone_mcp.phone_list()
+        if act == "task":
+            from app.services import phone_task
+            if not str(a.get("goal") or "").strip():
+                return {"success": False, "error": "phone task needs goal. Nothing was done."}
+            return await phone_task.run(str(a["goal"]), address, int(a.get("max_steps") or phone_task.MAX_STEPS), str(a.get("app") or ""))
+        if act == "act" and "element" in a and "target" not in a:
+            a["target"] = a.pop("element")
         tool = _PHONE_ACTIONS.get(act)
         if not tool:
             return {"success": False, "error": f"Phone actions: {', '.join(sorted(_PHONE_ACTIONS))} or status."}
@@ -4821,7 +4838,7 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
         affinities.append("xod_doctor")
 
     # The person's paired phone (the Xod phone app)
-    if any(k in q for k in ["my phone", "on my android", "my android", "on the phone", "my galaxy", "my samsung", "on my cell"]):
+    if any(k in q for k in ["my phone", "on my android", "my android", "on the phone", "my galaxy", "my samsung", "on my cell", "tiktok", "instagram"]):
         affinities.append("phone")
 
     # The Muse approvals switch

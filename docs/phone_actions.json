@@ -7,6 +7,7 @@
     {"name": "phone_open_app", "capability": "apps", "needs_tap": false},
     {"name": "phone_screen_read", "capability": "screen", "needs_tap": false},
     {"name": "phone_screen_tap", "capability": "tap", "needs_tap": true},
+    {"name": "phone_screen_act", "capability": "tap", "needs_tap": true},
     {"name": "phone_location", "capability": "location", "needs_tap": false},
     {"name": "phone_sms_send", "capability": "sms", "needs_tap": true},
     {"name": "phone_notifications", "capability": "notifications", "needs_tap": false},

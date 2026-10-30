@@ -41,7 +41,7 @@ REGISTRY_PATH = DATA_DIR / "phones.json"
 LOG_PATH = DATA_DIR / "phones_log.jsonl"
 
 CAPABILITIES = ("messages", "apps", "screen", "tap", "location", "sms", "files",
-                "notifications", "calendar", "contacts", "network", "background_apps")
+                "notifications", "calendar", "contacts", "network", "background_apps", "drive")
 MIRROR_ADDRESS = "iphone-mirroring"  # the virtual phone backed by macOS iPhone Mirroring (services/iphone_mirror.py)
 
 # The shared contract with the Android app: every action below is listed in
@@ -93,6 +93,7 @@ TOOLS: Dict[str, tuple] = {
     "phone_open_app": ("phone_open_app", "apps", False),
     "phone_screen_read": ("phone_screen_read", "screen", False),
     "phone_screen_tap": ("phone_screen_tap", "tap", True),
+    "phone_screen_act": ("phone_screen_act", "tap", True),      # one step in an app; answers with the screen, so Screen too
     "phone_location": ("phone_location", "location", False),
     # Background (headless / second-display) actions from the Android handoff spec.
     "phone_sms_send": ("phone_sms_send", "sms", True),            # sends, so it needs a tap on the phone
@@ -128,7 +129,8 @@ def _save(st: Dict[str, Any]) -> None:
 # What the phone app calls each switch (xod-android MainActivity CAPS), so "turn it on" names the right one.
 SWITCH_LABELS = {"messages": "Messages & approvals", "apps": "Apps", "location": "Location", "notifications": "Notifications",
                  "calendar": "Calendar", "contacts": "Contacts", "screen": "Screen", "tap": "Tap", "sms": "SMS",
-                 "files": "Files", "network": "Network", "background_apps": "Background apps"}
+                 "files": "Files", "network": "Network", "background_apps": "Background apps",
+                 "drive": "Use my apps without asking"}
 
 
 def pair_phone(address: str, nickname: str = "") -> Dict[str, Any]:
@@ -297,9 +299,11 @@ async def call_tool(tool: str, address: str = "", timeout: float = ASK_TIMEOUT, 
         return {"success": False, "error": f"{address} isn't a paired phone. Paired: {', '.join(phones)}."}
     action, capability, needs_ok = TOOLS[tool]
     caps = phone.get("capabilities") or {}
-    if capability and caps.get(capability) is not True:  # off until the phone reports it switched on
+    needed = [capability] + (["screen"] if tool == "phone_screen_act" else [])
+    off = next((c for c in needed if c and caps.get(c) is not True), None)
+    if off:  # off until the phone reports it switched on
         _audit({"tool": tool, "phone": phone["address"], "result": "not allowed on this phone"})
-        label = SWITCH_LABELS.get(capability, capability)
+        capability, label = off, SWITCH_LABELS.get(off, off)
         return {"success": False, "switched_off": capability,
                 "error": f"not allowed on this phone: the '{label}' switch is off. Tell the person to turn it on in the Xod "
                          f"app on their phone (Phone tab → {label}), then ask again."}
