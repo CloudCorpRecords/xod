@@ -348,6 +348,8 @@ async def _browser(args: Dict[str, Any], what: str) -> Dict[str, Any]:
     from app.services import browser_remote as br
     try:
         if what == "screen":
+            if "phone" in args:          # the phone's Take Over opened (true) or closed (false)
+                await br.phone_layout(bool(args["phone"]))
             return await br.screen()
         if what == "tap":
             return await br.tap(args.get("x", 0.5), args.get("y", 0.5))
@@ -361,7 +363,7 @@ async def _browser(args: Dict[str, Any], what: str) -> Dict[str, Any]:
             return await br.go(str(args.get("url") or ""))
         if what == "back":
             return await br.back()
-        return br.done()
+        return await br.done()
     except ValueError as e:
         raise ApiError(str(e))
     except RuntimeError as e:

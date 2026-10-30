@@ -99,8 +99,16 @@ async def main():
             check("only web addresses can be opened", True)
         check("scrolling answers with a picture", bool((await br.scroll("down")).get("image")))
 
+        print("Phone layout")
+        await br.phone_layout(True)
+        narrow = await br.screen()
+        check("while the phone signs in, the page lays out at phone width", narrow["page_width"] <= 520, str(narrow["page_width"]))
+        check("…and is drawn crisp, filling the phone's picture", narrow["width"] >= 700, str(narrow["width"]))
+
         print("Done")
-        msg = br.done()["message"]
+        msg = (await br.done())["message"]
+        wide = await br.screen()
+        check("finishing puts the browser back to its own size", wide["page_width"] >= 1200, str(wide["page_width"]))
         check("finishing thanks them and clears the sign-in", "session" in msg and br.signin_since(0) is None, msg)
     finally:
         srv.shutdown()

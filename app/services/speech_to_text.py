@@ -130,6 +130,15 @@ def _repetitive(text: str) -> bool:
     return False
 
 
+# Xod's name the way Whisper writes it, in the middle of what you say: "ask Zod to…", "Zodd, open…".
+_NAME_IN_TEXT = re.compile(r"\b(?:zod|zodd|xodd|zahd)\b", re.I)
+
+
+def name_fixed(text: str) -> str:
+    """'Zod' (and kin) said to Xod is Xod, not the TypeScript library."""
+    return _NAME_IN_TEXT.sub("Xod", text)
+
+
 def clean(out: Dict[str, Any]):
     """Whisper's result -> (text you said, why it was dropped or "", confidence 0–1)."""
     segs = out.get("segments") or []
@@ -148,6 +157,7 @@ def clean(out: Dict[str, Any]):
         return "", ("doubtful" if segs else ""), 0.0
     if _repetitive(text):
         return "", "repetitive", 0.0
+    text = name_fixed(text)
     bare = re.sub(r"[^a-z0-9' ]", "", text.lower()).strip()
     conf = round(min(probs), 2) if probs else 0.5
     if bare in STOCK_LINES and conf < 0.75:

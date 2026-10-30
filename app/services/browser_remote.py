@@ -75,8 +75,55 @@ async def _session(fn):
             return await fn(ws, send)
 
 
+PHONE_WINDOW = (500, 900)       # CSS pixels (Chrome's narrowest window): sites lay out for a phone, readable on one
+DESK_WINDOW = (1440, 900)       # browser_sandbox's own size (--window-size)
+IDLE_RESTORE = 600              # seconds without the phone before the browser goes back to its own size
+_phone = {"on": False, "last": 0.0, "task": None}
+
+
+async def _window(size) -> bool:
+    """Resizes the window of the page Xod's browser shows (the page lays itself out again for the new width)."""
+    async def resize(ws, send):
+        target = (await send("Target.getTargetInfo")).get("targetInfo", {}).get("targetId")
+        win = await send("Browser.getWindowForTarget", {"targetId": target} if target else {})
+        await send("Browser.setWindowBounds", {"windowId": win["windowId"], "bounds": {"width": size[0], "height": size[1]}})
+        for _ in range(20):          # the page lays itself out again a moment later
+            vp = (await send("Page.getLayoutMetrics")).get("cssVisualViewport") or {}
+            if abs(float(vp.get("clientWidth") or 0) - size[0]) < 80:
+                break
+            await asyncio.sleep(0.1)
+    try:
+        await _session(resize)
+        return True
+    except Exception as e:
+        logger.info(f"Take Over: couldn't resize the browser window ({e})")
+        return False
+
+
+async def phone_layout(on: bool) -> None:
+    """Narrow while the person is signing in from the phone; back to normal after, or when the phone goes quiet."""
+    _phone["last"] = time.time()
+    if on == _phone["on"]:
+        return
+    if await _window(PHONE_WINDOW if on else DESK_WINDOW):
+        _phone["on"] = on
+    if on and not _phone["task"]:
+        async def watch():
+            try:
+                while _phone["on"]:
+                    await asyncio.sleep(30)
+                    if time.time() - _phone["last"] > IDLE_RESTORE:
+                        await phone_layout(False)
+            finally:
+                _phone["task"] = None
+        _phone["task"] = asyncio.get_running_loop().create_task(watch())
+
+
 async def screen() -> Dict[str, Any]:
     """What the browser shows now: a JPEG (base64) with its size, and the page's address and title."""
+    if _phone["on"]:
+        _phone["last"] = time.time()
+
     async def grab(ws, send):
         await send("Page.enable")
         m = await send("Page.getLayoutMetrics")
@@ -88,7 +135,7 @@ async def screen() -> Dict[str, Any]:
             url, title = json.loads(info.get("result", {}).get("value") or "[]")
         except Exception:
             url, title = "", ""
-        scale = min(1.0, SCREEN_WIDTH / w)
+        scale = min(2.0, SCREEN_WIDTH / w)      # a narrow (phone) layout is drawn at up to twice its size: crisp
         data = ""
         for quality in (60, 45, 32, 22):
             shot = await send("Page.captureScreenshot", {"format": "jpeg", "quality": quality,
@@ -189,10 +236,11 @@ async def back() -> Dict[str, Any]:
     return await screen()
 
 
-def done() -> Dict[str, Any]:
+async def done() -> Dict[str, Any]:
     """The person finished (signed in): Xod can carry on with the session the browser now has."""
     site = _signin.get("site")
     signed_in()
+    await phone_layout(False)
     return {"message": f"Thanks! I'll use your {site} session from now on." if site else "Thanks! Xod's browser is yours again."}
 
 

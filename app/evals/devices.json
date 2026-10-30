@@ -26,6 +26,8 @@
   {"id": "muse-away", "q": "only approve muse's cards when I'm not at my computer", "want": ["muse_approvals.away"]},
   {"id": "muse-status", "q": "is auto-approve on right now?", "want": ["muse_approvals.status", "muse_approvals"]},
   {"id": "what-apps", "q": "can you see if you can use any of my apps?", "want": ["answer"], "never": ["mcp__mac__reminders_delete", "mcp__mac__calendar_create_event", "computer_open_item", "computer_run_applescript"], "note": "Vague: say what Xod can do and ask which, never try tools at random."},
-  {"id": "fb-post", "q": "can you try to see if you can post to my Facebook? just something simple.", "want": ["browser_navigate", "browser_run_mission", "browser_observe"], "never": ["web_search", "computer_run_command"], "note": "The person's own account: the browser (it says when a sign-in is needed)."}
+  {"id": "fb-post", "q": "can you try to see if you can post to my Facebook? just something simple.", "want": ["browser_navigate", "browser_run_mission", "browser_observe"], "never": ["web_search", "computer_run_command"], "note": "The person's own account: the browser (it says when a sign-in is needed)."},
+  {"id": "phone-open-app", "q": "open the calculator app on my phone", "want": ["phone.open_app"], "never": ["mcp__mac__shortcuts_run", "computer_open_item", "computer_run_applescript"], "note": "My phone is the paired phone (Xod phone app), never a Mac Shortcut."},
+  {"id": "phone-screen", "q": "what's on my phone's screen right now?", "want": ["phone.screen_read"], "never": ["computer_screenshot", "mcp__mac__shortcuts_run"]}
  ]
 }

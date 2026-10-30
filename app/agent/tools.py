@@ -2780,6 +2780,35 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "phone",
+            "description": "The person's own phone, through the Xod app paired with this computer (Android): open an app on it, "
+                           "read or tap its screen, its location, notifications, calendar, contacts or files, send them a message "
+                           "or ask them a question with buttons, or stop what's running. 'My phone' means this phone. Each ability "
+                           "works only if its switch is on in the phone app (the answer says which to turn on); sending, texting and "
+                           "tapping ask on the phone first. status lists the paired phone, what's switched on, battery and when it "
+                           "was last seen. iPhones can't be controlled by apps at all (Apple doesn't allow it).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["status", "open_app", "screen_read", "tap", "location", "notifications",
+                                                         "calendar", "contacts", "files", "read_file", "message", "ask", "sms",
+                                                         "run_hidden", "stop"]},
+                    "app": {"type": "string", "description": "open_app / run_hidden: the app's name as on the phone (\"Calculator\", \"YouTube\")"},
+                    "x": {"type": "integer"}, "y": {"type": "integer"},
+                    "text": {"type": "string", "description": "message / sms: what to say"},
+                    "to": {"type": "string", "description": "sms: the number"},
+                    "question": {"type": "string"}, "options": {"type": "string", "description": "ask: buttons, comma separated"},
+                    "query": {"type": "string", "description": "contacts: who"},
+                    "path": {"type": "string", "description": "files / read_file"},
+                    "phone": {"type": "string", "description": "Which phone, if more than one is paired"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "muse_approvals",
             "description": "The switch for approving the Muse app's cards (and Muse/Claude Code requests in Crew jobs) for the person. "
                            "status: how it's set and whether it's pressing now. off: every card waits for them. always: press every card. "
@@ -3052,6 +3081,18 @@ async def _with_signin_note(result: Any) -> Any:
         if note:
             result = {**result, "sign_in_needed": note}
     return result
+
+
+# The phone tool's actions -> the phone's own tools (services/phone_mcp.py) and the arguments each takes.
+_PHONE_ACTIONS = {"open_app": "phone_open_app", "screen_read": "phone_screen_read", "tap": "phone_screen_tap",
+                  "location": "phone_location", "notifications": "phone_notifications", "calendar": "phone_calendar",
+                  "contacts": "phone_contacts", "files": "phone_files_list", "read_file": "phone_file_read",
+                  "message": "phone_send", "ask": "phone_ask", "sms": "phone_sms_send", "run_hidden": "phone_app_run",
+                  "stop": "phone_stop"}
+_PHONE_ARGS = {"phone_open_app": ("app",), "phone_app_run": ("app",), "phone_screen_tap": ("x", "y"),
+               "phone_send": ("text",), "phone_ask": ("question", "options"), "phone_sms_send": ("to", "text"),
+               "phone_contacts": ("query",), "phone_files_list": ("path",), "phone_file_read": ("path",)}
+_PHONE_REQUIRED = {"app", "x", "y", "text", "question", "to"}
 
 
 # Names models reach for that a tool calls something else.
@@ -3589,6 +3630,22 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         from app.services import xod_network
         a = arguments or {}
         return await asyncio.to_thread(xod_network.accept, a.get("ref") or "", a.get("_grant") or "")
+    if name == "phone":
+        from app.services import phone_mcp
+        a = dict(arguments or {})
+        act = str(a.pop("action", "status") or "status").lower()
+        address = str(a.pop("phone", "") or "")
+        if act == "status":
+            return phone_mcp.phone_list()
+        tool = _PHONE_ACTIONS.get(act)
+        if not tool:
+            return {"success": False, "error": f"Phone actions: {', '.join(sorted(_PHONE_ACTIONS))} or status."}
+        keep = _PHONE_ARGS.get(tool, ())
+        args = {k: v for k, v in a.items() if k in keep and v not in (None, "")}
+        missing = [k for k in keep if k in _PHONE_REQUIRED and k not in args]
+        if missing:
+            return {"success": False, "error": f"phone {act} needs {', '.join(missing)}. Nothing was done."}
+        return await phone_mcp.call_tool(tool, address, **args)
     if name == "muse_approvals":
         from app.services import muse_app
         a = arguments or {}
@@ -4762,6 +4819,10 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
     if any(k in q for k in ["broken", "not working", "isn't working", "doesn't work", "fix yourself", "health", "diagnose",
                              "what's wrong", "whats wrong", "keeps failing", "self heal", "self-heal", "check yourself", "stuck"]):
         affinities.append("xod_doctor")
+
+    # The person's paired phone (the Xod phone app)
+    if any(k in q for k in ["my phone", "on my android", "my android", "on the phone", "my galaxy", "my samsung", "on my cell"]):
+        affinities.append("phone")
 
     # The Muse approvals switch
     if any(k in q for k in ["muse", "approval", "approve", "auto-approve", "autoapprove", "auto approve"]):
