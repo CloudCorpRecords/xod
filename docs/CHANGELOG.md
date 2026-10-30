@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.10
+
+**Xod uses your phone**
+- Ask Xod to open an app on your phone, read its screen, find where it is, or check its notifications, calendar, contacts or files ("open the calculator on my phone"). Each works only if its switch is on in the phone app, and Xod tells you which one to turn on. Before, Xod's own chat couldn't reach the phone at all, and tried Mac Shortcuts instead.
+- The phone answers even when the app it opens covers Xod (update the phone app too). Before, the app opened but the computer reported that the phone didn't answer.
+
+**Sign in from your phone**
+- When Xod reaches a sign-in page it has no login for (Facebook, a bank…), its answer on the phone shows a Sign in button. It opens Xod's browser on your phone: tap a box, type (hidden for passwords), press Enter. Xod keeps the session afterwards. What you type goes straight into the page: the computer doesn't keep it and the AI never sees it.
+- While you sign in, the page lays out for a phone, so it's readable there. Open Xod's browser any time with the search button in the phone's Chat.
+
+**Voice mode waits for you**
+- A short pause no longer ends what you're saying, a sentence that trails off waits for the rest, and what you add right after joins it instead of getting its own answer. When Xod hears "Zod", it knows you mean Xod.
+
+**Fewer surprises**
+- Xod no longer tries tools at random when asked what it can do, and a tool call that's missing what it needs is stopped before it runs.
+- Questions about your own day ("what did I work on today?") are answered from Xod's memory and your tasks, never from a web search. Xod may think before it decides how to answer.
+- Opening an app by name works ("open Muse"). The hidden browser closes when Xod does, so it can no longer keep Chrome from opening.
+
 ## 0.9.9
 
 **What Xod knows about you, on every computer you use**
