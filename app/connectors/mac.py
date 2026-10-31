@@ -46,7 +46,7 @@ server = MCPServer(
     instructions="Calendar, Reminders, Notes, Mail, Messages, Contacts, places nearby and Home (Shortcuts) on this Mac. "
                  "Read freely; creating or changing asks the user first; deleting, sending a message and unlocking always "
                  "ask. To change or delete something, list or search first to get its id.",
-    version="0.9.14",
+    version="0.9.15",
 )
 
 SEP, END = "\x1f", "\x1e"   # field and record separators that never appear in normal text
