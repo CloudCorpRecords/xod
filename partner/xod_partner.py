@@ -121,6 +121,7 @@ class Core:
         self.backoff_until = 0.0
         self.last_action = None
         self.last_outcome = None
+        self.updates_guardian = None  # partner_updates.UpdateGuardian, wired in main()
 
     def _load_token(self):
         path = self.state_dir / "token"
@@ -398,6 +399,11 @@ def api_status(core):
     st = core.status(time.time())
     st["bundle_id"] = BUNDLE_ID
     st["uptime_s"] = int(time.time() - core.started_at)
+    if getattr(core, "updates_guardian", None) is not None:
+        try:
+            st["updates"] = core.updates_guardian.status()
+        except Exception:
+            st["updates"] = None
     return st
 
 
@@ -510,6 +516,11 @@ def main(argv):
     except Exception as exc:  # no AX on this machine: the watchdog still watches
         log("ax service unavailable at startup: %s" % exc)
     core = Core(cfg, state_dir, probe, make_restarter(cfg, probe, log), log, trust=trust)
+    try:  # the update guardian (v0.5): a broken guardian must never stop the watchdog
+        import partner_updates
+        core.updates_guardian = partner_updates.UpdateGuardian(cfg, state_dir, log)
+    except Exception as exc:
+        log("update guardian unavailable at startup: %s" % exc)
     stopping = {"flag": False}
     graceful = {"flag": False}
     server = None
@@ -555,6 +566,8 @@ def main(argv):
             break
         try:
             core.cycle(time.time())
+            if core.updates_guardian is not None:
+                core.updates_guardian.tick()
         except Exception as exc:  # the watcher must outlive its own bugs
             log("cycle error: %s" % exc)
         text = json.dumps(core.status(time.time()), indent=1, sort_keys=True)
