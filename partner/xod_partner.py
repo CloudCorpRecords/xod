@@ -13,6 +13,15 @@ The Partner is deliberately tiny and frozen; new features belong in Xod,
 never here. Design record: the "Partner app" addendum in
 XOD-BRAIN-ARCHITECTURE.md.
 
+v1.1 (2026-10-31) changes only the restart accounting, plus one signal
+write: the hourly restart cap is spent by unplanned revivals only. A
+planned shutdown (Xod's marker file in the state dir, or an authenticated
+note_planned_restart inbox command, each good for ten minutes) still gets
+its revival; it just does not spend the cap. Status reports the split.
+And on a graceful exit the Partner writes its own planned-shutdown
+marker, so Xod's watchdog can keep the same accounts in the other
+direction (reciprocal supervision).
+
 Run: python3 xod_partner.py [state-dir]
 State dir default: ~/Library/Application Support/XodPartner
 """
@@ -41,16 +50,17 @@ DEFAULTS = {
     "quit_wait_s": 20,
     "restart_verify_timeout_s": 90,
     "max_restarts_per_hour": 3,
+    "planned_window_s": 600,
     "backoff_s": [30, 120, 300],
     "app_name": "Xod",
     "api_host": "127.0.0.1",
     "api_port": 8795,
 }
 
-VERSION = 1
+VERSION = "1.1"
 BUNDLE_ID = "dev.xod.partner"
 
-KNOWN_COMMANDS = ("restart_xod", "verify", "release_hold")
+KNOWN_COMMANDS = ("restart_xod", "verify", "release_hold", "note_planned_restart")
 
 
 def iso(ts=None):
@@ -105,8 +115,9 @@ class Core:
         self.xod_up = None
         self.last_probe_at = None
         self.last_probe_ok = None
-        self.restarts = []  # [(ts, outcome)] attempts, oldest first
+        self.restarts = []  # [(ts, outcome, planned)] attempts, oldest first
         self.cap_hold = False
+        self.planned_until = 0.0  # an operator note excuses revivals until this time
         self.backoff_until = 0.0
         self.last_action = None
         self.last_outcome = None
@@ -130,7 +141,40 @@ class Core:
         return (self.state_dir / "HOLD").exists()
 
     def _in_window(self, now):
-        return [t for t, _ in self.restarts if now - t < 3600]
+        return [t for t, _, _ in self.restarts if now - t < 3600]
+
+    def _unplanned_in_window(self, now):
+        return [t for t, _, planned in self.restarts if not planned and now - t < 3600]
+
+    def _planned_in_window(self, now):
+        return [t for t, _, planned in self.restarts if planned and now - t < 3600]
+
+    # -- planned-shutdown signals --------------------------------------
+    # A planned signal never suppresses a revival; it only keeps that
+    # revival from spending the hourly cap. Two sources, each valid for
+    # planned_window_s: the marker file Xod's backend writes on its
+    # graceful shutdown, and the authenticated note_planned_restart inbox
+    # command (operator or promoter kills that cannot write the marker).
+
+    def _marker_path(self):
+        return self.state_dir / "planned-shutdown.json"
+
+    def _planned_signal(self, now):
+        if now <= self.planned_until:
+            return True
+        try:
+            data = json.loads(self._marker_path().read_text())
+            at = float(data.get("at"))
+        except Exception:
+            return False
+        return 0 <= now - at <= self.cfg["planned_window_s"]
+
+    def _consume_planned_signal(self):
+        self.planned_until = 0.0
+        try:
+            self._marker_path().unlink()
+        except Exception:
+            pass
 
     # -- one cycle ---------------------------------------------------
     def cycle(self, now):
@@ -141,6 +185,12 @@ class Core:
         if ok:
             if self.xod_up is False:
                 self.log("probe ok: Xod is answering again")
+                # That shutdown ended without our revival (a human relaunched
+                # Xod): its planned marker, if any, has served its purpose.
+                try:
+                    self._marker_path().unlink()
+                except Exception:
+                    pass
             self.failures = 0
             self.first_fail_at = None
             self.down_since = None
@@ -172,33 +222,37 @@ class Core:
             self.last_action, self.last_outcome = "restart skipped", "cap hold active"
             self.log("restart skipped (%s): cap hold active, waiting for a human or release_hold" % why)
             return
-        window = self._in_window(now)
-        if len(window) >= self.cfg["max_restarts_per_hour"]:
+        unplanned = self._unplanned_in_window(now)
+        if len(unplanned) >= self.cfg["max_restarts_per_hour"]:
             self.cap_hold = True
             self.last_action, self.last_outcome = "HOLD", "restart cap reached"
             self.log(
-                "HOLD: restart cap reached (%d restarts in the last hour); "
-                "no more restarts until a human or a release_hold command" % len(window)
+                "HOLD: restart cap reached (%d unplanned restarts in the last hour); "
+                "no more restarts until a human or a release_hold command" % len(unplanned)
             )
             return
         if now < self.backoff_until:
             self.last_action, self.last_outcome = "restart deferred", "backoff"
             return
+        planned = self._planned_signal(now)
+        if planned:
+            self._consume_planned_signal()
         self.last_action = "restart Xod (%s)" % why
-        self.log("restarting Xod (%s)" % why)
+        self.log("restarting Xod (%s%s)" % (why, ", planned shutdown" if planned else ""))
         try:
             ok = bool(self.restart())
         except Exception as exc:  # a broken restart must never kill the watcher
             ok = False
             self.log("restart raised: %s" % exc)
         outcome = "healthy" if ok else "still down"
-        self.restarts.append((now, outcome))
+        self.restarts.append((now, outcome, planned))
         self.last_outcome = outcome
         idx = max(0, min(len(self._in_window(now)) - 1, len(self.cfg["backoff_s"]) - 1))
         self.backoff_until = now + self.cfg["backoff_s"][idx]
         self.log(
-            "restart outcome: %s (restarts in last hour: %d, next attempt not before +%ds)"
-            % (outcome, len(self._in_window(now)), self.cfg["backoff_s"][idx])
+            "restart outcome: %s (restarts in last hour: %d, unplanned: %d, next attempt not before +%ds)"
+            % (outcome, len(self._in_window(now)), len(self._unplanned_in_window(now)),
+               self.cfg["backoff_s"][idx])
         )
         if ok:
             self.failures = 0
@@ -248,6 +302,10 @@ class Core:
                     self.log("cap hold released by command; restart budget reset")
                 else:
                     self.log("release_hold: no cap hold was active")
+            elif cmd == "note_planned_restart":
+                self.planned_until = now + self.cfg["planned_window_s"]
+                self.log("inbox: planned restart noted; revivals in the next %ds "
+                         "count as planned" % self.cfg["planned_window_s"])
             elif cmd == "verify":
                 self.log("verify command: fresh probe and status this cycle")
         return forced
@@ -269,7 +327,11 @@ class Core:
             "xod_state": "up" if self.xod_up else ("down" if self.xod_up is False else "unknown"),
             "xod_down_since": iso(self.down_since) if self.down_since is not None else None,
             "restarts_last_hour": len(self._in_window(now)),
-            "restart_history": [{"at": iso(t), "outcome": o} for t, o in self.restarts[-5:]],
+            "planned_revivals_last_hour": len(self._planned_in_window(now)),
+            "unplanned_revivals_last_hour": len(self._unplanned_in_window(now)),
+            "cap_spent": len(self._unplanned_in_window(now)),
+            "restart_history": [{"at": iso(t), "outcome": o, "planned": p}
+                                for t, o, p in self.restarts[-5:]],
             "hold": hold,
             "last_action": self.last_action,
             "last_outcome": self.last_outcome,
@@ -449,6 +511,7 @@ def main(argv):
         log("ax service unavailable at startup: %s" % exc)
     core = Core(cfg, state_dir, probe, make_restarter(cfg, probe, log), log, trust=trust)
     stopping = {"flag": False}
+    graceful = {"flag": False}
     server = None
     if walk is not None:
         def _serve():
@@ -475,6 +538,7 @@ def main(argv):
 
     def _stop(signum, frame):
         stopping["flag"] = True
+        graceful["flag"] = True
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
@@ -500,6 +564,18 @@ def main(argv):
             tmp.replace(state_dir / "status.json")
             last_status = text
         time.sleep(cfg["probe_interval_s"])
+    if graceful["flag"]:
+        # A signal-driven exit was planned (a quit, an update, an operator
+        # restart): leave the marker Xod's watchdog reads, so the revival it
+        # performs does not spend its mirrored unplanned cap. The orphan
+        # exit above (the launcher died) is NOT planned and writes nothing.
+        try:
+            tmp = state_dir / "partner-planned-shutdown.json.tmp"
+            tmp.write_text(json.dumps({"at": time.time(), "reason": "quit"}))
+            tmp.replace(state_dir / "partner-planned-shutdown.json")
+            log("planned-shutdown marker written for Xod's watchdog")
+        except Exception:
+            pass
     log("xod-partner stopping")
     return 0
 

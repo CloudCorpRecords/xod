@@ -55,7 +55,7 @@ mv "$STAGE" "$APP"
 echo "installed app: $APP"
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature" || true
 CDHASH="$(codesign -dvvvv "$APP" 2>&1 | sed -n 's/^CandidateCDHash sha256=//p')"
-printf "cdhash=%s\nbuilt=%s\n" "$CDHASH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE/build.txt"
+printf "cdhash=%s\nbuilt=%s\nversion=1.1\n" "$CDHASH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE/build.txt"
 echo "build record: $STATE/build.txt (CDHash $CDHASH)"
 echo "NOTE: pair (or repair) the Accessibility switch ONLY against this exact"
 echo "build. For an ad-hoc signed app the Accessibility row binds to the"

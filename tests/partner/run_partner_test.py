@@ -10,7 +10,11 @@ touching the real Xod. Covered: the 3-failure / 30-second gate, recovery
 resetting the streak, backoff between attempts, the 3-per-hour cap and
 its HOLD, release_hold resetting the budget, the HOLD file switch, and
 the inbox token rules (bad token, unknown command, and malformed files
-are rejected and never executed).
+are rejected and never executed). The v1.1 blocks add the planned /
+unplanned split: Xod's planned-shutdown marker and the authenticated
+note_planned_restart command excuse a revival from the hourly cap without
+ever suppressing the revival itself, an expired marker excuses nothing,
+and three unplanned deaths still land the HOLD.
 
 Run: python3 tests/partner/run_partner_test.py
 """
@@ -193,6 +197,79 @@ def main():
         assert st["xod_state"] == "up" and st["restarts_last_hour"] == 1, st
         assert st["last_outcome"] == "healthy", st
         print("PASS: status tracks the down episode, the restart, and the recovery", flush=True)
+
+    # v1.1: a planned shutdown (Xod's marker) is revived but spends no cap,
+    # and three unplanned deaths afterwards still fit before the HOLD
+    with tempfile.TemporaryDirectory() as tmp:
+        probe, restart, lines = _FakeProbe(False), _FakeRestart(ok=False), []
+        core = _core(tmp, probe, restart, lines)
+        (Path(tmp) / "planned-shutdown.json").write_text(json.dumps({"at": 25.0, "reason": "quit"}))
+        core.cycle(0.0)
+        core.cycle(15.0)
+        core.cycle(30.0)  # gate: revival 1, planned by the marker
+        assert restart.calls == 1, restart.calls
+        st = core.status(30.0)
+        assert st["planned_revivals_last_hour"] == 1 and st["unplanned_revivals_last_hour"] == 0, st
+        assert st["cap_spent"] == 0 and st["restarts_last_hour"] == 1, st
+        assert st["restart_history"][-1]["planned"] is True, st
+        assert not (Path(tmp) / "planned-shutdown.json").exists()  # the signal was consumed
+        core.cycle(61.0)   # revival 2, unplanned 1 (backoff from revival 1 ends at 60)
+        core.cycle(200.0)  # revival 3, unplanned 2
+        core.cycle(600.0)  # revival 4, unplanned 3: the planned one spent nothing
+        assert restart.calls == 4 and not core.cap_hold, (restart.calls, core.cap_hold)
+        st = core.status(600.0)
+        assert st["planned_revivals_last_hour"] == 1 and st["unplanned_revivals_last_hour"] == 3, st
+        assert st["cap_spent"] == 3, st
+        core.cycle(950.0)  # a 5th revival would be unplanned 4: HOLD instead
+        assert restart.calls == 4 and core.cap_hold, (restart.calls, core.cap_hold)
+        print("PASS: a planned revival spends no cap; three unplanned deaths still HOLD", flush=True)
+
+    # v1.1: an expired marker excuses nothing
+    with tempfile.TemporaryDirectory() as tmp:
+        probe, restart, lines = _FakeProbe(False), _FakeRestart(ok=False), []
+        core = _core(tmp, probe, restart, lines)
+        (Path(tmp) / "planned-shutdown.json").write_text(json.dumps({"at": 0.0, "reason": "quit"}))
+        core.cycle(1000.0)
+        core.cycle(1015.0)
+        core.cycle(1030.0)  # marker is 1030s old, past the 600s window
+        assert restart.calls == 1, restart.calls
+        st = core.status(1030.0)
+        assert st["planned_revivals_last_hour"] == 0 and st["cap_spent"] == 1, st
+        assert st["restart_history"][-1]["planned"] is False, st
+        print("PASS: an expired planned-shutdown marker counts the revival unplanned", flush=True)
+
+    # v1.1: note_planned_restart excuses revivals inside its window only
+    with tempfile.TemporaryDirectory() as tmp:
+        probe, restart, lines = _FakeProbe(False), _FakeRestart(ok=False), []
+        core = _core(tmp, probe, restart, lines)
+        (Path(tmp) / "inbox").mkdir(exist_ok=True)
+        (Path(tmp) / "inbox" / "note.json").write_text(json.dumps({"token": core.token, "cmd": "note_planned_restart"}))
+        core.cycle(0.0)    # the note is processed; window runs to t=600
+        core.cycle(15.0)
+        core.cycle(30.0)   # revival 1, planned by the note
+        assert restart.calls == 1, restart.calls
+        st = core.status(30.0)
+        assert st["planned_revivals_last_hour"] == 1 and st["cap_spent"] == 0, st
+        core.cycle(631.0)  # the note has expired: revival 2 counts unplanned
+        assert restart.calls == 2, restart.calls
+        st = core.status(631.0)
+        assert st["unplanned_revivals_last_hour"] == 1 and st["cap_spent"] == 1, st
+        print("PASS: note_planned_restart excuses inside its 10 minute window only", flush=True)
+
+    # v1.1: a note with a bad token is rejected and excuses nothing
+    with tempfile.TemporaryDirectory() as tmp:
+        probe, restart, lines = _FakeProbe(False), _FakeRestart(ok=False), []
+        core = _core(tmp, probe, restart, lines)
+        (Path(tmp) / "inbox").mkdir(exist_ok=True)
+        (Path(tmp) / "inbox" / "note.json").write_text(json.dumps({"token": "wrong", "cmd": "note_planned_restart"}))
+        core.cycle(0.0)
+        core.cycle(15.0)
+        core.cycle(30.0)
+        assert restart.calls == 1, restart.calls
+        assert (Path(tmp) / "rejected" / "note.json").exists()
+        st = core.status(30.0)
+        assert st["planned_revivals_last_hour"] == 0 and st["cap_spent"] == 1, st
+        print("PASS: a bad-token note_planned_restart is rejected and excuses nothing", flush=True)
 
     print("ALL PARTNER TESTS PASSED", flush=True)
 
