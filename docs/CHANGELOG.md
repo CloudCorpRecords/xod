@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.9.14
+
+**The Partner gets a brain, on a short leash**
+- The watchdog that restarts Xod gains a judgment layer for the moments its rules cannot read: Xod alive but silent (wedged, or just slow under load), the restart allowance spent (an operator's busy evening, or a crash loop), the same failure three times in a row, and a health read after every revival.
+- It answers from a short list (wait and look again, restart, clear the hold, escalate) with a one-line reason, and it ships in shadow mode: its calls are written to the shared log for review, and the watchdog floor still makes every decision. A hard ceiling of six restarts an hour stands above it; no brain answer can raise it. It has no path to permissions, to pressing buttons, or to changing either app.
+- Its model is gpt-6.1-terra. Its key is provisioned from Xod's Settings into the Partner's own vault slot, so it can think while Xod is down, and every call it makes lands in the usage ledger. If its key is missing or the API is down, it says nothing and the floor proceeds exactly as before.
+
+**Updates get a guardian**
+- When Xod's own updater stages a new build, the Partner first snapshots the build that works. After the swap and the restart it runs a health battery: the app answers, one chat replies with an exact string, one file is written by a task and read back byte for byte, and the permission state is recorded.
+- A build that fails the battery is rolled back to the snapshot, and that version is blocked: if it ever stages again it is watched, never trusted, and rolled back again if it swaps in and fails. A good update passes with no human step, which is the point: a failed update is never the state you wake up to.
+
+**Mission checks now run what a step built**
+- A plan can declare a run alongside a file it creates: one command, one folder anchored to the step's own paths, one required exit code. The checker runs it with no shell, keeps the output as evidence, and a step whose tests fail is now contradicted instead of verified. Creating a file was never proof it works; the run is the proof.
+- Commands with shell tricks in them, and commands whose folder is anchored to nothing the task declares, are refused by name and never run.
+
+**A crash in the permission ask, fixed at the root**
+- Xod's own re-ask for Accessibility could crash in exactly the state where it is needed, untrusted: the options it handed the framework were keyed by a lookalike of the framework's constant instead of the constant itself. The Partner's proven fix is now Xod's too, and a test proves the dictionary is keyed by the framework's own object.
+
+**Prices catch up with the models**
+- The reference price table gains the current rows from OpenAI's pricing page: the 6.x family (gpt-6.1-terra at $1.00 in, $5.00 out per million tokens) and the 5.6, 5.5, 5.4, 5.2 and 5.1 lines. The usage ledger now costs those calls for real instead of leaving them unpriced.
+- In Auto mode, ViBench's GPT-6.1 Sol row now maps to the API model of the same name, since OpenAI's own page attests that id. GPT-6.1 Terra stays unranked: ViBench has no row for it, and Auto does not borrow a sibling's score.
+
+**The vault explains save failures too**
+- Every keychain unavailability, a refused save as much as a refused read, now becomes the vault's plain-language explanation instead of a raw error. The test suites pin a throwaway vault inside each runner, so a test process can never reach for the real one.
+
+**Checked before it shipped**
+- The merged tree passed every local suite: the Muse approval smoke test (61 checks), the file-effects suite, missions (55 of 55), keys and usage (45 of 45), Auto mode (19 of 19), the parameter suite (25 of 25), permissions (11 of 11), the keychain suite, the pricing checks, the brain integration seams (10 of 10), and all six Partner suites including the new brain suite (21 checks) and the update guardian suite.
+- In a live proof on throwaway copies, the guardian snapshotted a good build, let a staged bad build swap in, failed it on the battery's exact-reply check, rolled it back byte for byte, and blocked the version. The Partner's brain, in shadow mode with a throwaway key that was deleted afterwards, was consulted on a staged wedge (process alive, port silent), logged its judgment, and the floor restarted anyway; both consultations were metered into the usage endpoint under gpt-6.1-terra.
+
 ## 0.9.13
 
 **GPT-5 models work end to end**
