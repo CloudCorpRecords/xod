@@ -34,7 +34,22 @@ DB_PATH = DATA_DIR / "xod.db"
 SHOTS_DIR = DATA_DIR / "tasks"
 
 LIVE_FIELDS = ("id", "title", "request", "status", "waiting_kind", "waiting_detail", "result", "now",
-               "created_at", "updated_at", "finished_at", "steps", "has_screenshot", "history")
+               "created_at", "updated_at", "finished_at", "steps", "has_screenshot", "history",
+               "last_progress_at", "stalled", "stalled_reason")
+
+# Cancel and watchdog timing. A first cancel is graceful (the run stops after
+# its current step); if the task is still working CANCEL_GRACE_SEC later, or
+# the user cancels a second time, the cancel is forced: the worker asyncio
+# task itself is cancelled, because a hung await never sees the graceful flag.
+CANCEL_GRACE_SEC = 30
+# Progress is measured on its own clock (the last_progress_at column), never
+# on updated_at: cancel notes and other status pokes update the row, and a
+# user trying to cancel a wedged task must not mask the wedge by doing so.
+# A working task with no genuine progress for STALL_THRESHOLD_SEC is flagged
+# stalled; at STALL_RECOVER_SEC the watchdog stops it for real.
+STALL_THRESHOLD_SEC = 600
+STALL_RECOVER_SEC = 2 * STALL_THRESHOLD_SEC
+WATCHDOG_INTERVAL_SEC = 30
 
 
 def _conn() -> sqlite3.Connection:
@@ -66,16 +81,31 @@ def _init() -> None:
             mission_json TEXT,             -- last mission record (to resume from)
             pending_json TEXT,             -- pending approval saved for this task
             has_screenshot INTEGER DEFAULT 0,
-            history TEXT DEFAULT '[]'
+            history TEXT DEFAULT '[]',
+            last_progress_at REAL,
+            stalled INTEGER DEFAULT 0,
+            stalled_reason TEXT
         )
         """
     )
+    cols = [r[1] for r in c.execute("PRAGMA table_info(tasks)").fetchall()]
+    if "last_progress_at" not in cols:
+        c.execute("ALTER TABLE tasks ADD COLUMN last_progress_at REAL")
+        # Existing rows start from their last row update; from here on the
+        # clock only moves on genuine progress (see _touch_progress).
+        c.execute("UPDATE tasks SET last_progress_at = updated_at WHERE last_progress_at IS NULL")
+    if "stalled" not in cols:
+        c.execute("ALTER TABLE tasks ADD COLUMN stalled INTEGER DEFAULT 0")
+    if "stalled_reason" not in cols:
+        c.execute("ALTER TABLE tasks ADD COLUMN stalled_reason TEXT")
     c.commit()
     c.close()
 
 
 def _row(r: sqlite3.Row) -> Dict[str, Any]:
     d = dict(r)
+    if "stalled" in d:
+        d["stalled"] = bool(d["stalled"])
     for k in ("next_action", "waiting_detail", "mission_json", "pending_json", "history"):
         if d.get(k):
             try:
@@ -348,6 +378,9 @@ class TaskQueue:
         self._worker: Optional[asyncio.Task] = None
         self._running_id: Optional[str] = None
         self._cancel_requested: set = set()
+        self._cancel_at: Dict[str, float] = {}
+        self._escalations: Dict[str, asyncio.Task] = {}
+        self._watchdog: Optional[asyncio.Task] = None
 
     # ------------------------------------------------------------------ storage
     def get(self, task_id: str) -> Optional[Dict[str, Any]]:
@@ -369,12 +402,39 @@ class TaskQueue:
             hist[-1] = entry
         else:
             hist.append(entry)
-        c.execute("UPDATE tasks SET history = ? WHERE id = ?", (json.dumps(hist[-40:]), task_id))
+        # A progress history entry is genuine progress: it moves the progress
+        # clock (and clears any stalled flag). Nothing else in _progress or
+        # _update may do this; row updates in general must not.
+        c.execute("UPDATE tasks SET history = ?, last_progress_at = ?, stalled = 0, stalled_reason = NULL WHERE id = ?",
+                  (json.dumps(hist[-40:]), entry["at"], task_id))
         c.commit()
         c.close()
 
+    def _touch_progress(self, task_id: str, at: Optional[float] = None) -> None:
+        """Records genuine progress right now: a step advance, a progress
+        history entry, tool activity, or a run starting. This is the ONLY
+        clock the stall detector and the watchdog read. Cancel notes, status
+        pokes and every other _update leave it alone, so they can never mask
+        a wedged task the way refreshing updated_at used to."""
+        c = _conn()
+        c.execute("UPDATE tasks SET last_progress_at = ?, stalled = 0, stalled_reason = NULL WHERE id = ?",
+                  (at if at is not None else time.time(), task_id))
+        c.commit()
+        c.close()
+
+    def _progress_at(self, task: Dict[str, Any]) -> float:
+        """When this task last genuinely progressed. Legacy rows without a
+        progress stamp fall back to their creation time, never updated_at."""
+        return task.get("last_progress_at") or task.get("created_at") or task.get("updated_at") or 0.0
+
     def _update(self, task_id: str, note: Optional[str] = None, **fields: Any) -> None:
         fields["updated_at"] = time.time()
+        # Leaving "working" clears the stalled flag; only the watchdog sets it.
+        # Note what is NOT done here: last_progress_at is never touched by a
+        # plain row update, so notes and status pokes cannot fake progress.
+        if "status" in fields and fields["status"] != "working":
+            fields.setdefault("stalled", 0)
+            fields.setdefault("stalled_reason", None)
         for k in ("next_action", "waiting_detail", "mission_json", "pending_json"):
             if k in fields and fields[k] is not None and not isinstance(fields[k], str):
                 fields[k] = json.dumps(fields[k])
@@ -413,9 +473,9 @@ class TaskQueue:
         title = title or (request if len(request) <= 70 else request[:67].rsplit(" ", 1)[0] + "…")
         c = _conn()
         c.execute(
-            "INSERT INTO tasks (id, created_at, updated_at, title, request, status, next_action, history) VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO tasks (id, created_at, updated_at, title, request, status, next_action, history, last_progress_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (task_id, now, now, title, request, "queued", json.dumps({"type": "start"}),
-             json.dumps([{"at": now, "text": "Added to your tasks"}])),
+             json.dumps([{"at": now, "text": "Added to your tasks"}]), now),
         )
         c.commit()
         c.close()
@@ -460,8 +520,17 @@ class TaskQueue:
         if not t or t["status"] in ("done", "cancelled"):
             return {"success": False, "error": "Nothing to cancel."}
         if t["status"] == "working":
+            if task_id in self._cancel_requested:
+                # A second cancel while the first is still only "stopping"
+                # means the graceful path is not landing: force it now.
+                forced = await self._force_cancel(task_id, "you asked a second time while it was still working")
+                return {"success": True, "forced": forced}
             self._cancel_requested.add(task_id)  # stops after the current step
+            self._cancel_at[task_id] = time.time()
+            # This note updates the row but must not touch the progress
+            # clock: poking a wedged task cannot be allowed to hide it.
             self._update(task_id, note="Stopping after the current step", now="Stopping…")
+            self._schedule_cancel_escalation(task_id)
             return {"success": True, "stopping": True}
         self._update(task_id, note="Cancelled", status="cancelled", waiting_kind=None, finished_at=time.time(), next_action=None)
         if t.get("waiting_kind") == "approval":
@@ -469,6 +538,85 @@ class TaskQueue:
             agent_log.approval_decided(f"task-{task_id}-{t.get('steps') or 0}", "declined")
         await self._close_tab(t.get("tab_id"))
         return {"success": True}
+
+    # ------------------------------------------------------- forced stopping
+    def _schedule_cancel_escalation(self, task_id: str) -> None:
+        """Arms the grace timer for a graceful cancel. If the task is still
+        working when it fires, the cancel is forced (see _force_cancel)."""
+        existing = self._escalations.get(task_id)
+        if existing is not None and not existing.done():
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._escalations[task_id] = asyncio.create_task(self._escalate_cancel(task_id))
+
+    async def _escalate_cancel(self, task_id: str) -> None:
+        try:
+            await asyncio.sleep(CANCEL_GRACE_SEC)
+        except asyncio.CancelledError:
+            return
+        self._escalations.pop(task_id, None)
+        t = self.get(task_id)
+        if t and t["status"] == "working" and task_id in self._cancel_requested:
+            await self._force_cancel(
+                task_id, f"it did not stop within {int(CANCEL_GRACE_SEC)} seconds of your cancel")
+
+    async def _force_cancel(self, task_id: str, why: str) -> bool:
+        """Terminates a working task's run for real and records that the
+        cancel had to be forced, and why. The graceful flag alone cannot do
+        this: a hung await inside a step never checks it."""
+        return await self._force_stop(
+            task_id, status="cancelled",
+            note=f"Cancel forced: {why}, so Xod cancelled the run itself",
+            now_text="Cancelled")
+
+    async def _force_stop(self, task_id: str, status: str, note: str, now_text: str,
+                          result: Optional[str] = None) -> bool:
+        """The recover_stuck mechanism, shared by forced cancels, the
+        watchdog and the doctor fix: cancel the worker asyncio task itself
+        (not just the flag), settle the row, restart the worker if it died."""
+        t = self.get(task_id)
+        if not t or t["status"] != "working":
+            return False
+        was_running = (task_id == self._running_id and self._worker is not None
+                       and not self._worker.done())
+        worker = self._worker if was_running else None
+        if worker is not None:
+            worker.cancel()  # a hung await never sees the cancel flag; cancel the worker itself
+            try:
+                await asyncio.wait_for(asyncio.shield(worker), timeout=5)
+            except BaseException:
+                pass
+            self._running_id = None
+        fields: Dict[str, Any] = {"status": status, "finished_at": time.time(), "now": now_text,
+                                  "next_action": None, "waiting_kind": None}
+        if result is not None:
+            fields["result"] = result
+        self._update(task_id, note=note, **fields)
+        self._cancel_requested.discard(task_id)
+        self._cancel_at.pop(task_id, None)
+        esc = self._escalations.pop(task_id, None)
+        if esc is not None and esc is not asyncio.current_task() and not esc.done():
+            esc.cancel()
+        await self._close_tab(t.get("tab_id"))
+        if worker is not None and self._wake is not None:
+            if worker.done():
+                self._worker = asyncio.create_task(self._loop())  # only restart a worker that was running
+            else:
+                asyncio.create_task(self._respawn_worker(worker))
+        return True
+
+    async def _respawn_worker(self, old_worker: asyncio.Task) -> None:
+        """Restarts the worker loop once a force-cancelled worker finishes
+        dying, if nothing else has already replaced it."""
+        try:
+            await old_worker
+        except BaseException:
+            pass
+        if self._worker is old_worker and self._wake is not None:
+            self._worker = asyncio.create_task(self._loop())
 
     def delete(self, task_id: str) -> bool:
         t = self.get(task_id)
@@ -500,41 +648,106 @@ class TaskQueue:
             self._wake.set()
 
     def stuck(self, max_quiet_sec: float = 1200) -> List[Dict[str, Any]]:
-        """Tasks marked working that haven't reported progress in a long time."""
+        """Tasks marked working that haven't genuinely progressed in a long
+        time. Reads the progress clock (last_progress_at), never updated_at:
+        cancel attempts and status pokes refresh updated_at, and must not be
+        able to mask a wedged task from this check."""
+        now = time.time()
         c = _conn()
-        rows = c.execute("SELECT id, title, updated_at FROM tasks WHERE status = 'working' AND updated_at < ?",
-                         (time.time() - max_quiet_sec,)).fetchall()
+        rows = c.execute("SELECT * FROM tasks WHERE status = 'working'").fetchall()
         c.close()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = _row(r)
+            if now - self._progress_at(d) >= max_quiet_sec:
+                out.append({"id": d["id"], "title": d["title"],
+                            "last_progress_at": self._progress_at(d),
+                            "updated_at": d.get("updated_at")})
+        return out
 
     async def recover_stuck(self, max_quiet_sec: float = 1200) -> List[str]:
         """Stops tasks that hung (no progress for max_quiet_sec), marks them failed, restarts the worker."""
         fixed = []
         for t in self.stuck(max_quiet_sec):
-            if t["id"] == self._running_id and self._worker and not self._worker.done():
-                self._worker.cancel()  # a hung await never sees the cancel flag; cancel the worker itself
-                try:
-                    await asyncio.wait_for(asyncio.shield(self._worker), timeout=5)
-                except BaseException:
-                    pass
-                self._running_id = None
-            self._update(t["id"], note="Stopped by Xod's health check: no progress for a long time", status="failed",
-                         finished_at=time.time(), now="Stopped (it hung)", next_action=None,
-                         result="This task stopped making progress, so Xod stopped it. Retry it from the inbox.")
-            fixed.append(t["title"])
+            if await self._force_stop(
+                    t["id"], status="failed",
+                    note="Stopped by Xod's health check: no progress for a long time",
+                    now_text="Stopped (it hung)",
+                    result="This task stopped making progress, so Xod stopped it. Retry it from the inbox."):
+                fixed.append(t["title"])
         if fixed and self._wake is not None and (not self._worker or self._worker.done()):
             self._worker = asyncio.create_task(self._loop())  # only restart a worker that was running
         return fixed
 
+    # ------------------------------------------------------------- watchdog
+    def _quiet_text(self, quiet_sec: float) -> str:
+        mins = int(quiet_sec // 60)
+        if mins >= 1:
+            return f"Stalled: no progress for {mins} minute{'s' if mins != 1 else ''}"
+        return f"Stalled: no progress for {int(quiet_sec)} seconds"
+
+    async def run_watchdog(self, now: Optional[float] = None,
+                           stall_sec: Optional[float] = None,
+                           recover_sec: Optional[float] = None) -> Dict[str, List[str]]:
+        """One watchdog pass over working tasks, on the progress clock.
+        Past stall_sec with no progress: flag the task stalled (flag and
+        reason on the task dict, a history entry, and the now-text). Past
+        recover_sec: auto-recover through the same force path as
+        recover_stuck (worker cancelled, task failed with the honest
+        reason, worker restarted if it died)."""
+        now = time.time() if now is None else now
+        stall_sec = STALL_THRESHOLD_SEC if stall_sec is None else stall_sec
+        recover_sec = STALL_RECOVER_SEC if recover_sec is None else recover_sec
+        c = _conn()
+        rows = c.execute("SELECT * FROM tasks WHERE status = 'working'").fetchall()
+        c.close()
+        stalled, recovered = [], []
+        for r in rows:
+            t = _row(r)
+            quiet = now - self._progress_at(t)
+            if quiet >= recover_sec:
+                mins = int(quiet // 60)
+                if await self._force_stop(
+                        t["id"], status="failed",
+                        note=f"Stopped by Xod's watchdog: no progress for {mins} minutes",
+                        now_text="Stopped (it hung)",
+                        result="This task stopped making progress, so Xod stopped it. Retry it from the inbox."):
+                    recovered.append(t["id"])
+            elif quiet >= stall_sec:
+                reason = self._quiet_text(quiet)
+                if t.get("stalled_reason") != reason:
+                    self._update(t["id"], note=reason, stalled=1, stalled_reason=reason, now=reason)
+                stalled.append(t["id"])
+            elif t.get("stalled"):
+                self._update(t["id"], stalled=0, stalled_reason=None)
+        return {"stalled": stalled, "recovered": recovered}
+
+    async def _watchdog_loop(self) -> None:
+        """The periodic watchdog. It runs as its own coroutine, not inside
+        the worker loop, because the worker loop is blocked inside _run
+        exactly while a task is working (and possibly wedged)."""
+        while True:
+            try:
+                await asyncio.sleep(WATCHDOG_INTERVAL_SEC)
+                await self.run_watchdog()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.exception(f"Task watchdog error: {e}")
+
     def start(self) -> None:
         """Called at app startup. Interrupted tasks go back in the queue."""
         c = _conn()
-        c.execute("UPDATE tasks SET status = 'queued', now = 'Xod restarted; picking this back up' WHERE status = 'working'")
+        c.execute("UPDATE tasks SET status = 'queued', now = 'Xod restarted; picking this back up', "
+                  "stalled = 0, stalled_reason = NULL, last_progress_at = ? WHERE status = 'working'",
+                  (time.time(),))
         c.commit()
         c.close()
         self._wake = asyncio.Event()
         self._loop_ref = asyncio.get_event_loop()
         self._worker = asyncio.create_task(self._loop())
+        if self._watchdog is None or self._watchdog.done():
+            self._watchdog = asyncio.create_task(self._watchdog_loop())
 
     async def _loop(self) -> None:
         while True:
@@ -601,6 +814,7 @@ class TaskQueue:
                     last_status = line
                     if line[:1] in "✓✗⏸•":
                         steps += 1
+                    self._touch_progress(task_id)  # a fresh status line is tool activity: genuine progress
                     self._update(task_id, now=line, steps=steps)
                     if line.lstrip()[:1] in "".join(self._PROGRESS_MARKS) or line.startswith(self._PROGRESS_MARKS):
                         self._progress(task_id, line)
@@ -691,6 +905,7 @@ class TaskQueue:
         action = task.get("next_action") or {"type": "start"}
         self._running_id = task_id
         self._update(task_id, status="working", now="Starting…" if action["type"] == "start" else task.get("now"))
+        self._touch_progress(task_id)  # the progress clock starts when the run does
 
         resuming = action["type"] in ("approve", "continue")
         try:
@@ -757,6 +972,10 @@ class TaskQueue:
         self._running_id = None
         if task_id in self._cancel_requested:
             self._cancel_requested.discard(task_id)
+            self._cancel_at.pop(task_id, None)
+            esc = self._escalations.pop(task_id, None)
+            if esc is not None and not esc.done():
+                esc.cancel()
             self._update(task_id, note="Cancelled", status="cancelled", finished_at=time.time(), next_action=None, now="Cancelled")
             await self._close_tab(self.get(task_id).get("tab_id"))
             return
