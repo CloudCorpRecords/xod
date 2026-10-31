@@ -75,10 +75,33 @@ def _find_instruction_leak(text: Any) -> Optional[str]:
     inspection, the preceding step or source check, inserting a verified
     source before saving). An imperative alone is ordinary content (user
     guides, notes and code are full of them) and never matches, so
-    dictated proof strings, notes and code do not false-positive."""
+    dictated proof strings, notes and code do not false-positive.
+
+    One more two-signal shape, measured in production three runs in a
+    row (re-run 2, T1A): the whole line is a single angle-bracketed
+    descriptive sentence about the artifact to be made ("<pytest tests
+    invoking the actual CLI via subprocess with sys.executable and
+    tmp_path input files; assert exact stdout formatting and
+    counts, ...>"). It has no imperative opener (the bracket and the
+    noun phrase come first) and no planning-process reference, so the
+    rule above returned None for it at plan validation and at the
+    on-disk verdict check alike, and the sentence was written to disk
+    as the test file. The bracket is the first signal and descriptive
+    artifact vocabulary inside it (pytest, subprocess, tmp_path,
+    assert, stdout, invoking) is the second; a bracketed line carrying
+    markup (a closing tag inside it) or ordinary prose is not matched."""
     if not text or not isinstance(text, str):
         return None
     for line in text.splitlines():
+        s = line.strip()
+        if len(s) > 2 and s.startswith("<") and s.endswith(">"):
+            inner = s[1:-1].strip()
+            if ("<" not in inner and ">" not in inner
+                    and len(inner.split()) >= 5
+                    and re.search(r"\b(pytest|subprocess|sys\.executable|tmp_path|"
+                                  r"assert|invok\w*|verif\w*|stdout|tests?)\b",
+                                  inner.lower())):
+                return s[:160]
         low = line.strip().lstrip("(\"'*-> ").lower()
         if re.search(r"\bfrom the preceding source check\b", low):
             return line.strip()[:160]
@@ -508,6 +531,66 @@ def render_request(subtask: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ------------------------------------------------------- subtask assembly
+# Fix round 3 (2026-10-31, re-run 2 T1B): the research steps finished,
+# then the write step was invoked with no content at all
+# ("computer_write_file needs content. Nothing was done.") and the file
+# never landed. Two assembly defects in this module fed that: each
+# subtask's task was assembled from that subtask alone, so content an
+# earlier step produced never reached the step meant to write it; and
+# nothing checked the assembled payload of a write step before a task
+# (and its tool calls) was created from it. The helpers below are that
+# assembly: the request a write subtask runs with, and the guard that
+# stops an empty one before any tool can be invoked with it.
+
+def _empty_declared_content_problem(subtask: Dict[str, Any]) -> Optional[str]:
+    """A write subtask whose plan declares content for a file but whose
+    assembled content is empty, or None. Declared content is a string
+    the planner supplied for a create or modify effect; an empty or
+    whitespace-only string is a plan/execution error, not a file: left
+    through, it renders as a create with no contents and reaches the
+    file tool as an empty write. Content declared as null is not this:
+    null means the executing step composes the file from its
+    instruction and the carried results, which is the normal shape."""
+    for eff in subtask.get("expected_effects") or []:
+        if eff.get("kind") not in ("create", "modify"):
+            continue
+        content = eff.get("content")
+        if isinstance(content, str) and not content.strip():
+            return (f"Assembly stopped this step before any tool ran: subtask "
+                    f"\"{subtask.get('title', '')}\" declares content for "
+                    f"{eff.get('path', '')} but the assembled content is empty. "
+                    f"A write with empty content is a plan/execution error, "
+                    f"not a file, so no write was attempted.")
+    return None
+
+
+def assemble_request(mission_id: str, subtask: Dict[str, Any]) -> str:
+    """The task text for one subtask, assembled at dispatch time. A
+    write subtask (one with a create or modify effect) also carries the
+    reported results of the mission's earlier finished steps, in order:
+    those results are the content the write exists to land (research
+    findings, a draft, a decision), and before this they never left
+    their own task, so the write step started from its instruction
+    alone and could assemble a write with nothing in it. Steps that
+    change no files get their plain rendered request, unchanged."""
+    request = render_request(subtask)
+    if not any(e.get("kind") in ("create", "modify")
+               for e in subtask.get("expected_effects") or []):
+        return request
+    prior = [s for s in list_subtasks(mission_id)
+             if s["idx"] < subtask["idx"] and s["status"] == "done"
+             and (s.get("claimed") or "").strip()]
+    if not prior:
+        return request
+    lines = [request, "",
+             "Results from the earlier steps of this mission, for use in this step:"]
+    for s in prior:
+        lines.append(f"- Step {s['idx'] + 1} ({s['title']}): "
+                     f"{s['claimed'].strip()[:2000]}")
+    return "\n".join(lines)
+
+
 def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) -> Dict[str, Any]:
     """What the queue decided about a finished subtask task, kept separate from
     what the agent claimed. The verdict comes from the task's final state,
@@ -683,7 +766,31 @@ class MissionRunner:
         """Works one subtask to a recorded outcome. False means the mission
         paused because the subtask's task is waiting on the user."""
         if not sub.get("task_id"):
-            task = self.queue.create(render_request(sub),
+            problem = _empty_declared_content_problem(sub)
+            if problem:
+                # Assembly-time failure: the subtask is recorded failed
+                # with the problem as its evidence and no task is ever
+                # created, so the empty write cannot reach a tool. The
+                # outcome flows through the same recording and
+                # stop-on-failure path as a task outcome below.
+                outcome = {"status": "failed", "claimed": "",
+                           "verified_status": "contradicted",
+                           "evidence": [problem]}
+                _save_subtask(sub["id"], status=outcome["status"],
+                              claimed=outcome["claimed"],
+                              verified_status=outcome["verified_status"],
+                              evidence=outcome["evidence"],
+                              finished_at=time.time())
+                mission = get_mission(mission_id)
+                if not mission["continue_on_failure"]:
+                    for rest in list_subtasks(mission_id):
+                        if rest["status"] in ("pending", "queued"):
+                            _save_subtask(rest["id"], status="skipped")
+                    self._finish(mission_id,
+                                 reason=f"Step {sub['idx'] + 1} ({sub['title']}) failed: "
+                                        + outcome["evidence"][0])
+                return True
+            task = self.queue.create(assemble_request(mission_id, sub),
                                      title=f"{sub['title']} (mission step {sub['idx'] + 1})")
             _save_subtask(sub["id"], task_id=task["id"], status="queued",
                           started_at=time.time())
