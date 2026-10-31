@@ -86,6 +86,25 @@ class _Prefetch:
             r.cancel()
 
 
+def _as_text(value) -> str:
+    """Coerce a model-provided field that should be text into a string.
+
+    The deliberation model sometimes returns structured values (a dict or a
+    list) for fields the prompt describes as strings, most often
+    direct_response when the user asked for a JSON object back. Calling
+    .strip() on those crashed the whole task ("'dict' object has no
+    attribute 'strip'"). Structured values serialize to JSON text instead,
+    which keeps the caller's requested format intact.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+    return str(value)
+
+
 class AgenticResearcher:
     """
     Next-Generation Autonomous Research Director.
@@ -501,7 +520,7 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
 
         # If LLM decides direct conversational answer is sufficient (greetings, explanations, chitchat)
         if deliberation.get("decision") == "direct_answer":
-            direct_reply = deliberation.get("direct_response", "").strip()
+            direct_reply = _as_text(deliberation.get("direct_response")).strip()
             if direct_reply:
                 yield {"type": "content", "content": direct_reply}
             else:
@@ -2324,7 +2343,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             "incomplete": "### ⏳ Not finished yet",
             "failed": "### ⚠️ That didn't work",
         }.get(status, "### Browser task")
-        parts = [heading, (result.get("final_answer") or "").strip()]
+        parts = [heading, _as_text(result.get("final_answer")).strip()]
 
         if status == "needs_input" and not load_user_profile():
             parts.append(
@@ -2737,7 +2756,7 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
                 yield {"type": "reasoning", "content": f"{thought}\n"}
 
             decision = parsed.get("decision", "execute_plan")
-            direct_resp = parsed.get("direct_response", "")
+            direct_resp = _as_text(parsed.get("direct_response"))
             title = parsed.get("plan_title") or parsed.get("title") or f"Execution Plan: {query[:40]}"
             raw_steps = parsed.get("plan_steps") or parsed.get("steps") or []
             task_focus = parsed.get("task_focus") or parsed.get("task_category") or "general"

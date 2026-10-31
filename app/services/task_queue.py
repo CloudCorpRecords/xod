@@ -398,7 +398,8 @@ class TaskQueue:
         try:
             async for ev in AgenticResearcher().run_research_stream([{"role": "user", "content": message}]):
                 if ev.get("type") == "content":
-                    content.append(ev.get("content", ""))
+                    piece = ev.get("content", "")
+                    content.append(piece if isinstance(piece, str) else json.dumps(piece))
                 elif ev.get("type") == "status":
                     line = str(ev.get("content", ""))[:200]
                     if line != last_status:
