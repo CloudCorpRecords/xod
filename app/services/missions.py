@@ -35,6 +35,8 @@ import time
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from pathlib import Path
+
 from app.paths import DATA_DIR
 
 logger = logging.getLogger("xod.missions")
@@ -43,6 +45,125 @@ DB = DATA_DIR / "xod.db"
 MISSION_STATES = ("planning", "running", "paused", "done", "failed")
 _EFFECT_KINDS = ("create", "modify", "delete")
 _TERMINAL_TASK = ("done", "failed", "cancelled")
+
+
+# ------------------------------------------------------- verdict integrity
+# Fix round 1 (2026-10-31, from the Tier 1 baseline): a mission closed
+# "done" with every subtask "verified" while the subtasks' own reports said
+# "not complete", one named a pytest failure, the produced test file was a
+# planner instruction sentence rather than code, and the mission's evidence
+# text asserted a declared run check had exited 0 without anything having
+# established that. The helpers below are the mission layer's own checks,
+# applied before any subtask may be called verified: the subtask's own
+# report must not admit incompletion, its deliverable content must not be
+# planner scaffolding, and every declared run effect is re-executed here
+# through the queue's run check and must exit with the required code. The
+# queue's gate still runs first; these checks close the gaps where the
+# queue has nothing to contradict (a step with no file claims, a file whose
+# existence was checked but whose contents were not, a run the plan
+# declared but the task never proved).
+
+_IMPERATIVE_START = (r"(?:construct|create|write|insert|add|include|place|put|"
+                     r"generate|produce|implement|draft|compose|build|ensure)\b")
+
+
+def _find_instruction_leak(text: Any) -> Optional[str]:
+    """A line of would-be deliverable content that is actually a planner
+    instruction addressed to the writer, or None. Conservative by design:
+    a line needs two signals at once, an imperative addressed to the
+    writer and a reference to the planning process itself (after
+    inspection, the preceding step or source check, inserting a verified
+    source before saving). An imperative alone is ordinary content (user
+    guides, notes and code are full of them) and never matches, so
+    dictated proof strings, notes and code do not false-positive."""
+    if not text or not isinstance(text, str):
+        return None
+    for line in text.splitlines():
+        low = line.strip().lstrip("(\"'*-> ").lower()
+        if re.search(r"\bfrom the preceding source check\b", low):
+            return line.strip()[:160]
+        if not re.match(_IMPERATIVE_START, low):
+            continue
+        if re.search(r"\bafter inspection\b", low):
+            return line.strip()[:160]
+        if re.search(r"\b(preceding|previous) (step|check|task|source)\b", low):
+            return line.strip()[:160]
+        if (re.search(r"\bbefore saving\b", low)
+                and re.search(r"\b(source|url|link|citation|exact)\b", low)):
+            return line.strip()[:160]
+    return None
+
+
+_INCOMPLETION_RES = (
+    r"\bnot (?:yet )?(?:complete|completed|finished|done)\b",
+    r"\bincomplete\b",
+    r"\bpartially (?:complete|completed|finished|done)\b",
+    r"\b(?:could not|couldn't|unable to|failed to) (?:complete|finish|create|write|run|make)\b",
+    r"\bdid not (?:complete|finish|create|write|run)\b",
+    r"\bcollection error\b",
+)
+
+
+def _incompletion_signal(claimed: Any) -> Optional[str]:
+    """The sentence of a subtask report that admits the step did not
+    finish, or None. A subtask whose own words say the work is not
+    complete, or name a test failure, cannot be verified no matter what
+    the disk check found. Zero-count success phrasing ("5 passed,
+    0 failed", "no failures") is a success report, not an admission, and
+    is neutralised before scanning so clean reports do not trip this."""
+    if not claimed or not isinstance(claimed, str):
+        return None
+    text = re.sub(r"\b0 (?:failed|failures|errors)\b", "0", claimed, flags=re.I)
+    text = re.sub(r"\bno (?:failures|errors|failed tests)\b", "none", text, flags=re.I)
+    for sentence in re.split(r"[.\n]", text):
+        low = sentence.lower()
+        if any(re.search(p, low) for p in _INCOMPLETION_RES):
+            return sentence.strip()[:160]
+        if re.search(r"\bfail", low) and re.search(r"\b(pytest|test suite|tests?|collection)\b", low):
+            return sentence.strip()[:160]
+    return None
+
+
+def _run_effect_problem(eff: Dict[str, Any]) -> Optional[str]:
+    """Re-executes one declared run effect through the queue's own run
+    check; returns its problem text, or None when the exit code is the
+    required one. A declared run is the proof a subtask's code works, so
+    the mission layer establishes that proof itself instead of asserting
+    it: a run that failed, is refused, or never ran (its target does not
+    exist) returns a problem here and blocks verification."""
+    from app.services import task_queue as _tq
+    command = str(eff.get("command", ""))
+    cwd = Path(os.path.expanduser(str(eff.get("cwd", ""))))
+    claim = {"command": command, "cwd": cwd,
+             "expect_exit": eff.get("expect_exit", 0),
+             "refused": _tq._run_refusal(command)}
+    return _tq._check_run_claim(claim)
+
+
+def _content_leak_for_subtask(subtask: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """Planner scaffolding inside a subtask's deliverable as a
+    (path, line) pair, or None. Checks the content the plan declared and,
+    when a created or modified file is on disk and reads as UTF-8 text,
+    the file's actual content: the baseline's instruction-text test file
+    was never in the plan, the worker wrote the instruction sentence
+    itself. Files that are absent (the queue's gate owns existence) or
+    not text are not judged here."""
+    for eff in subtask.get("expected_effects") or []:
+        if eff.get("kind") == "run":
+            continue
+        leak = _find_instruction_leak(eff.get("content"))
+        if leak:
+            return str(eff.get("path", "")), leak
+        if eff.get("kind") in ("create", "modify"):
+            p = Path(os.path.expanduser(str(eff.get("path", ""))))
+            try:
+                if p.is_file() and p.stat().st_size <= 1_000_000:
+                    leak = _find_instruction_leak(p.read_text(encoding="utf-8"))
+                    if leak:
+                        return str(p), leak
+            except (OSError, UnicodeDecodeError):
+                continue
+    return None
 
 
 # --------------------------------------------------------------------- storage
@@ -290,12 +411,30 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
             if isinstance(content, str) and len(content) > 20000:
                 problems.append(f"{ewhere}: content is over 20000 characters")
                 continue
+            if isinstance(content, str) and content:
+                leak = _find_instruction_leak(content)
+                if leak:
+                    problems.append(f"{ewhere}: content is a planner instruction, not the "
+                                    f"requested artifact: \"{leak}\"")
+                    continue
             clean_effects.append({"kind": kind, "path": path, "content": content})
         out.append({"title": str(title).strip(), "instruction": str(instruction).strip(),
                     "expected_effects": clean_effects})
     if problems:
         return None, problems
-    return {"subtasks": out}, []
+    # A merged double plan (the baseline's interleaved 1,1,2,2,3,3) repeats
+    # steps exactly: same title, instruction and effects. Collapse exact
+    # repeats to their first occurrence; steps that differ in any field
+    # are real steps and stay.
+    seen: set = set()
+    deduped: List[Dict[str, Any]] = []
+    for s in out:
+        key = json.dumps(s, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(s)
+    return {"subtasks": deduped}, []
 
 
 def _path_parts(path: str) -> List[str]:
@@ -381,6 +520,20 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
         effects = subtask.get("expected_effects") or []
         files = [e for e in effects if e.get("kind") != "run"]
         runs = [e for e in effects if e.get("kind") == "run"]
+        # Verdict integrity: a finished task is not automatically a verified
+        # subtask. The subtask's own report, its deliverable content and its
+        # declared run proof are all checked before "verified" is said.
+        signal = _incompletion_signal(result)
+        if signal:
+            return {"status": "failed", "claimed": result, "verified_status": "contradicted",
+                    "evidence": [f"The step's own report admits it did not finish: \"{signal}\" "
+                                 "A report of incompletion cannot be verified."]}
+        leak_hit = _content_leak_for_subtask(subtask)
+        if leak_hit:
+            leak_path, leak = leak_hit
+            return {"status": "failed", "claimed": result, "verified_status": "contradicted",
+                    "evidence": [f"Checked on disk: {leak_path} contains planner instruction "
+                                 f"text, not the requested artifact: \"{leak}\""]}
         evidence: List[str] = []
         if files:
             dictated = [e for e in files
@@ -395,8 +548,15 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
                            "their contents were not checked against the instruction")
             evidence.append(f"The queue's file-effect check passed when the task finished: {checked}.")
         for e in runs:
+            problem = _run_effect_problem(e)
+            if problem:
+                return {"status": "failed", "claimed": result, "verified_status": "contradicted",
+                        "evidence": [f"Run check: {problem}"]}
             cwd = os.path.expanduser(str(e.get("cwd", "")))
             evidence.append(f"The queue also ran the declared check: '{e.get('command', '')}' "
+                            f"from {cwd} exited with code {e.get('expect_exit', 0)}, "
+                            "the code the plan required.")
+            evidence.append(f"The mission re-ran the declared check itself: '{e.get('command', '')}' "
                             f"from {cwd} exited with code {e.get('expect_exit', 0)}, "
                             "the code the plan required.")
         if not evidence:
@@ -564,7 +724,8 @@ class MissionRunner:
         subs = mission["subtasks"]
         failed = [s for s in subs if s["status"] == "failed"]
         if reason is None and failed:
-            reason = (f"{len(failed)} of {len(subs)} steps failed; the rest were run "
+            names = "; ".join(f"Step {s['idx'] + 1} ({s['title']})" for s in failed)
+            reason = (f"{len(failed)} of {len(subs)} steps failed: {names}; the rest were run "
                       "because this mission was set to keep going past failures.")
         state = "failed" if (reason or failed) else "done"
         finished = time.time()
