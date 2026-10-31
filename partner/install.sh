@@ -23,7 +23,7 @@ mkdir -p "$STATE/inbox" "$STATE/rejected" "$HOME/Applications" "$HOME/Library/La
 STAGE="$(mktemp -d)/Xod Partner.app"
 mkdir -p "$STAGE/Contents/MacOS" "$STAGE/Contents/Resources/partner"
 cp "$SRC/app/Info.plist" "$STAGE/Contents/Info.plist"
-cp "$SRC/xod_partner.py" "$SRC/partner_ax.py" "$SRC/partner_brain.py" "$SRC/config.json" "$STAGE/Contents/Resources/partner/"
+cp "$SRC/xod_partner.py" "$SRC/partner_ax.py" "$SRC/partner_brain.py" "$SRC/partner_updates.py" "$SRC/config.json" "$STAGE/Contents/Resources/partner/"
 
 # Bundle a minimal CPython inside the app: the interpreter, libpython, and
 # the stdlib (site-packages and the test/dev suites excluded; the Partner
