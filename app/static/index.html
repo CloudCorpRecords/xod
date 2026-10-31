@@ -1154,6 +1154,55 @@
             </div>
             <div id="testCloudKeyFeedback" class="text-xs hidden mt-1"></div>
           </div>
+
+          <!-- API Key Profiles (per provider; keys stay in the Keychain, shown masked) -->
+          <div id="groupKeyProfiles" class="hidden space-y-2 pt-1">
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-zinc-400">API Key Profiles</label>
+              <span id="keyProfileActiveNote" class="text-[10px] text-zinc-500"></span>
+            </div>
+            <div class="flex gap-2">
+              <select id="selectKeyProfile" onchange="kpSelectChange()" class="flex-1 bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"></select>
+              <button type="button" onclick="kpActivate()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap">Set active</button>
+            </div>
+            <div id="keyProfileMeta" class="text-[10px] text-zinc-500"></div>
+            <div class="flex gap-2">
+              <input type="password" id="inputKeyProfileKey" placeholder="Paste a key for the selected profile" autocomplete="off" class="flex-1 bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono">
+              <button type="button" onclick="kpSaveKey()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap">Save key</button>
+            </div>
+            <div class="flex gap-2">
+              <input type="text" id="inputKeyProfileName" placeholder="New profile name" autocomplete="off" class="flex-1 bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500">
+              <button type="button" onclick="kpAdd()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap">Add</button>
+              <button type="button" onclick="kpRename()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap">Rename</button>
+              <button type="button" onclick="kpDelete()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap">Delete</button>
+            </div>
+            <div id="keyProfileStatus" class="text-[11px] hidden"></div>
+            <p class="text-[10px] text-zinc-500">Detect Models runs against the selected profile (the active one by default) and saves the models it finds as that key's allowed models. Calls always use the active profile's key.</p>
+          </div>
+        </div>
+
+        <!-- Usage and Cost (per-call ledger: tokens and estimated cost, by model and by key) -->
+        <div class="space-y-3" id="usagePanel">
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <label class="text-xs font-semibold text-zinc-300">Usage and Cost</label>
+            <div class="flex items-center gap-1">
+              <button type="button" data-usage-range="today" onclick="setUsageRange('today')" class="usage-range-btn px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-[10px] font-semibold text-zinc-200 transition-colors">Today</button>
+              <button type="button" data-usage-range="7d" onclick="setUsageRange('7d')" class="usage-range-btn px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-[10px] font-semibold text-zinc-200 transition-colors">7 days</button>
+              <button type="button" data-usage-range="all" onclick="setUsageRange('all')" class="usage-range-btn px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-[10px] font-semibold text-zinc-200 transition-colors">All</button>
+              <button type="button" onclick="refreshUsagePanel()" class="px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-[10px] font-semibold text-zinc-200 transition-colors">Refresh</button>
+            </div>
+          </div>
+          <div id="usageTotals" class="text-xs text-zinc-300">No usage loaded yet.</div>
+          <div id="usageEstimateLine" class="text-[11px] text-zinc-400"></div>
+          <div>
+            <div class="text-[11px] text-zinc-400 font-semibold pb-1">By model</div>
+            <div id="usageByModel" class="space-y-1 text-[11px] text-zinc-300 font-mono"></div>
+          </div>
+          <div>
+            <div class="text-[11px] text-zinc-400 font-semibold pb-1">By API key profile</div>
+            <div id="usageByKey" class="space-y-1 text-[11px] text-zinc-300 font-mono"></div>
+          </div>
+          <p class="text-[10px] text-zinc-500">Costs are estimates from Xod's reference price table (dated <span id="usagePricingAsOf">unknown</span>), not provider bills. Calls whose tokens the provider did not report are estimated at about 4 characters per token and are counted separately above. Models with no reference price count as unpriced, never guessed.</p>
         </div>
 
         <!-- On-Device Image & Video Models Manager Section -->

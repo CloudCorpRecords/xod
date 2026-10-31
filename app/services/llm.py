@@ -262,9 +262,41 @@ class LLMService:
     def __init__(self):
         pass
 
-    def _build_endpoint(self, provider: str, model: Optional[str] = None) -> Dict[str, Any]:
+    def _cloud_key(self, provider: str, key_profile_id: Optional[str] = None) -> Tuple[str, Optional[str]]:
+        """The API key a cloud call should use, and the name of the key profile it belongs to.
+
+        Key profiles (services/key_profiles.py): the chosen profile when one is named (Detect
+        Models against a specific key), otherwise the active profile. A provider with no
+        profile metadata resolves to its single saved key, which is the Default profile, so
+        behavior is unchanged for anyone who never made a second profile."""
+        try:
+            from app.services import key_profiles
+            if key_profile_id:
+                name = next((p["name"] for p in key_profiles.list_profiles(provider)["profiles"]
+                             if p["id"] == key_profile_id), None)
+                return key_profiles.key_for_profile(provider, key_profile_id), name
+            value, name = key_profiles.active_key(provider)
+            if value or key_profiles.has_metadata(provider):
+                return value, name
+        except Exception:
+            pass
+        return (getattr(settings, f"{provider}_api_key", "") or ""), "Default"
+
+    def _tier_key_ready(self, provider: str) -> bool:
+        """A usable key for this provider: the single saved key, or any key profile holding one."""
+        if (getattr(settings, f"{provider}_api_key", "") or "").strip():
+            return True
+        try:
+            from app.services import key_profiles
+            return key_profiles.provider_has_key(provider)
+        except Exception:
+            return False
+
+    def _build_endpoint(self, provider: str, model: Optional[str] = None,
+                        key_profile_id: Optional[str] = None) -> Dict[str, Any]:
         base_url = settings.llm_base_url or "http://localhost:1234/v1"
         api_key = "local"
+        key_profile_name: Optional[str] = None
         m = model or settings.llm_model
 
         if provider == "lm_studio":
@@ -293,40 +325,49 @@ class LLMService:
             m = model or settings.llm_model or "default"
         elif provider == "openai":
             base_url = "https://api.openai.com/v1"
-            api_key = settings.openai_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("openai", key_profile_id)
+            api_key = api_key or "missing"
             m = model or "gpt-4o"
         elif provider == "gemini":
             base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
-            api_key = settings.gemini_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("gemini", key_profile_id)
+            api_key = api_key or "missing"
             m = model or "gemini-2.5-flash"
         elif provider == "groq":
             base_url = "https://api.groq.com/openai/v1"
-            api_key = settings.groq_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("groq", key_profile_id)
+            api_key = api_key or "missing"
             m = model or "llama-3.3-70b-versatile"
         elif provider == "openrouter":
             base_url = "https://openrouter.ai/api/v1"
-            api_key = settings.openrouter_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("openrouter", key_profile_id)
+            api_key = api_key or "missing"
             m = model or "meta-llama/llama-3.3-70b-instruct"
         elif provider == "anthropic":
             # Anthropic's OpenAI-compatible endpoint (chat/completions with a Bearer key).
             base_url = "https://api.anthropic.com/v1"
-            api_key = settings.anthropic_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("anthropic", key_profile_id)
+            api_key = api_key or "missing"
             m = model or "claude-opus-5-5"
         elif provider == "fireworks":
             base_url = settings.llm_base_url if (settings.llm_base_url and "fireworks" in settings.llm_base_url) else "https://api.fireworks.ai/inference/v1"
-            api_key = settings.fireworks_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("fireworks", key_profile_id)
+            api_key = api_key or "missing"
             m = model or settings.llm_model
             if not m or m == "google/gemma-4-12b-qat":
                 m = "accounts/fireworks/models/glm-5p3-flash"
             elif not m.startswith("accounts/"):
                 m = f"accounts/fireworks/models/{m}"
 
-        return {
+        info = {
             "provider": provider,
             "base_url": base_url.rstrip("/"),
             "model": m,
             "api_key": api_key
         }
+        if key_profile_name:
+            info["key_profile"] = key_profile_name
+        return info
 
     def get_endpoint_info(self) -> Dict[str, Any]:
         return self._build_endpoint(settings.llm_provider, settings.llm_model)
@@ -334,18 +375,18 @@ class LLMService:
     def get_available_tiers(self) -> Dict[str, Any]:
         """Returns readiness status for both local and cloud model tiers."""
         cloud_options = []
-        if settings.fireworks_api_key and settings.fireworks_api_key.strip():
+        if self._tier_key_ready("fireworks"):
             fw_model = settings.llm_model if (settings.llm_provider == "fireworks" and settings.llm_model) else "accounts/fireworks/models/glm-5p3-flash"
             cloud_options.append({"provider": "fireworks", "model": fw_model, "label": "Fireworks AI (GLM 5.3 Flash)"})
-        if settings.gemini_api_key and settings.gemini_api_key.strip():
+        if self._tier_key_ready("gemini"):
             cloud_options.append({"provider": "gemini", "model": "gemini-2.5-flash", "label": "Google Gemini"})
-        if settings.openai_api_key and settings.openai_api_key.strip():
+        if self._tier_key_ready("openai"):
             cloud_options.append({"provider": "openai", "model": "gpt-4o", "label": "OpenAI GPT-4o"})
-        if settings.groq_api_key and settings.groq_api_key.strip():
+        if self._tier_key_ready("groq"):
             cloud_options.append({"provider": "groq", "model": "llama-3.3-70b-versatile", "label": "Groq Ultra-Fast"})
-        if settings.openrouter_api_key and settings.openrouter_api_key.strip():
+        if self._tier_key_ready("openrouter"):
             cloud_options.append({"provider": "openrouter", "model": "meta-llama/llama-3.3-70b-instruct", "label": "OpenRouter"})
-        if settings.anthropic_api_key and settings.anthropic_api_key.strip():
+        if self._tier_key_ready("anthropic"):
             cloud_options.append({"provider": "anthropic", "model": "claude-opus-5-5", "label": "Anthropic Claude Opus"})
 
         local_configured = settings.llm_provider in LOCAL_PROVIDERS
@@ -570,7 +611,8 @@ class LLMService:
     # ------------------------------------------------------------------
     # Universal Inference with Custom Tools Support
     # ------------------------------------------------------------------
-    async def list_models(self, provider_override: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def list_models(self, provider_override: Optional[str] = None,
+                          key_profile_id: Optional[str] = None) -> List[Dict[str, Any]]:
         active_provider = provider_override or settings.llm_provider
         if active_provider == "xod":
             from app.services.local_engine import CATALOG, is_downloaded
@@ -598,7 +640,7 @@ class LLMService:
                 ]
 
         if active_provider == "fireworks":
-            info = self._build_endpoint("fireworks")
+            info = self._build_endpoint("fireworks", key_profile_id=key_profile_id)
             if info["api_key"] != "missing":
                 headers = {
                     "Authorization": f"Bearer {info['api_key']}",
@@ -626,7 +668,7 @@ class LLMService:
                 {"id": "accounts/fireworks/models/llama-v3p2-11b-vision-instruct", "name": "Llama 3.2 11B Vision", "is_loaded": True}
             ]
 
-        info = self._build_endpoint(active_provider)
+        info = self._build_endpoint(active_provider, key_profile_id=key_profile_id)
         headers = {
             "Authorization": f"Bearer {info['api_key']}",
             "Content-Type": "application/json"
@@ -748,7 +790,7 @@ class LLMService:
                     from app.services import llm_routing
                     llm_routing.record(info["provider"], info["model"], data.get("usage"),
                                        prompt_chars=len(json.dumps(messages)), completion_chars=len(str(data)),
-                                       kind="answer", task=task, started=started)
+                                       kind="answer", task=task, started=started, key_profile=info.get("key_profile"))
                     choice = data["choices"][0]
                     msg = choice.get("message", {})
                     answered = bool(msg.get("content"))
@@ -953,7 +995,7 @@ class LLMService:
                     from app.services import llm_routing
                     llm_routing.record(info["provider"], info["model"], _usage,
                                        prompt_chars=len(json.dumps(messages)), completion_chars=sum(len(x) for x in streamed) + reasoned,
-                                       kind="stream", task=task, started=started)
+                                       kind="stream", task=task, started=started, key_profile=info.get("key_profile"))
                     if task and streamed:
                         from app.services import dataset_recorder
                         ex_id = dataset_recorder.capture(
@@ -1192,7 +1234,7 @@ class LLMService:
         from app.services import llm_routing
         llm_routing.record(info["provider"], info["model"], _usage,
                            prompt_chars=len(json.dumps(messages)), completion_chars=len(full_content) + len(full_reasoning),
-                           kind="deliberate", started=_started)
+                           kind="deliberate", started=_started, key_profile=info.get("key_profile"))
         yield {
             "type": "deliberation_complete",
             "tool_calls": formatted_tool_calls,

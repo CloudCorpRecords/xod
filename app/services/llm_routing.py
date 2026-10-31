@@ -154,9 +154,13 @@ def cost(model: str, prompt_tokens: int, completion_tokens: int) -> Optional[flo
 
 
 def record(provider: str, model: str, usage: Optional[Dict[str, Any]], prompt_chars: int = 0, completion_chars: int = 0,
-           kind: str = "", task: Optional[str] = None, started: Optional[float] = None) -> None:
+           kind: str = "", task: Optional[str] = None, started: Optional[float] = None,
+           key_profile: Optional[str] = None) -> None:
     """Records a call: every one (local too) into the Usage tab's log (services/usage.py); cloud ones here as well,
-    for the monthly budget. Uses the provider's token counts, or estimates (~4 characters a token)."""
+    for the monthly budget. Uses the provider's token counts, or estimates (~4 characters a token).
+    Every call also lands in the key-aware ledger (services/usage_ledger.py), which names the
+    API key profile that paid for it and prices it from the dated reference table."""
+    u: Dict[str, Any] = {}
     try:
         from app.services import usage as usage_log
         u = dict(usage or {})
@@ -165,6 +169,21 @@ def record(provider: str, model: str, usage: Optional[Dict[str, Any]], prompt_ch
         usage_log.record(provider, model, u or None, prompt_chars, completion_chars, kind=kind, task=task, started=started)
     except Exception as e:
         logger.debug(f"usage log skipped: {e}")
+    try:
+        from app.services import usage_ledger
+        ctx = task or kind or "chat"
+        try:
+            from app.services import activity, usage as _usage_mod
+            if activity.origin.get():
+                ctx = activity.origin.get()
+            elif _usage_mod.purpose.get():
+                ctx = _usage_mod.purpose.get()
+        except Exception:
+            pass
+        usage_ledger.append_record(provider, model, key_profile=key_profile, usage=u or usage,
+                                   prompt_chars=prompt_chars, completion_chars=completion_chars, context=ctx)
+    except Exception as e:
+        logger.debug(f"usage ledger skipped: {e}")
     if provider in LOCAL_PROVIDERS:
         return
     estimated = not usage

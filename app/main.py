@@ -2068,19 +2068,143 @@ async def get_deals(category: Optional[str] = None, max_multiple: Optional[float
     return res
 
 @app.get("/api/llm/models")
-async def get_llm_models(provider: Optional[str] = None):
-    """Lists models available from the currently configured or requested provider."""
-    models = await llm_service.list_models(provider_override=provider)
+async def get_llm_models(provider: Optional[str] = None, key_profile: Optional[str] = None):
+    """Lists models available from the currently configured or requested provider.
+
+    With key_profile, detection runs against that key profile's key, and the model ids it
+    returns are stored on the profile as that key's allowed models."""
+    models = await llm_service.list_models(provider_override=provider, key_profile_id=key_profile)
     loaded_model = None
     for m in models:
         if m.get("is_loaded"):
             loaded_model = m.get("id")
             break
+    if key_profile:
+        from app.services import key_profiles
+        prov = provider or settings.llm_provider
+        if key_profiles.is_key_provider(prov):
+            try:
+                key_profiles.set_models(prov, key_profile, [m.get("id") for m in models if m.get("id")])
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
     return {
         "models": models,
         "current_model": settings.llm_model,
         "loaded_model": loaded_model
     }
+
+
+# ---- API key profiles (services/key_profiles.py) -------------------------------------
+# Named keys per cloud provider. Responses only ever carry masked keys.
+
+class KeyProfileCreate(BaseModel):
+    provider: str
+    name: str
+    key: Optional[str] = None
+
+
+class KeyProfileRename(BaseModel):
+    provider: str
+    name: str
+
+
+class KeyProfileKey(BaseModel):
+    provider: str
+    key: str
+
+
+class KeyProfileRef(BaseModel):
+    provider: str
+
+
+@app.get("/api/llm/key-profiles")
+async def get_key_profiles(provider: str):
+    from app.services import key_profiles
+    if not key_profiles.is_key_provider(provider):
+        raise HTTPException(status_code=400, detail=f"{provider} does not use API keys.")
+    return key_profiles.list_profiles(provider)
+
+
+@app.post("/api/llm/key-profiles")
+async def create_key_profile(req: KeyProfileCreate):
+    from app.services import key_profiles
+    try:
+        return key_profiles.create_profile(req.provider, req.name, req.key or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/llm/key-profiles/{profile_id}/rename")
+async def rename_key_profile(profile_id: str, req: KeyProfileRename):
+    from app.services import key_profiles
+    try:
+        return key_profiles.rename_profile(req.provider, profile_id, req.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/llm/key-profiles/{profile_id}/key")
+async def set_key_profile_key(profile_id: str, req: KeyProfileKey):
+    from app.services import key_profiles
+    try:
+        return key_profiles.set_profile_key(req.provider, profile_id, req.key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/llm/key-profiles/{profile_id}/activate")
+async def activate_key_profile(profile_id: str, req: KeyProfileRef):
+    from app.services import key_profiles
+    try:
+        return key_profiles.set_active(req.provider, profile_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/llm/key-profiles/{profile_id}")
+async def delete_key_profile(profile_id: str, provider: str):
+    from app.services import key_profiles
+    try:
+        return key_profiles.delete_profile(provider, profile_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---- Usage ledger (services/usage_ledger.py) ------------------------------------------
+
+@app.get("/api/usage/summary")
+async def get_usage_summary(range: str = "today"):
+    """Token and cost totals from the per-call ledger: by model, by key profile, by day.
+    Costs are estimates from the dated reference price table; records whose tokens were
+    estimated (the provider reported no usage) are counted separately from api-reported ones."""
+    from app.services import usage_ledger
+    if range not in usage_ledger.RANGES:
+        raise HTTPException(status_code=400, detail="range must be one of: today, 7d, all")
+    return await asyncio.to_thread(usage_ledger.summary, range)
+
+
+class UsageEstimateRequest(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    messages: Optional[List[Dict[str, Any]]] = None
+    text: Optional[str] = None
+    max_tokens: Optional[int] = None
+
+
+@app.post("/api/usage/estimate")
+async def post_usage_estimate(req: UsageEstimateRequest):
+    """A pre-flight estimate for a call that has not run: input tokens from the prompt's
+    size, output tokens from the call's budget, cost from the reference price table.
+    Everything returned is labeled an estimate."""
+    from app.services import usage_ledger
+    info = llm_service.get_endpoint_info()
+    provider = req.provider or info["provider"]
+    model = req.model or info["model"]
+    if req.messages is not None:
+        prompt_chars = len(json.dumps(req.messages))
+    else:
+        prompt_chars = len(req.text or "")
+    return usage_ledger.estimate(provider, model, prompt_chars, req.max_tokens)
 
 @app.get("/api/lmstudio/status")
 async def get_lmstudio_status():
