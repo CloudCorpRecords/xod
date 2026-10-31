@@ -11,7 +11,11 @@ shaping (card found, labels listed, the frozen pick), press choosing the
 always-allow for a recipient over a plain Allow, Allow chosen when that
 is what the card offers, Deny never pressed (a Deny-only card is a clean
 refusal), no card is a clean refusal, and the watchdog status fields the
-API reports.
+API reports. Also covered: the request-access ask (token-gated like every
+route, answered while untrusted because that is the state it exists for,
+the prompt option genuinely passed into the framework call at the seam,
+the framework's answer surfaced verbatim, and a clean error, never a
+crash, when the framework cannot be asked).
 
 Run: python3 tests/partner/run_partner_ax_test.py
 """
@@ -42,12 +46,18 @@ class El:
 class FakeAx:
     """The surface partner_ax.Walk uses, over El nodes. perform() records."""
 
-    def __init__(self, root, trusted=True):
+    def __init__(self, root, trusted=True, access_result=False):
         self.root, self._trusted = root, trusted
         self.pressed = []
+        self._access_result = access_result
+        self.access_calls = 0
 
     def trusted(self):
         return self._trusted
+
+    def request_access(self):
+        self.access_calls += 1
+        return self._access_result
 
     def create_app(self, pid):
         return self.root
@@ -104,6 +114,51 @@ def _call(base, path, token=None, body=None):
             return resp.status, json.loads(resp.read())
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read())
+
+
+def _seam_request_access():
+    """The real CtypesAx request_access with only its output half faked: a
+    stand-in prompt function receives the options dictionary the seam built
+    and inspects it with real CoreFoundation calls, so the prompt option is
+    proven to reach the framework call, not assumed. The dictionary the
+    callback receives is released when request_access returns, so every
+    observation is captured inside the callback."""
+    import ctypes
+    real = AX.CtypesAx()
+    assert real.ok, "the real AX seam must load on this Mac"
+    cf = real._cf
+    cf.CFDictionaryGetCount.restype = ctypes.c_long
+    cf.CFDictionaryGetCount.argtypes = [ctypes.c_void_p]
+    cf.CFDictionaryGetValue.restype = ctypes.c_void_p
+    cf.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+    for answer in (False, True):
+        ax = AX.CtypesAx.__new__(AX.CtypesAx)
+        ax.ok, ax._strings, ax._cf = True, {}, cf
+        seen = {}
+
+        def fake_prompt(options, _answer=answer):
+            # The dictionary was built with null key callbacks, so its keys
+            # compare by pointer: look the value up under the very key ref
+            # the seam cached, or the lookup rightly finds nothing.
+            key = ax._strings["AXTrustedCheckOptionPrompt"]
+            seen["count"] = cf.CFDictionaryGetCount(options)
+            seen["value"] = cf.CFDictionaryGetValue(options, key)
+            return _answer
+
+        ax._prompt = fake_prompt
+        result = ax.request_access()
+        assert result is answer, (result, answer)
+        assert seen["count"] == 1, seen
+        assert seen["value"] == ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue").value, seen
+    print("PASS: the seam passes the prompt option into the framework call and surfaces its answer verbatim", flush=True)
+
+    ax = AX.CtypesAx.__new__(AX.CtypesAx)
+    ax.ok, ax._prompt = False, None
+    assert ax.request_access() is None
+    ax.ok, ax._prompt = True, None
+    assert ax.request_access() is None
+    print("PASS: an unavailable framework answers None from the seam, never a crash", flush=True)
 
 
 def main():
@@ -223,6 +278,58 @@ def main():
             print("PASS: with Muse not running, scan and press answer cleanly", flush=True)
         finally:
             server.shutdown()
+
+    # request-access: token-gated, answered while untrusted (the state it
+    # exists for), exactly one ask per call, the answer surfaced verbatim
+    with tempfile.TemporaryDirectory() as tmp:
+        ax = FakeAx(card_tree(["Allow", "Deny"]), trusted=False, access_result=False)
+        walk = AX.Walk(ax, pid_of=lambda: 4242)
+        cfg, core = _core(tmp, False)
+        server, base = _serve(cfg, core, walk)
+        try:
+            code, _ = _call(base, "/ax/request-access", body={})
+            assert code == 401 and ax.access_calls == 0, (code, ax.access_calls)
+            code, _ = _call(base, "/ax/request-access", token="not-the-token", body={})
+            assert code == 401 and ax.access_calls == 0, (code, ax.access_calls)
+            code, out = _call(base, "/ax/request-access", token=core.token, body={})
+            assert code == 200 and out == {"trusted": False, "prompted": True}, (code, out)
+            assert ax.access_calls == 1, ax.access_calls
+            print("PASS: /ax/request-access asks once, answers while untrusted, surfaces the answer", flush=True)
+        finally:
+            server.shutdown()
+
+    # request-access when the framework's answer is yes: verbatim again
+    with tempfile.TemporaryDirectory() as tmp:
+        ax = FakeAx(card_tree(["Allow"]), trusted=True, access_result=True)
+        walk = AX.Walk(ax, pid_of=lambda: 4242)
+        cfg, core = _core(tmp, True)
+        server, base = _serve(cfg, core, walk)
+        try:
+            code, out = _call(base, "/ax/request-access", token=core.token, body={})
+            assert code == 200 and out == {"trusted": True, "prompted": True}, (code, out)
+            assert ax.access_calls == 1, ax.access_calls
+            print("PASS: /ax/request-access surfaces a yes verbatim too", flush=True)
+        finally:
+            server.shutdown()
+
+    # request-access when the framework cannot be asked: a clean error,
+    # never a crash, and the API keeps serving afterwards
+    with tempfile.TemporaryDirectory() as tmp:
+        ax = FakeAx(card_tree(["Allow"]), trusted=False, access_result=None)
+        walk = AX.Walk(ax, pid_of=lambda: 4242)
+        cfg, core = _core(tmp, False)
+        server, base = _serve(cfg, core, walk)
+        try:
+            code, out = _call(base, "/ax/request-access", token=core.token, body={})
+            assert code == 500 and "error" in out and out["prompted"] is False, (code, out)
+            assert ax.access_calls == 1, ax.access_calls
+            code, st = _call(base, "/status", token=core.token)
+            assert code == 200, code
+            print("PASS: an unaskable framework is a clean error and the API survives it", flush=True)
+        finally:
+            server.shutdown()
+
+    _seam_request_access()
 
     print("ALL PARTNER AX TESTS PASSED", flush=True)
 

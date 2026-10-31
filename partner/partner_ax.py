@@ -66,6 +66,7 @@ class CtypesAx:
     def __init__(self):
         global _cf
         self.ok = False
+        self._prompt = None
         self._strings = {}
         try:
             cf, asv = ctypes.CDLL(_CF), ctypes.CDLL(_AS)
@@ -102,6 +103,19 @@ class CtypesAx:
             self.ok = True
         except Exception:
             self.ok = False
+        # The prompt variant is registered on its own: a machine where it
+        # cannot be set up must not cost the Partner its plain trust check
+        # or its tree walk.
+        if self.ok:
+            try:
+                cf.CFDictionaryCreate.restype = vp
+                cf.CFDictionaryCreate.argtypes = [vp, ctypes.POINTER(vp),
+                                                  ctypes.POINTER(vp), lg, vp, vp]
+                prompt = asv.AXIsProcessTrustedWithOptions
+                prompt.restype, prompt.argtypes = bl, [vp]
+                self._prompt = prompt
+            except Exception:
+                self._prompt = None
 
     # -- primitives ---------------------------------------------------
     def _name(self, s):
@@ -118,6 +132,41 @@ class CtypesAx:
             return bool(self._asv.AXIsProcessTrusted())
         except Exception:
             return None
+
+    def request_access(self):
+        """Ask macOS to show the Accessibility prompt for THIS process.
+
+        This is the step that makes the system create the Accessibility
+        row bound to this live build, so the user has a real row to flip;
+        the plain trust check can only ever read a row something else
+        created. Exactly one prompt call per invocation. Returns the
+        trust state the call reports (True or False), or None when the
+        framework call cannot be made at all.
+        """
+        prompt = getattr(self, "_prompt", None)
+        if not self.ok or prompt is None:
+            return None
+        cf = self._cf
+        options = None
+        try:
+            value = ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue")
+            if not value:
+                return None
+            # kAXTrustedCheckOptionPrompt's string value is its own name;
+            # building the CFString through the _name cache avoids chasing
+            # the constant across sub-frameworks (the cache owns the ref).
+            key = self._name("AXTrustedCheckOptionPrompt")
+            keys = (ctypes.c_void_p * 1)(key)
+            values = (ctypes.c_void_p * 1)(value)
+            options = cf.CFDictionaryCreate(None, keys, values, 1, None, None)
+            if not options:
+                return None
+            return bool(prompt(options))
+        except Exception:
+            return None
+        finally:
+            if options:
+                _release(options)
 
     def create_app(self, pid):
         if not self.ok:
@@ -314,6 +363,16 @@ class Walk:
 
     def __init__(self, ax, log=lambda msg: None, pid_of=_muse_pid):
         self.ax, self.log, self.pid_of = ax, log, pid_of
+
+    def request_access(self):
+        """Ask macOS for the grant, through the ax surface when the surface
+        can ask at all. Answers what the surface answers: a bool, or None
+        when the ask cannot be made (a surface without the ask, or the
+        framework missing)."""
+        fn = getattr(self.ax, "request_access", None)
+        if fn is None:
+            return None
+        return fn()
 
     # -- shared tree machinery (mirrors muse_app._scan) ----------------
     def _cards(self, pid):

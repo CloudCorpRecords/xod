@@ -326,8 +326,10 @@ def make_restarter(cfg, probe, log):
 # Authenticated loopback HTTP, the Partner's only network surface. Every
 # call needs the pairing token (the same one the inbox uses). The Partner
 # stays dumb: /ax/scan only reads, /ax/press applies the frozen rules in
-# partner_ax to one card Xod named. Nothing here takes orders from files,
-# web content, or task text; the inbox and this API are the only inputs.
+# partner_ax to one card Xod named, and /ax/request-access asks macOS to
+# show the Accessibility prompt for this process (the ask that creates
+# the row the user flips). Nothing here takes orders from files, web
+# content, or task text; the inbox and this API are the only inputs.
 
 
 def api_status(core):
@@ -379,13 +381,32 @@ def make_server(cfg, core, walk, log):
 
         def do_POST(self):
             path = self.path.split("?")[0]
-            if path not in ("/ax/scan", "/ax/press"):
+            if path not in ("/ax/scan", "/ax/press", "/ax/request-access"):
                 return self._send(404, {"error": "not found"})
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
             body = self._json_body()
             if not isinstance(body, dict):
                 return self._send(400, {"error": "a JSON object body is required"})
+            if path == "/ax/request-access":
+                # The one route that must answer while untrusted: asking
+                # is how the grant comes to exist at all. Token-gated like
+                # every route, exactly one prompt per call, every ask
+                # logged (the ask is a security-relevant event).
+                try:
+                    result = walk.request_access()
+                except Exception as exc:  # a broken ask must never kill the API
+                    log("ax request-access failed: %s" % exc)
+                    return self._send(500, {"error": "access request failed: %s" % exc,
+                                            "prompted": False})
+                if result is None:
+                    log("ax request-access: the prompt call is unavailable on this system")
+                    return self._send(500, {"error": "the Accessibility prompt call is "
+                                            "unavailable on this system",
+                                            "prompted": False})
+                log("ax request-access: prompt shown for this process; "
+                    "the call reports trusted=%s" % result)
+                return self._send(200, {"trusted": result, "prompted": True})
             if not self._trusted_or_refuse():
                 return
             try:
