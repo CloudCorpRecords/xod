@@ -180,6 +180,13 @@ class AgenticResearcher:
         else:
             user_query = str(user_msg)
 
+        # The person's own words, before any enrichment: an attached image is about to be
+        # turned into words by the vision model and user_query replaced with that description.
+        # Deterministic routing decisions (hunt routing below) are made from what the person
+        # asked, never from machine-generated description text: a described invoice carries a
+        # year and a document kind, which reads exactly like a name-plus-year file hunt.
+        person_query = user_query
+
         # A chat model that can't see: the picture becomes words before anything else (routing, planning, the answer),
         # from a small vision model (services/vision.py). Planned blind, "who is this invoice from?" went to the browser.
         if attached_image_urls:
@@ -423,8 +430,8 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         # the web research path instead, and the contract never fired (re-runs 1 and 2).
         if not has_image and not has_document:
             from app.services import hunt_routing
-            if hunt_routing.is_find_intent(user_query):
-                async for ev in hunt_routing.stream_hunt(user_query, execute_tool):
+            if hunt_routing.is_find_intent(person_query):
+                async for ev in hunt_routing.stream_hunt(person_query, execute_tool):
                     yield ev
                 return
 
