@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.11
+
+**Xod Partner: a companion that holds the permission**
+- This release adds a companion app, Xod Partner. It holds the macOS Accessibility permission that approval buttons need. Before, that permission belonged to Xod itself, and updating Xod could quietly knock it loose; now it lives in the Partner, which almost never changes, so Xod can update freely underneath it.
+- Pairing is one deliberate switch: turn Xod Partner on once in Privacy & Security, under Accessibility. After that, when an approval card appears, the Partner presses the button Xod chooses. Xod still makes every decision, and if the Partner cannot serve, Xod falls back to its own hands exactly as before.
+- The Partner also watches Xod and brings it back if it stops (in live tests on a real Mac, Xod was healthy again in about 40 seconds), and it keeps the shared log of what it did.
+- If the Partner's permission ever goes stale, Xod can clear the stale entry itself, the Partner asks again, and one switch flip finishes the repair. The whole cycle was run live, start to finish, before this release.
+
+**Pick a model from a list, and see what it costs**
+- In Settings, Detect Models now fills a dropdown with the models your provider offers. Pick one instead of typing its name exactly; typing a custom name still works.
+- Each model shows a reference price, input and output per 1M tokens, from a table inside Xod dated 2026-10-30. It is a dated reference table, not a live quote: prices can change, and a model with no verified price says so rather than guessing.
+
+**Checked before it shipped**
+- Every local suite passes on the release tree: the Muse approval smoke test (61 checks), the Partner watchdog, accessibility and delegation suites, the permission self-checks, the file-effects and source-links tests, and the new pricing table test. The release privacy scan is clean.
+
 ## 0.9.10
 
 **Xod uses your phone**
