@@ -78,16 +78,23 @@ def _endpoint(provider: str, model: str, base_url: str = "") -> Dict[str, Any]:
 
 
 async def _ask(c: httpx.AsyncClient, info: Dict[str, Any], content: Any, tools=None, max_tokens: int = ROOM) -> Dict[str, Any]:
-    from app.services.llm import _quiet_thinking, _apply_tools_effort
+    from app.services.llm import _quiet_thinking, _apply_tools_effort, _tools_effort_rejected
     payload: Dict[str, Any] = {"model": info["model"], "messages": [{"role": "user", "content": content}],
                                "temperature": 0, "max_tokens": max_tokens, "stream": False}
     if tools:
         payload["tools"], payload["tool_choice"] = tools, "auto"
     _quiet_thinking(payload, info, False)
-    _apply_tools_effort(payload, info)   # up-front half of the tools/effort rule; this path has no retry loop
+    _apply_tools_effort(payload, info)   # the tools/effort rule, up front (services/llm.py)
     t = time.time()
     r = await c.post(f"{info['base_url']}/chat/completions", json=payload,
                      headers={"Authorization": f"Bearer {info.get('api_key') or 'local'}"})
+    if r.status_code >= 400 and _tools_effort_rejected(payload, info, r.status_code, r.text):
+        # The reactive half of the same rule: the endpoint refused this
+        # tools call over reasoning_effort, the shared handler has
+        # remedied the payload and remembered the pair, so ask once more.
+        # Before round 3 this path returned the 400 as the score result.
+        r = await c.post(f"{info['base_url']}/chat/completions", json=payload,
+                         headers={"Authorization": f"Bearer {info.get('api_key') or 'local'}"})
     secs = time.time() - t
     if r.status_code >= 400:
         return {"error": f"{r.status_code}: {r.text[:200]}", "secs": secs}
