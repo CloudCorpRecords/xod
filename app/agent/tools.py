@@ -3246,6 +3246,21 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     bad = placeholder_argument(arguments)
     if bad:
         return placeholder_error(name, bad[0], bad[1])
+    if name == "computer_run_applescript":
+        # Permission guard (services/abilities.py applescript_block), after the placeholder guard above
+        # (a malformed call is rejected before any permission state is read or surfaced) and before
+        # anything here can reach _execute_tool: a script telling an app macOS has not allowed Xod to
+        # control (ask or denied) must not fire, because firing it is what shows the Automation prompt
+        # mid-task. The guard is a no-prompt pre-check, so it sits before the spawn; Lane 4's bounded,
+        # reaped osascript run in SystemControlService.run_applescript is untouched below it.
+        try:
+            from app.services import abilities
+            block = await asyncio.to_thread(abilities.applescript_block, arguments.get("script") or "")
+        except Exception as e:
+            logger.warning(f"applescript permission guard skipped for {name}: {e}")
+            block = None
+        if block:
+            return block
     missing = _missing_required(name, arguments)
     if missing:
         # A call without what the tool needs only fails, or worse does something nobody asked for (a delete with no

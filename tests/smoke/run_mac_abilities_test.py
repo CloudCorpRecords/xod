@@ -276,15 +276,15 @@ async def main():
     opened, ran = [], []
     ab._open = lambda url: opened.append(url)
     ab.automation = lambda bundle: {"com.apple.iCal": "allowed", "com.apple.reminders": "ask", "com.apple.AddressBook": "denied",
-                                    "com.apple.MobileSMS": "allowed"}[bundle]
+                                    "com.apple.MobileSMS": "allowed", "com.apple.Music": "allowed"}[bundle]
     ab.messages_readable = lambda: False
     ab.location_status = lambda: "ask"
     ab.shortcut_names = lambda: ["Lights off"]
     on = {"v": False}
     ab._connector_on = lambda: on["v"]
     st = {a["id"]: a for a in ab.status()["abilities"]}
-    check("six abilities, like a phone's: Messages, Location, Calendar, Home, Reminders, Contacts",
-          list(st) == ["messages", "location", "calendar", "home", "reminders", "contacts"])
+    check("seven abilities, like a phone's: Messages, Location, Calendar, Home, Reminders, Contacts, Music",
+          list(st) == ["messages", "location", "calendar", "home", "reminders", "contacts", "music"])
     check("This Mac off: even an app macOS allowed shows one click away", st["calendar"]["state"] == "ask")
     on["v"] = True
     st = {a["id"]: a for a in ab.status()["abilities"]}
@@ -355,7 +355,7 @@ async def main():
     from app.main import app as xod_app
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=xod_app), base_url="http://127.0.0.1:8000") as cl:
         r = (await cl.get("/api/abilities")).json()
-        check("the Abilities screen's API lists the six", r["supported"] and len(r["abilities"]) == 6)
+        check("the Abilities screen's API lists the seven", r["supported"] and len(r["abilities"]) == 7)
         r = (await cl.post("/api/abilities/nonsense/allow")).json()
         check("…an unknown one says so", r["success"] is False)
 
