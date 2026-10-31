@@ -1901,8 +1901,26 @@ async def get_config():
         "huggingface_masked_token": (settings.huggingface_token[:4] + "..." + settings.huggingface_token[-4:]) if len(settings.huggingface_token) > 8 else ("Configured" if settings.huggingface_token else "")
     }
 
+def _vault_refusal() -> HTTPException:
+    """The Keychain refused a save: answer with the vault's own explanation
+    (the same words the model switcher banner uses) instead of a bare 500."""
+    from app.services import keychain
+    return HTTPException(status_code=400, detail=keychain.problem()
+                         or "macOS isn't letting Xod reach its saved keys right now.")
+
+
 @app.post("/api/config")
 async def update_config(req: ConfigUpdateRequest):
+    """Updates settings and persists to .env. A Keychain refusal on a key
+    save answers with the vault's problem text instead of a bare 500."""
+    from app.services import keychain
+    try:
+        return await _update_config_apply(req)
+    except keychain.Unreadable:
+        raise _vault_refusal()
+
+
+async def _update_config_apply(req: ConfigUpdateRequest):
     """Updates settings and persists to .env."""
     if req.trustmrr_api_key is not None:
         key_val = req.trustmrr_api_key.strip()
@@ -2206,47 +2224,57 @@ async def get_key_profiles(provider: str):
 
 @app.post("/api/llm/key-profiles")
 async def create_key_profile(req: KeyProfileCreate):
-    from app.services import key_profiles
+    from app.services import key_profiles, keychain
     try:
         return key_profiles.create_profile(req.provider, req.name, req.key or "")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except keychain.Unreadable:
+        raise _vault_refusal()
 
 
 @app.post("/api/llm/key-profiles/{profile_id}/rename")
 async def rename_key_profile(profile_id: str, req: KeyProfileRename):
-    from app.services import key_profiles
+    from app.services import key_profiles, keychain
     try:
         return key_profiles.rename_profile(req.provider, profile_id, req.name)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except keychain.Unreadable:
+        raise _vault_refusal()
 
 
 @app.post("/api/llm/key-profiles/{profile_id}/key")
 async def set_key_profile_key(profile_id: str, req: KeyProfileKey):
-    from app.services import key_profiles
+    from app.services import key_profiles, keychain
     try:
         return key_profiles.set_profile_key(req.provider, profile_id, req.key)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except keychain.Unreadable:
+        raise _vault_refusal()
 
 
 @app.post("/api/llm/key-profiles/{profile_id}/activate")
 async def activate_key_profile(profile_id: str, req: KeyProfileRef):
-    from app.services import key_profiles
+    from app.services import key_profiles, keychain
     try:
         return key_profiles.set_active(req.provider, profile_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except keychain.Unreadable:
+        raise _vault_refusal()
 
 
 @app.delete("/api/llm/key-profiles/{profile_id}")
 async def delete_key_profile(profile_id: str, provider: str):
-    from app.services import key_profiles
+    from app.services import key_profiles, keychain
     try:
         return key_profiles.delete_profile(provider, profile_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except keychain.Unreadable:
+        raise _vault_refusal()
 
 
 # ---- Usage ledger (services/usage_ledger.py) ------------------------------------------

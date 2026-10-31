@@ -149,6 +149,39 @@ def main():
     check("calibration beats the raw heuristic on the harvested pairs", cal_err < raw_err, f"raw {raw_err:.3f} cal {cal_err:.3f}")
     check("ledger record heuristic is unchanged (still labeled estimated)", usage_ledger.estimate_tokens(1804) == 451)
 
+    # ---- a refused vault explains itself in the save routes, not a bare 500
+    # (keyvault rider, 2026-10-31: the key save routes caught only ValueError,
+    # so a Keychain refusal escaped as HTTP 500 and the panels showed only
+    # "That did not work." The honest answer is the vault's own problem text.)
+    import keyring as _keyring
+    from fastapi.testclient import TestClient
+    import app.main as _app_main
+    from app.services import keychain as _keychain
+    _real_get_password = _keyring.get_password
+
+    def _refusing_get_password(service, account):
+        raise RuntimeError("simulated keychain refusal")
+
+    _keychain._vault, _keychain._problem = None, None
+    _keyring.get_password = _refusing_get_password
+    try:
+        _client = TestClient(_app_main.app, base_url="http://localhost", raise_server_exceptions=False)
+        r = _client.post("/api/llm/key-profiles", json={"provider": "openai", "name": "Refused", "key": "sk-refused"})
+        check("refused key-profile save answers with the vault problem, not a bare 500",
+              r.status_code == 400 and "macOS didn't let Xod read its saved keys" in (r.json().get("detail") or ""),
+              f"{r.status_code} {r.text[:140]}")
+        r = _client.post("/api/llm/key-profiles/default/key", json={"provider": "openai", "key": "sk-refused"})
+        check("refused profile key save answers with the vault problem, not a bare 500",
+              r.status_code == 400 and "macOS didn't let Xod read its saved keys" in (r.json().get("detail") or ""),
+              f"{r.status_code} {r.text[:140]}")
+        r = _client.post("/api/config", json={"openai_api_key": "sk-refused"})
+        check("refused settings save answers with the vault problem, not a bare 500",
+              r.status_code == 400 and "macOS didn't let Xod read its saved keys" in (r.json().get("detail") or ""),
+              f"{r.status_code} {r.text[:140]}")
+    finally:
+        _keyring.get_password = _real_get_password
+        _keychain._vault, _keychain._problem = None, None
+
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
     return 1 if failed else 0
