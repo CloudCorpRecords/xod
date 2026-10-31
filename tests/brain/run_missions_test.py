@@ -278,6 +278,25 @@ def case_render():
     check("render: single-line content uses exact text", "with exact text: one line" in M.render_request(single))
 
 
+def case_hardening():
+    """The 2026-10-30 hardening round: directory steps and honest evidence."""
+    dsub = {"title": "Create Project Directory",
+            "instruction": "Create a new directory at /tmp/xod-proj for the project.",
+            "expected_effects": [{"kind": "create", "path": "/tmp/xod-proj", "content": None}]}
+    req = M.render_request(dsub)
+    check("render: a directory step asks for a directory, not a file",
+          "Create the directory at /tmp/xod-proj." in req and "Create the file at /tmp/xod-proj" not in req, req)
+    done_task = {"status": "done", "result": "Created it."}
+    out = M._outcome_from_task(done_task, dsub)
+    check("evidence: existence-only checks say the contents were not checked",
+          out["verified_status"] == "verified" and "contents were not checked" in out["evidence"][0], str(out))
+    ssub = {"title": "T", "instruction": "Write it",
+            "expected_effects": [{"kind": "create", "path": "/tmp/s.txt", "content": "one line"}]}
+    out2 = M._outcome_from_task(done_task, ssub)
+    check("evidence: dictated text checks say the text was checked",
+          "dictated text" in out2["evidence"][0], str(out2))
+
+
 # --------------------------------------------------------------------- real queue
 async def _boom():
     raise RuntimeError("Background Chrome failed to start or open remote debugging port.")
@@ -328,6 +347,7 @@ async def case_real_queue():
 async def main():
     case_validate()
     case_render()
+    case_hardening()
     await case_decompose()
     await case_happy()
     await case_stop_on_failure()

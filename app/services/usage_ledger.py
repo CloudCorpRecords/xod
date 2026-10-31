@@ -209,11 +209,22 @@ def _default_output_allowance() -> int:
         return 1024
 
 
+# Pre-flight prompt estimates run high on real prompts: provider tokenizers pack
+# typical English and code denser than the raw chars-per-token heuristic assumes.
+# Measured against the provider counts on three gpt-4o planning prompts in the
+# Brain v1 hardening round (2026-10-30): actual/estimated ratios 0.869, 0.917,
+# 0.861 (mean 0.88). The pre-flight estimate applies that factor so the number a
+# user sees before sending is the expected size, not a consistent overstatement.
+# Ledger records are untouched: when a provider count is unavailable they keep
+# the raw heuristic and stay labeled estimated.
+PROMPT_ESTIMATE_FACTOR = 0.88
+
+
 def estimate(provider: str, model: str, prompt_chars: int, max_tokens: Optional[int] = None) -> Dict[str, Any]:
     """A pre-flight estimate for one call that has not run yet. Everything here is an
     estimate and says so: input tokens from the prompt's size at ~4 characters a token,
     output tokens the call's own budget (or the usage_output_allowance setting)."""
-    pt = max(1, estimate_tokens(prompt_chars)) if prompt_chars else 0
+    pt = max(1, int(estimate_tokens(prompt_chars) * PROMPT_ESTIMATE_FACTOR)) if prompt_chars else 0
     ct = int(max_tokens) if max_tokens else _default_output_allowance()
     return {
         "estimate": True,

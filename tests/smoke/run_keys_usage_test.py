@@ -131,10 +131,23 @@ def main():
     # ---- pre-flight estimate: labeled, heuristic in, budget out, table cost
     est = usage_ledger.estimate("openai", "gpt-4o", prompt_chars=4000, max_tokens=500)
     check("estimate shape", est["estimate"] is True and est["tokens_source"] == "estimated", str(est))
-    check("estimate token math (chars/4 in, budget out)", est["estimated_prompt_tokens"] == 1000 and est["estimated_completion_tokens"] == 500)
-    check("estimate cost from the table", abs(est["estimated_cost_usd"] - (1000 / 1e6 * 2.5 + 500 / 1e6 * 10.0)) < 1e-9, str(est))
+    check("estimate token math (calibrated chars in, budget out)", est["estimated_prompt_tokens"] == 880 and est["estimated_completion_tokens"] == 500)
+    check("estimate cost from the table", abs(est["estimated_cost_usd"] - (880 / 1e6 * 2.5 + 500 / 1e6 * 10.0)) < 1e-9, str(est))
     est2 = usage_ledger.estimate("openai", "mystery-1", prompt_chars=400)
     check("estimate for an unpriced model has no cost", est2["estimated_cost_usd"] is None)
+
+    # ---- calibration, proven against the hardening round's harvested pairs
+    # (prompt_chars, provider-counted prompt tokens) from three real gpt-4o
+    # planning calls, 2026-10-30: raw heuristic ran 9 to 16 percent high.
+    pairs = [(1804, 392), (1396, 320), (1984, 427)]
+    raw_err = cal_err = 0.0
+    for chars, actual in pairs:
+        got = usage_ledger.estimate("openai", "gpt-4o", prompt_chars=chars, max_tokens=1500)["estimated_prompt_tokens"]
+        raw_err += abs(usage_ledger.estimate_tokens(chars) - actual) / actual
+        cal_err += abs(got - actual) / actual
+        check(f"calibrated estimate within 6% for {chars} chars", abs(got - actual) / actual <= 0.06, f"got {got} actual {actual}")
+    check("calibration beats the raw heuristic on the harvested pairs", cal_err < raw_err, f"raw {raw_err:.3f} cal {cal_err:.3f}")
+    check("ledger record heuristic is unchanged (still labeled estimated)", usage_ledger.estimate_tokens(1804) == 451)
 
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")

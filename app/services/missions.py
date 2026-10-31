@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -317,7 +318,11 @@ def render_request(subtask: Dict[str, Any]) -> str:
             verb = "Create" if eff["kind"] == "create" else "Write"
             lines.append(f"{verb} the file at {p} with exact text: {content.strip()}")
         elif eff["kind"] == "create":
-            lines.append(f"Create the file at {p}." + (f" Its contents should be:\n{content}" if content else ""))
+            words = f"{subtask.get('title', '')} {subtask['instruction']}".lower()
+            if re.search(r"\b(directory|folder)\b", words):
+                lines.append(f"Create the directory at {p}.")
+            else:
+                lines.append(f"Create the file at {p}." + (f" Its contents should be:\n{content}" if content else ""))
         else:
             lines.append(f"Write the updated file at {p}." + (f" Its contents should be:\n{content}" if content else ""))
     return "\n".join(lines)
@@ -333,8 +338,18 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
     result = task.get("result") or ""
     if task["status"] == "done":
         if subtask.get("expected_effects"):
-            evidence = ["The queue's file-effect check passed when the task finished: "
-                        "the claimed effects were true on disk."]
+            effects = subtask["expected_effects"]
+            dictated = [e for e in effects
+                        if e.get("content") is not None and "\n" not in str(e["content"]).strip()]
+            if len(dictated) == len(effects):
+                checked = "every declared effect was true on disk, including the dictated text"
+            elif dictated:
+                checked = ("the declared effects were true on disk; text matched exactly where "
+                           "the plan dictated it, and the other contents were not checked")
+            else:
+                checked = ("the declared paths existed on disk when the task finished; "
+                           "their contents were not checked against the instruction")
+            evidence = [f"The queue's file-effect check passed when the task finished: {checked}."]
         else:
             evidence = ["This step claimed no file effects, and the queue's check found "
                         "nothing on disk to contradict the report."]

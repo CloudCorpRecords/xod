@@ -169,7 +169,20 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
             elif _EFFECT_VERB.search(text):
                 kind = "write"
         if kind:
-            claims.append({"kind": kind, "path": p, "content": content if kind == "write" else None})
+            target = "file"
+            if kind == "write":
+                # A claim whose own words call the target a directory or folder is
+                # a directory claim: a directory can never satisfy a file check.
+                # (Hardening round 2026-10-30: a mission step that created its
+                # project directory exactly as asked was contradicted because the
+                # check required is_file() on the directory path.)
+                for sent in sentences:
+                    if (_path_mentioned(sent, p) and not _NEGATION.search(sent)
+                            and re.search(r"\b(directory|folder)\b", sent, re.IGNORECASE)):
+                        target = "directory"
+                        break
+            claims.append({"kind": kind, "path": p, "content": content if kind == "write" else None,
+                           "target": target})
     return claims
 
 
@@ -482,7 +495,10 @@ class TaskQueue:
                 if p.exists():
                     problems.append(f"the task asked for {p.name} to be deleted, but it is still on disk")
             else:
-                if not p.is_file():
+                if claim.get("target") == "directory":
+                    if not p.is_dir():
+                        problems.append(f"the task asked for {p.name} to be created, but it is not on disk")
+                elif not p.is_file():
                     problems.append(f"the task asked for {p.name} to be created, but it is not on disk")
                 elif claim.get("content") is not None:
                     try:

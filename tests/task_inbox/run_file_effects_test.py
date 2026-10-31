@@ -144,6 +144,45 @@ async def main():
     assert t["status"] == "failed" and "Not finished" in (t.get("result") or ""), t
     print("PASS: dictated contents are compared, not just existence", flush=True)
 
+    # --- a directory create is a directory claim (hardening round, 2026-10-30:
+    # a mission step that created its project directory exactly as asked was
+    # contradicted because the check required is_file() on the directory path)
+    proj = TMP / "projdir"
+    old_style = f"Create a new directory at {proj} for the project.\nCreate the file at {proj}."
+    claims = TQ._claimed_file_effects(old_style)
+    assert len(claims) == 1 and claims[0]["kind"] == "write" and claims[0]["target"] == "directory", claims
+    new_style = f"Create the directory at {proj}."
+    claims = TQ._claimed_file_effects(new_style)
+    assert len(claims) == 1 and claims[0]["target"] == "directory", claims
+    file_claims = TQ._claimed_file_effects(f"Create a plain text file at {TMP}/plain.txt")
+    assert len(file_claims) == 1 and file_claims[0]["target"] == "file", file_claims
+    print("PASS: directory claims parse as directories, file claims stay files", flush=True)
+
+    class _DirResearcher:
+        """Does exactly what the task asked: makes the directory."""
+        target = None
+
+        async def run_research_stream(self, messages):
+            Path(type(self).target).mkdir(parents=True, exist_ok=True)
+            yield {"type": "content", "content": "Directory created."}
+
+    _DirResearcher.target = proj
+    RS.AgenticResearcher = _DirResearcher
+    t = await _run_one(q, old_style)
+    print(f"   directory-honest: status={t['status']}", flush=True)
+    assert t["status"] == "done", f"expected done, got {t['status']}: {t.get('result')}"
+    assert proj.is_dir()
+    print("PASS: a created directory verifies as done, not contradicted", flush=True)
+
+    proj2 = TMP / "neverdir"
+    _LyingResearcher.calls = 0
+    RS.AgenticResearcher = _LyingResearcher
+    t = await _run_one(q, f"Create a new directory at {proj2} for the project.")
+    print(f"   directory-lie: status={t['status']} result={t.get('result')!r}", flush=True)
+    assert t["status"] == "failed" and "Not finished" in (t.get("result") or ""), t
+    assert not proj2.exists()
+    print("PASS: a claimed directory that does not exist still fails honestly", flush=True)
+
     # --- the recorded-ops layer: what the activity log says must match the disk
     import sqlite3, time as _time
     import app.services.activity as ACT
