@@ -37,7 +37,12 @@ sed -e "s|__APP_EXE__|$APP/Contents/MacOS/XodPartner|g" \
     "$SRC/dev.xod.partner.plist.template" > "$AGENT"
 
 launchctl bootout "$DOMAIN/dev.xod.partner" 2>/dev/null || true
-sleep 1
-launchctl bootstrap "$DOMAIN" "$AGENT"
+# bootout is asynchronous: bootstrap raced against it fails with EIO, so
+# wait until the label is really gone (up to ~10s), then bootstrap.
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  launchctl print "$DOMAIN/dev.xod.partner" >/dev/null 2>&1 || break
+  sleep 1
+done
+launchctl bootstrap "$DOMAIN" "$AGENT" || { sleep 3; launchctl bootstrap "$DOMAIN" "$AGENT"; }
 launchctl enable "$DOMAIN/dev.xod.partner"
 echo "agent dev.xod.partner reloaded; state dir: $STATE"

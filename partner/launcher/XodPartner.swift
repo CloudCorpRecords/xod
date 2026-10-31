@@ -20,11 +20,15 @@ let script = resources.appendingPathComponent("partner/xod_partner.py").path
 
 var child: Process? = nil
 var terminating = false
+var signalSources: [DispatchSourceSignal] = []  // sources die with their last reference; keep them
 
 func spawnChild() -> Bool {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
     p.arguments = [script, stateDir]
+    var env = ProcessInfo.processInfo.environment
+    env["XOD_PARTNER_PARENTED"] = "1"  // the child exits if it ever finds itself orphaned
+    p.environment = env
     p.standardOutput = FileHandle.standardOutput
     p.standardError = FileHandle.standardError
     do {
@@ -44,6 +48,7 @@ for sig in [SIGTERM, SIGINT] {
         terminating = true
         if let c = child, c.isRunning { c.terminate() }
     }
+    signalSources.append(src)
     src.resume()
 }
 

@@ -427,26 +427,47 @@ def main(argv):
     except Exception as exc:  # no AX on this machine: the watchdog still watches
         log("ax service unavailable at startup: %s" % exc)
     core = Core(cfg, state_dir, probe, make_restarter(cfg, probe, log), log, trust=trust)
+    stopping = {"flag": False}
     server = None
     if walk is not None:
-        try:
-            server = make_server(cfg, core, walk, log)
-            threading.Thread(target=server.serve_forever, daemon=True).start()
-        except Exception as exc:
-            log("ax api could not start: %s" % exc)
-            server = None
-    stopping = {"flag": False}
+        def _serve():
+            # A previous generation may still hold the port for a few seconds
+            # while it notices its launcher is gone; keep trying, briefly.
+            nonlocal server
+            last = None
+            for _ in range(12):
+                if stopping["flag"]:
+                    return
+                try:
+                    server = make_server(cfg, core, walk, log)
+                    break
+                except OSError as exc:
+                    last = exc
+                    time.sleep(5)
+            if server is None:
+                log("ax api could not start: %s" % last)
+                return
+            log("ax api listening on %s:%s" % (cfg["api_host"], cfg["api_port"]))
+            server.serve_forever()
+
+        threading.Thread(target=_serve, daemon=True).start()
 
     def _stop(signum, frame):
         stopping["flag"] = True
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    log("xod-partner starting (pid %d, probing %s every %ss, ax api %s)"
-        % (os.getpid(), cfg["probe_url"], cfg["probe_interval_s"],
-           "on %s:%s" % (cfg["api_host"], cfg["api_port"]) if server else "unavailable"))
+    log("xod-partner starting (pid %d, probing %s every %ss)"
+        % (os.getpid(), cfg["probe_url"], cfg["probe_interval_s"]))
+    parented = os.environ.get("XOD_PARTNER_PARENTED") == "1"
     last_status = None
     while not stopping["flag"]:
+        if parented and os.getppid() == 1:
+            # The bundle launcher is gone (a kickstart replaced it, or it was
+            # killed hard): a partner must never outlive its own front door,
+            # or two generations end up watching at once.
+            log("the launcher is gone; the partner exits with it")
+            break
         try:
             core.cycle(time.time())
         except Exception as exc:  # the watcher must outlive its own bugs
