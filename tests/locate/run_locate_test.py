@@ -190,6 +190,74 @@ def main():
           out.get("status") == "found" and out["candidates"] and out["candidates"][0]["path"] == str(tax25),
           str(out)[:300])
 
+    # ---- Lane 3 (Fix Round 2): determinism, diagnostics, hint precedence ----
+    base2 = Path(tempfile.mkdtemp(prefix="xod-locate-var-"))
+    rep_a = plant(base2, "alpha/Meeting Notes.pdf", b"%PDF fake", (2025, 5, 1))
+    rep_b = plant(base2, "beta/Meeting Notes.pdf", b"%PDF fake", (2025, 5, 1))
+    roots2 = [str(base2)]
+
+    class FwdIndex:
+        def search(self, clues, roots_):
+            return [str(rep_a), str(rep_b)]
+
+    class RevIndex:
+        def search(self, clues, roots_):
+            return [str(rep_b), str(rep_a)]
+
+    tie_req = "find the Meeting Notes pdf"
+    r_empty = loc.locate(tie_req, roots=roots2, index_backend=EmptyIndex())
+    r_fwd = loc.locate(tie_req, roots=roots2, index_backend=FwdIndex())
+    r_rev = loc.locate(tie_req, roots=roots2, index_backend=RevIndex())
+    orders = [[c["path"] for c in r["candidates"]] for r in (r_empty, r_fwd, r_rev)]
+    check("tie-order determinism: same-name equal-score candidates keep one order regardless of route production order",
+          orders[0] == orders[1] == orders[2] == [str(rep_a), str(rep_b)], str(orders))
+
+    score_maps = [{c["path"]: c["score"] for c in r["candidates"]} for r in (r_empty, r_fwd, r_rev)]
+    check("index-blind equivalence: a candidate scores the same whether the index returns it, misses it, or returns it first",
+          score_maps[0] == score_maps[1] == score_maps[2], str(score_maps))
+
+    diag_fwd = r_fwd.get("diagnostics") or {}
+    diag_by_path = {d["path"]: d for d in diag_fwd.get("candidates", [])}
+    da = diag_by_path.get(str(rep_a), {})
+    check("diagnostics: per-candidate routes and in_index are reported",
+          da.get("in_index") is True and "spotlight" in da.get("routes", []) and "filename" in da.get("routes", []),
+          str(diag_fwd)[:300])
+    diag_empty = r_empty.get("diagnostics") or {}
+    de = {d["path"]: d for d in diag_empty.get("candidates", [])}
+    check("diagnostics: index-missed candidates are counted with examples",
+          de.get(str(rep_a), {}).get("in_index") is False
+          and diag_empty.get("index_missed_count", 0) >= 2
+          and str(rep_a) in diag_empty.get("index_missed_examples", []),
+          str(diag_empty)[:300])
+    check("diagnostics: a fully indexed pool reports zero index-missed",
+          diag_fwd.get("index_missed_count") == 0, str(diag_fwd)[:300])
+
+    res = loc.locate("find the tax return summary for 2025, not 2024", extra={"year": 2024},
+                     roots=roots, index_backend=EmptyIndex())
+    check("hint precedence: a contradicting year hint loses to the text",
+          res["clues"]["year"] == 2025 and res["candidates"] and res["candidates"][0]["path"] == str(tax25),
+          str(res["clues"]) + " " + str(res["candidates"][:1]))
+    res = loc.locate("find the Family Reunion photo from 2024", extra={"kind": "spreadsheet"},
+                     roots=roots, index_backend=EmptyIndex())
+    check("hint precedence: a contradicting kind hint loses to the text",
+          res["clues"]["kind"] == "image" and res["candidates"] and res["candidates"][0]["path"] == str(reunion24),
+          str(res["clues"]) + " " + str(res["candidates"][:1]))
+    res = loc.locate("find the Family Reunion photo", extra={"year": 2024},
+                     roots=roots, index_backend=EmptyIndex())
+    check("hint precedence: a hint for a field the text lacks is used",
+          res["clues"]["year"] == 2024 and res["candidates"] and res["candidates"][0]["path"] == str(reunion24),
+          str(res["clues"]) + " " + str(res["candidates"][:1]))
+    res = loc.locate("find the tax return summary for 2025, not 2024", extra={"year": 2025},
+                     roots=roots, index_backend=EmptyIndex())
+    check("hint precedence: a confirming hint changes nothing",
+          res["clues"]["year"] == 2025 and res["candidates"] and res["candidates"][0]["path"] == str(tax25),
+          str(res["clues"]) + " " + str(res["candidates"][:1]))
+    out = asyncio.run(execute_tool("locate_files", {"request": "find the tax return summary for 2025, not 2024",
+                                                    "year": 2024, "root_dir": str(base)}))
+    check("hint precedence at the tool dispatch: a contradicting year argument loses to the request text",
+          out.get("clues", {}).get("year") == 2025 and out.get("candidates")
+          and out["candidates"][0]["path"] == str(tax25), str(out)[:300])
+
     # every path ever returned exists and is complete
     all_ok = True
     for req in ["find the consulting contract", "find my W2", "find the Smith lease",

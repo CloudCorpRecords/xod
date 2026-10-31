@@ -173,7 +173,9 @@ class Clues:
 def parse_clues(request: str, extra: Optional[Dict[str, Any]] = None,
                 now: Optional[datetime] = None) -> Clues:
     """Turn a natural find request (plus any structured clues the caller
-    already parsed) into a Clues object. Structured values win."""
+    already parsed) into a Clues object. The request text is authoritative:
+    a structured value may only fill a field the text parse left empty, it
+    never overrides what the person actually said."""
     extra = extra or {}
     text = (request or "").strip()
     low = text.lower()
@@ -214,19 +216,23 @@ def parse_clues(request: str, extra: Optional[Dict[str, Any]] = None,
         if token not in skip and token not in clues.name_tokens:
             clues.name_tokens.append(token)
 
-    if extra.get("name"):
+    if extra.get("name") and not clues.name_tokens:
         for token in tokens_of(str(extra["name"])):
             if token not in clues.name_tokens:
-                clues.name_tokens.insert(0, token)
-    if extra.get("kind"):
+                clues.name_tokens.append(token)
+    if extra.get("kind") and not clues.kind:
         clues.kind = str(extra["kind"]).lower()
         if clues.kind == "folder":
             clues.want_folder = True
-    if extra.get("year"):
+    if extra.get("year") and clues.year is None:
         try:
-            clues.year = int(extra["year"])
+            hint_year = int(extra["year"])
         except (TypeError, ValueError):
-            pass
+            hint_year = None
+        if hint_year is not None and hint_year not in clues.excluded_years:
+            clues.year = hint_year
+    # content_words has no text-parse counterpart: the hint fills an
+    # otherwise always-empty field, so it can never fight the text.
     if extra.get("content_words"):
         for word in extra["content_words"]:
             for token in tokens_of(str(word)):
@@ -508,6 +514,25 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
     return score, why
 
 
+def _content_hits_for(path: str, words: Set[str]) -> Set[str]:
+    """Content words inside one file, matched with the same rule
+    content_search uses. Lets an index-only candidate (a path outside the
+    walked roots, so the content route never scanned it) be scored on the
+    same content evidence as if the content route had found it: route
+    provenance must not change a candidate's score."""
+    if os.path.splitext(path)[1].lower() not in TEXT_EXTS:
+        return set()
+    try:
+        if os.path.getsize(path) > MAX_CONTENT_BYTES:
+            return set()
+        with open(path, "r", errors="ignore") as f:
+            body = f.read().lower()
+    except OSError:
+        return set()
+    body_tokens = set(tokens_of(body))
+    return {w for w in words if w in body_tokens or ("-" in w and w in body)}
+
+
 def _candidate_dict(path: str, score: float, why: List[str]) -> Optional[Dict[str, Any]]:
     try:
         st = os.stat(path)
@@ -542,7 +567,9 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
            hunt_deadline_s: float = HUNT_DEADLINE_S) -> Dict[str, Any]:
     """Run a full hunt. Returns a dict with status found | ask | not_found,
     ranked candidates (each existence-verified, full path, with evidence),
-    and the tried list. Never raises on a missing route; a route that fails
+    the tried list, and a diagnostics block (per-candidate route provenance
+    and index visibility, plus how many pooled candidates the index missed).
+    Never raises on a missing route; a route that fails
     is recorded in the tried list and the fallbacks still run."""
     clues = parse_clues(request, extra, now=now)
     roots = list(roots) if roots else default_roots()
@@ -550,11 +577,16 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
     hunt_deadline_at = hunt_started + max(0.0, float(hunt_deadline_s))
     tried: List[Dict[str, Any]] = []
     pool: Dict[str, Set[str]] = {}
+    routes_by_path: Dict[str, Set[str]] = {}
+    index_paths: Set[str] = set()
 
     def add(paths: Sequence[str], route: str):
         for p in paths:
             if p:
                 pool.setdefault(str(p), set())
+                routes_by_path.setdefault(str(p), set()).add(route)
+                if route == "spotlight":
+                    index_paths.add(str(p))
 
     if use_index:
         backend = index_backend if index_backend is not None else SpotlightBackend()
@@ -592,6 +624,7 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
         tried.append(content_tried)
         for p, words in content_hits.items():
             pool.setdefault(p, set()).update(words)
+            routes_by_path.setdefault(p, set()).add("content")
 
     scored: List[Dict[str, Any]] = []
     folder_children: Dict[str, List[Tuple[float, str]]] = {}
@@ -603,7 +636,11 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
             continue
         if not is_dir and clues.want_folder and not clues.folder_by_contents:
             continue
-        score, why = score_candidate(path, clues, hits_words if not is_dir else set())
+        words_here = hits_words
+        if not is_dir and path not in content_hits and routes_by_path.get(path) == {"spotlight"}:
+            probe = {w for w in (set(clues.content_words) | set(clues.name_tokens) | set(clues.purpose_terms)) if len(w) > 2}
+            words_here = _content_hits_for(path, probe)
+        score, why = score_candidate(path, clues, words_here if not is_dir else set())
         cand = _candidate_dict(path, score, why)
         if cand:
             scored.append(cand)
@@ -633,8 +670,26 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
                     scored.append(cand)
 
     scored = [c for c in scored if c["score"] >= FOUND_THRESHOLD]
-    scored.sort(key=lambda c: (-c["score"], c["name"].lower()))
+    # Fully deterministic order: score, then name, then the full path, so
+    # equal-score same-name candidates never keep pool insertion order
+    # (which depended on which route produced a path first).
+    scored.sort(key=lambda c: (-c["score"], c["name"].lower(), c["path"]))
     top = scored[:MAX_CANDIDATES]
+
+    missed = sorted(p for p in routes_by_path
+                    if "spotlight" not in routes_by_path[p]
+                    and routes_by_path[p] & {"filename", "content"})
+    diagnostics: Dict[str, Any] = {
+        "candidates": [
+            {"path": c["path"],
+             "routes": sorted(routes_by_path.get(c["path"], set())),
+             "in_index": c["path"] in index_paths}
+            for c in top
+        ],
+        "index_used": use_index,
+        "index_missed_count": len(missed),
+        "index_missed_examples": missed[:5],
+    }
 
     result: Dict[str, Any] = {
         "request": request,
@@ -646,6 +701,7 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
         },
         "tried": tried,
         "candidates": top,
+        "diagnostics": diagnostics,
     }
     if not top:
         result["status"] = "not_found"
