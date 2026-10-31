@@ -198,6 +198,88 @@ def main():
             all_ok = False
     check("every returned path exists and is complete", all_ok)
 
+    # ---- Lane 2 (Fix Round 2): bounded content search, pathological tree ----
+    # A FIFO with a text extension blocks open() forever on the unbounded
+    # code (reproduced on main under a 20s external timeout: no return).
+    # The bounded route must skip it without opening it, cap every read,
+    # skip and count what it cannot scan, and label any budget trip.
+    pbase = Path(tempfile.mkdtemp(prefix="xod-locate-patho-"))
+    pdocs = pbase / "Documents"
+    pdocs.mkdir(parents=True)
+    good = plant(pdocs, "recipes/broth notes.txt",
+                 "chicken broth with carrots and celery, simmer gently")
+    huge = pdocs / "huge.txt"
+    with open(huge, "wb") as f:
+        f.seek(8 * 1024 * 1024 - 1)
+        f.write(b"x")
+    with open(huge, "r+b") as f:
+        f.seek(8 * 1024 * 1024 - 64)
+        f.write(b"chicken broth carrots")
+    plant(pdocs, "binary.txt", bytes(range(256)) * 64)
+    unread = plant(pdocs, "unreadable.txt", "chicken broth carrots secret")
+    os.chmod(unread, 0o000)
+    os.mkfifo(pdocs / "pipe.txt")
+    pclues = loc.parse_clues("", {"content_words": ["chicken", "broth", "carrots"]})
+    proots = [str(pbase)]
+    try:
+        stats = {}
+        t0 = time.time()
+        hits = loc.content_search(pclues, proots, deadline_s=10, stats=stats)
+        elapsed = time.time() - t0
+        check("patho: content_search completes inside budget over FIFO tree",
+              elapsed < 10, f"elapsed={elapsed:.2f} stats={stats}")
+        check("patho: genuine hit still found with all its words",
+              str(good) in hits and {"chicken", "broth", "carrots"} <= hits[str(good)],
+              str(hits))
+        check("patho: FIFO counted as nonregular skip, never opened",
+              stats.get("skipped_nonregular", 0) >= 1, str(stats))
+        check("patho: unreadable file skipped and counted, not a hit",
+              stats.get("skipped", 0) >= 2 and str(unread) not in hits, str(stats))
+        check("patho: oversized file skipped, words past the cap not matched",
+              stats.get("skipped_oversized", 0) >= 1 and str(huge) not in hits, str(stats))
+        check("patho: no budget trip on a small tree, not labeled partial",
+              stats.get("partial") is False, str(stats))
+
+        stats = {}
+        hits = loc.content_search(pclues, proots, deadline_s=0, stats=stats)
+        check("patho: zero deadline trips at once, labeled deadline partial",
+              stats.get("partial") is True and stats.get("partial_reason") == "deadline",
+              str(stats))
+        stats = {}
+        loc.content_search(pclues, proots, deadline_s=10, max_files=0, stats=stats)
+        check("patho: file cap trips, labeled file_cap partial",
+              stats.get("partial") is True and stats.get("partial_reason") == "file_cap",
+              str(stats))
+        stats = {}
+        loc.content_search(pclues, proots, deadline_s=10, max_entries=0, stats=stats)
+        check("patho: entry cap trips, labeled entry_cap partial",
+              stats.get("partial") is True and stats.get("partial_reason") == "entry_cap",
+              str(stats))
+
+        t0 = time.time()
+        res = loc.locate("find the file with chicken broth carrots", roots=proots,
+                         index_backend=EmptyIndex(), content_deadline_s=5, hunt_deadline_s=20)
+        elapsed = time.time() - t0
+        check("patho: full locate completes inside the hunt budget",
+              elapsed < 20, f"elapsed={elapsed:.2f}")
+        check("patho: full locate still finds the genuine hit",
+              any(c["path"] == str(good) for c in res["candidates"]), str(res)[:300])
+        ctried = [t for t in res["tried"] if t["route"] == "content"]
+        check("patho: locate content tried entry is not partial on a small tree",
+              bool(ctried) and ctried[0].get("partial") is False, str(res["tried"]))
+
+        t0 = time.time()
+        res = loc.locate("find the file with chicken broth carrots", roots=proots,
+                         index_backend=EmptyIndex(), content_deadline_s=0, hunt_deadline_s=20)
+        elapsed = time.time() - t0
+        ctried = [t for t in res["tried"] if t["route"] == "content"]
+        check("patho: locate labels a tripped content budget in tried",
+              elapsed < 20 and bool(ctried) and ctried[0].get("partial") is True
+              and ctried[0].get("partial_reason") == "deadline",
+              f"elapsed={elapsed:.2f} tried={res['tried']}")
+    finally:
+        os.chmod(unread, 0o644)
+
     failed = [n for n, ok in results if not ok]
     print(f"\nSUMMARY {'PASS' if not failed else 'FAIL'} {failed}")
     sys.exit(1 if failed else 0)

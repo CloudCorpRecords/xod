@@ -23,6 +23,7 @@ which routes ran, with which terms, and how much each one saw.
 """
 import os
 import re
+import stat
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -37,6 +38,14 @@ MAX_WALK_ENTRIES = 30000    # hard bounds so a hunt can never wedge
 MAX_WALK_DEPTH = 9
 MAX_CONTENT_FILES = 6000
 MAX_CONTENT_BYTES = 512 * 1024
+MAX_CONTENT_ENTRIES = 30000   # entries the content route will look at, total
+# Wall-clock budgets: a hunt must finish on its own, never by watchdog.
+# The content route gets tens of seconds; the whole hunt stays under about
+# a minute. Both are parameters on locate()/content_search() so tests can
+# shrink them. Prevention, not thread-killing: only regular files are ever
+# opened and every read is capped, so no single file can block past a check.
+CONTENT_ROUTE_DEADLINE_S = 30.0
+HUNT_DEADLINE_S = 55.0
 
 NOISE_DIRS = {
     "Library", "Caches", "node_modules", ".git", ".venv", "venv", "__pycache__",
@@ -300,32 +309,111 @@ def filename_search(clues: Clues, roots: Sequence[str]) -> List[str]:
     return found
 
 
-def content_search(clues: Clues, roots: Sequence[str]) -> Dict[str, Set[str]]:
+def content_search(clues: Clues, roots: Sequence[str],
+                   deadline_s: Optional[float] = None,
+                   max_files: Optional[int] = None,
+                   max_entries: Optional[int] = None,
+                   stats: Optional[Dict[str, Any]] = None) -> Dict[str, Set[str]]:
     """Fallback 2: which content words appear inside which text files.
-    Returns path -> set of matched words. Bounded in files and bytes."""
+    Returns path -> set of matched words.
+
+    Bounded four ways, so this route can never wedge a hunt: a wall-clock
+    deadline (checked between files), a cap on files scanned, a cap on
+    walk entries seen, and a per-file byte cap. Only regular files are
+    ever opened (a FIFO or device with a text extension would block open()
+    forever, and a blocked thread cannot be killed, so it must never be
+    opened at all), and every read is capped at the byte cap plus one, so
+    no read is ever unbounded. Unscannable entries (stat failures, files
+    that vanish mid-walk, unreadable files) are skipped and counted.
+
+    When any bound trips, the hits gathered so far are returned and, if a
+    stats dict was passed, stats records partial=True and partial_reason
+    as one of "deadline", "file_cap", "entry_cap". Nothing is silently
+    truncated: locate() copies that labeling into its tried list."""
+    if deadline_s is None:
+        deadline_s = CONTENT_ROUTE_DEADLINE_S
+    if max_files is None:
+        max_files = MAX_CONTENT_FILES
+    if max_entries is None:
+        max_entries = MAX_CONTENT_ENTRIES
+    started = time.monotonic()
+    deadline_at = started + max(0.0, float(deadline_s))
     words = set(clues.content_words) | set(clues.name_tokens) | set(clues.purpose_terms)
     words = {w for w in words if len(w) > 2}
     hits: Dict[str, Set[str]] = {}
-    if not words:
-        return hits
     scanned = 0
+    skipped = 0
+    skipped_nonregular = 0
+    skipped_oversized = 0
+    entries_seen = 0
+    partial = False
+    partial_reason = ""
+
+    def _record_stats() -> None:
+        if stats is not None:
+            stats.update({
+                "scanned": scanned,
+                "skipped": skipped,
+                "skipped_nonregular": skipped_nonregular,
+                "skipped_oversized": skipped_oversized,
+                "entries_seen": entries_seen,
+                "partial": partial,
+                "partial_reason": partial_reason,
+                "elapsed_s": round(time.monotonic() - started, 3),
+            })
+
+    if not words:
+        _record_stats()
+        return hits
+    if time.monotonic() >= deadline_at:
+        partial = True
+        partial_reason = "deadline"
+        _record_stats()
+        return hits
     for path, is_dir in _walk(roots):
-        if is_dir or scanned >= MAX_CONTENT_FILES:
+        if is_dir:
             continue
+        entries_seen += 1
+        if entries_seen > max_entries:
+            partial = True
+            partial_reason = "entry_cap"
+            break
         if os.path.splitext(path)[1].lower() not in TEXT_EXTS:
             continue
+        if scanned >= max_files:
+            partial = True
+            partial_reason = "file_cap"
+            break
+        # Deadline is checked between files, before any stat or open.
+        if time.monotonic() >= deadline_at:
+            partial = True
+            partial_reason = "deadline"
+            break
         try:
-            if os.path.getsize(path) > MAX_CONTENT_BYTES:
-                continue
-            scanned += 1
-            with open(path, "r", errors="ignore") as f:
-                body = f.read().lower()
+            st = os.stat(path)
         except OSError:
+            skipped += 1
             continue
+        if not stat.S_ISREG(st.st_mode):
+            skipped += 1
+            skipped_nonregular += 1
+            continue
+        if st.st_size > MAX_CONTENT_BYTES:
+            skipped_oversized += 1
+            continue
+        scanned += 1
+        try:
+            with open(path, "rb") as f:
+                raw = f.read(MAX_CONTENT_BYTES + 1)
+        except OSError:
+            skipped += 1
+            continue
+        body = raw.decode(errors="ignore").lower()
         body_tokens = set(tokens_of(body))
         matched = {w for w in words if w in body_tokens or ("-" in w and w in body)}
         if matched:
             hits[path] = matched
+    _record_stats()
     return hits
 
 
@@ -449,13 +537,17 @@ def default_roots() -> List[str]:
 def locate(request: str, extra: Optional[Dict[str, Any]] = None,
            roots: Optional[Sequence[str]] = None,
            index_backend: Any = None, use_index: bool = True,
-           now: Optional[datetime] = None) -> Dict[str, Any]:
+           now: Optional[datetime] = None,
+           content_deadline_s: float = CONTENT_ROUTE_DEADLINE_S,
+           hunt_deadline_s: float = HUNT_DEADLINE_S) -> Dict[str, Any]:
     """Run a full hunt. Returns a dict with status found | ask | not_found,
     ranked candidates (each existence-verified, full path, with evidence),
     and the tried list. Never raises on a missing route; a route that fails
     is recorded in the tried list and the fallbacks still run."""
     clues = parse_clues(request, extra, now=now)
     roots = list(roots) if roots else default_roots()
+    hunt_started = time.monotonic()
+    hunt_deadline_at = hunt_started + max(0.0, float(hunt_deadline_s))
     tried: List[Dict[str, Any]] = []
     pool: Dict[str, Set[str]] = {}
 
@@ -480,9 +572,24 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
 
     content_hits: Dict[str, Set[str]] = {}
     if clues.content_words or clues.name_tokens or clues.purpose_terms:
-        content_hits = content_search(clues, roots)
-        tried.append({"route": "content", "terms": sorted(set(clues.content_words) | set(clues.name_tokens)),
-                      "hits": len(content_hits)})
+        # The content route gets whichever budget runs out first: its own
+        # route deadline, or the time left under the total hunt deadline.
+        remaining_s = hunt_deadline_at - time.monotonic()
+        route_budget_s = max(0.0, min(float(content_deadline_s), remaining_s))
+        content_stats: Dict[str, Any] = {}
+        content_hits = content_search(clues, roots, deadline_s=route_budget_s,
+                                       stats=content_stats)
+        content_tried: Dict[str, Any] = {
+            "route": "content",
+            "terms": sorted(set(clues.content_words) | set(clues.name_tokens)),
+            "hits": len(content_hits),
+            "partial": bool(content_stats.get("partial")),
+            "scanned": content_stats.get("scanned", 0),
+            "skipped": content_stats.get("skipped", 0),
+        }
+        if content_stats.get("partial"):
+            content_tried["partial_reason"] = content_stats.get("partial_reason", "")
+        tried.append(content_tried)
         for p, words in content_hits.items():
             pool.setdefault(p, set()).update(words)
 
@@ -544,6 +651,10 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
         result["status"] = "not_found"
         result["message"] = ("Nothing matched well enough to name. Tried: " +
                              "; ".join(f"{t['route']} ({t['hits']} hits)" for t in tried) + ".")
+        for t in tried:
+            if t.get("route") == "content" and t.get("partial"):
+                result["message"] += (f" The content search was partial ({t.get('partial_reason', '')}), "
+                                       "so more matches may exist than were seen.")
         return result
     if len(top) >= 2 and (top[0]["score"] - top[1]["score"]) <= ASK_MARGIN:
         result["status"] = "ask"
