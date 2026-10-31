@@ -271,6 +271,39 @@ def _budget_param_rejected(payload: Dict[str, Any], info: Dict[str, Any], status
     return True
 
 
+# The same families also refuse a set "temperature": OpenAI answers
+# "Unsupported value: 'temperature' does not support 0.1 with this model. Only
+# the default (1) value is supported." Found in the 0.9.13 promotion attempt
+# (2026-10-31): the budget-key fix got a GPT-5 chat past max_tokens and into
+# this second 400 (defect H5). Same handling as the budget key: omit the
+# parameter up front for the families known to refuse it, and learn
+# reactively from a 400 that names temperature.
+_temperature_learned: set = set()   # (provider, model) pairs a 400 taught us about
+
+
+def _temperature_ok(info: Dict[str, Any]) -> bool:
+    """True when this endpoint accepts a caller-chosen temperature."""
+    if (info.get("provider"), info.get("model")) in _temperature_learned:
+        return False
+    model = str(info.get("model") or "").lower()
+    if info.get("provider") == "openai" and model.startswith(_BUDGET_KEY_MODELS):
+        return False
+    return True
+
+
+def _temperature_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int, body: str) -> bool:
+    """True when the endpoint refused the temperature we sent: the parameter is
+    dropped, the pair is remembered for the rest of the process, and the caller
+    retries. Same shape as _budget_param_rejected."""
+    if status != 400 or "temperature" not in payload or "temperature" not in (body or "").lower():
+        return False
+    payload.pop("temperature", None)
+    _temperature_learned.add((info.get("provider"), info.get("model")))
+    logger.info("Endpoint refuses a set temperature for %s/%s; dropping it and retrying.",
+                info.get("provider"), info.get("model"))
+    return True
+
+
 def plain_error(info: Dict[str, Any], status: Optional[int] = None, body: str = "") -> str:
     """What went wrong with the model, in words a person can act on (not "LLM error 401: {json}")."""
     who = PROVIDER_NAMES.get(info.get("provider", ""), info.get("provider") or "The model")
@@ -810,7 +843,7 @@ class LLMService:
         payload: Dict[str, Any] = {
             "model": info["model"],
             "messages": messages,
-            "temperature": temperature,
+            **({"temperature": temperature} if _temperature_ok(info) else {}),
             _budget_key(info): max_tokens
         }
         if info["provider"] == "ollama":
@@ -838,6 +871,8 @@ class LLMService:
                     if res.status_code != 200 and _effort_rejected(payload, info, res.status_code, res.text):
                         continue
                     if res.status_code != 200 and _budget_param_rejected(payload, info, res.status_code, res.text):
+                        continue
+                    if res.status_code != 200 and _temperature_rejected(payload, info, res.status_code, res.text):
                         continue
                     if res.status_code != 200 and await ollama_context.retry_after_error(payload, info, res.status_code, res.text):
                         continue
@@ -982,7 +1017,7 @@ class LLMService:
         payload = {
             "model": info["model"],
             "messages": messages,
-            "temperature": temperature,
+            **({"temperature": temperature} if _temperature_ok(info) else {}),
             _budget_key(info): max_tokens,
             "stream": True
         }
@@ -1003,6 +1038,8 @@ class LLMService:
                             if _effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
                             if _budget_param_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
+                            if _temperature_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
                             if await ollama_context.retry_after_error(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
@@ -1144,7 +1181,7 @@ class LLMService:
         payload: Dict[str, Any] = {
             "model": info["model"],
             "messages": messages,
-            "temperature": temperature,
+            **({"temperature": temperature} if _temperature_ok(info) else {}),
             _budget_key(info): max_tokens,
             "stream": True
         }
@@ -1169,6 +1206,8 @@ class LLMService:
                         if response.status_code != 200:
                             err_body = await response.aread()
                             if _budget_param_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
+                            if _temperature_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
                             if await ollama_context.retry_after_error(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
