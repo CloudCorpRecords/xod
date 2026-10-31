@@ -67,6 +67,7 @@ class CtypesAx:
         global _cf
         self.ok = False
         self._prompt = None
+        self._prompt_key = None
         self._strings = {}
         try:
             cf, asv = ctypes.CDLL(_CF), ctypes.CDLL(_AS)
@@ -113,9 +114,24 @@ class CtypesAx:
                                                   ctypes.POINTER(vp), lg, vp, vp]
                 prompt = asv.AXIsProcessTrustedWithOptions
                 prompt.restype, prompt.argtypes = bl, [vp]
+                # The options dictionary built in request_access compares
+                # its keys by pointer, and the framework looks the prompt
+                # option up under its own exported constant, so the key
+                # must BE that constant: a same-text CFString misses the
+                # lookup, the framework reads NULL for the value, and it
+                # dereferences the NULL (EXC_BAD_ACCESS at 0x8 inside
+                # CFGetTypeID; the 2026-10-30 21:52 crash reports, and
+                # Xod's own 20:05 report with the identical stack). If the
+                # constant cannot be read, the ask stays unavailable
+                # (_prompt None) rather than dangerous.
+                self._prompt_key = ctypes.c_void_p.in_dll(
+                    asv, "kAXTrustedCheckOptionPrompt")
+                if not self._prompt_key:
+                    raise ValueError("kAXTrustedCheckOptionPrompt unreadable")
                 self._prompt = prompt
             except Exception:
                 self._prompt = None
+                self._prompt_key = None
 
     # -- primitives ---------------------------------------------------
     def _name(self, s):
@@ -144,7 +160,8 @@ class CtypesAx:
         framework call cannot be made at all.
         """
         prompt = getattr(self, "_prompt", None)
-        if not self.ok or prompt is None:
+        key = getattr(self, "_prompt_key", None)
+        if not self.ok or prompt is None or not key:
             return None
         cf = self._cf
         options = None
@@ -152,10 +169,11 @@ class CtypesAx:
             value = ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue")
             if not value:
                 return None
-            # kAXTrustedCheckOptionPrompt's string value is its own name;
-            # building the CFString through the _name cache avoids chasing
-            # the constant across sub-frameworks (the cache owns the ref).
-            key = self._name("AXTrustedCheckOptionPrompt")
+            # The key is the framework's own kAXTrustedCheckOptionPrompt
+            # constant, read in __init__: the dictionary compares keys by
+            # pointer, so only the constant itself is found by the
+            # framework's lookup (see the note at the registration site).
+            # The constant is framework-owned; it is never released here.
             keys = (ctypes.c_void_p * 1)(key)
             values = (ctypes.c_void_p * 1)(value)
             options = cf.CFDictionaryCreate(None, keys, values, 1, None, None)

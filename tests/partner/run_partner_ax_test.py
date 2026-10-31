@@ -132,18 +132,26 @@ def _seam_request_access():
     cf.CFDictionaryGetValue.restype = ctypes.c_void_p
     cf.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 
+    asv = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+    real_key = ctypes.c_void_p.in_dll(asv, "kAXTrustedCheckOptionPrompt")
+    assert real_key, "the framework must export the prompt key constant"
+
     for answer in (False, True):
         ax = AX.CtypesAx.__new__(AX.CtypesAx)
         ax.ok, ax._strings, ax._cf = True, {}, cf
+        ax._prompt_key = real_key
         seen = {}
 
         def fake_prompt(options, _answer=answer):
-            # The dictionary was built with null key callbacks, so its keys
-            # compare by pointer: look the value up under the very key ref
-            # the seam cached, or the lookup rightly finds nothing.
-            key = ax._strings["AXTrustedCheckOptionPrompt"]
+            # The framework looks the option up under its own exported
+            # constant and the dictionary compares keys by pointer, so
+            # look it up under that very constant: finding the value here
+            # is exactly what the real call does inside
+            # AXIsProcessTrustedWithOptions. (Before the fix the seam
+            # keyed the dictionary with a same-text CFString; this lookup
+            # then found nothing, which is the 2026-10-30 crash.)
             seen["count"] = cf.CFDictionaryGetCount(options)
-            seen["value"] = cf.CFDictionaryGetValue(options, key)
+            seen["value"] = cf.CFDictionaryGetValue(options, real_key)
             return _answer
 
         ax._prompt = fake_prompt
@@ -152,6 +160,17 @@ def _seam_request_access():
         assert seen["count"] == 1, seen
         assert seen["value"] == ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue").value, seen
     print("PASS: the seam passes the prompt option into the framework call and surfaces its answer verbatim", flush=True)
+
+    # Without the real key constant the seam must refuse to ask at all:
+    # asking with a same-text lookalike key is the 2026-10-30 crash.
+    ax = AX.CtypesAx.__new__(AX.CtypesAx)
+    ax.ok, ax._cf = True, cf
+    calls = []
+    ax._prompt = lambda options: calls.append(options) or True
+    ax._prompt_key = None
+    assert ax.request_access() is None
+    assert calls == [], calls
+    print("PASS: no real key constant, no ask: the seam answers None instead of risking the framework", flush=True)
 
     ax = AX.CtypesAx.__new__(AX.CtypesAx)
     ax.ok, ax._prompt = False, None
