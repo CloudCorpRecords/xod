@@ -276,6 +276,11 @@ def case_render():
     single = {"title": "T", "instruction": "Write it",
               "expected_effects": [{"kind": "create", "path": "/tmp/s.txt", "content": "one line"}]}
     check("render: single-line content uses exact text", "with exact text: one line" in M.render_request(single))
+    trailing = {"title": "T", "instruction": "Write it with a newline at the end",
+                "expected_effects": [{"kind": "create", "path": "/tmp/nl.txt", "content": "one line\n"}]}
+    req = M.render_request(trailing)
+    check("render: content with a trailing newline is not dictated as exact text",
+          "with exact text:" not in req and "Create the file at /tmp/nl.txt." in req, req)
 
 
 def case_hardening():

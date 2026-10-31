@@ -314,7 +314,13 @@ def render_request(subtask: Dict[str, Any]) -> str:
         content = eff.get("content")
         if eff["kind"] == "delete":
             lines.append(f"Delete the file at {p}.")
-        elif content is not None and "\n" not in content.strip():
+        elif content is not None and content == content.strip() and "\n" not in content:
+            # The exact-text form carries one line byte for byte, nothing
+            # more: content with leading or trailing whitespace (a trailing
+            # newline above all) would be silently reworded by the strip,
+            # and the queue would then enforce words the plan never said
+            # (mission-2f2579b68a). Such content rides on the instruction
+            # below instead, and only the file's existence is enforced.
             verb = "Create" if eff["kind"] == "create" else "Write"
             lines.append(f"{verb} the file at {p} with exact text: {content.strip()}")
         elif eff["kind"] == "create":

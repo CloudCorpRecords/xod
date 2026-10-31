@@ -252,6 +252,15 @@ async def main():
     assert claims[0]["path"] == cont4 / "proof.txt" and claims[0]["target"] == "file", claims
     print("PASS: a container called a directory does not make its file a directory claim", flush=True)
 
+    # --- the renderer's fall-through shape (content that rides on the
+    # instruction) yields an existence-only claim, never an exact-text one
+    ride_req = (f"Create the file at {cont4}/proof.txt. Its contents should be:\n"
+                f"hardening proof.\n")
+    claims = TQ._claimed_file_effects(ride_req)
+    assert len(claims) == 1 and claims[0]["path"] == cont4 / "proof.txt", claims
+    assert claims[0]["content"] is None, claims
+    print("PASS: content riding on the instruction is checked for existence only", flush=True)
+
     _ContainerResearcher.base = cont4
     RS.AgenticResearcher = _ContainerResearcher
     t = await _run_one(q, mirror_req)
