@@ -682,6 +682,8 @@ async def _start_task_worker():
     asyncio.create_task(local_servers.idle_loop())   # stops the built-in engine after a while unused
     from app.services import phone
     phone.start()                           # the linked phone (Telegram), if there is one
+    from app.services import partner_client
+    partner_client.start_watchdog()         # reciprocal supervision: Xod watches the Partner back
     from app.services import phone_mcp
     phone_mcp.start_bridge()                # Approvals/Crew questions to a paired Android phone, if one is paired
 
@@ -2427,6 +2429,16 @@ async def crew_accessibility_reset_partner_grant():
     user finishes with one flip of the Xod Partner switch (see services/permissions.py)."""
     from app.services import permissions
     return permissions.reset_partner_grant()
+
+
+@app.post("/api/crew/settings/auto-approve/partner/note-planned-restart")
+async def crew_partner_note_planned_restart():
+    """Operator note: a Partner restart in the next ten minutes is planned (a
+    rebuild, an install, a manual restart). Xod's watchdog still revives the
+    Partner if it stays down, but that revival does not spend the mirrored
+    unplanned cap (reciprocal supervision, Partner v1.1 era)."""
+    from app.services import partner_client
+    return {"watchdog": partner_client.note_planned_restart("settings API")}
 
 
 class HandoffRepos(BaseModel):
