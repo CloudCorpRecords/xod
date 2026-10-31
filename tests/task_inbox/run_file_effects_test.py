@@ -158,6 +158,32 @@ async def main():
     assert len(file_claims) == 1 and file_claims[0]["target"] == "file", file_claims
     print("PASS: directory claims parse as directories, file claims stay files", flush=True)
 
+    # --- a path named only as the container of another claimed path is not
+    # itself a claim (H6, mission-1938ea6dd9: step 2 "Create a file named
+    # proof.txt inside /abs/dir ..." manufactured a file claim for the dir,
+    # which is_file() could never satisfy, and the step was contradicted
+    # while proof.txt sat on disk exactly as specified)
+    cont = TMP / "xod-hardening-proof"
+    inside_req = (f"Create a file named proof.txt inside {cont} containing the line: hardening proof.\n"
+                  f"Create the file at {cont}/proof.txt with exact text: hardening proof")
+    claims = TQ._claimed_file_effects(inside_req)
+    assert len(claims) == 1, claims
+    assert claims[0]["kind"] == "write" and claims[0]["target"] == "file", claims
+    assert claims[0]["path"] == cont / "proof.txt", claims
+    assert claims[0]["content"] == "hardening proof", claims
+    print("PASS: a container-only path makes no claim of its own", flush=True)
+
+    # --- one step that genuinely creates BOTH a directory and a file inside
+    # it keeps both claims, each checked as what it is
+    both = TMP / "bothdir"
+    claims = TQ._claimed_file_effects(
+        f"Create the directory at {both}.\nCreate the file at {both}/inner.txt.")
+    assert len(claims) == 2, claims
+    by_target = {c["target"]: c for c in claims}
+    assert by_target["directory"]["path"] == both, claims
+    assert by_target["file"]["path"] == both / "inner.txt", claims
+    print("PASS: a step creating a directory and its file keeps both claims", flush=True)
+
     class _DirResearcher:
         """Does exactly what the task asked: makes the directory."""
         target = None
@@ -182,6 +208,38 @@ async def main():
     assert t["status"] == "failed" and "Not finished" in (t.get("result") or ""), t
     assert not proj2.exists()
     print("PASS: a claimed directory that does not exist still fails honestly", flush=True)
+
+    # --- the H6 shape end to end through the queue: the file inside its
+    # named container verifies; a claimed one that was never made still fails
+    class _ContainerResearcher:
+        """Makes the container directory and the file inside it, as asked."""
+        base = None
+
+        async def run_research_stream(self, messages):
+            d = Path(type(self).base)
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "proof.txt").write_text("hardening proof")
+            yield {"type": "content", "content": "Created proof.txt inside the folder."}
+
+    cont2 = TMP / "container-case"
+    _ContainerResearcher.base = cont2
+    RS.AgenticResearcher = _ContainerResearcher
+    t = await _run_one(q, f"Create a file named proof.txt inside {cont2} containing the line: hardening proof.\n"
+                          f"Create the file at {cont2}/proof.txt with exact text: hardening proof")
+    print(f"   container-honest: status={t['status']}", flush=True)
+    assert t["status"] == "done", f"expected done, got {t['status']}: {t.get('result')}"
+    assert (cont2 / "proof.txt").read_text() == "hardening proof"
+    print("PASS: a file created inside its named container verifies as done", flush=True)
+
+    cont3 = TMP / "container-lie"
+    _LyingResearcher.calls = 0
+    RS.AgenticResearcher = _LyingResearcher
+    t = await _run_one(q, f"Create a file named proof.txt inside {cont3} containing the line: hardening proof.\n"
+                          f"Create the file at {cont3}/proof.txt with exact text: hardening proof")
+    print(f"   container-lie: status={t['status']} result={t.get('result')!r}", flush=True)
+    assert t["status"] == "failed" and "Not finished" in (t.get("result") or ""), t
+    assert not (cont3 / "proof.txt").exists()
+    print("PASS: a claimed file inside a container still fails when nothing was made", flush=True)
 
     # --- the recorded-ops layer: what the activity log says must match the disk
     import sqlite3, time as _time

@@ -183,6 +183,24 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
                         break
             claims.append({"kind": kind, "path": p, "content": content if kind == "write" else None,
                            "target": target})
+    # A write claim whose path is only the container of a sibling write
+    # claim (a proper path prefix: "create proof.txt inside /abs/dir" names
+    # the directory but asks for nothing to be made of it) was manufactured
+    # by the path extraction, not by the request: no sentence calls that
+    # path a file, and the contained claim's existence on disk already
+    # implies the container is there. Keeping it demands is_file() of a
+    # directory, which can never hold, so honest work was contradicted
+    # (H6, mission-1938ea6dd9). A claim whose own words make it a directory
+    # keeps its claim: one step may genuinely create both a directory and
+    # a file inside it, and each is then checked as what it is.
+    write_paths = [c["path"] for c in claims if c["kind"] == "write"]
+
+    def _proper_prefix(a: Path, b: Path) -> bool:
+        return len(a.parts) < len(b.parts) and b.parts[:len(a.parts)] == a.parts
+
+    claims = [c for c in claims
+              if not (c["kind"] == "write" and c.get("target") == "file"
+                      and any(_proper_prefix(c["path"], q) for q in write_paths))]
     return claims
 
 

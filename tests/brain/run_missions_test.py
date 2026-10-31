@@ -343,6 +343,34 @@ async def case_real_queue():
           m2["state"] == "failed" and m2["subtasks"][0]["verified_status"] == "contradicted",
           f"state={m2['state']} sub={m2['subtasks'][0]}")
 
+    # The mission-1938ea6dd9 shape (H6): step 2 creates a file inside the
+    # directory step 1 made. Before the parser fix, the queue manufactured a
+    # file claim for the container path itself and contradicted honest work.
+    d = TMP / "xod-hardening-proof"
+    proof = d / "proof.txt"
+
+    def _make_container():
+        d.mkdir(parents=True, exist_ok=True)
+        proof.write_text("hardening proof")
+
+    _HonestResearcher.effect = _make_container
+    RS.AgenticResearcher = _HonestResearcher
+    plan3 = plan_json([
+        sub("Create directory", f"Create the directory {d}.",
+            [{"kind": "create", "path": str(d), "content": None}]),
+        sub("Create proof.txt",
+            f"Create a file named proof.txt inside {d} containing the line: hardening proof.",
+            [{"kind": "create", "path": str(proof), "content": "hardening proof"}]),
+        sub("Read proof.txt", f"Read the contents of {proof} and report its contents."),
+    ])
+    runner3 = M.MissionRunner(queue=q, ask=FakeAsk([plan3]), poll_sec=0.05)
+    m3 = M.create_mission("real queue, container shape")
+    await runner3.drive(m3["id"])
+    m3 = M.get_mission(m3["id"])
+    check("real queue: a file inside its mission-made directory verifies (H6)",
+          m3["state"] == "done" and m3["subtasks"][1]["verified_status"] == "verified",
+          f"state={m3['state']} subs={[(s['title'], s['verified_status']) for s in m3['subtasks']]}")
+
 
 async def main():
     case_validate()
