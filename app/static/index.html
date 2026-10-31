@@ -1113,6 +1113,19 @@
               ></select>
             </div>
             <div id="llmModelPriceLine" class="hidden text-[10px] text-zinc-400 pt-0.5"></div>
+            <!-- Auto Model Mode: benchmark + cost pick (ViBench snapshot) -->
+            <div class="space-y-1 pt-1">
+              <label class="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                <input type="checkbox" id="checkboxLlmAutoModel" onchange="handleAutoModelToggle()" class="accent-brand-500">
+                <span>Auto (benchmark + cost)</span>
+              </label>
+              <div id="autoModelPickLine" class="hidden text-[10px] text-zinc-400"></div>
+              <details id="vibenchDetails" class="hidden pt-0.5">
+                <summary class="text-[10px] text-brand-400 cursor-pointer hover:underline">The ViBench snapshot behind Auto</summary>
+                <div id="vibenchTableWrap" class="pt-1 overflow-x-auto"></div>
+                <p id="vibenchMeta" class="text-[9px] text-zinc-500 pt-1"></p>
+              </details>
+            </div>
             <!-- LM Studio Detected Models Quick-Picker -->
             <div id="lmStudioDetectedModelsContainer" class="hidden space-y-1.5 pt-1">
               <div class="flex items-center justify-between text-[10px]">

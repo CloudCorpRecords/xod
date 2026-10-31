@@ -331,6 +331,28 @@ class LLMService:
     def get_endpoint_info(self) -> Dict[str, Any]:
         return self._build_endpoint(settings.llm_provider, settings.llm_model)
 
+    async def _apply_auto_model(self, info: Dict[str, Any], endpoint_override, tier) -> Dict[str, Any]:
+        """Auto model mode: on the plain send path (no explicit endpoint, tier, or
+        routed turn), resolve the model through the benchmark + cost selector
+        (services/auto_model.py) instead of the saved model name. Any failure
+        leaves the resolved endpoint untouched."""
+        if endpoint_override or tier or not info:
+            return info
+        try:
+            from app.services import auto_model
+            if not auto_model.auto_enabled():
+                return info
+            result = await auto_model.pick_for(self, info.get("provider") or settings.llm_provider)
+            pick = result.get("pick")
+            if pick and pick != info.get("model"):
+                logger.info(f"Auto model pick: {pick} for {info.get('provider')} ({result.get('pick_reason')})")
+                return {**info, "model": pick}
+            if pick:
+                logger.info(f"Auto model pick: {pick} for {info.get('provider')} (already the resolved model)")
+        except Exception as e:
+            logger.warning(f"Auto model pick failed, keeping {info.get('model')}: {e}")
+        return info
+
     def get_available_tiers(self) -> Dict[str, Any]:
         """Returns readiness status for both local and cloud model tiers."""
         cloud_options = []
@@ -678,6 +700,7 @@ class LLMService:
         except Exception:
             pass
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
+        info = await self._apply_auto_model(info, endpoint_override, tier)
         if task and think is False and not endpoint_override:
             from app.services.specialists import active_endpoint_for
             specialist_ep = active_endpoint_for(task)
@@ -860,6 +883,7 @@ class LLMService:
         except Exception:
             pass
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
+        info = await self._apply_auto_model(info, endpoint_override, tier)
         if info["provider"] in ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic") and info["api_key"] == "missing":
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}
             return
@@ -1019,6 +1043,7 @@ class LLMService:
             if route and route.endpoint:   # this turn runs on the stronger (cloud) model
                 endpoint_override = route.endpoint
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
+        info = await self._apply_auto_model(info, endpoint_override, tier)
         if info["provider"] in ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic") and info["api_key"] == "missing":
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}
             return
