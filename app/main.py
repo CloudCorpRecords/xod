@@ -176,6 +176,11 @@ class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
     persona: Optional[str] = None
 
+def auto_model_enabled() -> bool:
+    from app.services import auto_model
+    return auto_model.auto_enabled()
+
+
 class ConfigUpdateRequest(BaseModel):
     trustmrr_api_key: Optional[str] = None
     you_api_key: Optional[str] = None
@@ -183,6 +188,7 @@ class ConfigUpdateRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
+    llm_auto_model: Optional[bool] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
@@ -1815,6 +1821,7 @@ async def get_config():
         "llm_provider": settings.llm_provider,
         "llm_base_url": settings.llm_base_url,
         "llm_model": settings.llm_model,
+        "llm_auto_model": auto_model_enabled(),
         "has_openai_key": bool(settings.openai_api_key),
         "has_anthropic_key": bool(settings.anthropic_api_key),
         "has_gemini_key": bool(settings.gemini_api_key),
@@ -1864,6 +1871,10 @@ async def update_config(req: ConfigUpdateRequest):
 
     if req.llm_model is not None:
         update_env_variable("LLM_MODEL", req.llm_model)
+
+    if req.llm_auto_model is not None:
+        from app.services import auto_model
+        auto_model.set_auto_enabled(bool(req.llm_auto_model))
 
     if req.openai_api_key is not None:
         update_env_variable("OPENAI_API_KEY", req.openai_api_key.strip())
@@ -2205,6 +2216,27 @@ async def post_usage_estimate(req: UsageEstimateRequest):
     else:
         prompt_chars = len(req.text or "")
     return usage_ledger.estimate(provider, model, prompt_chars, req.max_tokens)
+
+@app.get("/api/llm/auto-pick")
+async def get_llm_auto_pick(provider: Optional[str] = None):
+    """Auto mode's current pick for a provider, with the full ranked list and the
+    reason for every rank. Ranks the same models the Detect Models flow returns."""
+    from app.services import auto_model
+    models = await llm_service.list_models(provider_override=provider)
+    ids = [m.get("id") for m in models if m.get("id")]
+    result = auto_model.rank_models(provider or settings.llm_provider, ids)
+    result["enabled"] = auto_model.auto_enabled()
+    result["current_model"] = settings.llm_model
+    return result
+
+
+@app.get("/api/llm/vibench")
+async def get_llm_vibench():
+    """The bundled ViBench snapshot Auto ranks from, served so the Settings page
+    can show the basis of every pick (dated, attributed, never live data)."""
+    from app.services import auto_model
+    return auto_model.load_snapshot()
+
 
 @app.get("/api/lmstudio/status")
 async def get_lmstudio_status():

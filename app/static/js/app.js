@@ -487,6 +487,10 @@ async function loadConfig() {
     document.getElementById("inputLlmModel").value = data.llm_model || "google/gemma-4-12b-qat";
     handleProviderChange();
     updateLlmModelPriceLine();
+    const autoBox = document.getElementById("checkboxLlmAutoModel");
+    if (autoBox) autoBox.checked = Boolean(data.llm_auto_model);
+    renderVibenchTable();
+    refreshAutoModelPick();
 
     // Update Cloud Swarm Keys Badges
     const updateKeyBadge = (id, hasKey, inputId) => {
@@ -1281,6 +1285,80 @@ function stopUsageAutoRefresh() {
   if (_usageTimer) { clearInterval(_usageTimer); _usageTimer = null; }
 }
 
+// ---- Auto model mode (ViBench benchmark + cost) -----------------------------
+// The pick comes from the backend selector (GET /api/llm/auto-pick), which ranks
+// the provider's detected models against the bundled ViBench snapshot and the
+// pricing table. The snapshot table below renders that same data, so the basis
+// of every pick can be inspected. Snapshot numbers are dated, never live.
+let _vibenchSnapshot = null;
+let _vibenchPromise = null;
+let _autoWired = false;
+
+function loadVibenchSnapshot() {
+  if (_vibenchSnapshot) return Promise.resolve(_vibenchSnapshot);
+  if (_vibenchPromise) return _vibenchPromise;
+  _vibenchPromise = fetch("/static/vibench_snapshot.json")
+    .then(r => (r.ok ? r.json() : null))
+    .then(d => { _vibenchSnapshot = d; return d; })
+    .catch(() => null);
+  return _vibenchPromise;
+}
+
+function vibenchRowsTable(rows) {
+  const head = "<tr><th class='text-left pr-2'>Model</th><th class='text-right pr-2'>Pass@1</th><th class='text-right pr-2'>Plan pass</th><th class='text-right pr-2'>Cost / build</th><th class='text-right'>Build time</th></tr>";
+  const body = (rows || []).map(r =>
+    `<tr><td class='pr-2 py-0.5'>${escapeHtml(r.display_name)}</td>` +
+    `<td class='text-right pr-2 py-0.5'>${r.pass_at_1}%</td>` +
+    `<td class='text-right pr-2 py-0.5'>${r.plan_pass_rate}%</td>` +
+    `<td class='text-right pr-2 py-0.5'>$${Number(r.cost_per_build_usd).toFixed(2)}</td>` +
+    `<td class='text-right py-0.5'>${escapeHtml(r.build_time)}</td></tr>`).join("");
+  return `<table class='w-full text-[10px] text-zinc-300 font-mono'><thead class='text-zinc-500'>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+async function renderVibenchTable() {
+  const details = document.getElementById("vibenchDetails");
+  const wrap = document.getElementById("vibenchTableWrap");
+  const meta = document.getElementById("vibenchMeta");
+  if (!details || !wrap) return;
+  const snap = await loadVibenchSnapshot();
+  if (!snap || !snap.rows) { details.classList.add("hidden"); return; }
+  let html = vibenchRowsTable(snap.rows);
+  (snap.secondary_tables || []).forEach(t => {
+    html += `<p class='text-[9px] text-zinc-500 pt-1.5 pb-0.5'>${escapeHtml(t.name)}: a separate run, shown for context; it does not feed Auto.</p>` + vibenchRowsTable(t.rows);
+  });
+  wrap.innerHTML = html;
+  if (meta) meta.textContent = `${snap.benchmark} snapshot dated ${snap.snapshot_date}. Source: ${snap.source}. ${snap.attribution || ""}`;
+  details.classList.remove("hidden");
+}
+
+async function refreshAutoModelPick() {
+  const line = document.getElementById("autoModelPickLine");
+  const box = document.getElementById("checkboxLlmAutoModel");
+  if (!line || !box) return;
+  if (!_autoWired) {
+    _autoWired = true;
+    const prov = document.getElementById("selectLlmProvider");
+    if (prov) prov.addEventListener("change", () => refreshAutoModelPick());
+  }
+  if (!box.checked) { line.classList.add("hidden"); line.textContent = ""; return; }
+  const provider = document.getElementById("selectLlmProvider")?.value || "";
+  try {
+    const res = await fetch(`/api/llm/auto-pick${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`);
+    const data = await res.json();
+    line.classList.remove("hidden");
+    line.textContent = data.pick
+      ? `Auto pick: ${data.pick}. Why: ${data.pick_reason}. ${data.formula}`
+      : `Auto pick: none yet. ${data.pick_reason || ""}`;
+  } catch (e) {
+    line.classList.remove("hidden");
+    line.textContent = "Auto pick unavailable right now; the saved model name still applies.";
+  }
+}
+
+function handleAutoModelToggle() {
+  refreshAutoModelPick();
+}
+
 async function refreshLlmModels(options = {}) {
   const isSilent = Boolean(options && options.silent);
   const btn = document.getElementById("btnDetectModels");
@@ -1388,6 +1466,7 @@ async function refreshLlmModels(options = {}) {
       btn.innerHTML = `<i data-lucide="refresh-cw" class="size-3"></i> Detect Models`;
       if (window.lucide) lucide.createIcons();
     }
+    refreshAutoModelPick();
   }
 }
 
@@ -2321,6 +2400,7 @@ async function saveSettings() {
     llm_base_url: (provider === "fireworks" && (!baseUrl || baseUrl.includes("localhost"))) ? "https://api.fireworks.ai/inference/v1" : baseUrl,
     llm_model: (provider === "fireworks" && (!model || model.includes("gemma-4"))) ? "accounts/fireworks/models/glm-5p3-flash" : model
   };
+  payload.llm_auto_model = document.getElementById("checkboxLlmAutoModel")?.checked || false;
   if (key) payload.trustmrr_api_key = key;
   if (youKey) payload.you_api_key = youKey;
   if (tavilyKey) payload.tavily_api_key = tavilyKey;
