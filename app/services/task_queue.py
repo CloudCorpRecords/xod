@@ -15,6 +15,8 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -105,6 +107,70 @@ def _phone(task: Optional[Dict[str, Any]], event: str) -> None:
         phone.on_task(task, event)
     except Exception as e:
         logger.debug(f"phone: {e}")
+
+
+# ------------------------------------------------------------- file-effect claims
+# What a task's own words promise on disk. Deliberately conservative: an effect
+# verb, a resolvable path, and no negation governing the verb. Anything less
+# explicit is left to the agent's report; the recorded-ops check in
+# TaskQueue._verify_file_effects still applies to every task.
+_EFFECT_VERB = re.compile(r"\b(create|write|save|make|delete|remove|trash|erase)\b", re.I)
+_DELETE_VERB = re.compile(r"\b(delete|remove|trash|erase)\b", re.I)
+_NEGATION = re.compile(r"\b(do not|don't|never)\b", re.I)
+_PATH_RE = re.compile(r"(?:~|/)[^\s\"'<>|]+")
+_NAMED_INSIDE_RE = re.compile(r"file named ([^\s/]+?) inside the ([^\s/]+?) folder", re.I)
+_FOLDER_NAMED_RE = re.compile(r"folder named ([^\s/(]+)", re.I)
+_FILE_NAMED_RE = re.compile(r"file named ([^\s/]+)", re.I)
+_EXACT_CONTENT_RE = re.compile(r"(?:contents? (?:are|is) exactly this|containing exactly|exact text)[^:]*:\s*(.+)", re.I | re.S)
+
+
+def _path_mentioned(sentence: str, p: Path) -> bool:
+    if str(p) in sentence or p.name in sentence:
+        return True
+    return bool(p.stem and re.search(rf"\b{re.escape(p.stem)}\b", sentence))
+
+
+def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
+    """File effects the request itself explicitly asks for:
+    [{kind: "write" or "delete", path: Path, content: exact text or None}]."""
+    text = request or ""
+    paths: List[Path] = []
+    for m in _PATH_RE.finditer(text):
+        if m.start() and text[m.start() - 1] in "/:":
+            continue   # the tail of a longer path or a URL, not a path of its own
+        raw = m.group(0).rstrip(".,;:)")
+        if raw not in ("", "~", "/"):
+            paths.append(Path(os.path.expanduser(raw)))
+    named = _NAMED_INSIDE_RE.search(text)
+    if named:
+        paths.append(Path.home() / named.group(2) / named.group(1))
+    elif "home folder" in text.lower():
+        folder, fname = _FOLDER_NAMED_RE.search(text), _FILE_NAMED_RE.search(text)
+        if folder and fname:
+            paths.append(Path.home() / folder.group(1) / fname.group(1))
+    content = None
+    cm = _EXACT_CONTENT_RE.search(text)
+    if cm:
+        content = cm.group(1).split("\n")[0].strip() or None
+    claims: List[Dict[str, Any]] = []
+    sentences = re.split(r"[.!?\n]", text)
+    for p in dict.fromkeys(paths):
+        kind = None
+        for s in sentences:
+            if not _path_mentioned(s, p) or _NEGATION.search(s):
+                continue
+            if _DELETE_VERB.search(s):
+                kind = "delete"
+            elif _EFFECT_VERB.search(s):
+                kind = "write"
+        if kind is None and len(paths) == 1 and not _NEGATION.search(text):
+            if _DELETE_VERB.search(text):
+                kind = "delete"
+            elif _EFFECT_VERB.search(text):
+                kind = "write"
+        if kind:
+            claims.append({"kind": kind, "path": p, "content": content if kind == "write" else None})
+    return claims
 
 
 class TaskQueue:
@@ -352,6 +418,86 @@ class TaskQueue:
         except Exception:
             pass
 
+    async def _stream(self, task_id: str, message: str, steps: int):
+        """Runs the agent for one stretch of a task; returns (report_text, steps).
+        Raises whatever the stream raises; the caller finishes the task as crashed."""
+        from app.agent.researcher import AgenticResearcher
+        content, last_status = [], ""
+        async for ev in AgenticResearcher().run_research_stream([{"role": "user", "content": message}]):
+            if ev.get("type") == "content":
+                piece = ev.get("content", "")
+                content.append(piece if isinstance(piece, str) else json.dumps(piece))
+            elif ev.get("type") == "status":
+                line = str(ev.get("content", ""))[:200]
+                if line != last_status:
+                    last_status = line
+                    if line[:1] in "✓✗⏸•":
+                        steps += 1
+                    self._update(task_id, now=line, steps=steps)
+                    if line.lstrip()[:1] in "".join(self._PROGRESS_MARKS) or line.startswith(self._PROGRESS_MARKS):
+                        self._progress(task_id, line)
+            if task_id in self._cancel_requested:
+                break
+        return "".join(content).strip(), steps
+
+    def _verify_file_effects(self, task: Dict[str, Any], started: float) -> List[str]:
+        """Ways this task's file effects are NOT true on disk (empty list = verified).
+        Two layers, both factual: (1) the file ops the activity log recorded for this
+        task must match the disk now; (2) file effects the request itself spells out
+        (a path plus create/write/delete wording, exact contents when dictated) must
+        hold on disk, whether or not any tool ran. The agent has reported tasks done
+        without calling a single file tool; this check trusts the disk, not the report."""
+        from app.services import activity
+        problems: List[str] = []
+        try:
+            entries = activity.entries_for_origin(f"task:{task['id']}", since=started - 1)
+        except Exception:
+            logger.exception("file-effect check: activity read failed")
+            entries = []
+        expect: Dict[str, str] = {}
+        for e in entries:
+            if not e.get("ok"):
+                continue
+            for op in e.get("ops") or []:
+                kind = op.get("kind")
+                if kind in ("restore_file", "remove_created"):
+                    expect[str(op.get("path"))] = "file"
+                elif kind == "untrash":
+                    expect[str(op.get("path"))] = "absent"
+                elif kind in ("move_back", "remove_copy"):
+                    expect[str(op.get("now_at") or op.get("to_hint"))] = "present"
+                elif kind == "remove_empty_dir":
+                    expect[str(op.get("path"))] = "present"
+        for raw, want in expect.items():
+            p = Path(raw)
+            if want == "file" and not p.is_file():
+                problems.append(f"{p.name} was written during the task but is not on disk now")
+            elif want == "absent" and p.exists():
+                problems.append(f"{p.name} was deleted during the task but is still on disk")
+            elif want == "present" and not p.exists():
+                problems.append(f"{p.name} should be on disk but is missing")
+        for claim in _claimed_file_effects(task.get("request") or ""):
+            p = claim["path"]
+            if claim["kind"] == "delete":
+                if p.exists():
+                    problems.append(f"the task asked for {p.name} to be deleted, but it is still on disk")
+            else:
+                if not p.is_file():
+                    problems.append(f"the task asked for {p.name} to be created, but it is not on disk")
+                elif claim.get("content") is not None:
+                    try:
+                        actual = p.read_bytes() if p.stat().st_size <= 1_000_000 else None
+                    except Exception:
+                        actual = None
+                    if actual is not None and actual != claim["content"].encode("utf-8"):
+                        problems.append(f"{p.name} does not contain exactly what the task asked for")
+        seen, out = set(), []
+        for pr in problems:
+            if pr not in seen:
+                seen.add(pr)
+                out.append(pr)
+        return out
+
     async def _run(self, task_id: str) -> None:
         from app.services import activity
         activity.origin.set(f"task:{task_id}")   # tool calls in this task are logged as the task's
@@ -394,28 +540,36 @@ class TaskQueue:
             message = f"{action.get('text', '')}\n(continue)"
 
         started = time.time()
-        content, last_status, steps = [], "", task.get("steps") or 0
+        steps = task.get("steps") or 0
         try:
-            async for ev in AgenticResearcher().run_research_stream([{"role": "user", "content": message}]):
-                if ev.get("type") == "content":
-                    piece = ev.get("content", "")
-                    content.append(piece if isinstance(piece, str) else json.dumps(piece))
-                elif ev.get("type") == "status":
-                    line = str(ev.get("content", ""))[:200]
-                    if line != last_status:
-                        last_status = line
-                        if line[:1] in "✓✗⏸•":
-                            steps += 1
-                        self._update(task_id, now=line, steps=steps)
-                        if line.lstrip()[:1] in "".join(self._PROGRESS_MARKS) or line.startswith(self._PROGRESS_MARKS):
-                            self._progress(task_id, line)
-                if task_id in self._cancel_requested:
-                    break
+            report, steps = await self._stream(task_id, message, steps)
         except Exception as e:
             logger.exception(f"Task {task_id} crashed")
             self._finish(task_id, "failed", f"Something went wrong: {e}", note="Crashed")
             self._running_id = None
             return
+
+        # A task is only done when its file effects are true on disk (see
+        # _verify_file_effects). No-mission tasks get one honest retry with the
+        # problem named; mission tasks are verified at their finish below,
+        # without a retry (their flow has its own confirmation states).
+        mission = sb.latest_mission if (sb.latest_mission or {}).get("started_at", 0) >= started - 1 else None
+        problems: List[str] = []
+        if not mission and task_id not in self._cancel_requested:
+            problems = self._verify_file_effects(task, started)
+            if problems:
+                self._update(task_id, note="The first attempt did not check out; running it again",
+                             now="Checking the result before finishing")
+                retry_msg = (f"{task['request']}\n\n(You already attempted this once and reported finishing, "
+                             f"but checking found: {'; '.join(problems)}. Do it now for real, using your "
+                             "file tools, then confirm briefly.)")
+                try:
+                    again, steps = await self._stream(task_id, retry_msg, steps)
+                    if again:
+                        report = again
+                except Exception:
+                    logger.exception(f"Task {task_id} verification retry crashed")
+                problems = self._verify_file_effects(task, started)
 
         self._running_id = None
         if task_id in self._cancel_requested:
@@ -424,10 +578,13 @@ class TaskQueue:
             await self._close_tab(self.get(task_id).get("tab_id"))
             return
 
-        report = "".join(content).strip()
-        mission = sb.latest_mission if (sb.latest_mission or {}).get("started_at", 0) >= started - 1 else None
         if not mission:
-            self._finish(task_id, "done", report or "Done.", note="Finished")
+            if problems:
+                tail = f"Not finished: {'; '.join(problems)}"
+                self._finish(task_id, "failed", f"{report}\n\n{tail}".strip() if report else tail,
+                             note="Verification failed")
+            else:
+                self._finish(task_id, "done", report or "Done.", note="Finished")
             await self._close_tab(self.get(task_id).get("tab_id"))
             return
 
@@ -438,7 +595,13 @@ class TaskQueue:
         common = {"mission_json": snapshot, "result": report, "next_action": None}
 
         if status == "completed":
-            self._finish(task_id, "done", report, note="Finished", **common)
+            problems = self._verify_file_effects(task, started)
+            if problems:
+                self._finish(task_id, "failed",
+                             f"{report}\n\nNot finished: {'; '.join(problems)}".strip(),
+                             note="Verification failed", **common)
+            else:
+                self._finish(task_id, "done", report, note="Finished", **common)
             await self._close_tab(self.get(task_id).get("tab_id"))
         elif status == "needs_confirmation":
             pending = sb.pending_submit or {}

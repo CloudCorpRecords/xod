@@ -245,6 +245,25 @@ def recent(limit: int = 200, since: Optional[float] = None) -> List[Dict[str, An
              "undone_at": r["undone_at"], "note": r["note"]} for r in rows]
 
 
+def entries_for_origin(origin: str, since: float = 0, limit: int = 500) -> List[Dict[str, Any]]:
+    """Full entries for one origin, oldest first, with the recorded file ops parsed.
+    recent() does not expose the ops; the task queue's completion check needs them
+    to compare what a task did against what is actually on disk."""
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM activity WHERE origin = ? AND ts >= ? ORDER BY id ASC LIMIT ?",
+                         (origin, since or 0, limit)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["ok"] = bool(r["ok"])
+        try:
+            d["ops"] = json.loads(r["undo"] or "[]")
+        except Exception:
+            d["ops"] = []
+        out.append(d)
+    return out
+
+
 def _trash(p: Path) -> None:
     """Into the macOS Trash (recoverable), not deleted. macOS 14+ has /usr/bin/trash (no Finder permission needed).
     On Windows: the Recycle Bin."""
