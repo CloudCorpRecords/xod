@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.13
+
+**GPT-5 models work end to end**
+- Some newer models refuse the classic token limit parameter and accept only their own. Xod now sends the parameter each model family accepts, in chat, streaming, and agent runs alike, and if a model refuses a parameter by name, Xod retries with the right one and remembers the pairing for next time.
+- The same applies to temperature: models that only accept their default are called without a set value instead of failing.
+
+**Mission checks tell the truth about paths**
+- A step that creates a folder now verifies as a folder, and the mission evidence says exactly what was checked for each step: that a path exists, or that a file holds the exact dictated text.
+- The checker no longer manufactures a claim for a folder that is only the address of a file inside it, and a sentence describing the container no longer decides what the file inside it is.
+- Exact text is only dictated to a step when the text can be carried byte for byte; anything longer or multi-line is checked by existence, as the plan states.
+
+**Estimates calibrated against real calls**
+- Pre-flight prompt estimates ran about 13 percent high against the calls Xod actually made. They are now scaled by the measured factor, and the estimate next to each call still labels itself an estimate.
+
+**A refused key save explains itself**
+- When macOS will not let Xod write to its key vault (usually right after restarts, before the vault prompt is answered), saving a key in Settings now answers with the vault's own explanation instead of a bare failure.
+
+**Xod and the Partner watch each other**
+- The Partner's restart allowance now counts only unplanned revivals. A graceful quit, an update, or a restart announced ahead of time is signaled as planned and never spends the allowance, so a busy evening of updates cannot lock the Partner out of reviving a real crash later. The Partner's status shows the planned and unplanned counts separately.
+- Xod watches the Partner back: if the Partner stops answering, Xod restarts it with the same planned and unplanned accounting, mirrored in Xod's own status. macOS launchd still sits under both as the last resort.
+
+**Checked before it shipped**
+- The merged tree passed every local suite: the Muse approval smoke test (61 checks), the file-effects tests, the missions suite (44), the key and usage suite (45), the Auto mode suite (19), the new parameter suite (25), and the Partner watchdog, accessibility, and delegation suites. The release privacy scan is clean.
+- On a real Mac, a live mission finished with every step verified on disk, the proving suite passed 7 of 7 against the installed app, an Auto pick on a GPT-5 model completed and landed in the usage ledger, and the restart accounting was exercised both ways: a planned restart spent nothing, a cold kill spent exactly one slot. Xod Partner's permission read true throughout.
+
 ## 0.9.12
 
 **Missions: give Xod a goal, get a verified report**
