@@ -78,12 +78,13 @@ def _endpoint(provider: str, model: str, base_url: str = "") -> Dict[str, Any]:
 
 
 async def _ask(c: httpx.AsyncClient, info: Dict[str, Any], content: Any, tools=None, max_tokens: int = ROOM) -> Dict[str, Any]:
-    from app.services.llm import _quiet_thinking
+    from app.services.llm import _quiet_thinking, _apply_tools_effort
     payload: Dict[str, Any] = {"model": info["model"], "messages": [{"role": "user", "content": content}],
                                "temperature": 0, "max_tokens": max_tokens, "stream": False}
     if tools:
         payload["tools"], payload["tool_choice"] = tools, "auto"
     _quiet_thinking(payload, info, False)
+    _apply_tools_effort(payload, info)   # up-front half of the tools/effort rule; this path has no retry loop
     t = time.time()
     r = await c.post(f"{info['base_url']}/chat/completions", json=payload,
                      headers={"Authorization": f"Bearer {info.get('api_key') or 'local'}"})

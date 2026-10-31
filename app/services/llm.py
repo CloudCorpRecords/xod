@@ -239,6 +239,82 @@ def _effort_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int,
     return False
 
 
+# Reasoning effort with function tools (fix round 1, 2026-10-31). OpenAI
+# refused a chat/completions request for gpt-6.1-sol that carried function
+# tools together with a reasoning effort, HTTP 400: "Function tools with
+# reasoning_effort are not supported for gpt-6.1-sol in /v1/chat/completions.
+# To use function tools, use /v1/responses or set reasoning_effort to
+# 'none'." An Auto-mode subtask died on exactly this and its work was lost.
+# Two shapes meet here:
+# - _quiet_thinking (think=False) can attach a thinking effort ("low" on
+#   Fireworks) to a payload that also carries tools: that effort must not
+#   reach a model that refuses the combination.
+# - deliberate_stream, the agent/tool stream, attaches no reasoning_effort
+#   at all, and the evidenced call still died, so dropping a parameter
+#   cannot be the only remedy: the API's own instruction for that shape is
+#   an explicit reasoning_effort of "none".
+# The refusal names the model, so the one up-front rule follows the model
+# id on any route. No other model is named up front: there is no error-text
+# evidence for the other rows of the pricing table (gpt-6-astra,
+# gpt-6.1-terra, gpt-6-luna, gpt-6-sol, the 5.6, 5.5 and 5.4 rows); the
+# reactive handler below covers a model if an endpoint ever teaches it.
+_TOOLS_EFFORT_NONE_MODELS = ("gpt-6.1-sol",)
+_tools_effort_learned: Dict[Tuple[str, str], str] = {}   # (provider, model) -> "none" or "omit", tools calls only
+
+
+def _tools_effort_mode(info: Dict[str, Any], has_tools: bool) -> Optional[str]:
+    """How a tools call for this pair must treat reasoning_effort: "none",
+    "omit", or None (leave the payload as it is). Tools calls only: a call
+    without tools keeps its current behaviour, and the learned remedies
+    below are scoped the same way, unlike _no_effort above."""
+    if not has_tools:
+        return None
+    pair = (info.get("provider"), info.get("model"))
+    if pair in _tools_effort_learned:
+        return _tools_effort_learned[pair]
+    if str(info.get("model") or "").lower() in _TOOLS_EFFORT_NONE_MODELS:
+        return "none"
+    return None
+
+
+def _apply_tools_effort(payload: Dict[str, Any], info: Dict[str, Any]) -> None:
+    """Applies _tools_effort_mode to a built payload. Call after tools are
+    attached and after _quiet_thinking, so a carried thinking effort is
+    the thing being replaced or dropped."""
+    mode = _tools_effort_mode(info, bool(payload.get("tools")))
+    if mode == "none":
+        payload["reasoning_effort"] = "none"
+    elif mode == "omit":
+        payload.pop("reasoning_effort", None)
+
+
+def _tools_effort_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int, body: str) -> bool:
+    """True when the endpoint refused this tools call over reasoning_effort:
+    the remedy that fits the payload is applied (a carried thinking effort
+    is dropped, the H2/H5 shape; a payload carrying no effort gets an
+    explicit "none", the API's own instruction), the pair and the remedy
+    are remembered for later tools calls, and the caller retries. A payload
+    already sending "none" is not retried again on the same refusal."""
+    if status != 400 or not payload.get("tools"):
+        return False
+    text = (body or "").lower()
+    if "reasoning_effort" not in text or "function tools" not in text:
+        return False
+    current = payload.get("reasoning_effort")
+    if current == "none":
+        return False
+    if current is None:
+        payload["reasoning_effort"] = "none"
+        remedy = "none"
+    else:
+        payload.pop("reasoning_effort", None)
+        remedy = "omit"
+    _tools_effort_learned[(info.get("provider"), info.get("model"))] = remedy
+    logger.info("Endpoint refuses reasoning_effort with function tools for %s/%s; remedy %s, retrying.",
+                info.get("provider"), info.get("model"), remedy)
+    return True
+
+
 # Models whose chat API refuses "max_tokens" and requires "max_completion_tokens"
 # instead (the GPT-5 family and the o-series reasoning models at OpenAI). Found in
 # the Brain v1 hardening round (2026-10-30): Auto mode picked gpt-5-nano and every
@@ -852,6 +928,7 @@ class LLMService:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
         _quiet_thinking(payload, info, think)
+        _apply_tools_effort(payload, info)
 
         last_err: Optional[Exception] = None
         grown = False
@@ -867,6 +944,8 @@ class LLMService:
                     if res.status_code in RETRYABLE_STATUS and attempt < MAX_ATTEMPTS and not is_specialist:
                         logger.warning(f"LLM HTTP {res.status_code}, retrying ({attempt}/{MAX_ATTEMPTS})")
                         await asyncio.sleep(1.5 * attempt)
+                        continue
+                    if res.status_code != 200 and _tools_effort_rejected(payload, info, res.status_code, res.text):
                         continue
                     if res.status_code != 200 and _effort_rejected(payload, info, res.status_code, res.text):
                         continue
@@ -1027,6 +1106,7 @@ class LLMService:
             payload["stream_options"] = {"include_usage": True}   # token counts (cost, and the Usage tab for local models too)
         _usage: Optional[Dict[str, Any]] = None
         _quiet_thinking(payload, info, think)
+        _apply_tools_effort(payload, info)   # no tools on this path today; kept so a future tools parameter is covered
 
         restarted = False
         async with httpx.AsyncClient(timeout=XOD_TIMEOUT if info["provider"] == "xod" else LLM_TIMEOUT) as client:
@@ -1035,6 +1115,8 @@ class LLMService:
                     async with _open_stream(client, url, payload, headers, info) as response:
                         if response.status_code != 200:
                             err_body = await response.aread()
+                            if _tools_effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
                             if _effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
                             if _budget_param_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
@@ -1193,6 +1275,7 @@ class LLMService:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
+        _apply_tools_effort(payload, info)
 
         tool_calls_map: Dict[int, Dict[str, Any]] = {}
         full_reasoning = ""
@@ -1205,6 +1288,10 @@ class LLMService:
                     async with _open_stream(client, url, payload, headers, info) as response:
                         if response.status_code != 200:
                             err_body = await response.aread()
+                            if _tools_effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
+                            if _effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
                             if _budget_param_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
                             if _temperature_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
