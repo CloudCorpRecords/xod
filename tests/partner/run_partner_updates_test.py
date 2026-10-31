@@ -22,6 +22,7 @@ Run: python3 tests/partner/run_partner_updates_test.py
 """
 import hashlib
 import json
+import os
 import plistlib
 import re
 import sys
@@ -29,6 +30,13 @@ import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+# Standing rule (2026-10-31): test processes never reach for the real
+# vault, so every suite runner names the file keyring backend explicitly,
+# in the same shape the smoke suites use. This suite's own paths (the
+# Partner modules and a fake HTTP backend) never load vault code; the
+# setting is set anyway so the rule holds for anything it imports.
+os.environ["PYTHON_KEYRING_BACKEND"] = "tests.support.filekeyring.FileKeyring"
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "partner"))
