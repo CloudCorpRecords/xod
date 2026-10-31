@@ -486,6 +486,7 @@ async function loadConfig() {
     document.getElementById("inputLlmBaseUrl").value = data.llm_base_url || "http://localhost:1234/v1";
     document.getElementById("inputLlmModel").value = data.llm_model || "google/gemma-4-12b-qat";
     handleProviderChange();
+    updateLlmModelPriceLine();
 
     // Update Cloud Swarm Keys Badges
     const updateKeyBadge = (id, hasKey, inputId) => {
@@ -981,6 +982,115 @@ async function testCurrentCloudProviderKey() {
   }
 }
 
+
+// ---- Model pricing reference + detected-model dropdown ---------------------
+// Prices come from one dated reference table (app/static/model_pricing.json),
+// verified by hand against the provider's official pricing pages. The provider's
+// model-list API does not return prices, so a model missing from the table shows
+// "no reference price" rather than a guess.
+let _modelPricingTable = null;
+let _modelPricingPromise = null;
+let _priceLineWired = false;
+
+function loadModelPricing() {
+  if (_modelPricingTable) return Promise.resolve(_modelPricingTable);
+  if (_modelPricingPromise) return _modelPricingPromise;
+  _modelPricingPromise = fetch("/static/model_pricing.json")
+    .then(r => (r.ok ? r.json() : null))
+    .then(d => { _modelPricingTable = d; return d; })
+    .catch(() => null);
+  return _modelPricingPromise;
+}
+
+// Exact id first, then the undated alias (dated snapshots like gpt-4o-2024-08-06
+// share the alias price). Returns {input, output} in USD per 1M tokens, or null.
+function lookupModelPrice(table, provider, modelId) {
+  if (!table || !table.providers || !modelId) return null;
+  const rows = table.providers[provider];
+  if (!rows) return null;
+  const id = String(modelId).trim();
+  if (rows[id]) return rows[id];
+  const alias = id.replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  return rows[alias] || null;
+}
+
+function formatUsd(n) {
+  return "$" + Number(n).toFixed(2);
+}
+
+function modelPriceSuffix(table, provider, modelId) {
+  const row = lookupModelPrice(table, provider, modelId);
+  if (!row) return "";
+  return ` (${formatUsd(row.input)} in / ${formatUsd(row.output)} out per 1M)`;
+}
+
+async function updateLlmModelPriceLine() {
+  const line = document.getElementById("llmModelPriceLine");
+  if (!line) return;
+  if (!_priceLineWired) {
+    _priceLineWired = true;
+    const input = document.getElementById("inputLlmModel");
+    if (input) input.addEventListener("input", () => updateLlmModelPriceLine());
+    const prov = document.getElementById("selectLlmProvider");
+    if (prov) prov.addEventListener("change", () => updateLlmModelPriceLine());
+  }
+  const provider = document.getElementById("selectLlmProvider")?.value || "";
+  const modelId = (document.getElementById("inputLlmModel")?.value || "").trim();
+  const table = await loadModelPricing();
+  const hasProvider = Boolean(table && table.providers && table.providers[provider]);
+  if (!hasProvider || !modelId) {
+    line.classList.add("hidden");
+    line.textContent = "";
+    return;
+  }
+  const row = lookupModelPrice(table, provider, modelId);
+  line.classList.remove("hidden");
+  line.textContent = row
+    ? `Reference price: ${formatUsd(row.input)} in / ${formatUsd(row.output)} out per 1M tokens (table dated ${table.as_of})`
+    : `No reference price for this model (table dated ${table.as_of})`;
+}
+
+// Fill the detected-models dropdown from a Detect Models result. Choosing a row
+// writes the id into the Model Name input, which is what Save Settings persists,
+// so the save path is unchanged. The Custom row leaves manual typing untouched.
+async function populateDetectedModelSelect(models, selectedId) {
+  const wrap = document.getElementById("detectedModelsContainer");
+  const sel = document.getElementById("selectLlmModelDetected");
+  if (!wrap || !sel) return;
+  const provider = document.getElementById("selectLlmProvider")?.value || "";
+  const table = await loadModelPricing();
+  sel.innerHTML = "";
+  const ids = (models || []).map(m => m.id).filter(Boolean);
+  ids.forEach(id => {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = id + modelPriceSuffix(table, provider, id);
+    sel.appendChild(opt);
+  });
+  const custom = document.createElement("option");
+  custom.value = "__custom__";
+  custom.textContent = "Custom (keep the name typed above)";
+  sel.appendChild(custom);
+  if (ids.length === 0) {
+    wrap.classList.add("hidden");
+    return;
+  }
+  wrap.classList.remove("hidden");
+  sel.value = ids.includes(selectedId) ? selectedId : "__custom__";
+  sel.onchange = () => {
+    if (sel.value && sel.value !== "__custom__") {
+      const input = document.getElementById("inputLlmModel");
+      if (input) input.value = sel.value;
+    }
+    updateLlmModelPriceLine();
+  };
+}
+
+function hideDetectedModelSelect() {
+  const wrap = document.getElementById("detectedModelsContainer");
+  if (wrap) wrap.classList.add("hidden");
+}
+
 async function refreshLlmModels(options = {}) {
   const isSilent = Boolean(options && options.silent);
   const btn = document.getElementById("btnDetectModels");
@@ -1000,6 +1110,7 @@ async function refreshLlmModels(options = {}) {
     const models = data.models || [];
 
     if (provider === "lm_studio" && container && pillsContainer) {
+      hideDetectedModelSelect();
       if (models.length > 0) {
         container.classList.remove("hidden");
         pillsContainer.innerHTML = "";
@@ -1070,9 +1181,12 @@ async function refreshLlmModels(options = {}) {
       if (inputModel && (!isSilent || !inputModel.value)) {
         inputModel.value = targetModel;
       }
+      populateDetectedModelSelect(models, inputModel ? inputModel.value.trim() : targetModel);
+      updateLlmModelPriceLine();
       if (!isSilent) showToast(`Detected ${models.length} model(s). Selected: ${targetModel}`);
     } else {
       if (container) container.classList.add("hidden");
+      hideDetectedModelSelect();
       if (!isSilent) alert("No active models detected. Ensure your model server is reachable!");
     }
   } catch (e) {
