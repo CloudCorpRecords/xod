@@ -547,6 +547,49 @@ async def show_task_page(task_id: str):
     return await sb.manage_tabs("switch", target_id=t["tab_id"])
 
 
+# --------------------------------------------------------------
+# Missions: the parent orchestrator (see services/missions.py)
+# --------------------------------------------------------------
+class NewMissionRequest(BaseModel):
+    goal: str
+    continue_on_failure: bool = False
+
+
+@app.post("/api/missions")
+async def create_mission(req: NewMissionRequest):
+    from app.services import missions
+    try:
+        return {"success": True, "mission": missions.create_mission(req.goal, req.continue_on_failure)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/missions")
+async def list_missions():
+    from app.services import missions
+    return {"missions": missions.list_missions()}
+
+
+@app.get("/api/missions/{mission_id}")
+async def get_mission(mission_id: str):
+    from app.services import missions
+    m = missions.get_mission(mission_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="No such mission")
+    return {"mission": m}
+
+
+@app.get("/api/missions/{mission_id}/report")
+async def get_mission_report(mission_id: str):
+    from app.services import missions
+    if not missions.get_mission(mission_id):
+        raise HTTPException(status_code=404, detail="No such mission")
+    report = missions.get_report(mission_id)
+    if report is None:
+        raise HTTPException(status_code=409, detail="This mission has not finished yet")
+    return {"report": report}
+
+
 @app.on_event("shutdown")
 async def _stop_crew_host():
     try:
@@ -593,6 +636,8 @@ async def _start_task_worker():
     from app.services.doctor import doctor
     task_queue.start()
     doctor.start()
+    from app.services import missions
+    missions.start()
     from app.services import activity, routines
     activity.prune()
     routines.start()
