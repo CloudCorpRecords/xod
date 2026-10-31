@@ -223,6 +223,13 @@
                   <button data-c-accessibility-open class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600">Open Accessibility settings</button>
                   <button data-c-accessibility-reset class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600">Reset my stale grant</button>
                 </div>
+                <div data-c-partner-repair class="hidden space-y-1 text-[11px] text-zinc-300">
+                  <ol data-c-partner-repair-steps class="list-decimal ml-4 space-y-0.5"></ol>
+                  <div class="flex gap-1">
+                    <button data-c-partner-reset class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600">Reset the Partner's stale grant</button>
+                    <button data-c-partner-open class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600">Open Accessibility settings</button>
+                  </div>
+                </div>
                 <details data-c-tools class="text-[11px] text-zinc-400"><summary class="cursor-pointer hover:text-zinc-200">Muse's tools for jobs</summary>
                   <p class="mt-1">Each one Muse starts before a job begins (all of yours took minutes), so jobs get only the ones you tick.</p>
                   <div data-c-toolbox class="mt-1 max-h-40 overflow-y-auto grid grid-cols-2 gap-x-2"></div></details>
@@ -327,6 +334,15 @@
         const reset = fix.querySelector("[data-c-accessibility-reset]");
         if (reset) reset.classList.toggle("hidden", !perm.can_reset);
       }
+      const repair = root.querySelector("[data-c-partner-repair]");
+      if (repair) {
+        const steps = partner.stale_grant && partner.repair_steps ? partner.repair_steps : null;
+        repair.classList.toggle("hidden", !steps);
+        if (steps) {
+          const ol = repair.querySelector("[data-c-partner-repair-steps]");
+          if (ol) ol.innerHTML = steps.map((s) => `<li>${esc(s.text)}</li>`).join("");
+        }
+      }
     }
   }
 
@@ -358,6 +374,18 @@
       const r = await api("/api/crew/settings/auto-approve/accessibility/reset-grant", {});
       if (typeof showToast === "function" && r && r.message) showToast(r.message);
       showAutoApprove(await api("/api/crew/settings/auto-approve"));
+    };
+    const partnerResetBtn = root.querySelector("[data-c-partner-reset]");
+    if (partnerResetBtn) partnerResetBtn.onclick = async () => {
+      if (!window.confirm("Clear the Xod Partner's stale Accessibility entry? The Partner restarts, Xod asks it to ask macOS again, and you finish by flipping the fresh Xod Partner row on in Accessibility settings.")) return;
+      const r = await api("/api/crew/settings/auto-approve/accessibility/reset-partner-grant", {});
+      if (typeof showToast === "function" && r && r.message) showToast(r.message);
+      showAutoApprove(await api("/api/crew/settings/auto-approve"));
+    };
+    const partnerOpenBtn = root.querySelector("[data-c-partner-open]");
+    if (partnerOpenBtn) partnerOpenBtn.onclick = async () => {
+      const r = await api("/api/crew/settings/auto-approve/accessibility/open-settings", {});
+      if (typeof showToast === "function" && r && r.message) showToast(r.message);
     };
   }
 
