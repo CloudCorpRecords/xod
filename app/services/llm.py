@@ -226,7 +226,8 @@ def _quiet_thinking(payload: Dict[str, Any], info: Dict[str, Any], think: Option
     elif p in CLOUD_PROVIDERS:
         if p == "fireworks" and (p, info["model"]) not in _no_effort:
             payload["reasoning_effort"] = "low"
-        payload["max_tokens"] = int(payload.get("max_tokens") or 1024) + CLOUD_THINK_HEADROOM
+        _bk = "max_completion_tokens" if "max_completion_tokens" in payload else "max_tokens"
+        payload[_bk] = int(payload.get(_bk) or 1024) + CLOUD_THINK_HEADROOM
 
 
 def _effort_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int, body: str) -> bool:
@@ -236,6 +237,38 @@ def _effort_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int,
         payload.pop("reasoning_effort", None)
         return True
     return False
+
+
+# Models whose chat API refuses "max_tokens" and requires "max_completion_tokens"
+# instead (the GPT-5 family and the o-series reasoning models at OpenAI). Found in
+# the Brain v1 hardening round (2026-10-30): Auto mode picked gpt-5-nano and every
+# call failed with HTTP 400 (Unsupported parameter: max_tokens... Use
+# max_completion_tokens instead), which failed a mission in planning.
+_BUDGET_KEY_MODELS = ("gpt-5", "o1", "o3", "o4")
+_budget_key_learned: set = set()   # (provider, model) pairs a 400 taught us about
+
+
+def _budget_key(info: Dict[str, Any]) -> str:
+    """The payload key this endpoint accepts for the completion budget."""
+    if (info.get("provider"), info.get("model")) in _budget_key_learned:
+        return "max_completion_tokens"
+    model = str(info.get("model") or "").lower()
+    if info.get("provider") == "openai" and model.startswith(_BUDGET_KEY_MODELS):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
+def _budget_param_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int, body: str) -> bool:
+    """True when the endpoint refused "max_tokens" and named its replacement: the
+    value moves to "max_completion_tokens", the pair is remembered for the rest of
+    the process, and the caller retries. Same shape as _effort_rejected."""
+    if status != 400 or "max_tokens" not in payload or "max_completion_tokens" not in (body or ""):
+        return False
+    payload["max_completion_tokens"] = payload.pop("max_tokens")
+    _budget_key_learned.add((info.get("provider"), info.get("model")))
+    logger.info("Endpoint wants max_completion_tokens for %s/%s; renamed the budget and retrying.",
+                info.get("provider"), info.get("model"))
+    return True
 
 
 def plain_error(info: Dict[str, Any], status: Optional[int] = None, body: str = "") -> str:
@@ -778,7 +811,7 @@ class LLMService:
             "model": info["model"],
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens
+            _budget_key(info): max_tokens
         }
         if info["provider"] == "ollama":
             payload["model"] = await ollama_context.long_context_model(info["base_url"], info["model"])
@@ -804,6 +837,8 @@ class LLMService:
                         continue
                     if res.status_code != 200 and _effort_rejected(payload, info, res.status_code, res.text):
                         continue
+                    if res.status_code != 200 and _budget_param_rejected(payload, info, res.status_code, res.text):
+                        continue
                     if res.status_code != 200 and await ollama_context.retry_after_error(payload, info, res.status_code, res.text):
                         continue
                     if res.status_code != 200:
@@ -822,7 +857,8 @@ class LLMService:
                     if (not msg.get("content") and msg.get("reasoning_content") and choice.get("finish_reason") == "length"
                             and not grown and info["provider"] in CLOUD_PROVIDERS):
                         grown = True              # all thinking, no answer: it ran out of room; once more with plenty
-                        payload["max_tokens"] = int(payload["max_tokens"]) * 3
+                        _bk = "max_completion_tokens" if "max_completion_tokens" in payload else "max_tokens"
+                        payload[_bk] = int(payload[_bk]) * 3
                         continue
                     if not msg.get("content") and msg.get("reasoning_content"):
                         if choice.get("finish_reason") == "length":
@@ -947,7 +983,7 @@ class LLMService:
             "model": info["model"],
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            _budget_key(info): max_tokens,
             "stream": True
         }
         if info["provider"] == "ollama":
@@ -965,6 +1001,8 @@ class LLMService:
                         if response.status_code != 200:
                             err_body = await response.aread()
                             if _effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
+                            if _budget_param_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
                             if await ollama_context.retry_after_error(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
@@ -1107,7 +1145,7 @@ class LLMService:
             "model": info["model"],
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            _budget_key(info): max_tokens,
             "stream": True
         }
         if info["provider"] == "ollama":
@@ -1130,6 +1168,8 @@ class LLMService:
                     async with _open_stream(client, url, payload, headers, info) as response:
                         if response.status_code != 200:
                             err_body = await response.aread()
+                            if _budget_param_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
                             if await ollama_context.retry_after_error(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
                             if response.status_code in RETRYABLE_STATUS and attempt < MAX_ATTEMPTS:
