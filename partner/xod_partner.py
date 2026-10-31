@@ -69,7 +69,7 @@ DEFAULTS = {
     "api_port": 8795,
     "partner_brain_mode": "shadow",
     "brain_base_url": "https://api.openai.com/v1",
-    "brain_model": "gpt-5-nano",
+    "brain_model": "gpt-6.1-terra",
     "brain_provider": "openai",
     "brain_timeout_s": 20,
     "brain_usage_url": "",

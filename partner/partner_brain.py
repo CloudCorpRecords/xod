@@ -216,7 +216,7 @@ class Brain:
         return str(self.cfg.get("brain_base_url") or "https://api.openai.com/v1")
 
     def model(self):
-        return str(self.cfg.get("brain_model") or "gpt-5-nano")
+        return str(self.cfg.get("brain_model") or "gpt-6.1-terra")
 
     def provider(self):
         return str(self.cfg.get("brain_provider") or "openai")
