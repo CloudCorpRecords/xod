@@ -5,11 +5,17 @@ import Foundation
 // launchd runs this executable. It spawns the Python partner and stays its
 // parent, and that parentage is the whole point: the python child rides on
 // this bundle's macOS responsibility, so the Accessibility grant belongs to
-// dev.xod.partner (this app) and not to any interpreter entry. It is the
-// same mechanism by which Xod's own backend rides on Xod.app. The launcher
-// never execs (exec would hand the process identity to the interpreter)
-// and it does nothing else, ever: spawn, forward SIGTERM, respawn a child
-// that died on its own after a short pause, exit when told to stop.
+// dev.xod.partner (this app) and not to any interpreter entry. The
+// interpreter is the Python bundled inside this app (Resources/python),
+// the same arrangement by which Xod's own backend rides on Xod.app. An
+// earlier build spawned /usr/bin/python3, which on this Mac resolves into
+// Xcode's Python.app: a foreign identity that can change with a dev-tool
+// update, so it was retired. The launcher never execs (exec would hand
+// the process identity to the interpreter) and it does nothing else,
+// ever: spawn, forward SIGTERM, respawn a child that died on its own
+// after a short pause, exit when told to stop. If the bundled interpreter
+// is missing it fails closed (exit 70) rather than falling back to a
+// foreign python and silently changing the trust arrangement.
 
 let stateDir = CommandLine.arguments.count > 1
     ? CommandLine.arguments[1]
@@ -17,6 +23,11 @@ let stateDir = CommandLine.arguments.count > 1
 
 guard let resources = Bundle.main.resourceURL else { exit(70) }
 let script = resources.appendingPathComponent("partner/xod_partner.py").path
+let interpreter = resources.appendingPathComponent("python/bin/python3.12").path
+guard FileManager.default.isExecutableFile(atPath: interpreter) else {
+    FileHandle.standardError.write("xod-partner launcher: bundled interpreter missing at \(interpreter)\n".data(using: .utf8)!)
+    exit(70)
+}
 
 var child: Process? = nil
 var terminating = false
@@ -24,7 +35,7 @@ var signalSources: [DispatchSourceSignal] = []  // sources die with their last r
 
 func spawnChild() -> Bool {
     let p = Process()
-    p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+    p.executableURL = URL(fileURLWithPath: interpreter)
     p.arguments = [script, stateDir]
     var env = ProcessInfo.processInfo.environment
     env["XOD_PARTNER_PARENTED"] = "1"  // the child exits if it ever finds itself orphaned

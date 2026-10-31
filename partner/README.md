@@ -30,18 +30,36 @@ updates (the v0.5 design) is not in v1.
   Partner**, and its grant binds to this bundle, to nothing else.
 - Signing: ad-hoc, with a fixed identifier:
   `codesign --force --deep --sign - --identifier dev.xod.partner`
-  (Signature=adhoc, TeamIdentifier=not set). The build is frozen, so the
-  signing identity is stable across reinstalls of the same build. If a
-  future rebuild ever stales the grant, the supervised repair above is
-  the fix.
+  (Signature=adhoc, TeamIdentifier=not set).
+- **Which build the switch covers.** For an ad-hoc signed app, the
+  Accessibility row binds to the exact build that held the switch when
+  it was flipped: the identifier AND the build's code hash (CDHash).
+  A plain off/on flip toggles that same row; it never rebinds it to a
+  newer build. So pair only against the FINAL installed build, and
+  treat any reinstall or rebuild as a new build the old row will not
+  cover, even from identical source. When that happens the cure is the
+  supervised repair (a reset from Xod deletes the stale row, then one
+  flip binds a fresh row to the current build), never a bare re-flip.
+  This is not theory: the first v1 pairing failed exactly this way. The
+  row was registered by an early v1 build during install testing, the
+  final build landed minutes later, and the user's flip faithfully
+  enabled a row the shipped binary could never satisfy. install.sh
+  writes the shipped build's CDHash to `build.txt` in the state dir so
+  the paired build is always on record.
 - How the grant reaches the code: the bundle's executable is a small
-  Swift launcher. It SPAWNS `/usr/bin/python3` with the bundled partner
-  script and stays its parent for life (it never execs). macOS attributes
-  the child's Accessibility trust to the responsible process, the
-  launcher, so the Python partner reads and acts under dev.xod.partner.
-  The launcher forwards SIGTERM/SIGINT to the child, respawns it if it
-  dies alone, and the child exits on its own if it ever finds itself
-  orphaned, so two partner generations can never watch at once.
+  Swift launcher. It spawns the Python interpreter bundled inside this
+  app (`Resources/python/bin/python3.12`, part of the bundle's seal)
+  with the bundled partner script and stays its parent for life (it
+  never execs). macOS attributes the child's Accessibility trust to the
+  responsible process, the launcher, so the Python partner reads and
+  acts under dev.xod.partner. This mirrors Xod's own arrangement (a
+  bundled interpreter inside Xod.app). The first v1 build instead
+  spawned `/usr/bin/python3`, which on this Mac resolves into Xcode's
+  Python.app: a foreign identity, and a dev-tool dependency that could
+  change under a frozen app, so it was retired. The launcher forwards
+  SIGTERM/SIGINT to the child, respawns it if it dies alone, and the
+  child exits on its own if it ever finds itself orphaned, so two
+  partner generations can never watch at once.
 
 ## Install
 
@@ -64,6 +82,8 @@ State lives in `~/Library/Application Support/XodPartner/`:
   commands `hold`, `release`, `restart-xod`.
 - `status.json`: the latest status (watchdog fields from v0, plus
   `partner_trusted` and `ax` since v1).
+- `build.txt`: the installed build's CDHash and build time, written by
+  install.sh (see "Which build the switch covers" above).
 - `partner.log`: one append-only log for probes, restarts, refusals,
   scans' presses, and API lifecycle lines.
 
@@ -115,7 +135,8 @@ the state dir) disables all restarting until released.
 
 ## Tests
 
-Under the system python (the Partner is stdlib-only):
+Under any python3 (the Partner is stdlib-only; the shipped runtime is
+the interpreter bundled in the app):
 
     /usr/bin/python3 tests/partner/run_partner_test.py       # the v0 watchdog suite
     /usr/bin/python3 tests/partner/run_partner_ax_test.py    # the API contract, fake AX trees
@@ -131,8 +152,11 @@ Under the repo venv:
 - `xod_partner.py`: the watchdog, the API server, the entry point.
 - `partner_ax.py`: the ctypes Accessibility layer: trust, the tree
   walk, the frozen card rules, scan, press.
-- `launcher/XodPartner.swift`: the bundle executable (spawn, stay
-  parent, forward signals, respawn).
+- `launcher/XodPartner.swift`: the bundle executable (spawn the bundled
+  interpreter, stay parent, forward signals, respawn).
+- The bundled CPython under `Resources/python` in the installed app
+  (interpreter, libpython, stdlib; assembled by install.sh, not kept in
+  the repo).
 - `app/Info.plist`: the bundle's identity.
 - `dev.xod.partner.plist.template`: the LaunchAgent (the bundle
   executable, the state dir).
