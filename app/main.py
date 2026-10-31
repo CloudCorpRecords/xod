@@ -2469,6 +2469,59 @@ async def crew_partner_note_planned_restart():
     return {"watchdog": partner_client.note_planned_restart("settings API")}
 
 
+class PartnerBrainKey(BaseModel):
+    provider: str
+    profile_id: str
+
+
+@app.post("/api/crew/settings/auto-approve/partner/brain-key")
+async def crew_partner_brain_key(req: PartnerBrainKey):
+    """Give the Partner brain its own key (Partner v1.2): the user picks one
+    of their existing key profiles; Xod reads that profile's key from its own
+    vault and sends it once over the token-authenticated loopback channel,
+    and the Partner stores it in its own Keychain item so it can think while
+    Xod is down. The key is never returned, never logged, and never written
+    to a file on either side."""
+    from app.services import key_profiles, keychain, partner_client
+    if not key_profiles.is_key_provider(req.provider):
+        raise HTTPException(status_code=400, detail=f"{req.provider} does not use API keys.")
+    try:
+        key = key_profiles.key_for_profile(req.provider, req.profile_id)
+    except keychain.Unreadable:
+        raise _vault_refusal()
+    if not key:
+        raise HTTPException(status_code=400, detail="That key profile has no key stored.")
+    out = partner_client.provision_brain_key(key, profile=f"{req.provider}:{req.profile_id}")
+    if out is None:
+        raise HTTPException(status_code=502, detail="The Partner did not answer.")
+    if out.get("_status"):
+        raise HTTPException(status_code=502,
+                            detail=f"The Partner refused the brain key ({out.get('error') or out['_status']}).")
+    return {"ok": True, "stored": bool(out.get("stored")), "has_key": bool(out.get("has_key"))}
+
+
+class PartnerBrainUsage(BaseModel):
+    provider: Optional[str] = "openai"
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    trigger: Optional[str] = ""
+    decision: Optional[str] = ""
+
+
+@app.post("/api/partner/brain/usage")
+async def partner_brain_usage(req: PartnerBrainUsage):
+    """Metering for the Partner brain (v1.2): the Partner reports each of its
+    LLM calls here and Xod ledgers it under the partner context, so the cost
+    of supervision is visible next to every other call. When Xod is down the
+    Partner writes the same fields to its own log as a brain_usage line
+    instead, so nothing is unmetered."""
+    from app.services import partner_client
+    return partner_client.record_brain_usage(req.provider or "openai", req.model,
+                                             req.prompt_tokens, req.completion_tokens,
+                                             req.trigger or "", req.decision or "")
+
+
 class HandoffRepos(BaseModel):
     repos: List[str]
 

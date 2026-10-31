@@ -131,6 +131,46 @@ def press(card_id: str, front: bool = False, away: bool = False) -> Optional[Dic
                  {"card_id": card_id, "front": bool(front), "away": bool(away)}, timeout=25.0)
 
 
+# -- the Partner brain (v1.2): key provisioning and usage metering -----------
+# The Partner carries a judgment layer over its watchdog floor. It thinks
+# with its OWN key, so it can think while Xod is down: the user picks one
+# of their existing key profiles in Settings, Xod reads that profile's key
+# from its own vault and sends it ONCE over this token-authenticated
+# loopback channel, and the Partner stores it in its own Keychain item.
+# The key is never written to a file here, never logged, and the Partner's
+# answer never echoes any part of it. The brain's calls are metered back
+# the other way: the Partner reports each call and Xod ledgers it under
+# the partner context (see record_brain_usage).
+
+
+def provision_brain_key(key: str, profile: str = "") -> Optional[Dict[str, Any]]:
+    """Send one key to the Partner's brain, once. The answer is the
+    Partner's {stored, has_key} confirmation (or a refusal dict carrying
+    _status); None when the Partner cannot be reached. The key itself is
+    in the request body only: never in a log line, never in the answer."""
+    if not key:
+        return None
+    return _call("POST", "/brain/key", {"key": key, "profile": profile}, timeout=10.0)
+
+
+def record_brain_usage(provider: str, model: str, prompt_tokens: int,
+                       completion_tokens: int, trigger: str = "",
+                       decision: str = "") -> Dict[str, Any]:
+    """Ledger one Partner brain call the Partner reported, under the
+    partner context, in the same record shape every other call uses
+    (services/usage_ledger.append_record, tokens as the API reported
+    them). The trigger and decision ride along in the answer so the
+    Partner can confirm the metering landed."""
+    from app.services import usage_ledger
+    usage_ledger.append_record(
+        provider or "openai", model,
+        usage={"prompt_tokens": int(prompt_tokens or 0),
+               "completion_tokens": int(completion_tokens or 0)},
+        context="partner")
+    return {"recorded": True, "context": "partner", "trigger": trigger,
+            "decision": decision, "model": model}
+
+
 # -- reciprocal supervision: Xod watches the Partner back -------------------
 # The Partner watches Xod; since Partner v1.1, Xod watches the Partner with
 # the same discipline, because launchd KeepAlive alone cannot see a wedge
