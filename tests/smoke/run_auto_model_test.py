@@ -3,7 +3,9 @@ Auto model mode (services/auto_model.py): the ViBench snapshot, the ranking, and
 the /api/llm/auto-pick endpoint with a stubbed model list.
 
   - the shipped snapshot loads, is dated and sourced, carries the official
-    ViBench 2.0 rows exactly, and maps only the two justified Anthropic ids
+    ViBench 2.0 rows exactly, and maps only the justified ids (the two
+    Anthropic ids, and GPT-6.1 Sol: OpenAI's own pricing page attests the
+    API id gpt-6.1-sol for that product, verified 2026-10-31)
   - ranking fixtures: a clear quality winner, a cost tiebreak at equal plan
     pass rate, list price stepping in when a row has no build cost, unmapped
     models ranked last with their reasons stated and never dropped, and the
@@ -58,8 +60,9 @@ check("Claude Opus 5.5 row matches the published table",
 check("every row carries the full schema",
       all(set(r) >= {"display_name", "pass_at_1", "plan_pass_rate", "cost_per_build_usd", "build_time", "model_id"}
           for r in rows))
-check("model_id_map holds only the two justified Anthropic ids",
-      snap.get("model_id_map") == {"Claude Opus 5.5": "claude-opus-5-5", "Claude Sonnet 5.5": "claude-sonnet-5-5"},
+check("model_id_map holds only the justified ids",
+      snap.get("model_id_map") == {"Claude Opus 5.5": "claude-opus-5-5", "Claude Sonnet 5.5": "claude-sonnet-5-5",
+                                   "GPT-6.1 Sol": "gpt-6.1-sol"},
       str(snap.get("model_id_map")))
 check("row model_id fields agree with the map",
       all(r["model_id"] == snap["model_id_map"].get(r["display_name"]) for r in rows))
