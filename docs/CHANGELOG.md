@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.16
+
+**Find answers now arrive whole**
+- In the re-run of the Tier 1 baseline, the search found the right file again and again, and the delivered answer still stopped at a bare filename. The cause was measured, not guessed: the writing step only ever received a 500 character summary of the search result, and the first candidate path ended past that cut, so no hunt answer could carry a complete path. A search result is now treated as the answer decisive evidence: it is stored whole with the task, and the delivered answer carries a block rendered from it directly. Ranked candidates with full paths, kind, modified dates, sizes, and why each one matched. When two candidates are too close to call, both are shown with the question and the task waits for the answer instead of picking one. When nothing is found, the answer says what was tried. A request that dictates its own exact output format still gets exactly that format, with nothing stapled on.
+- The plain worker path gained the same delivery, and the find tool itself, which it could not call before.
+
+**A content hunt can no longer hang**
+- One baseline re-run hunt wedged inside content search, and only the watchdog twenty minute stop ended it. The mechanism was proven in testing: content search would open any file carrying a text extension, and a named pipe blocks that open forever. Content search now opens only regular files, reads a bounded number of bytes per file, and works inside stated budgets (thirty seconds for the content route, fifty five seconds for a whole hunt). When a budget runs out, the results gathered so far come back labeled partial, with the reason, instead of silence.
+
+**The same hunt now gives the same answer**
+- Identical hunts graded differently across runs. Instrumentation came first: every hunt result now reports which routes found each candidate and whether the system index can see it yet. The measured instability was equal scoring matches changing order with the index hit order. Ordering is now fully deterministic, down to the full path as the final tiebreak. A candidate score no longer depends on which route happened to produce it, and search hints supplied by the model can fill gaps in the request text but never override what the text says.
+
+**Checked before it shipped**
+- New and grown suites on the merged tree: the delivery evidence suite end to end (18 of 18; the same suite scores 4 of 18 against the 0.9.15 code), the locate suite at 47 of 47 including the bounded content and deterministic ordering checks, and a variance rig that replays identical hunts across index states and now shows zero differences.
+- All 88 local suite runners were run on the merged tree; 70 passed outright. Each of the 18 that did not was re-run standalone on this tree and on the unmodified 0.9.15 tree, and every failure reproduced identically on the unmodified tree in this environment (live model engine errors, browser harness faults, and suites needing a key or a free port the test setup does not provide). None of the 18 is a change this release made, and each is recorded in the round record.
+- The promoted build then passed the proving suite against the installed app, 7 of 7.
+- One operational repair rides along: during this round the installed app was found to have rolled itself back to the 0.9.14 build when a stale staged update was consumed at a restart, silently losing the 0.9.15 fixes. The stale stage has been parked where it cannot be consumed, and this build restores everything 0.9.15 carried.
+- This release is the second fix round of the escalation program. The same Tier 1 and Locate baseline is re-run against this build to grade the difference.
+
 ## 0.9.15
 
 **A mission can no longer call itself done over its own evidence**
