@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.9.15
+
+**A mission can no longer call itself done over its own evidence**
+- A subtask that ends failed, or whose own report says the work is not complete, now fails the mission and is named in the result. Before, a mission could close verified while its steps admitted they were not finished, and its run evidence could be asserted from the plan alone.
+- A step that declares a run check is verified by the run itself, re-executed when the verdict is written. A run that failed, was refused, or never happened because its file was never written blocks the step and the mission.
+- Words meant for the planner can no longer pose as a deliverable. A plan that dictates file contents which are themselves an instruction sentence is rejected, and a created file whose contents read as an instruction cannot verify its step.
+- Plans that arrive doubled, the same steps merged in twice, are collapsed to one sequence at validation.
+
+**Finding files from almost nothing: Locate**
+- Xod can now hunt the whole system from scant clues: a name fragment, a kind plus a rough date, words from inside the file, what the file was for, or a folder known only by what it holds.
+- It searches the Spotlight index first, then filenames, then file contents, and answers with ranked candidates. Each carries its full path, kind, modified date, size, and the clues it matched. Every path is checked to exist before it is named, and no path is ever truncated.
+- When two candidates are genuinely close, Xod asks which one you mean. When nothing qualifies, it says so and lists what it tried. It never invents a path.
+
+**Newer models stop refusing the tool calls**
+- OpenAI's newer models refuse function tools sent with a thinking effort they do not accept, and one refusal could kill a step mid-mission. For gpt-6.1-sol, the model the refusal names, tool calls now send the effort as 'none', the remedy the refusal itself prescribes. For every other model, the same refusal is caught, remedied once, and remembered per model, for tool calls only, so an unproven model is never hard-coded on a guess.
+
+**A stuck task can now actually be stopped**
+- Cancel used to set a flag the run only read between steps; a run hung inside a step ignored it forever, and one task sat "working" for forty minutes through two accepted cancels. A cancel now escalates: the run gets a short grace to stop on its own, and if it is still working, Xod cancels the run itself and records that it had to.
+- A watchdog measures real progress (steps and tool activity) instead of row updates, so poking cancel can no longer make a hung task look alive. A task with no progress for ten minutes is marked stalled, with the reason, where you can see it; at twenty minutes it is stopped with an honest explanation.
+
+**When the Partner's grant goes stale, Xod says how to repair it**
+- After a Partner rebuild, macOS keeps the Accessibility grant for the old build and approvals quietly go nowhere. Xod now notices when the Partner build it once trusted has changed or stopped reading as trusted, and puts the repair in front of you in order: reset the stale grant, Xod asks the Partner to ask macOS again, then flip the new Xod Partner row on in the Accessibility settings. The notice clears itself once the grant reads live for the current build.
+
+**Checked before it shipped**
+- The merged tree passed every local suite run for it: the smoke suite, missions (55 of 55) plus the new verdict-integrity suite (24 of 24), file effects, the new task watchdog suite (23 of 23), the new locate suite (24 of 24), the new tools-and-thinking suite (23 of 23), the parameter suite (25 of 25), keys and usage, Auto mode, brain integration, keychain, pricing, permissions, the Muse app suite, and all seven Partner suites including the new re-pair suite.
+- The promoted build then passed the proving suite against the installed app, 7 of 7.
+- This release is the first fix round of the escalation program: every fix answers a failure measured in the Tier 1 and Locate baseline, and the same baseline is re-run against this build to grade the difference.
+
 ## 0.9.14
 
 **The Partner gets a brain, on a short leash**
