@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -122,6 +123,7 @@ _NAMED_INSIDE_RE = re.compile(r"file named ([^\s/]+?) inside the ([^\s/]+?) fold
 _FOLDER_NAMED_RE = re.compile(r"folder named ([^\s/(]+)", re.I)
 _FILE_NAMED_RE = re.compile(r"file named ([^\s/]+)", re.I)
 _EXACT_CONTENT_RE = re.compile(r"(?:contents? (?:are|is) exactly this|containing exactly|exact text)[^:]*:\s*(.+)", re.I | re.S)
+_RUN_RE = re.compile(r"Run exactly this command from the directory (.+?) and require exit code (-?\d+): (.+)$")
 
 
 def _path_mentioned(sentence: str, p: Path) -> bool:
@@ -134,6 +136,9 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
     """File effects the request itself explicitly asks for:
     [{kind: "write" or "delete", path: Path, content: exact text or None}]."""
     text = request or ""
+    # Run-effect lines are the run gate's vocabulary, not file claims: the
+    # paths and words inside a declared command are not file promises.
+    text = "\n".join(l for l in text.splitlines() if not _RUN_RE.search(l))
     paths: List[Path] = []
     for m in _PATH_RE.finditer(text):
         if m.start() and text[m.start() - 1] in "/:":
@@ -207,6 +212,133 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
               if not (c["kind"] == "write" and c.get("target") == "file"
                       and any(_proper_prefix(c["path"], q) for q in write_paths))]
     return claims
+
+
+# ------------------------------------------------------------- run-effect claims
+# A run effect proves produced code works, not just that it exists (H4
+# remainder, hardening round 2026-10-30: a mission's pytest file whose 5
+# tests all failed with NameError was reported "verified" because the gate
+# only checked the file was on disk). The vocabulary is one canonical
+# phrasing, parsed deterministically; anything outside it is not a run claim.
+RUN_TIMEOUT_SEC = 120
+_RUN_OUTPUT_TAIL = 2000
+
+
+def _is_prefix(a: Path, b: Path) -> bool:
+    return len(a.parts) < len(b.parts) and b.parts[:len(a.parts)] == a.parts
+
+
+def _paths_related(a: Path, b: Path) -> bool:
+    """True when either path is the other, inside it, or its container."""
+    return a == b or _is_prefix(a, b) or _is_prefix(b, a)
+
+
+def _run_refusal(command: str) -> Optional[str]:
+    """Why a declared run command must not be executed, or None if it may run.
+    The gate executes an argv list with shell=False, but the declared
+    vocabulary is a single plain command: anything that only makes sense to
+    a shell (chaining, pipes, redirection, substitution, backgrounding) is
+    refused at parse time. Shell metacharacters inside quoted argument text
+    are inert in an argv list and stay allowed, except dollar and backtick
+    inside double quotes, where a shell would substitute; when in doubt,
+    refuse."""
+    if "\n" in command or "\r" in command:
+        return "the command is not a single line"
+    try:
+        argv = shlex.split(command)
+    except ValueError as e:
+        return f"the command could not be parsed ({e})"
+    if not argv:
+        return "the command is empty"
+    quote = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+        elif quote == '"':
+            if ch == '"':
+                quote = None
+            elif ch in "$`":
+                return f"the command contains {ch} inside double quotes, where a shell would substitute it"
+            elif ch == "\\":
+                i += 1
+        else:
+            if ch in "'\"":
+                quote = ch
+            elif ch == "\\":
+                i += 1
+            elif ch in ";&|><`$()":
+                return f"the command contains the shell metacharacter {ch}"
+        i += 1
+    if quote is not None:
+        return "the command has an unbalanced quote"
+    return None
+
+
+def _claimed_run_effects(request: str, anchors: List[Path]) -> List[Dict[str, Any]]:
+    """Run effects the request declares in the gate's canonical phrasing:
+    [{command, cwd, expect_exit, refused}]. A claim whose command is not a
+    single plain command, or whose working directory is not anchored by a
+    path this same task declares (equal to it, inside it, or the directory
+    containing it), is refused: recorded here with its reason, never
+    silently dropped and never executed."""
+    claims: List[Dict[str, Any]] = []
+    for line in (request or "").splitlines():
+        m = _RUN_RE.search(line)
+        if not m:
+            continue
+        cwd = Path(os.path.expanduser(m.group(1).strip()))
+        command = m.group(3).strip()
+        claim: Dict[str, Any] = {"command": command, "cwd": cwd,
+                                 "expect_exit": int(m.group(2)), "refused": None}
+        refusal = _run_refusal(command)
+        if refusal:
+            claim["refused"] = refusal
+        elif not any(_paths_related(cwd, a) for a in anchors):
+            claim["refused"] = ("the working directory is not inside any path this task "
+                                "declares, so nothing anchors where it would run")
+        claims.append(claim)
+    return claims
+
+
+def _output_tail(*parts: Any) -> str:
+    chunks = []
+    for part in parts:
+        if not part:
+            continue
+        if isinstance(part, bytes):
+            part = part.decode("utf-8", "replace")
+        chunks.append(str(part))
+    return "\n".join(chunks).strip()[-_RUN_OUTPUT_TAIL:]
+
+
+def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
+    """Runs one accepted run claim; returns its problem text, or None when
+    the exit code is the required one. Refused claims are never executed;
+    the refusal itself is the problem."""
+    command, cwd = claim["command"], claim["cwd"]
+    if claim.get("refused"):
+        return (f"the run of '{command}' from {cwd} was refused and was not run: "
+                f"{claim['refused']}")
+    argv = shlex.split(command)
+    try:
+        proc = subprocess.run(argv, cwd=str(cwd), shell=False, capture_output=True,
+                              text=True, timeout=RUN_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired as e:
+        tail = _output_tail(e.output, e.stderr)
+        return (f"the run of '{command}' from {cwd} timed out after {RUN_TIMEOUT_SEC} "
+                "seconds and was stopped"
+                + (f". Output tail: {tail}" if tail else ""))
+    except OSError as e:
+        return f"the run of '{command}' from {cwd} could not be started: {e}"
+    if proc.returncode == claim["expect_exit"]:
+        return None
+    tail = _output_tail(proc.stdout, proc.stderr)
+    return (f"the run of '{command}' from {cwd} exited with code {proc.returncode}, "
+            f"not the required code {claim['expect_exit']}"
+            + (f". Output tail: {tail}" if tail else ". It produced no output"))
 
 
 class TaskQueue:
@@ -477,12 +609,14 @@ class TaskQueue:
         return "".join(content).strip(), steps
 
     def _verify_file_effects(self, task: Dict[str, Any], started: float) -> List[str]:
-        """Ways this task's file effects are NOT true on disk (empty list = verified).
-        Two layers, both factual: (1) the file ops the activity log recorded for this
+        """Ways this task's declared effects are NOT true (empty list = verified).
+        Three layers, all factual: (1) the file ops the activity log recorded for this
         task must match the disk now; (2) file effects the request itself spells out
         (a path plus create/write/delete wording, exact contents when dictated) must
-        hold on disk, whether or not any tool ran. The agent has reported tasks done
-        without calling a single file tool; this check trusts the disk, not the report."""
+        hold on disk, whether or not any tool ran; (3) run effects the request
+        declares must exit with the required code when executed. The agent has
+        reported tasks done without calling a single file tool; this check trusts
+        the disk and the exit code, not the report."""
         from app.services import activity
         problems: List[str] = []
         try:
@@ -512,7 +646,8 @@ class TaskQueue:
                 problems.append(f"{p.name} was deleted during the task but is still on disk")
             elif want == "present" and not p.exists():
                 problems.append(f"{p.name} should be on disk but is missing")
-        for claim in _claimed_file_effects(task.get("request") or ""):
+        file_claims = _claimed_file_effects(task.get("request") or "")
+        for claim in file_claims:
             p = claim["path"]
             if claim["kind"] == "delete":
                 if p.exists():
@@ -530,6 +665,15 @@ class TaskQueue:
                         actual = None
                     if actual is not None and actual != claim["content"].encode("utf-8"):
                         problems.append(f"{p.name} does not contain exactly what the task asked for")
+        # (3) run effects the request declares: the command is executed with
+        # an argv list (never a shell) and its exit code must be the required
+        # one. A contradicted run is a problem exactly like a missing file,
+        # so the honest retry and the failure text treat it the same way.
+        for claim in _claimed_run_effects(task.get("request") or "",
+                                          [c["path"] for c in file_claims]):
+            problem = _check_run_claim(claim)
+            if problem:
+                problems.append(problem)
         seen, out = set(), []
         for pr in problems:
             if pr not in seen:
