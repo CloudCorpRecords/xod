@@ -14,6 +14,7 @@ other performs the effect only when the verification retry asks again.
 Run: .venv/bin/python tests/task_inbox/run_file_effects_test.py
 """
 import asyncio, os, sys, tempfile
+os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]

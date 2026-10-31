@@ -20,6 +20,7 @@ Covered here, with the model and (mostly) the queue faked:
 Run: .venv/bin/python tests/brain/run_missions_test.py
 """
 import asyncio, json, os, sys, tempfile
+os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]

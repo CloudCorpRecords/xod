@@ -6,6 +6,7 @@ Here the AX API is faked with a small element tree: no real Muse app, nothing is
   .venv/bin/python tests/smoke/run_muse_app_test.py
 """
 import os
+os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
 import sys
 import tempfile
 import time
