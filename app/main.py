@@ -616,6 +616,27 @@ async def _stop_terminal_sessions():
         pass
 
 
+@app.on_event("shutdown")
+async def _note_planned_shutdown():
+    """Tell the Partner this exit was planned (a quit, an update): the marker
+    keeps the revival it performs from spending its unplanned restart cap
+    (the Partner v1.1 accounting). Only the installed app writes it: a dev
+    instance's shutdown says nothing about the production app."""
+    try:
+        from app.services import permissions
+        if not permissions.own_bundle_id():
+            return
+        import json as _json
+        import time as _time
+        state = Path.home() / "Library" / "Application Support" / "XodPartner"
+        if state.is_dir():
+            tmp = state / "planned-shutdown.json.tmp"
+            tmp.write_text(_json.dumps({"at": _time.time(), "reason": "quit"}))
+            tmp.replace(state / "planned-shutdown.json")
+    except Exception:
+        pass
+
+
 def _announce_server() -> None:
     """Writes where this server listens (DATA_DIR/server.json), so `xod` in a terminal finds the app's server even when
     it isn't on port 8000 (the app picks another port when 8000 is taken)."""
