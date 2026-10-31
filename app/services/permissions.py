@@ -47,6 +47,7 @@ class _CTypesAX:
     def __init__(self) -> None:
         self._plain = None
         self._prompt = None
+        self._prompt_key = None
         self._cf = None
         try:
             svc = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
@@ -57,7 +58,28 @@ class _CTypesAX:
             prompt = svc.AXIsProcessTrustedWithOptions
             prompt.restype = ctypes.c_bool
             prompt.argtypes = [ctypes.c_void_p]
-            self._plain, self._prompt, self._cf = plain, prompt, cf
+            self._plain, self._cf = plain, cf
+            # The prompt key constant is read on its own: a machine where
+            # it cannot be read must not cost this process its plain trust
+            # check. The options dictionary built in trusted_with_prompt
+            # compares its keys by pointer, and the framework looks the
+            # prompt option up under its own exported constant, so the key
+            # must BE that constant: a same-text CFString misses the
+            # lookup, the framework reads NULL for the value, and it
+            # dereferences the NULL (EXC_BAD_ACCESS inside
+            # AXIsProcessTrustedWithOptions; the 2026-10-30 20:05 crash
+            # report, python3.12-2026-10-30-200539.ips). If the constant
+            # cannot be read, the ask stays unavailable (_prompt None)
+            # rather than dangerous. The Partner's identical fix is
+            # partner/partner_ax.py commit 3e2987d, proven live.
+            try:
+                prompt_key = ctypes.c_void_p.in_dll(svc, "kAXTrustedCheckOptionPrompt")
+                if not prompt_key:
+                    raise ValueError("kAXTrustedCheckOptionPrompt unreadable")
+                self._prompt_key, self._prompt = prompt_key, prompt
+            except Exception:
+                self._prompt = None
+                self._prompt_key = None
         except Exception as e:
             logger.debug(f"Accessibility calls unavailable: {e}")
 
@@ -71,40 +93,41 @@ class _CTypesAX:
 
     def trusted_with_prompt(self) -> Optional[bool]:
         """Ask macOS to show the trust prompt, so the user flips one switch."""
-        if self._prompt is None or self._cf is None:
+        prompt = getattr(self, "_prompt", None)
+        key = getattr(self, "_prompt_key", None)
+        if prompt is None or self._cf is None or not key:
             return None
         cf = self._cf
-        key = options = None
+        options = None
         try:
-            cf.CFStringCreateWithCString.restype = ctypes.c_void_p
-            cf.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
             cf.CFDictionaryCreate.restype = ctypes.c_void_p
             cf.CFDictionaryCreate.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
                                               ctypes.POINTER(ctypes.c_void_p), ctypes.c_long,
                                               ctypes.c_void_p, ctypes.c_void_p]
             cf.CFRelease.argtypes = [ctypes.c_void_p]
-            # kAXTrustedCheckOptionPrompt's string value is its own name; building the
-            # CFString directly avoids chasing the constant across sub-frameworks.
-            key = cf.CFStringCreateWithCString(None, b"AXTrustedCheckOptionPrompt", 0x08000100)
             value = ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue")
-            if not key or not value:
+            if not value:
                 return None
+            # The key is the framework's own kAXTrustedCheckOptionPrompt
+            # constant, read in __init__: the dictionary compares keys by
+            # pointer, so only the constant itself is found by the
+            # framework's lookup (see the note at the registration site).
+            # The constant is framework-owned; it is never released here.
             keys = (ctypes.c_void_p * 1)(key)
             values = (ctypes.c_void_p * 1)(value)
             options = cf.CFDictionaryCreate(None, keys, values, 1, None, None)
             if not options:
                 return None
-            return bool(self._prompt(options))
+            return bool(prompt(options))
         except Exception as e:
             logger.debug(f"trust prompt unavailable: {e}")
             return None
         finally:
-            for ref in (options, key):
-                if ref:
-                    try:
-                        cf.CFRelease(ref)
-                    except Exception:
-                        pass
+            if options:
+                try:
+                    cf.CFRelease(options)
+                except Exception:
+                    pass
 
 
 _backend: Optional[_CTypesAX] = None
