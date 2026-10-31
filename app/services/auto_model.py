@@ -170,14 +170,24 @@ async def pick_for(llm_service: Any, provider: str) -> Dict[str, Any]:
 
     The ranking is cached per provider for a minute so a chatty send path does
     not re-ask the provider for its model list on every message; the pick itself
-    is still resolved when the caller asks, from that fresh-enough list.
+    is still resolved when the caller asks, from that fresh-enough list. The
+    list is fetched with the active key profile's key (llm_service resolves it
+    at call time), so the cache is keyed by the active profile as well:
+    switching keys must not inherit the previous key's ranking.
     """
     now = time.monotonic()
-    hit = _pick_cache.get(provider)
+    cache_key = provider
+    try:
+        from app.services import key_profiles
+        if key_profiles.is_key_provider(provider):
+            cache_key = f"{provider}|{key_profiles.active_profile(provider)['id']}"
+    except Exception:
+        pass
+    hit = _pick_cache.get(cache_key)
     if hit and now - hit[0] < _PICK_CACHE_TTL:
         return hit[1]
     models = await llm_service.list_models(provider_override=provider)
     ids = [m.get("id") for m in models if m.get("id")]
     result = rank_models(provider, ids)
-    _pick_cache[provider] = (now, result)
+    _pick_cache[cache_key] = (now, result)
     return result

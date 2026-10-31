@@ -19,6 +19,7 @@ Writing never blocks or fails a model call: any error here is logged and swallow
 import datetime as dt
 import json
 import logging
+import sqlite3
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -161,6 +162,43 @@ def summary(rng: str = "today") -> Dict[str, Any]:
         "pricing_as_of": pricing.as_of(),
         "costs_are_estimates": True,
     }
+
+
+def mission_totals(mission_id: str) -> Dict[str, Any]:
+    """Token and cost totals for one mission (services/missions.py), summed
+    from this ledger. A mission's calls carry two of the ledger's context
+    tags: its planning calls run under "mission:<id>" (the mission runner
+    stamps the activity origin while it plans), and each subtask's calls run
+    under "task:<task id>" (the origin the task queue stamps on every call
+    inside a task), resolved to the mission through the mission_subtasks
+    rows in xod.db. Returns {} when nothing attributable is recorded, so
+    the caller keeps saying usage is not tracked rather than showing
+    numbers that were not measured."""
+    if not mission_id:
+        return {}
+    tags = {f"mission:{mission_id}"}
+    try:
+        db = DATA_DIR / "xod.db"
+        if db.exists():
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            try:
+                rows = conn.execute("SELECT task_id FROM mission_subtasks WHERE mission_id = ?",
+                                    (mission_id,)).fetchall()
+            finally:
+                conn.close()
+            tags.update(f"task:{row[0]}" for row in rows if row and row[0])
+    except Exception:
+        pass
+    totals = _blank()
+    for rec in _read_all():
+        if rec.get("context") in tags:
+            _add(totals, rec)
+    if not totals["calls"]:
+        return {}
+    totals["attribution"] = ("planning calls plus subtask execution calls, "
+                             "matched by the ledger context tags")
+    totals["pricing_as_of"] = pricing.as_of()
+    return totals
 
 
 def _default_output_allowance() -> int:

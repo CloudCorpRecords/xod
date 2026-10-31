@@ -401,7 +401,15 @@ class MissionRunner:
         if mission.get("plan"):
             return True
         try:
-            plan = await decompose(mission["goal"], self._ask)
+            # Planning calls are this mission's own spend: stamp the activity
+            # origin so the usage ledger records them under the mission's tag
+            # (subtask calls are stamped by the queue with their task id).
+            from app.services import activity
+            _origin = activity.origin.set(f"mission:{mission['id']}")
+            try:
+                plan = await decompose(mission["goal"], self._ask)
+            finally:
+                activity.origin.reset(_origin)
         except PlanRejected as e:
             _save_mission(mission["id"], state="failed", finished_at=time.time(),
                           failure_reason="The plan could not be made valid: " + "; ".join(e.problems))
