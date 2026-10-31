@@ -175,9 +175,14 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
                 # a directory claim: a directory can never satisfy a file check.
                 # (Hardening round 2026-10-30: a mission step that created its
                 # project directory exactly as asked was contradicted because the
-                # check required is_file() on the directory path.)
+                # check required is_file() on the directory path.) The sentence
+                # must name this path itself, not merely mention it by name: a
+                # sentence that names the file while calling its container a
+                # directory ("a file proof.txt inside the new directory") would
+                # otherwise turn the file's claim into a directory claim and
+                # contradict work that is on disk (mission-0d528a2c13).
                 for sent in sentences:
-                    if (_path_mentioned(sent, p) and not _NEGATION.search(sent)
+                    if (str(p) in sent and not _NEGATION.search(sent)
                             and re.search(r"\b(directory|folder)\b", sent, re.IGNORECASE)):
                         target = "directory"
                         break

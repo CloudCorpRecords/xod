@@ -241,6 +241,24 @@ async def main():
     assert not (cont3 / "proof.txt").exists()
     print("PASS: a claimed file inside a container still fails when nothing was made", flush=True)
 
+    # --- the mirror image (proof-2 re-run, mission-0d528a2c13): a sentence
+    # that mentions the file by name while calling its CONTAINER a directory
+    # must not classify the file's own claim as a directory claim
+    cont4 = TMP / "xod-hardening-proof"
+    mirror_req = (f"Create a file proof.txt inside the new directory containing the line hardening proof.\n"
+                  f"Create the file at {cont4}/proof.txt with exact text: hardening proof")
+    claims = TQ._claimed_file_effects(mirror_req)
+    assert len(claims) == 1, claims
+    assert claims[0]["path"] == cont4 / "proof.txt" and claims[0]["target"] == "file", claims
+    print("PASS: a container called a directory does not make its file a directory claim", flush=True)
+
+    _ContainerResearcher.base = cont4
+    RS.AgenticResearcher = _ContainerResearcher
+    t = await _run_one(q, mirror_req)
+    print(f"   container-mirror: status={t['status']}", flush=True)
+    assert t["status"] == "done", f"expected done, got {t['status']}: {t.get('result')}"
+    print("PASS: a file inside a directory the words call new verifies as done", flush=True)
+
     # --- the recorded-ops layer: what the activity log says must match the disk
     import sqlite3, time as _time
     import app.services.activity as ACT
