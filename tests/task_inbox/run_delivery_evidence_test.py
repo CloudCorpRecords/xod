@@ -89,6 +89,17 @@ LEASE_B = plant("Archive/Smith Lease.pdf", when=(2025, 3, 1))
 plant("Trips/Japan Trip/itinerary.txt", "Japan trip: Tokyo, Kyoto, bullet train, ramen")
 plant("notes/meeting.txt", "standup notes, roadmap chat")
 
+# Routing seam (fix round 3): find requests are dispatched by the routing
+# layer (services/hunt_routing.py), not by the planner, so the forest root
+# is steered there as well as through the planner args below. Guarded: on
+# trees without the routing layer this is a no-op and the planner args
+# still steer the hunt, exactly as before.
+try:
+    from app.services import hunt_routing as _HR
+    _HR.locate_root = lambda: str(FOREST)
+except Exception:
+    pass
+
 # ---------------------------------------------------------------- stub model
 # The planner is scripted: one locate_files step against the forest. The
 # synthesis model is scripted to behave like the real one did: paraphrase
