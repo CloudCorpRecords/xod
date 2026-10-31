@@ -719,22 +719,49 @@ class BrowserSandboxService:
         self._msg_id += 1
         return self._msg_id
 
+    def _probe_devtools(self, timeout: float) -> str:
+        """Asks the debug port once. Returns "ready" (pages listed), "empty"
+        (answered, no pages), "refused" (nothing listening) or "slow" (no
+        answer in time; busy is not the same as gone)."""
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                return "ready" if data else "empty"
+        except urllib.error.URLError as e:
+            if isinstance(getattr(e, "reason", None), ConnectionRefusedError):
+                return "refused"
+            return "slow"
+        except Exception:
+            return "slow"
+
+    async def _wait_for_devtools(self, timeout_s: float = 20.0) -> bool:
+        """Polls the debug port until it lists pages or the budget runs out.
+        A cold Chrome on a busy machine can need well over 5 seconds."""
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            await asyncio.sleep(0.25)
+            if self._probe_devtools(0.5) == "ready":
+                return True
+        return False
+
     async def ensure_browser_running(self) -> bool:
         """Verifies Chrome is running on DEBUG_PORT or launches it in configured mode."""
         # A busy Chrome (a heavy page, a slow PC) can take more than a second to answer: ask again, longer, before
         # deciding it's gone, because what follows ends it, and with it a half-filled form waiting for the person's OK.
+        state = "slow"
         for wait in (1.0, 2.5, 4.0):
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=wait) as resp:
-                    data = json.loads(resp.read().decode())
-                    if data:
-                        return True
-                    break      # it answered, with no pages: start fresh
-            except urllib.error.URLError as e:
-                if isinstance(getattr(e, "reason", None), ConnectionRefusedError):
-                    break      # nothing on the port: no need to wait
-            except Exception:
-                pass
+            state = self._probe_devtools(wait)
+            if state == "ready":
+                return True
+            if state in ("empty", "refused"):
+                break
+        if state == "slow":
+            # No answer yet, but nothing proved it gone either. Both Xod
+            # instances share this profile and port, so killing on a guess can
+            # end the other instance's live browser mid-task. Give a busy
+            # Chrome one long final chance before treating it as dead.
+            if self._probe_devtools(10.0) == "ready":
+                return True
 
         # If not responding, clean up any stale chrome processes & singleton locks
         if self.proc:
@@ -803,16 +830,8 @@ class BrowserSandboxService:
         if self.headless:
             _end_with_xod(self.proc)
 
-        # Wait up to 5 seconds for DevTools to become available
-        for _ in range(25):
-            await asyncio.sleep(0.2)
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=0.5) as resp:
-                    tabs = json.loads(resp.read().decode())
-                    if tabs:
-                        return True
-            except Exception:
-                pass
+        if await self._wait_for_devtools(20.0):
+            return True
 
         raise RuntimeError("Background Chrome failed to start or open remote debugging port.")
 

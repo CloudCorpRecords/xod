@@ -364,7 +364,16 @@ class TaskQueue:
         self._update(task_id, status="working", now="Starting…" if action["type"] == "start" else task.get("now"))
 
         resuming = action["type"] in ("approve", "continue")
-        page_ok = await self._ensure_tab(task, resuming)
+        try:
+            page_ok = await self._ensure_tab(task, resuming)
+        except Exception as e:
+            # The browser is a tool, not a gate: a task that never opens a page
+            # must not die because Chrome would not start. Browser tools call
+            # ensure_browser_running again when a page is actually needed, and
+            # the failure surfaces there instead of failing the whole task.
+            logger.warning(f"Task {task_id}: browser tab unavailable ({e}); continuing without one")
+            self._update(task_id, note="Browser unavailable; carrying on without it")
+            page_ok = False
         if resuming and not page_ok:
             # The paused page is gone (browser restarted). Start over; any submit still asks again.
             self._update(task_id, note="The paused page was lost, so I started this task over")
