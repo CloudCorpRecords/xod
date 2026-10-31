@@ -1336,6 +1336,21 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             except Exception as e:
                 logger.error(f"Recovery synthesis failed: {e}")
 
+        # Decisive evidence delivery (services/decisive_evidence.py): a
+        # locate result IS the answer, and the synthesis model only ever
+        # saw a 500-char truncated summary of it, so the block is rendered
+        # from the stored payload and appended here, deterministically.
+        try:
+            from app.services import decisive_evidence as _decisive
+            _entries = _decisive.collect(
+                (t.get("tool"), t.get("result")) for t in getattr(evidence_board, "tool_audit_trail", []))
+            _block = _decisive.block_for(_entries, user_query)
+        except Exception:
+            _block = ""
+        if _block and _block not in accumulated_text:
+            yield {"type": "content", "content": "\n\n" + _block}
+            accumulated_text += "\n\n" + _block
+
         for ev in self._source_link_events(evidence_board, accumulated_text, user_query):
             yield ev
 

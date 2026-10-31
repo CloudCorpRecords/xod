@@ -94,6 +94,8 @@ def _init() -> None:
         # Existing rows start from their last row update; from here on the
         # clock only moves on genuine progress (see _touch_progress).
         c.execute("UPDATE tasks SET last_progress_at = updated_at WHERE last_progress_at IS NULL")
+    if "evidence_json" not in cols:
+        c.execute("ALTER TABLE tasks ADD COLUMN evidence_json TEXT")
     if "stalled" not in cols:
         c.execute("ALTER TABLE tasks ADD COLUMN stalled INTEGER DEFAULT 0")
     if "stalled_reason" not in cols:
@@ -106,7 +108,7 @@ def _row(r: sqlite3.Row) -> Dict[str, Any]:
     d = dict(r)
     if "stalled" in d:
         d["stalled"] = bool(d["stalled"])
-    for k in ("next_action", "waiting_detail", "mission_json", "pending_json", "history"):
+    for k in ("next_action", "waiting_detail", "mission_json", "pending_json", "history", "evidence_json"):
         if d.get(k):
             try:
                 d[k] = json.loads(d[k])
@@ -800,11 +802,15 @@ class TaskQueue:
             pass
 
     async def _stream(self, task_id: str, message: str, steps: int):
-        """Runs the agent for one stretch of a task; returns (report_text, steps).
+        """Runs the agent for one stretch of a task; returns (report_text, steps, decisive_payloads).
         Raises whatever the stream raises; the caller finishes the task as crashed."""
         from app.agent.researcher import AgenticResearcher
+        from app.services import decisive_evidence
         content, last_status = [], ""
+        decisive_pairs = []
         async for ev in AgenticResearcher().run_research_stream([{"role": "user", "content": message}]):
+            if ev.get("type") in ("tool_result", "subagent_tool_result"):
+                decisive_pairs.append((ev.get("name"), ev.get("data")))
             if ev.get("type") == "content":
                 piece = ev.get("content", "")
                 content.append(piece if isinstance(piece, str) else json.dumps(piece))
@@ -820,7 +826,7 @@ class TaskQueue:
                         self._progress(task_id, line)
             if task_id in self._cancel_requested:
                 break
-        return "".join(content).strip(), steps
+        return "".join(content).strip(), steps, decisive_evidence.collect(decisive_pairs)
 
     def _verify_file_effects(self, task: Dict[str, Any], started: float) -> List[str]:
         """Ways this task's declared effects are NOT true (empty list = verified).
@@ -939,8 +945,9 @@ class TaskQueue:
 
         started = time.time()
         steps = task.get("steps") or 0
+        payloads: List[Dict[str, Any]] = []
         try:
-            report, steps = await self._stream(task_id, message, steps)
+            report, steps, payloads = await self._stream(task_id, message, steps)
         except Exception as e:
             logger.exception(f"Task {task_id} crashed")
             self._finish(task_id, "failed", f"Something went wrong: {e}", note="Crashed")
@@ -962,9 +969,11 @@ class TaskQueue:
                              f"but checking found: {'; '.join(problems)}. Do it now for real, using your "
                              "file tools, then confirm briefly.)")
                 try:
-                    again, steps = await self._stream(task_id, retry_msg, steps)
+                    again, steps, payloads2 = await self._stream(task_id, retry_msg, steps)
                     if again:
                         report = again
+                    if payloads2:
+                        payloads = payloads2
                 except Exception:
                     logger.exception(f"Task {task_id} verification retry crashed")
                 problems = self._verify_file_effects(task, started)
@@ -981,12 +990,21 @@ class TaskQueue:
             return
 
         if not mission:
+            evidence = {"evidence_json": json.dumps(payloads)} if payloads else {}
             if problems:
                 tail = f"Not finished: {'; '.join(problems)}"
                 self._finish(task_id, "failed", f"{report}\n\n{tail}".strip() if report else tail,
-                             note="Verification failed")
+                             note="Verification failed", **evidence)
+            elif any(p["payload"].get("status") == "ask" for p in payloads):
+                # The hunt ended in a question (two close matches): wait for
+                # the person's answer instead of picking one for them.
+                self._update(task_id, note="Waiting for you", status="waiting", waiting_kind="question",
+                             waiting_detail={"message": report}, result=report,
+                             now="Needs your answer", next_action=None, **evidence)
+                notify(self.get(task_id)["title"], "Has a question for you.")
+                _phone(self.get(task_id), "question")
             else:
-                self._finish(task_id, "done", report or "Done.", note="Finished")
+                self._finish(task_id, "done", report or "Done.", note="Finished", **evidence)
             await self._close_tab(self.get(task_id).get("tab_id"))
             return
 

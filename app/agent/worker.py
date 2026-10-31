@@ -39,7 +39,7 @@ MAX_CHECKS = 3            # times the done-check may send it back
 KEEP_FULL = 6             # tool results kept whole; older ones shrink so a long job fits the context
 TOOLS = ("computer_run_command", "computer_start_job", "computer_wait_for", "computer_check_job", "computer_stop_job",
          "computer_read_file", "computer_write_file", "computer_edit_file", "computer_list_directory",
-         "computer_find_files", "web_search")
+         "computer_find_files", "locate_files", "web_search")
 WEB_TOOLS = ("web_search", "web_scrape", "computer_write_file", "computer_read_file")
 
 # ------------------------------------------------------------------ which requests are work on the computer
@@ -651,6 +651,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     convo.append({"role": "user", "content": ask})
 
     log: List[Dict[str, Any]] = []
+    decisive_hits: List = []          # (tool, result) pairs; decisive evidence is delivered whole (services/decisive_evidence.py)
     told: Dict[str, int] = {}
     checks = 0
     answer, verdict, stopped, left = "", None, "", ""
@@ -766,6 +767,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 yield {"type": "tool_call", "name": name, "args": args, "id": cid}
                 res = refused(name, args) or await execute_tool(name, args)
                 yield {"type": "tool_result", "name": name, "id": cid, "summary": _summary(name, res), "data": res}
+                decisive_hits.append((name, res))
             out = _out(res)
             log.append({"name": name, "args": args, "fp": _fp(name, args), "failed": _failed(res), "out": out[-3000:],
                         "exit": res.get("exit_code") if isinstance(res, dict) else None, "new": True})
@@ -791,6 +793,13 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                    + (f" ({worked} of them worked)" if log else "") + ". Say **continue** and I'll pick up from here.")
     elif stopped and log:
         left = left or "it stopped partway"
+
+    if decisive_hits:
+        try:
+            from app.services import decisive_evidence as _decisive
+            answer = _decisive.apply_to_answer(answer, _decisive.collect(decisive_hits), goal)
+        except Exception:
+            pass
 
     if not answer and log:
         answer = "Here's where it got to:\n" + "\n".join(
