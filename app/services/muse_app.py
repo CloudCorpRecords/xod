@@ -208,6 +208,11 @@ def status() -> Dict[str, Any]:
            "approved": _state["count"], "last": _state["last"],
            "accessibility_error": _state.get("error") if enabled() else None,
            "dry_run": DRY_RUN, "backend": (_backends.backend().name if _backends.backend() else None)}
+    try:
+        from app.services import permissions
+        out["permissions"] = permissions.accessibility_status(auto_approve_on=bool(out["on"]))
+    except Exception:
+        out["permissions"] = None
     if m == "away" and not until:
         out["you"] = user_away()
     try:
@@ -240,8 +245,8 @@ def _describe_error(e: Exception) -> str:
     """What Crew shows under the switch: the Accessibility fix only when that's really the problem."""
     msg = str(e).strip()
     if "accessibility" in msg.lower():
-        return ("Xod needs Accessibility access to press Allow in the Muse app "
-                "(System Settings → Privacy & Security → Accessibility).")
+        from app.services import permissions
+        return permissions.STALE_NOTICE
     return f"Can't reach the Muse app's approvals: {msg[:200]}" if msg else "Can't reach the Muse app's approvals."
 
 
@@ -363,7 +368,8 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
     approving button, and press it when press=True (and this isn't a dry run). press=False only reads."""
     ax = _ax_api()
     if not ax.trusted():
-        raise PermissionError("Xod needs Accessibility access to press Allow in the Muse app")
+        raise PermissionError("Xod needs Accessibility access to press Allow in the Muse app "
+                              "(not in effect: the grant may be stale after an app update)")
     pid = _muse_pid()
     if pid is None:
         return {"running": False, "approved": []}
@@ -697,6 +703,20 @@ async def scan_once() -> List[Dict[str, Any]]:
                           "reason": f"press failed: still showing after {MAX_PRESS_TRIES} presses"})
                 if (c.get("title") or "", c.get("what") or "") not in _state["present"]:
                     _log(c)
+            if any(str(c.get("reason") or "").startswith("press failed") for c in cards):
+                # A press that does not take is often not the card's fault: if macOS is not
+                # honoring Xod's Accessibility access, say so once, plainly, instead of
+                # letting the card just look missed.
+                try:
+                    from app.services import permissions
+                    if permissions.trusted() is False and not _state.get("trust_warned"):
+                        logger.warning("A card press failed and macOS is not honoring Xod's Accessibility "
+                                       "access (the grant looks stale); the repair options are in Settings")
+                        _state["trust_warned"] = True
+                except Exception:
+                    pass
+            else:
+                _state["trust_warned"] = False
             _state["present"] = keys
             _state["present_ids"] = {_card_id(c) for c in cards}
             _state["no_button_ids"] = no_button

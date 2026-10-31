@@ -2182,6 +2182,21 @@ async def crew_set_auto_approve(req: CrewAutoApprove):
     return muse_app.status()
 
 
+@app.post("/api/crew/settings/auto-approve/accessibility/open-settings")
+async def crew_accessibility_open_settings():
+    """Guided repair, user-triggered: open the exact Settings pane for Xod's Accessibility grant."""
+    from app.services import permissions
+    return permissions.open_accessibility_settings()
+
+
+@app.post("/api/crew/settings/auto-approve/accessibility/reset-grant")
+async def crew_accessibility_reset_grant():
+    """Guided repair, user-triggered: clear Xod's OWN stale Accessibility entry and ask macOS again.
+    Refuses when the running process cannot prove which app it is (see services/permissions.py)."""
+    from app.services import permissions
+    return permissions.reset_own_grant()
+
+
 class HandoffRepos(BaseModel):
     repos: List[str]
 

@@ -219,6 +219,10 @@
                   <div data-c-autoapprove-state class="text-zinc-500"></div>
                 </div>
                 <p data-c-autoapprove-note class="text-[11px] text-amber-300 hidden"></p>
+                <div data-c-autoapprove-fix class="hidden flex gap-1">
+                  <button data-c-accessibility-open class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600">Open Accessibility settings</button>
+                  <button data-c-accessibility-reset class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600">Reset my stale grant</button>
+                </div>
                 <details data-c-tools class="text-[11px] text-zinc-400"><summary class="cursor-pointer hover:text-zinc-200">Muse's tools for jobs</summary>
                   <p class="mt-1">Each one Muse starts before a job begins (all of yours took minutes), so jobs get only the ones you tick.</p>
                   <div data-c-toolbox class="mt-1 max-h-40 overflow-y-auto grid grid-cols-2 gap-x-2"></div></details>
@@ -311,8 +315,16 @@
       if (st.accessibility_error) bits.push(st.accessibility_error);
       else if (st.on && st.awake_held) bits.push("Staying awake while this is on, so the computer doesn't lock mid-job.");
       if (st.on && st.locked) bits.push("Screen is locked: cards are still read; a press while locked is unproven.");
+      const perm = st.permissions || {};
+      if (perm.notice && !bits.includes(perm.notice)) bits.push(perm.notice);
       note.textContent = bits.join(" ");
       note.classList.toggle("hidden", !bits.length);
+      const fix = root.querySelector("[data-c-autoapprove-fix]");
+      if (fix) {
+        fix.classList.toggle("hidden", !perm.notice);
+        const reset = fix.querySelector("[data-c-accessibility-reset]");
+        if (reset) reset.classList.toggle("hidden", !perm.can_reset);
+      }
     }
   }
 
@@ -333,6 +345,18 @@
     box.onchange = () => setAutoApprove({ mode: box.value });
     const pause = root.querySelector("[data-c-autoapprove-pause]");
     if (pause) pause.onclick = () => setAutoApprove(pause.textContent === "Resume" ? { mode: "resume" } : { mode: "pause", pause_minutes: 60 });
+    const openBtn = root.querySelector("[data-c-accessibility-open]");
+    if (openBtn) openBtn.onclick = async () => {
+      const r = await api("/api/crew/settings/auto-approve/accessibility/open-settings", {});
+      if (typeof showToast === "function" && r && r.message) showToast(r.message);
+    };
+    const resetBtn = root.querySelector("[data-c-accessibility-reset]");
+    if (resetBtn) resetBtn.onclick = async () => {
+      if (!window.confirm("Clear Xod's Accessibility entry so macOS asks fresh? Xod stays unapproved until you flip it back on in the prompt that follows.")) return;
+      const r = await api("/api/crew/settings/auto-approve/accessibility/reset-grant", {});
+      if (typeof showToast === "function" && r && r.message) showToast(r.message);
+      showAutoApprove(await api("/api/crew/settings/auto-approve"));
+    };
   }
 
   // The watcher can hit (or clear) a problem seconds after the switch is flipped, so the note under
