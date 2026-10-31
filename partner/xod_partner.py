@@ -3,24 +3,31 @@
 xod-partner: the small companion that watches Xod so Xod never has to
 watch itself.
 
-Charter (v0): watch Xod's health, restart Xod when it dies, keep the log.
+Charter: watch Xod's health, restart Xod when it dies, keep the log (v0),
+and since v1 hold the Accessibility grant and do the physical acting on
+Xod's request: an authenticated loopback API offers a read-only scan of
+the Muse app's approval cards and a press of the approving button,
+under the frozen rules ported in partner_ax. The Partner stays dumb:
+every decision (modes, away, pause, whether to press at all) is Xod's.
 The Partner is deliberately tiny and frozen; new features belong in Xod,
-never here. Permissions and update-swapping arrive in later versions,
-only once this skeleton is proven. Design record: the "Partner app"
-addendum in XOD-BRAIN-ARCHITECTURE.md.
+never here. Design record: the "Partner app" addendum in
+XOD-BRAIN-ARCHITECTURE.md.
 
 Run: python3 xod_partner.py [state-dir]
 State dir default: ~/Library/Application Support/XodPartner
 """
+import hmac
 import json
 import os
 import secrets
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 DEFAULT_STATE_DIR = Path.home() / "Library" / "Application Support" / "XodPartner"
@@ -36,7 +43,12 @@ DEFAULTS = {
     "max_restarts_per_hour": 3,
     "backoff_s": [30, 120, 300],
     "app_name": "Xod",
+    "api_host": "127.0.0.1",
+    "api_port": 8795,
 }
+
+VERSION = 1
+BUNDLE_ID = "dev.xod.partner"
 
 KNOWN_COMMANDS = ("restart_xod", "verify", "release_hold")
 
@@ -78,12 +90,14 @@ class Core:
     cycle is handed the current time, so the tests can drive each path
     without touching the real Xod or the real clock."""
 
-    def __init__(self, cfg, state_dir, probe, restart, log):
+    def __init__(self, cfg, state_dir, probe, restart, log, trust=None):
         self.cfg = cfg
         self.state_dir = Path(state_dir)
         self.probe = probe
         self.restart = restart
         self.log = log
+        self.trust = trust  # callable -> True/False/None: is OUR Accessibility grant in effect?
+        self.started_at = time.time()
         self.token = self._load_token()
         self.failures = 0
         self.first_fail_at = None
@@ -241,10 +255,13 @@ class Core:
     # -- status ----------------------------------------------------------
     def status(self, now):
         hold = "file" if self._hold_file() else ("cap" if self.cap_hold else None)
+        trusted = self.trust() if self.trust else None
         return {
             "partner": "xod-partner",
-            "version": 0,
+            "version": VERSION,
             "partner_pid": os.getpid(),
+            "partner_trusted": trusted,
+            "ax": {"trusted": trusted, "port": self.cfg.get("api_port")},
             "updated_at": iso(now),
             "last_probe_at": iso(self.last_probe_at) if self.last_probe_at is not None else None,
             "last_probe_ok": self.last_probe_ok,
@@ -305,6 +322,95 @@ def make_restarter(cfg, probe, log):
     return restart
 
 
+# -- the AX API (v1) -------------------------------------------------------
+# Authenticated loopback HTTP, the Partner's only network surface. Every
+# call needs the pairing token (the same one the inbox uses). The Partner
+# stays dumb: /ax/scan only reads, /ax/press applies the frozen rules in
+# partner_ax to one card Xod named. Nothing here takes orders from files,
+# web content, or task text; the inbox and this API are the only inputs.
+
+
+def api_status(core):
+    st = core.status(time.time())
+    st["bundle_id"] = BUNDLE_ID
+    st["uptime_s"] = int(time.time() - core.started_at)
+    return st
+
+
+def make_server(cfg, core, walk, log):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def _send(self, code, obj):
+            body = json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _authed(self):
+            head = self.headers.get("Authorization") or ""
+            return head.startswith("Bearer ") and hmac.compare_digest(head[7:], core.token)
+
+        def _json_body(self):
+            try:
+                return json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            except Exception:
+                return None
+
+        def _trusted_or_refuse(self):
+            t = core.trust() if core.trust else None
+            if t is not True:
+                self._send(403, {"error": "the Partner's Accessibility access is not in effect",
+                                 "trusted": t, "bundle_id": BUNDLE_ID})
+                return False
+            return True
+
+        def do_GET(self):
+            if self.path.split("?")[0] != "/status":
+                return self._send(404, {"error": "not found"})
+            if not self._authed():
+                return self._send(401, {"error": "unauthorized"})
+            self._send(200, api_status(core))
+
+        def do_POST(self):
+            path = self.path.split("?")[0]
+            if path not in ("/ax/scan", "/ax/press"):
+                return self._send(404, {"error": "not found"})
+            if not self._authed():
+                return self._send(401, {"error": "unauthorized"})
+            body = self._json_body()
+            if not isinstance(body, dict):
+                return self._send(400, {"error": "a JSON object body is required"})
+            if not self._trusted_or_refuse():
+                return
+            try:
+                if path == "/ax/scan":
+                    out = walk.scan(front=bool(body.get("front")))
+                    out["trusted"] = True
+                    self._send(200, out)
+                else:
+                    want = str(body.get("card_id") or "")
+                    if not want:
+                        return self._send(400, {"error": "card_id is required"})
+                    out = walk.press(want, front=bool(body.get("front")), away=bool(body.get("away")))
+                    out["trusted"] = True
+                    self._send(200, out)
+            except TimeoutError as exc:
+                self._send(500, {"error": str(exc)})
+            except Exception as exc:  # a broken call must never kill the API or the watcher
+                log("ax api error on %s: %s" % (path, exc))
+                self._send(500, {"error": "ax call failed: %s" % exc})
+
+    server = ThreadingHTTPServer((cfg["api_host"], int(cfg["api_port"])), Handler)
+    server.daemon_threads = True
+    return server
+
+
 def main(argv):
     state_dir = Path(argv[1]).expanduser() if len(argv) > 1 else DEFAULT_STATE_DIR
     (state_dir / "inbox").mkdir(parents=True, exist_ok=True)
@@ -312,7 +418,23 @@ def main(argv):
     cfg = load_config(state_dir)
     log = Log(state_dir / "partner.log")
     probe = lambda: http_probe(cfg["probe_url"], cfg["probe_timeout_s"])
-    core = Core(cfg, state_dir, probe, make_restarter(cfg, probe, log), log)
+    trust, walk = None, None
+    try:
+        import partner_ax
+        ax = partner_ax.CtypesAx()
+        trust = ax.trusted
+        walk = partner_ax.Walk(ax, log)
+    except Exception as exc:  # no AX on this machine: the watchdog still watches
+        log("ax service unavailable at startup: %s" % exc)
+    core = Core(cfg, state_dir, probe, make_restarter(cfg, probe, log), log, trust=trust)
+    server = None
+    if walk is not None:
+        try:
+            server = make_server(cfg, core, walk, log)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+        except Exception as exc:
+            log("ax api could not start: %s" % exc)
+            server = None
     stopping = {"flag": False}
 
     def _stop(signum, frame):
@@ -320,8 +442,9 @@ def main(argv):
 
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    log("xod-partner starting (pid %d, probing %s every %ss)"
-        % (os.getpid(), cfg["probe_url"], cfg["probe_interval_s"]))
+    log("xod-partner starting (pid %d, probing %s every %ss, ax api %s)"
+        % (os.getpid(), cfg["probe_url"], cfg["probe_interval_s"],
+           "on %s:%s" % (cfg["api_host"], cfg["api_port"]) if server else "unavailable"))
     last_status = None
     while not stopping["flag"]:
         try:

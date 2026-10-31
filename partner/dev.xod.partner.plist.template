@@ -6,8 +6,7 @@
   <string>dev.xod.partner</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
-    <string>__STATE_DIR__/app/xod_partner.py</string>
+    <string>__APP_EXE__</string>
     <string>__STATE_DIR__</string>
   </array>
   <key>RunAtLoad</key>
