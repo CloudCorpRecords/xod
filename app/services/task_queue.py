@@ -592,6 +592,7 @@ class TaskQueue:
             except BaseException:
                 pass
             self._running_id = None
+        await self._sweep_tool_children(task_id)
         fields: Dict[str, Any] = {"status": status, "finished_at": time.time(), "now": now_text,
                                   "next_action": None, "waiting_kind": None}
         if result is not None:
@@ -609,6 +610,18 @@ class TaskQueue:
             else:
                 asyncio.create_task(self._respawn_worker(worker))
         return True
+
+    async def _sweep_tool_children(self, task_id: str) -> None:
+        """Task end means tool-child end: reap any computer-tool process this task
+        spawned that is still running, so a finished, cancelled, or watchdog-stopped
+        task can never leave orphans behind (the whole-home find processes that
+        outlived their tasks in the eval runs). Only this task's own origin is
+        swept; chat and other tasks keep their children."""
+        try:
+            from app.services.system_control import system_control_service
+            await system_control_service.reap_tool_children(origin=f"task:{task_id}")
+        except Exception:
+            pass
 
     async def _respawn_worker(self, old_worker: asyncio.Task) -> None:
         """Restarts the worker loop once a force-cancelled worker finishes
@@ -772,6 +785,11 @@ class TaskQueue:
                     self._running_id = None
                     self._update(r["id"], note=f"Error: {e}", status="failed", finished_at=time.time(),
                                  result=f"Something went wrong inside Xod: {e}", now="Stopped", next_action=None)
+                finally:
+                    # Every _run exit path lands here (done, failed, waiting, and a
+                    # forced cancel unwinding through this loop): no tool child of
+                    # this task survives the task.
+                    await self._sweep_tool_children(r["id"])
             except Exception as e:
                 logger.exception(f"Task worker error: {e}")
                 await asyncio.sleep(3)
