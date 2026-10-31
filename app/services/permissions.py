@@ -218,6 +218,38 @@ def reset_own_grant(runner: Callable = subprocess.run) -> Dict[str, Any]:
                         "the prompt (or in the Accessibility settings) to finish.")}
 
 
+PARTNER_BUNDLE_ID = "dev.xod.partner"   # the Xod Partner app: since Partner v1 it holds the grant
+
+
+def reset_partner_grant(runner: Callable = subprocess.run) -> Dict[str, Any]:
+    """USER-TRIGGERED ONLY: clear the XOD PARTNER's stale Accessibility entry.
+
+    The repair asymmetry the Partner design rests on: Xod may reset the
+    Partner's grant because Xod is not the process that dies for it. macOS
+    kills the grant holder when its entry is reset, so the Partner goes
+    down; launchd's KeepAlive brings it straight back, and the user then
+    flips the fresh Xod Partner switch once. Xod never re-asks for the
+    Partner here (a prompt from this process would ask about Xod, the
+    wrong app). The bundle id is a constant, validated by the same strict
+    shape as Xod's own; only Accessibility is ever reset."""
+    cmd = reset_command(PARTNER_BUNDLE_ID)
+    logger.warning(f"User asked to reset the Xod Partner's Accessibility grant: {' '.join(cmd)}")
+    try:
+        r = runner(cmd, capture_output=True, text=True, timeout=30)
+    except Exception as e:
+        logger.warning(f"Partner Accessibility reset could not run: {e}")
+        return {"ok": False, "bundle_id": PARTNER_BUNDLE_ID, "message": f"The reset could not run: {e}"}
+    if r.returncode != 0:
+        logger.warning(f"Partner Accessibility reset failed: {(r.stderr or '').strip()[:200]}")
+        return {"ok": False, "bundle_id": PARTNER_BUNDLE_ID,
+                "message": f"macOS refused the reset: {(r.stderr or 'unknown error').strip()[:200]}"}
+    logger.warning("Partner Accessibility grant reset at the user's request; launchd revives the "
+                   "Partner, and the user flips Xod Partner on to finish")
+    return {"ok": True, "bundle_id": PARTNER_BUNDLE_ID,
+            "message": "Done: the Partner's stale entry is cleared and the Partner is restarting. "
+                       "Flip Xod Partner on in the Accessibility settings to finish."}
+
+
 def open_accessibility_settings(runner: Callable = subprocess.run) -> Dict[str, Any]:
     """USER-TRIGGERED ONLY: open the exact Settings pane where the grant lives."""
     logger.info("Opening the Accessibility settings pane at the user's request")

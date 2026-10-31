@@ -317,11 +317,13 @@
       if (st.on && st.locked) bits.push("Screen is locked: cards are still read; a press while locked is unproven.");
       const perm = st.permissions || {};
       if (perm.notice && !bits.includes(perm.notice)) bits.push(perm.notice);
+      const partner = st.partner || {};
+      if (partner.notice && !bits.includes(partner.notice)) bits.push(partner.notice);
       note.textContent = bits.join(" ");
       note.classList.toggle("hidden", !bits.length);
       const fix = root.querySelector("[data-c-autoapprove-fix]");
       if (fix) {
-        fix.classList.toggle("hidden", !perm.notice);
+        fix.classList.toggle("hidden", !(perm.notice || partner.notice));
         const reset = fix.querySelector("[data-c-accessibility-reset]");
         if (reset) reset.classList.toggle("hidden", !perm.can_reset);
       }

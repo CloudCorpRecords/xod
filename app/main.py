@@ -2197,6 +2197,16 @@ async def crew_accessibility_reset_grant():
     return permissions.reset_own_grant()
 
 
+@app.post("/api/crew/settings/auto-approve/accessibility/reset-partner-grant")
+async def crew_accessibility_reset_partner_grant():
+    """Guided repair, user-triggered: clear the XOD PARTNER's stale Accessibility entry.
+    Xod performs it because Xod survives it; the Partner (the grant holder) is
+    expected to be killed by macOS at the reset, and launchd revives it. The
+    user finishes with one flip of the Xod Partner switch (see services/permissions.py)."""
+    from app.services import permissions
+    return permissions.reset_partner_grant()
+
+
 class HandoffRepos(BaseModel):
     repos: List[str]
 

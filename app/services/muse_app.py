@@ -213,6 +213,11 @@ def status() -> Dict[str, Any]:
         out["permissions"] = permissions.accessibility_status(auto_approve_on=bool(out["on"]))
     except Exception:
         out["permissions"] = None
+    try:
+        from app.services import partner_client
+        out["partner"] = partner_client.summary()
+    except Exception:
+        out["partner"] = None
     if m == "away" and not until:
         out["you"] = user_away()
     try:
@@ -472,6 +477,98 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
     return {"running": True, "approved": found}
 
 
+# ------------------------------------------------------------------ the Partner's hands (v1)
+def _partner_delegated() -> bool:
+    """May the Partner do this scan? Only when it answers and macOS honors its
+    grant. Anything else (absent, down, untrusted, odd) means Xod's own walk."""
+    try:
+        from app.services import partner_client
+        st = partner_client.status()
+        return bool(st) and not st.get("_status") and st.get("partner_trusted") is True
+    except Exception:
+        return False
+
+
+def _no_button_reason(labels: List[str]) -> str:
+    labs = [l for l in labels if l.lower() in ("deny", "don't send", "deny all")]
+    others = [l for l in labels if l.lower() not in ("deny", "don't send", "deny all")]
+    if others:
+        return "no button Xod may press (saw: %s)" % ", ".join(others)
+    if labs == ["Deny"]:
+        return "only a Deny button"
+    if labs:
+        return "only negative buttons (%s)" % ", ".join(labs)
+    return "no button Xod may press"
+
+
+def _partner_scan_press(skip_ids: Optional[set] = None, want_front: bool = False) -> Optional[Dict[str, Any]]:
+    """One scan through the Partner, in _scan(press=True)'s exact shape, with the
+    decision ladder applied here (the Partner only reads and presses): expiry,
+    already-pressed skips, the no-button reasons, the dry run, then a press per
+    card Xod approves of. Returns None when the Partner cannot serve the READ
+    (down or untrusted at that moment): nothing has been pressed yet, so the
+    caller may fall back to Xod's own walk for the whole scan. A failure
+    mid-press never falls back within the same scan; the card just carries
+    the reason, so nothing can be pressed twice by two hands."""
+    from app.services import partner_client
+    st = partner_client.status(force=True)
+    if not st or st.get("_status") or st.get("partner_trusted") is not True:
+        return None
+    first = partner_client.scan(front=want_front)
+    if not first or first.get("trusted") is False or first.get("_status"):
+        return None
+    raws = first.get("cards") or []
+    if not want_front and not DRY_RUN and any(c.get("button") is None and not c.get("expired")
+                                              for c in raws):
+        # Cards whose buttons may only render with Muse in front get one
+        # fronted look before anyone logs them as unanswerable (as in _scan's flow).
+        second = partner_client.scan(front=True)
+        if second and second.get("trusted") is not False and not second.get("_status"):
+            raws, want_front = second.get("cards") or [], True
+    away = bool((_state.get("away_now") or {}).get("away")) if mode() == "away" else False
+    entries: List[Dict[str, Any]] = []
+    for raw in raws:
+        entry = {"title": raw.get("title") or "", "what": raw.get("what") or "",
+                 "pressed": False, "button": raw.get("button"), "reason": "",
+                 "type": raw.get("type") or _card_type(raw.get("title") or ""),
+                 "from": raw.get("from") or "", "to": raw.get("to") or "",
+                 "subject": raw.get("subject") or "", "attachments": raw.get("attachments") or []}
+        cid = raw.get("card_id") or _card_id(entry)
+        if raw.get("expired"):
+            entry["button"], entry["reason"] = None, "expired before Xod got to it"
+        elif entry["button"] is not None and cid in (skip_ids or set()):
+            entry["reason"] = "already pressed: not pressing again"
+        elif entry["button"] is None:
+            entry["reason"] = _no_button_reason(raw.get("buttons") or [])
+        elif DRY_RUN:
+            entry["reason"] = "dry run: not pressed (test mode)"
+        else:
+            r = partner_client.press(cid, front=want_front, away=away)
+            if r is None:
+                entry["reason"] = "partner press failed: no answer from the Partner"
+            elif r.get("trusted") is False or r.get("_status"):
+                entry["reason"] = "partner press refused: the Partner is not trusted"
+            else:
+                entry["pressed"] = bool(r.get("pressed"))
+                if r.get("button"):
+                    entry["button"] = r["button"]
+                if not entry["pressed"]:
+                    entry["reason"] = r.get("reason") or "press failed"
+        entries.append(entry)
+    return {"running": bool(first.get("running", True)), "approved": entries}
+
+
+def _scan_dispatch(skip_ids: Optional[set] = None, want_front: bool = False) -> Dict[str, Any]:
+    """One physical scan-and-press, by whichever hands are right: the Partner
+    when it is reachable and trusted, Xod's own in-process walk otherwise."""
+    res = _partner_scan_press(skip_ids, want_front)
+    if res is not None:
+        _state["last_path"] = "partner"
+        return res
+    _state["last_path"] = "own"
+    return _scan(True, skip_ids)
+
+
 # ------------------------------------------------------------------ the record of what Xod did
 def _card_id(card: Dict[str, Any]) -> str:
     if card.get("_id"):
@@ -669,16 +766,26 @@ async def scan_once() -> List[Dict[str, Any]]:
             repress = {pid for pid in showing if pid in marks and pid not in skip}
             unanswerable = (_state.get("no_button_ids") or set()) - fronted
             prev, moved = None, False
-            if (repress or unanswerable) and not DRY_RUN:
+            want_front = bool((repress or unanswerable) and not DRY_RUN)
+            use_partner = _partner_delegated()
+            if want_front and not use_partner:
                 # Muse sometimes only takes a press, or only shows a card's buttons, with its window in front
                 # (the screenshot cards above all). Bring it forward for this look, then put back what was there.
+                # When the Partner does the looking, IT fronts (the caller just says the look is a fronted one).
                 fronted |= repress | unanswerable
                 prev = await asyncio.to_thread(_bring_forward)
                 moved = prev is not None
                 if moved:
                     await asyncio.sleep(FRONT_SETTLE)
             try:
-                res = await asyncio.to_thread(_scan, True, skip)
+                if use_partner:
+                    res = await asyncio.to_thread(_partner_scan_press, skip, want_front)
+                    if res is None:  # the Partner vanished between the check and the scan: Xod's own hands
+                        res = await asyncio.to_thread(_scan, True, skip)
+                    elif want_front:
+                        fronted |= {_card_id(c) for c in (res.get("approved") or [])}
+                else:
+                    res = await asyncio.to_thread(_scan, True, skip)
             finally:
                 if moved:
                     await asyncio.sleep(FRONT_SETTLE)
@@ -705,12 +812,21 @@ async def scan_once() -> List[Dict[str, Any]]:
                     _log(c)
             if any(str(c.get("reason") or "").startswith("press failed") for c in cards):
                 # A press that does not take is often not the card's fault: if macOS is not
-                # honoring Xod's Accessibility access, say so once, plainly, instead of
-                # letting the card just look missed.
+                # honoring the pressing app's Accessibility access, say so once, plainly,
+                # instead of letting the card just look missed. Since Partner v1 the hands
+                # are usually the Partner's, so ask after the right app's grant.
                 try:
-                    from app.services import permissions
-                    if permissions.trusted() is False and not _state.get("trust_warned"):
-                        logger.warning("A card press failed and macOS is not honoring Xod's Accessibility "
+                    if _state.get("last_path") == "partner":
+                        from app.services import partner_client
+                        pst = partner_client.status(force=True)
+                        untrusted = bool(pst) and pst.get("partner_trusted") is False
+                        who = "the Xod Partner's"
+                    else:
+                        from app.services import permissions
+                        untrusted = permissions.trusted() is False
+                        who = "Xod's"
+                    if untrusted and not _state.get("trust_warned"):
+                        logger.warning(f"A card press failed and macOS is not honoring {who} Accessibility "
                                        "access (the grant looks stale); the repair options are in Settings")
                         _state["trust_warned"] = True
                 except Exception:

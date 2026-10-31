@@ -117,6 +117,16 @@ def main():
         out = P.open_accessibility_settings(runner=runner)
         assert runner.calls == [["open", P.SETTINGS_URL]] and out["ok"] is True, runner.calls
         print("PASS: open-settings opens the Accessibility pane deep link", flush=True)
+
+        # Partner v1: resetting the PARTNER's grant targets dev.xod.partner exactly,
+        # never Xod's own id, and never re-asks from this process (the prompt would
+        # be about Xod, the wrong app)
+        runner = _FakeRunner()
+        P._backend.prompt_calls = 0
+        out = P.reset_partner_grant(runner=runner)
+        assert runner.calls == [["tccutil", "reset", "Accessibility", "dev.xod.partner"]], runner.calls
+        assert out["ok"] is True and P._backend.prompt_calls == 0, out
+        print("PASS: the partner reset targets dev.xod.partner once and never re-asks here", flush=True)
     finally:
         P._backend, P.own_bundle_id = real_backend, real_bid_fn
 
