@@ -885,6 +885,7 @@ function handleProviderChange() {
     if (lmContainer) lmContainer.classList.add("hidden");
     lblCloud.textContent = `${provider.toUpperCase()} API Key`;
   }
+  kpOnProviderChange();
 }
 
 function setFireworksModel(modelId) {
@@ -1091,6 +1092,195 @@ function hideDetectedModelSelect() {
   if (wrap) wrap.classList.add("hidden");
 }
 
+// ---- API key profiles + usage ledger ---------------------------------------
+// Named keys per cloud provider (services/key_profiles.py); the UI only ever
+// sees masked keys. Detect Models runs against the selected profile (the
+// active one by default) and the server stores the models it finds on it, so
+// the detected-models dropdown doubles as the active key's allowed models.
+const KEY_PROFILE_PROVIDERS = ["openai", "anthropic", "gemini", "groq", "openrouter", "fireworks"];
+let _kpData = null;
+let _kpSelected = null;
+
+function kpProvider() { return document.getElementById("selectLlmProvider")?.value || ""; }
+
+function kpStatus(msg, isError) {
+  const el = document.getElementById("keyProfileStatus");
+  if (!el) return;
+  el.classList.remove("hidden");
+  el.className = isError ? "text-[11px] text-red-400" : "text-[11px] text-emerald-400";
+  el.textContent = msg;
+}
+
+async function loadKeyProfiles() {
+  const group = document.getElementById("groupKeyProfiles");
+  const provider = kpProvider();
+  if (!group) return;
+  if (!KEY_PROFILE_PROVIDERS.includes(provider)) { group.classList.add("hidden"); return; }
+  group.classList.remove("hidden");
+  try {
+    const res = await fetch(`/api/llm/key-profiles?provider=${encodeURIComponent(provider)}`);
+    if (!res.ok) return;
+    _kpData = await res.json();
+    if (!_kpData.profiles.some(p => p.id === _kpSelected)) _kpSelected = _kpData.active;
+    renderKeyProfiles();
+    const active = _kpData.profiles.find(p => p.id === _kpData.active);
+    if (active && active.models && active.models.length) {
+      populateDetectedModelSelect(active.models.map(id => ({ id })), document.getElementById("inputLlmModel")?.value.trim());
+    }
+  } catch (e) { /* key profiles are an extra; never break Settings */ }
+}
+
+function renderKeyProfiles() {
+  const sel = document.getElementById("selectKeyProfile");
+  const meta = document.getElementById("keyProfileMeta");
+  const note = document.getElementById("keyProfileActiveNote");
+  if (!sel || !_kpData) return;
+  sel.innerHTML = "";
+  _kpData.profiles.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = `${p.name}${p.active ? " (active)" : ""} · ${p.has_key ? p.masked : "no key saved"}`;
+    sel.appendChild(opt);
+  });
+  sel.value = _kpSelected;
+  const active = _kpData.profiles.find(p => p.id === _kpData.active);
+  if (note) note.textContent = active ? `Calls use: ${active.name}` : "";
+  const cur = _kpData.profiles.find(p => p.id === _kpSelected);
+  if (meta && cur) {
+    meta.textContent = cur.models && cur.models.length
+      ? `${cur.models.length} allowed model(s) for this key${cur.models_at ? `, detected ${new Date(cur.models_at * 1000).toLocaleString()}` : ""}.`
+      : "No models detected for this key yet. Use Detect Models.";
+  }
+}
+
+function kpSelectChange() {
+  _kpSelected = document.getElementById("selectKeyProfile")?.value || null;
+  renderKeyProfiles();
+}
+
+async function kpMutate(url, options, okMsg) {
+  try {
+    const res = await fetch(url, options);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { kpStatus(data.detail || "That did not work.", true); return false; }
+    _kpData = data;
+    if (!_kpData.profiles.some(p => p.id === _kpSelected)) _kpSelected = _kpData.active;
+    renderKeyProfiles();
+    if (okMsg) kpStatus(okMsg, false);
+    return true;
+  } catch (e) {
+    kpStatus("Could not reach Xod: " + e.message, true);
+    return false;
+  }
+}
+
+function kpActivate() {
+  if (!_kpSelected) return;
+  kpMutate(`/api/llm/key-profiles/${encodeURIComponent(_kpSelected)}/activate`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: kpProvider() }) },
+    "Active key switched. New calls use this profile's key.");
+}
+
+async function kpAdd() {
+  const name = document.getElementById("inputKeyProfileName")?.value.trim();
+  const key = document.getElementById("inputKeyProfileKey")?.value.trim() || "";
+  if (!name) { kpStatus("Give the new profile a name first.", true); return; }
+  const ok = await kpMutate("/api/llm/key-profiles",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: kpProvider(), name, key }) },
+    `Profile "${name}" added.`);
+  if (ok) {
+    const created = _kpData.profiles.find(p => p.name === name);
+    if (created) { _kpSelected = created.id; renderKeyProfiles(); }
+    document.getElementById("inputKeyProfileName").value = "";
+    document.getElementById("inputKeyProfileKey").value = "";
+  }
+}
+
+async function kpRename() {
+  const name = document.getElementById("inputKeyProfileName")?.value.trim();
+  if (!_kpSelected || !name) { kpStatus("Pick a profile and type its new name first.", true); return; }
+  const ok = await kpMutate(`/api/llm/key-profiles/${encodeURIComponent(_kpSelected)}/rename`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: kpProvider(), name }) },
+    "Profile renamed.");
+  if (ok) document.getElementById("inputKeyProfileName").value = "";
+}
+
+async function kpDelete() {
+  if (!_kpSelected) return;
+  if (_kpSelected === "default") { kpStatus("The Default profile cannot be deleted.", true); return; }
+  const cur = _kpData?.profiles.find(p => p.id === _kpSelected);
+  if (!confirm(`Delete the key profile "${cur ? cur.name : _kpSelected}" and its saved key?`)) return;
+  const ok = await kpMutate(`/api/llm/key-profiles/${encodeURIComponent(_kpSelected)}?provider=${encodeURIComponent(kpProvider())}`,
+    { method: "DELETE" }, "Profile deleted.");
+  if (ok) _kpSelected = _kpData.active;
+}
+
+async function kpSaveKey() {
+  const key = document.getElementById("inputKeyProfileKey")?.value.trim() || "";
+  if (!_kpSelected) return;
+  const ok = await kpMutate(`/api/llm/key-profiles/${encodeURIComponent(_kpSelected)}/key`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: kpProvider(), key }) },
+    key ? "Key saved for this profile." : "Key removed from this profile.");
+  if (ok) document.getElementById("inputKeyProfileKey").value = "";
+}
+
+function kpOnProviderChange() {
+  if (KEY_PROFILE_PROVIDERS.includes(kpProvider())) loadKeyProfiles();
+  else document.getElementById("groupKeyProfiles")?.classList.add("hidden");
+}
+
+// Usage panel: totals and breakdowns from the per-call ledger
+// (services/usage_ledger.py). Costs are estimates from the dated reference
+// price table; provider-reported and estimated token counts stay separate.
+let _usageRange = "today";
+let _usageTimer = null;
+
+function setUsageRange(r) { _usageRange = r; refreshUsagePanel(); }
+function fmtTokens(n) { return Number(n || 0).toLocaleString(); }
+function fmtCost(n) { return (n === null || n === undefined) ? "unpriced" : "$" + Number(n).toFixed(4); }
+
+async function refreshUsagePanel() {
+  const totals = document.getElementById("usageTotals");
+  if (!totals) return;
+  try {
+    const res = await fetch(`/api/usage/summary?range=${encodeURIComponent(_usageRange)}`);
+    if (!res.ok) return;
+    const d = await res.json();
+    document.querySelectorAll(".usage-range-btn").forEach(b =>
+      b.classList.toggle("ring-1", b.dataset.usageRange === _usageRange));
+    const t = d.totals || {};
+    totals.textContent = `${t.calls || 0} call(s) · ${fmtTokens(t.total_tokens)} tokens (${fmtTokens(t.prompt_tokens)} in / ${fmtTokens(t.completion_tokens)} out) · estimated cost ${fmtCost(t.cost_usd)}`
+      + (t.unpriced_calls ? ` · ${t.unpriced_calls} unpriced call(s)` : "")
+      + ` · token counts: ${t.records_api || 0} from the provider, ${t.records_estimated || 0} estimated`;
+    const row = (left, b) => `<div class="flex justify-between gap-2"><span class="truncate">${escapeHtml(left)}</span><span class="whitespace-nowrap">${b.calls} calls · ${fmtTokens(b.total_tokens)} tok · ${fmtCost(b.cost_usd)}</span></div>`;
+    const bm = document.getElementById("usageByModel");
+    if (bm) bm.innerHTML = (d.by_model || []).map(m => row(`${m.model} (${m.provider})`, m)).join("") || `<div class="text-zinc-500">No calls in this range yet.</div>`;
+    const bk = document.getElementById("usageByKey");
+    if (bk) bk.innerHTML = (d.by_key_profile || []).map(k => row(`${k.key_profile || "(local or no key)"} (${k.provider})`, k)).join("") || `<div class="text-zinc-500">No calls in this range yet.</div>`;
+    const line = document.getElementById("usageEstimateLine");
+    if (line) {
+      let est = null;
+      try { est = JSON.parse(localStorage.getItem("xod_last_estimate") || "null"); } catch (e) { est = null; }
+      const estTxt = est ? `Last pre-flight estimate: ~${fmtTokens(est.estimated_total_tokens)} tokens, ~${fmtCost(est.estimated_cost_usd)} (estimate, ${escapeHtml(est.model || "")}).` : "No pre-flight estimate yet.";
+      const lc = d.last_call;
+      const actTxt = lc ? `Last actual call: ${fmtTokens(lc.total_tokens)} tokens, ${fmtCost(lc.cost_usd)} (${escapeHtml(lc.model || "")}, ${lc.tokens_source === "api" ? "provider counts" : "estimated counts"}).` : "No calls recorded yet.";
+      line.textContent = estTxt + " " + actTxt;
+    }
+    const asOf = document.getElementById("usagePricingAsOf");
+    if (asOf && d.pricing_as_of) asOf.textContent = d.pricing_as_of;
+  } catch (e) { /* the panel refreshes on a timer; a failed read just waits for the next one */ }
+}
+
+function startUsageAutoRefresh() {
+  refreshUsagePanel();
+  if (_usageTimer) clearInterval(_usageTimer);
+  _usageTimer = setInterval(refreshUsagePanel, 20000);
+}
+
+function stopUsageAutoRefresh() {
+  if (_usageTimer) { clearInterval(_usageTimer); _usageTimer = null; }
+}
+
 async function refreshLlmModels(options = {}) {
   const isSilent = Boolean(options && options.silent);
   const btn = document.getElementById("btnDetectModels");
@@ -1105,7 +1295,8 @@ async function refreshLlmModels(options = {}) {
 
   try {
     const provider = document.getElementById("selectLlmProvider")?.value || "lm_studio";
-    const res = await fetch(`/api/llm/models${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`);
+    const kpParam = KEY_PROFILE_PROVIDERS.includes(provider) ? (_kpSelected || (_kpData && _kpData.active) || "") : "";
+    const res = await fetch(`/api/llm/models?provider=${encodeURIComponent(provider)}${kpParam ? `&key_profile=${encodeURIComponent(kpParam)}` : ''}`);
     const data = await res.json();
     const models = data.models || [];
 
@@ -1183,6 +1374,7 @@ async function refreshLlmModels(options = {}) {
       }
       populateDetectedModelSelect(models, inputModel ? inputModel.value.trim() : targetModel);
       updateLlmModelPriceLine();
+      if (KEY_PROFILE_PROVIDERS.includes(provider)) loadKeyProfiles();
       if (!isSilent) showToast(`Detected ${models.length} model(s). Selected: ${targetModel}`);
     } else {
       if (container) container.classList.add("hidden");
@@ -1266,6 +1458,8 @@ async function deleteSavedLogin(site) {
 function openSettingsModal() {
   document.getElementById("settingsModal").classList.remove("hidden");
   if (window.lucide) lucide.createIcons();
+  loadKeyProfiles();
+  startUsageAutoRefresh();
   loadMediaModelsSettings();
   loadSavedLogins();
   if (typeof loadOnePassword === "function") loadOnePassword();
@@ -1276,6 +1470,7 @@ function openSettingsModal() {
 }
 
 function closeSettingsModal() {
+  stopUsageAutoRefresh();
   document.getElementById("settingsModal").classList.add("hidden");
 }
 
@@ -3164,6 +3359,13 @@ async function handleChatSubmit(e) {
   currentAbortController = new AbortController();
 
   try {
+    fetch("/api/usage/estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: finalExpandedQuery || "", max_tokens: 4096 })
+    }).then(r => (r.ok ? r.json() : null)).then(d => {
+      if (d) { try { localStorage.setItem("xod_last_estimate", JSON.stringify(d)); } catch (e) {} }
+    }).catch(() => {});
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
