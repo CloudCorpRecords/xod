@@ -417,6 +417,17 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                     yield ev
                 return
 
+        # Deterministic hunt routing (services/hunt_routing.py): a find/locate request for the
+        # person's own files dispatches locate_files directly, under the round 2 decisive-evidence
+        # contract. Production hunts left to the model's tool choice rode computer_find_files or
+        # the web research path instead, and the contract never fired (re-runs 1 and 2).
+        if not has_image and not has_document:
+            from app.services import hunt_routing
+            if hunt_routing.is_find_intent(user_query):
+                async for ev in hunt_routing.stream_hunt(user_query, execute_tool):
+                    yield ev
+                return
+
         # "Make me a game", "build a timer", then "make it harder": the builder writes real files, runs
         # them in headless Chrome, fixes what breaks, and opens the result in the preview pane.
         if not has_image:

@@ -3168,6 +3168,74 @@ def _missing_required(name: str, arguments: Dict[str, Any]) -> List[str]:
     return [k for k in required if (arguments or {}).get(k) in (None, "", [], {})]
 
 
+# ------------------------------------------------------------------ placeholder arguments
+# A literal placeholder passed as a real value (the L7 hunt shape: the model
+# called computer_read_file on "<matching file path from search results>",
+# the search result's rendering having dropped the actual path) is a hard
+# failure at this dispatch layer, never something to execute as a real path.
+# The rule: a string argument that IS an angle-bracketed placeholder (its
+# whole value is one <...> chunk whose inner text is a multi-word phrase or
+# a known placeholder token), or a path argument CONTAINING such a chunk, is
+# unresolved template text. Payload keys (content, text, message, ...) are
+# exempt from the whole-value rule: their text is data, not a reference.
+_PLACEHOLDER_TOKENS = {"path", "filepath", "file path", "filename", "file name", "name", "value",
+                       "result", "output", "input", "todo", "placeholder", "x", "id", "url",
+                       "the path", "file", "folder", "directory", "location"}
+_PLACEHOLDER_PAYLOAD_KEYS = {"content", "text", "message", "body", "html", "command", "prompt",
+                             "instructions", "description", "title", "caption"}
+_PLACEHOLDER_WHOLE_RE = re.compile(r"^<([^<>\n]{1,200})>$")
+_PLACEHOLDER_PART_RE = re.compile(r"<([^<>\n]{1,200})>")
+
+
+def _is_placeholder_inner(inner: str) -> bool:
+    inner = (inner or "").strip().lower()
+    if not inner:
+        return False
+    if inner in _PLACEHOLDER_TOKENS:
+        return True
+    # a phrase: two or more words joined by spaces, underscores or hyphens
+    return bool(re.fullmatch(r"[a-z0-9]+(?:[ _\-]+[a-z0-9]+)+", inner))
+
+
+def placeholder_argument(arguments):
+    """The first (key, value) argument that is unresolved placeholder text, or None."""
+    def scan(value, key):
+        if isinstance(value, str):
+            s = value.strip()
+            m = _PLACEHOLDER_WHOLE_RE.match(s)
+            if m and key not in _PLACEHOLDER_PAYLOAD_KEYS and _is_placeholder_inner(m.group(1)):
+                return value
+            if key in PATH_ARGS or key == "cwd":
+                for part in _PLACEHOLDER_PART_RE.finditer(value):
+                    if _is_placeholder_inner(part.group(1)):
+                        return value
+            return None
+        if isinstance(value, dict):
+            for k, v in value.items():
+                hit = scan(v, str(k))
+                if hit is not None:
+                    return hit
+        if isinstance(value, (list, tuple)):
+            for v in value:
+                hit = scan(v, key)
+                if hit is not None:
+                    return hit
+        return None
+
+    for k, v in (arguments or {}).items():
+        hit = scan(v, str(k))
+        if hit is not None:
+            return str(k), hit
+    return None
+
+
+def placeholder_error(name: str, key: str, value: str) -> Dict[str, Any]:
+    return {"success": False, "error_code": "placeholder_argument",
+            "error": (f"PlaceholderArgumentError: argument '{key}' for {name} is an unresolved "
+                      f"placeholder ({value!r}), not a real value. Nothing was run. Use the actual "
+                      "value an earlier tool result returned, or run the search that produces it first.")}
+
+
 async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None,
                        reviewed: bool = False) -> Dict[str, Any]:
     """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first.
@@ -3175,6 +3243,9 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     (reviewed=True is that OK). What comes back from tools that read others' content is remembered for the next look."""
     from app.services import activity, sentinel
     arguments = _expand_path_args(_alias_args(name, arguments))
+    bad = placeholder_argument(arguments)
+    if bad:
+        return placeholder_error(name, bad[0], bad[1])
     missing = _missing_required(name, arguments)
     if missing:
         # A call without what the tool needs only fails, or worse does something nobody asked for (a delete with no
