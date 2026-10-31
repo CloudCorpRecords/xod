@@ -259,6 +259,154 @@ async def main():
     assert t["status"] == "done", f"expected done, got {t['status']}: {t.get('result')}"
     print("PASS: a file inside a directory the words call new verifies as done", flush=True)
 
+    # --- run effects: the gate executes a declared command and its exit
+    # code becomes part of the verdict (H4 remainder: existence is not proof
+    # that produced code works)
+    class _EffectResearcher:
+        """Performs its effect on every attempt, then claims success."""
+        calls = 0
+        effect = None
+
+        async def run_research_stream(self, messages):
+            type(self).calls += 1
+            if type(self).effect is not None:
+                type(self).effect()
+            yield {"type": "content", "content": "All done."}
+
+    _TEST_HARNESS = '''
+
+import sys as _sys, traceback as _tb
+
+
+def _main():
+    tests = [(n, f) for n, f in sorted(globals().items())
+             if n.startswith("test_") and callable(f)]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print("PASS " + name)
+        except Exception:
+            failed += 1
+            print("FAIL " + name)
+            _tb.print_exc()
+    print("%d passed, %d failed" % (len(tests) - failed, failed))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    _sys.exit(_main())
+'''
+    _FAILING_TESTS = "\n".join(
+        f"def test_case_{i}():\n    assert undefined_helper_{i}() == {i}\n" for i in range(1, 6)
+    ) + _TEST_HARNESS
+    _PASSING_TESTS = ("def add(a, b):\n    return a + b\n\n\n"
+                      + "\n".join(f"def test_case_{i}():\n    assert add({i}, 1) == {i + 1}\n"
+                                  for i in range(1, 6))
+                      + _TEST_HARNESS)
+    py = sys.executable
+
+    # parser level: the canonical phrasing parses, anchored by the file claim
+    probe_dir = TMP / "probe-proj"
+    probe_req = (f"Create the file at {probe_dir}/test_probe.py.\n"
+                 f"Run exactly this command from the directory {probe_dir} "
+                 f"and require exit code 0: {py} test_probe.py")
+    file_claims = TQ._claimed_file_effects(probe_req)
+    assert len(file_claims) == 1 and file_claims[0]["path"] == probe_dir / "test_probe.py", file_claims
+    run_claims = TQ._claimed_run_effects(probe_req, [c["path"] for c in file_claims])
+    assert len(run_claims) == 1 and run_claims[0]["refused"] is None, run_claims
+    assert run_claims[0]["cwd"] == probe_dir and run_claims[0]["expect_exit"] == 0, run_claims
+    print("PASS: a run claim parses from the canonical phrasing and anchors to its file claim", flush=True)
+
+    # (a) THE HARDENING PROBE CASE: a pytest file whose 5 tests all fail
+    # with NameError, plus a run claim executing it, must be contradicted,
+    # with the nonzero exit and the failure output in the evidence
+    def _write_failing():
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        (probe_dir / "test_probe.py").write_text(_FAILING_TESTS)
+
+    _EffectResearcher.calls = 0
+    _EffectResearcher.effect = _write_failing
+    RS.AgenticResearcher = _EffectResearcher
+    t = await _run_one(q, probe_req)
+    print(f"   run-probe-failing: status={t['status']} result={t.get('result')!r}", flush=True)
+    assert t["status"] == "failed" and "Not finished" in (t.get("result") or ""), t
+    assert "exited with code 1" in (t.get("result") or ""), t.get("result")
+    assert "NameError" in (t.get("result") or ""), t.get("result")
+    print("PASS: a test file whose tests all fail is contradicted by its run claim", flush=True)
+
+    # (b) the same shape with passing tests verifies
+    pass_dir = TMP / "pass-proj"
+
+    def _write_passing():
+        pass_dir.mkdir(parents=True, exist_ok=True)
+        (pass_dir / "test_ok.py").write_text(_PASSING_TESTS)
+
+    _EffectResearcher.calls = 0
+    _EffectResearcher.effect = _write_passing
+    RS.AgenticResearcher = _EffectResearcher
+    t = await _run_one(q, f"Create the file at {pass_dir}/test_ok.py.\n"
+                          f"Run exactly this command from the directory {pass_dir} "
+                          f"and require exit code 0: {py} test_ok.py")
+    print(f"   run-passing: status={t['status']} calls={_EffectResearcher.calls}", flush=True)
+    assert t["status"] == "done", f"expected done, got {t['status']}: {t.get('result')}"
+    print("PASS: a test file whose tests pass verifies by its run claim", flush=True)
+
+    # (c) a run claim whose cwd is outside every declared path is refused
+    # and never executed (the command would create a marker if it ran)
+    anchor_dir = TMP / "anchor-proj"
+    outside_dir = TMP / "outside-dir"
+    outside_dir.mkdir(parents=True, exist_ok=True)
+    marker = outside_dir / "marker.txt"
+    _EffectResearcher.effect = lambda: (anchor_dir.mkdir(parents=True, exist_ok=True),
+                                        (anchor_dir / "anchor.txt").write_text("here"))
+    RS.AgenticResearcher = _EffectResearcher
+    t = await _run_one(q, f"Create the file at {anchor_dir}/anchor.txt.\n"
+                          f"Run exactly this command from the directory {outside_dir} "
+                          f"and require exit code 0: {py} -c \"open('marker.txt', 'w').write('x')\"")
+    print(f"   run-unanchored: status={t['status']} result={t.get('result')!r}", flush=True)
+    assert t["status"] == "failed" and "refused" in (t.get("result") or ""), t
+    assert not marker.exists(), "a refused run claim must never execute"
+    print("PASS: an unanchored run claim is refused and not executed", flush=True)
+
+    # (d) a command with shell metacharacters is refused and never executed
+    chain_dir = TMP / "chain-proj"
+    chained = chain_dir / "chained.txt"
+
+    def _write_chain_anchor():
+        chain_dir.mkdir(parents=True, exist_ok=True)
+        (chain_dir / "test_ok.py").write_text(_PASSING_TESTS)
+
+    _EffectResearcher.effect = _write_chain_anchor
+    RS.AgenticResearcher = _EffectResearcher
+    t = await _run_one(q, f"Create the file at {chain_dir}/test_ok.py.\n"
+                          f"Run exactly this command from the directory {chain_dir} "
+                          f"and require exit code 0: {py} test_ok.py ; {py} -c "
+                          f"\"open('chained.txt', 'w').write('x')\"")
+    print(f"   run-metachar: status={t['status']} result={t.get('result')!r}", flush=True)
+    assert t["status"] == "failed" and "refused" in (t.get("result") or ""), t
+    assert "metacharacter" in (t.get("result") or ""), t.get("result")
+    assert not chained.exists(), "a refused run claim must never execute"
+    print("PASS: a chained command is refused as a shell metacharacter and not executed", flush=True)
+
+    # (e) a run that outlives the timeout is contradicted, with the timeout
+    # stated (the cap is injectable so the test does not wait 120 seconds)
+    slow_dir = TMP / "slow-proj"
+    _EffectResearcher.effect = lambda: (slow_dir.mkdir(parents=True, exist_ok=True),
+                                        (slow_dir / "anchor.txt").write_text("here"))
+    RS.AgenticResearcher = _EffectResearcher
+    old_timeout = TQ.RUN_TIMEOUT_SEC
+    TQ.RUN_TIMEOUT_SEC = 1
+    try:
+        t = await _run_one(q, f"Create the file at {slow_dir}/anchor.txt.\n"
+                              f"Run exactly this command from the directory {slow_dir} "
+                              f"and require exit code 0: {py} -c \"import time; time.sleep(30)\"")
+    finally:
+        TQ.RUN_TIMEOUT_SEC = old_timeout
+    print(f"   run-timeout: status={t['status']} result={t.get('result')!r}", flush=True)
+    assert t["status"] == "failed" and "timed out after 1 seconds" in (t.get("result") or ""), t
+    print("PASS: a run that outlives its timeout is contradicted with the timeout stated", flush=True)
+
     # --- the recorded-ops layer: what the activity log says must match the disk
     import sqlite3, time as _time
     import app.services.activity as ACT

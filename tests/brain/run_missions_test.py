@@ -129,6 +129,35 @@ def case_validate():
     check("validate: an empty plan is rejected", bool(p))
     _, p = M.validate_plan("not even a dict")
     check("validate: a non-object reply is rejected", bool(p))
+    run_ok = {"subtasks": [sub("Test it", "Run the tests",
+                               [{"kind": "run", "command": "python3 test_a.py", "cwd": "/tmp/proj",
+                                 "expect_exit": 0}])]}
+    plan, problems = M.validate_plan(run_ok)
+    eff = (plan or {}).get("subtasks", [{}])[0].get("expected_effects", [{}])[0]
+    check("validate: a run effect passes with its fields kept",
+          plan is not None and eff.get("kind") == "run" and eff.get("command") == "python3 test_a.py"
+          and eff.get("cwd") == "/tmp/proj" and eff.get("expect_exit") == 0, str(problems))
+    run_default = {"subtasks": [sub("Test it", "Run the tests",
+                                    [{"kind": "run", "command": "python3 test_a.py", "cwd": "/tmp/proj"}])]}
+    plan, _ = M.validate_plan(run_default)
+    check("validate: a run effect defaults expect_exit to 0",
+          plan is not None and plan["subtasks"][0]["expected_effects"][0]["expect_exit"] == 0)
+    run_typed = {"subtasks": [sub("Test it", "Run the tests",
+                                  [{"type": "run", "command": "python3 test_a.py", "cwd": "/tmp/proj"}])]}
+    plan, _ = M.validate_plan(run_typed)
+    check("validate: a run effect spelled with type also passes",
+          plan is not None and plan["subtasks"][0]["expected_effects"][0]["kind"] == "run")
+    _, p = M.validate_plan({"subtasks": [sub("T", "Do", [{"kind": "run", "command": "  ", "cwd": "/tmp/proj"}])]})
+    check("validate: a run effect with no command is named",
+          any("command must be a non-empty string" in x for x in p), str(p))
+    _, p = M.validate_plan({"subtasks": [sub("T", "Do", [{"kind": "run", "command": "python3 t.py",
+                                                          "cwd": "relative/dir"}])]})
+    check("validate: a run effect with a relative cwd is named",
+          any("cwd must be absolute or start with" in x for x in p), str(p))
+    _, p = M.validate_plan({"subtasks": [sub("T", "Do", [{"kind": "run", "command": "python3 t.py",
+                                                          "cwd": "/tmp/proj", "expect_exit": "0"}])]})
+    check("validate: a run effect with a non-integer expect_exit is named",
+          any("expect_exit must be an integer" in x for x in p), str(p))
 
 
 async def case_decompose():
@@ -276,6 +305,12 @@ def case_render():
     single = {"title": "T", "instruction": "Write it",
               "expected_effects": [{"kind": "create", "path": "/tmp/s.txt", "content": "one line"}]}
     check("render: single-line content uses exact text", "with exact text: one line" in M.render_request(single))
+    running = {"title": "T", "instruction": "Run it",
+               "expected_effects": [{"kind": "run", "command": "python3 test_a.py",
+                                     "cwd": "/tmp/proj", "expect_exit": 0}]}
+    check("render: a run effect uses the gate's canonical phrasing",
+          "Run exactly this command from the directory /tmp/proj and require exit code 0: python3 test_a.py"
+          in M.render_request(running), M.render_request(running))
 
 
 def case_hardening():
@@ -372,6 +407,100 @@ async def case_real_queue():
           f"state={m3['state']} subs={[(s['title'], s['verified_status']) for s in m3['subtasks']]}")
 
 
+_RUN_HARNESS = '''
+
+import sys as _sys, traceback as _tb
+
+
+def _main():
+    tests = [(n, f) for n, f in sorted(globals().items())
+             if n.startswith("test_") and callable(f)]
+    failed = 0
+    for name, fn in tests:
+        try:
+            fn()
+            print("PASS " + name)
+        except Exception:
+            failed += 1
+            print("FAIL " + name)
+            _tb.print_exc()
+    print("%d passed, %d failed" % (len(tests) - failed, failed))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    _sys.exit(_main())
+'''
+_FAILING_TESTS = "\n".join(
+    f"def test_case_{i}():\n    assert undefined_helper_{i}() == {i}\n" for i in range(1, 6)
+) + _RUN_HARNESS
+_PASSING_TESTS = ("def add(a, b):\n    return a + b\n\n\n"
+                  + "\n".join(f"def test_case_{i}():\n    assert add({i}, 1) == {i + 1}\n"
+                              for i in range(1, 6))
+                  + _RUN_HARNESS)
+
+
+async def case_real_queue_run_effects():
+    """End to end through the real queue: a subtask that writes a test file
+    and declares a run effect is judged by the run, not by the file's
+    existence (the hardening probe case, H4 remainder)."""
+    BS.browser_sandbox_service.ensure_browser_running = _boom
+    q = TQ.TaskQueue()
+    q.start()
+    py = sys.executable
+
+    d = TMP / "run-proj"
+    target = d / "test_calc.py"
+
+    def _write_failing():
+        d.mkdir(parents=True, exist_ok=True)
+        target.write_text(_FAILING_TESTS)
+
+    _HonestResearcher.effect = _write_failing
+    RS.AgenticResearcher = _HonestResearcher
+    plan = plan_json([sub("Write the tests", "Write the test file",
+                          [{"kind": "create", "path": str(target), "content": None},
+                           {"kind": "run", "command": f"{py} test_calc.py", "cwd": str(d),
+                            "expect_exit": 0}])])
+    runner = M.MissionRunner(queue=q, ask=FakeAsk([plan]), poll_sec=0.05)
+    m = M.create_mission("real queue, failing tests")
+    await runner.drive(m["id"])
+    m = M.get_mission(m["id"])
+    s = m["subtasks"][0]
+    check("run effects: a test file whose tests all fail is contradicted by the run check",
+          m["state"] == "failed" and s["verified_status"] == "contradicted",
+          f"state={m['state']} sub={s}")
+    check("run effects: the contradiction evidence carries the exit code and the failure output",
+          any("exited with code 1" in e and "NameError" in e for e in s["evidence"]),
+          str(s["evidence"]))
+
+    d2 = TMP / "run-proj-ok"
+    target2 = d2 / "test_calc.py"
+
+    def _write_passing():
+        d2.mkdir(parents=True, exist_ok=True)
+        target2.write_text(_PASSING_TESTS)
+
+    _HonestResearcher.effect = _write_passing
+    RS.AgenticResearcher = _HonestResearcher
+    plan2 = plan_json([sub("Write the tests", "Write the test file",
+                           [{"kind": "create", "path": str(target2), "content": None},
+                            {"kind": "run", "command": f"{py} test_calc.py", "cwd": str(d2),
+                             "expect_exit": 0}])])
+    runner2 = M.MissionRunner(queue=q, ask=FakeAsk([plan2]), poll_sec=0.05)
+    m2 = M.create_mission("real queue, passing tests")
+    await runner2.drive(m2["id"])
+    m2 = M.get_mission(m2["id"])
+    s2 = m2["subtasks"][0]
+    check("run effects: a test file whose tests pass verifies",
+          m2["state"] == "done" and s2["verified_status"] == "verified",
+          f"state={m2['state']} sub={s2}")
+    check("run effects: the verified evidence states what ran, where, and its exit code",
+          any("ran the declared check" in e and "test_calc.py" in e and str(d2) in e
+              and "exited with code 0" in e for e in s2["evidence"]),
+          str(s2["evidence"]))
+
+
 async def main():
     case_validate()
     case_render()
@@ -384,6 +513,7 @@ async def main():
     await case_pause_resume()
     await case_restart_resume()
     await case_real_queue()
+    await case_real_queue_run_effects()
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed", flush=True)
     if failed:
