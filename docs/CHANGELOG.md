@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.17
+
+**File hunts now take the find path**
+- In the second re-run of the Tier 1 baseline, the hunt answers still arrived without ranked candidates or evidence, and the cause sat one layer below the last fix: a hunt never called the find tool at all. Tool choice belonged to the model, and it chose the generic computer search, whose results drop the full path, or, for one name-plus-year hunt, web links with no local search at all. Find intent is now recognized deterministically from the request itself, before the model plans anything, and dispatched to the find tool, so the delivery contract from 0.9.16 (ranked candidates with full paths and evidence, the question when two are close, what was tried when nothing qualifies) finally fires in real use. Folder hunts and name-plus-year hunts, the two shapes that failed three runs straight, are named cases. A request about your own files can no longer be answered from the web. And an unresolved placeholder can no longer be passed as a tool argument: a call carrying one is rejected with a named error before anything runs.
+
+**The thinking-effort remedy now covers every model call**
+- The refusal that killed a mission step in the last re-run ("Function tools with reasoning_effort are not supported for gpt-6.1-sol") was fixed for the plain chat paths in 0.9.15, but the mission subtask path still sent the refused combination, because model ids reach the shared code in routed and dated forms the up-front rule did not match, the streaming entry could not carry tools at all, and the model scoring call had no remedy when refused. Every model call in the app was inventoried (the table is in the round record), and the rule now sits at the one choke point they all share: the prescribed effort is sent up front however the model id arrives, the streaming entry carries tools like the others, and a refusal on any path is remedied once and remembered.
+
+**Missions stop losing their own deliverables**
+- For the third run in a row, a mission's test file was a single instruction sentence in angle brackets instead of code. The check built to catch it required an imperative opening the real sentence does not have, and mission plans declare no content up front, so the sentence only ever existed at execution time. The same detector now knows the bracketed shape, at both of its call sites: declared in a plan, the mission fails at planning naming the leak; written during execution, the step fails with the evidence named. A second assembly defect went with it: a write step could be invoked with no content because earlier steps' results never reached it. Write steps now receive the reported results of the steps before them, and a write whose declared content is empty fails at assembly, before any task or tool runs.
+
+**Tools can no longer leave orphaned processes behind**
+- Searches spawned by the computer tools had no deadline and were never reaped: one hung find wedged its task for twenty minutes and outlived it, and an earlier round left eight such processes walking the home folder for hours. Every child a tool spawns now starts in its own process group with a deadline and an output cap, and is reaped as a group on completion, on timeout, on cancel, and when its task ends. A task-end sweep checks for survivors, so a task cannot leave orphans behind by construction.
+
+**AppleScript now asks permission the managed way, once**
+- Controlling an app like Music had no permission path: the generic AppleScript tool fired with no check, so a task could raise the system automation prompt mid-work, and nothing remembered a dismissal. A targeted AppleScript call now runs the same no-prompt permission check the abilities use. When the answer is not yet granted, the script does not run; the task gets a named result saying so, and the request surfaces once on the Abilities screen, which now covers Music and the other common targets. A dismissal is remembered, so later tasks degrade gracefully instead of prompting again, and a grant given later lets the next call through.
+
+**Release builds move to the current Mac runner**
+- GitHub retires the macos-14 runner image on November 2, 2026, and its scheduled brownouts cancelled both first attempts at the 0.9.16 Mac build. The release workflow now builds on macos-15, the current arm64 image, pinned so the build cannot drift when the floating latest label migrates again.
+
+**Checked before it shipped**
+- New suites: hunt routing end to end (40 of 40; 7 of 40 against the 0.9.16 code), model call paths on the wire (17 of 17; 7 of 17 before), planner integrity (27 of 27; 13 of 27 before), process hygiene (17 of 17; the same suite hangs and leaves orphans against the old code), and the AppleScript permission guard (22 of 22; 7 of 22 before).
+- All 93 local suite runners ran on the merged tree (the run straddled a Mac reboot, so it finished in two segments). Eleven failed; each was re-run standalone on this tree and on the unmodified tree. Nine fail the same way on the unmodified code (approval-flow checks, the browser harness family, live local model errors, and suites needing a key or port this environment does not give them), and one was a battery-context flake that passes standalone on both trees. The eleventh was real, and this round's own routing caused it: an attached image is turned into words before routing, and the hunt detector was reading that machine-generated description, so a described invoice (a year, a document kind) matched the name-plus-year hunt rule and the question was hijacked into a file hunt. Routing now decides on the person's own words alone; the vision suite passes again and the hunt routing suite still passes 40 of 40.
+- The promoted build then passed the proving suite against the installed app, 7 of 7.
+- One operational repair rides along: midway through this round the Mac rebooted while the installed app was mid self-update, which left the app bundle damaged and unable to launch (its seal no longer verified). It was restored from a sealed 0.9.15 copy kept on the machine, and this build's promotion re-applies everything since on top of it.
+- This release is the third fix round of the escalation program. The same Tier 1 and Locate baseline is re-run against this build to grade the difference.
+
 ## 0.9.16
 
 **Find answers now arrive whole**
