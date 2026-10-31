@@ -105,6 +105,14 @@ def _as_text(value) -> str:
     return str(value)
 
 
+# The user dictated the reply's exact form: appended source links or a search
+# warning would break it, so _source_link_events stays silent for these.
+_EXACT_OUTPUT_RE = re.compile(
+    r"reply with exactly|respond with exactly|answer with exactly|exactly this text|"
+    r"exactly the following|nothing else|no other text|just the number|only the number|"
+    r"reply with only|respond with only|answer with only", re.I)
+
+
 class AgenticResearcher:
     """
     Next-Generation Autonomous Research Director.
@@ -1328,7 +1336,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             except Exception as e:
                 logger.error(f"Recovery synthesis failed: {e}")
 
-        for ev in self._source_link_events(evidence_board, accumulated_text):
+        for ev in self._source_link_events(evidence_board, accumulated_text, user_query):
             yield ev
 
         final_step["status"] = "completed"
@@ -1336,9 +1344,13 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         yield {"type": "done"}
 
     @staticmethod
-    def _source_link_events(evidence_board: EvidenceBoard, answer: str) -> List[Dict[str, Any]]:
+    def _source_link_events(evidence_board: EvidenceBoard, answer: str, user_query: str = "") -> List[Dict[str, Any]]:
         """Small local models often name sources without linking them. Add the real links from what
         the searches returned, so every answer can be checked (and Share report lists them)."""
+        if _EXACT_OUTPUT_RE.search(user_query or ""):
+            # The user dictated the reply's exact form; appended source links or a
+            # search warning would break it. Exactness wins over the garnish.
+            return []
         if "](http" in answer:
             return []
         links = []
@@ -1887,7 +1899,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             yield {"type": "content", "content": "\n\n**Sources**\n" + "\n".join(
                 f"[{n}] [{meta[n - 1][0].replace('[', '(').replace(']', ')')}]({meta[n - 1][1]})  " for n in sorted(cited))}
         else:
-            for ev in self._source_link_events(evidence_board, written):
+            for ev in self._source_link_events(evidence_board, written, query):
                 yield ev
         yield {"type": "done"}
 
