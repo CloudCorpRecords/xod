@@ -1104,6 +1104,15 @@
               placeholder="google/gemma-4-12b-qat"
               class="w-full bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"
             >
+            <!-- Detected Models Dropdown (cloud providers; populated by Detect Models) -->
+            <div id="detectedModelsContainer" class="hidden space-y-1 pt-1">
+              <label class="text-[10px] text-zinc-400">Detected models:</label>
+              <select
+                id="selectLlmModelDetected"
+                class="w-full bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"
+              ></select>
+            </div>
+            <div id="llmModelPriceLine" class="hidden text-[10px] text-zinc-400 pt-0.5"></div>
             <!-- LM Studio Detected Models Quick-Picker -->
             <div id="lmStudioDetectedModelsContainer" class="hidden space-y-1.5 pt-1">
               <div class="flex items-center justify-between text-[10px]">
