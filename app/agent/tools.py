@@ -32,6 +32,7 @@ from app.services.email_intel import email_intel_service
 from app.services.funding_intel import funding_intel_service
 from app.services.project_storage import project_storage_service
 from app.services.filesystem import filesystem_service
+from app.services.locate import locate as _locate_files
 from app.services.browser_sandbox import browser_sandbox_service
 from app.services.system_control import system_control_service
 from app.services.creator_intel import creator_intel_service
@@ -2027,6 +2028,40 @@ TOOL_DEFINITIONS = [
                     }
                 },
                 "required": ["query"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "locate_files",
+            "description": "Finds a file or folder anywhere on this computer from loose human clues: name fragments, a kind (pdf, photo, spreadsheet, folder), a year or rough date ('last spring'), words inside the file, or its purpose ('my W2', 'the folder that has my Japan trip stuff', 'tax return summary for 2025'). Returns ranked candidates, each with its full verified path, kind, modified date, size, and the evidence for the match; returns status 'ask' with a question when the top two are too close to call, or 'not_found' with what was tried. Use this for 'find the X' requests; never guess a path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "string",
+                        "description": "The find request in the person's own words (e.g. 'find my tax return summary for 2025, not 2024')."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "Optional kind if already parsed: pdf, image, spreadsheet, document, folder, video, audio, presentation."
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Optional explicit year clue if already parsed (e.g. 2025)."
+                    },
+                    "content_words": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional words expected inside the file's contents."
+                    },
+                    "root_dir": {
+                        "type": "string",
+                        "description": "Optional folder to search within. Defaults to the home folders (Documents, Desktop, Downloads, Pictures, Movies, Music)."
+                    }
+                },
+                "required": ["request"]
             }
         }
     },
@@ -4308,6 +4343,15 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                 query, root = tail, head
             return await system_control_service.find_files(query=query, root_dir=root, max_results=arguments.get("max_results", 25))
 
+        elif name == "locate_files":
+            request = (arguments.get("request") or arguments.get("query") or arguments.get("description") or "")
+            if not request:
+                return {"success": False, "error": "Say what to find: pass the person's find request as 'request'."}
+            extra = {k: arguments[k] for k in ("kind", "year", "content_words", "name") if arguments.get(k)}
+            root = (arguments.get("root_dir") or arguments.get("root") or arguments.get("directory") or "")
+            roots = [os.path.expanduser(str(root))] if root else None
+            return await asyncio.to_thread(_locate_files, str(request), extra, roots)
+
         elif name == "computer_manage_file":
             # The words models use for these: "compress", "extract", "delete", "rename"...
             act = str(arguments.get("action") or "").strip().lower()
@@ -4800,6 +4844,7 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
         "computer_inspect_port",
         "computer_run_command",
         "computer_find_files",
+        "locate_files",
         "computer_directory_tree",
         "computer_read_file",
         "computer_edit_file",
@@ -4863,7 +4908,7 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
             "computer_write_file", "computer_edit_file", "computer_batch_organize",
             "fs_list_workspace_files", "fs_read_workspace_file", "fs_write_workspace_file",
             "fs_search_workspace", "fs_create_folder", "fs_move_file", "fs_organize_files",
-            "computer_manage_file"
+            "computer_manage_file", "locate_files"
         ])
 
     # Autonomous Browser Sandbox affinities
