@@ -35,6 +35,90 @@ PARTNER_NOTICE = ("Xod Partner needs its Accessibility switch on; it is the app 
                   "approval buttons now. Open the Accessibility settings and flip Xod Partner "
                   "on. (Xod's own switch no longer matters for approvals.)")
 
+# -- stale grant detection (the re-pair prompt) -------------------------------
+# The Partner is ad-hoc signed (no Apple Developer ID), so macOS binds its
+# Accessibility row to the exact build: the identifier AND the build's code
+# hash (CDHash). install.sh writes that CDHash to build.txt in the Partner
+# state dir, the same dir this module already reads the pairing token from,
+# so the build identity is available Xod-side with no Partner change. Any
+# Partner rebuild mints a new CDHash the old row does not cover: the Partner
+# then reports untrusted and approvals quietly go nowhere. Xod records the
+# last build it saw WITH a trusted reading (a settings row), and a grant is
+# stale when a build was once trusted and the Partner now reports untrusted:
+# that covers the same build flipping trusted to untrusted, and a new build
+# arriving untrusted after an older one was trusted. A fresh install that
+# was never paired has no trusted build on record, so it keeps the plain
+# pairing notice above, not the repair walkthrough.
+
+TRUSTED_BUILD_SETTING = "partner_trusted_build_id"
+
+REPAIR_NOTICE = ("The Xod Partner build changed, so the Accessibility grant macOS holds is for "
+                 "the old build and approvals will not go through. Repair it in order: "
+                 "1) Reset the Partner's stale grant (the button below). "
+                 "2) Xod then asks the Partner to ask macOS again, which creates a fresh "
+                 "Xod Partner row. "
+                 "3) Open System Settings, Privacy and Security, Accessibility, and flip the "
+                 "Xod Partner row on. This notice clears once macOS honors the grant for "
+                 "this build.")
+
+REPAIR_STEPS = [
+    {"n": 1, "action": "reset",
+     "text": "Reset the Partner's stale grant."},
+    {"n": 2, "action": None,
+     "text": "Xod asks the Partner to ask macOS again. That creates a fresh Xod Partner row."},
+    {"n": 3, "action": "open",
+     "text": "Open System Settings, Privacy and Security, Accessibility, and flip the Xod Partner row on."},
+]
+
+
+def build_identity(state_dir=None) -> Optional[str]:
+    """The installed Partner build's identity, from build.txt in its state
+    dir: the CDHash install.sh recorded, or version@built when a build.txt
+    predates the CDHash line. None when there is no readable build record."""
+    d = Path(state_dir) if state_dir is not None else _state_dir()
+    try:
+        fields = {}
+        for line in (d / "build.txt").read_text().splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                fields[k.strip()] = v.strip()
+    except Exception:
+        return None
+    if fields.get("cdhash"):
+        return fields["cdhash"]
+    if fields.get("built"):
+        return "%s@%s" % (fields.get("version") or "?", fields["built"])
+    return None
+
+
+def _load_trusted_build() -> Optional[str]:
+    """The last Partner build seen with a trusted reading, from settings.
+    Fails soft to None (unknown), like everything in this module."""
+    try:
+        from app.services.storage import get_setting
+        return get_setting(TRUSTED_BUILD_SETTING, "") or None
+    except Exception:
+        return None
+
+
+def _save_trusted_build(build: str) -> None:
+    try:
+        from app.services.storage import set_setting
+        set_setting(TRUSTED_BUILD_SETTING, build)
+    except Exception:
+        pass
+
+
+def detect_stale_grant(trusted, current_build, trusted_build) -> bool:
+    """The stale trigger, pure: the Partner currently reports untrusted AND
+    a build was recorded trusted before. current_build is carried for the
+    caller's record and the summary; either stale shape (same build flipped,
+    or a different build now untrusted) fires on the recorded trust alone,
+    because a build that was never trusted has nothing to go stale."""
+    if trusted is not False:
+        return False
+    return bool(trusted_build)
+
 _cache: Dict[str, Any] = {"at": 0.0, "status": None}
 
 
@@ -105,16 +189,58 @@ def summary() -> Dict[str, Any]:
               "cap_spent": 0, "hold": False, "last_revival": None}
     if not st or st.get("_status"):
         out: Dict[str, Any] = {"running": False, "trusted": None, "version": None,
-                               "bundle_id": BUNDLE_ID, "notice": None}
+                               "bundle_id": BUNDLE_ID, "notice": None,
+                               "build": None, "trusted_build": None,
+                               "stale_grant": False, "repair_steps": None}
     else:
         trusted = st.get("partner_trusted")
+        current_build = build_identity()
+        trusted_build = _load_trusted_build()
+        if trusted is True and current_build and trusted_build != current_build:
+            # A trusted reading is the only moment worth recording: this is
+            # the build the human's switch flip actually covers. Recording
+            # it is also what clears the repair notice after a re-pair.
+            _save_trusted_build(current_build)
+            trusted_build = current_build
+        stale = detect_stale_grant(trusted, current_build, trusted_build)
         out = {"running": True, "trusted": trusted, "version": st.get("version"),
                "bundle_id": st.get("bundle_id") or BUNDLE_ID,
-               "notice": PARTNER_NOTICE if trusted is False else None}
+               "build": current_build, "trusted_build": trusted_build,
+               "stale_grant": stale,
+               "repair_steps": REPAIR_STEPS if stale else None,
+               "notice": (REPAIR_NOTICE if stale else
+                          PARTNER_NOTICE if trusted is False else None)}
     out.update(wd)
     if wd.get("hold"):
         out["notice"] = HOLD_NOTICE
+        out["repair_steps"] = None
     return out
+
+
+def request_access() -> Optional[Dict[str, Any]]:
+    """Ask the Partner to ask macOS for Accessibility again (its
+    /ax/request-access: the one Partner route that answers while untrusted,
+    because asking is how the row the human flips comes to exist). The
+    answer is {trusted, prompted}, or None when the Partner cannot be
+    reached."""
+    return _call("POST", "/ax/request-access", {}, timeout=10.0)
+
+
+def ask_after_reset(deadline_s: float = 90.0, poll_s: float = 2.0) -> Optional[Dict[str, Any]]:
+    """Step 2 of the re-pair ceremony, as the reset flow's follow-up: a grant
+    reset kills the Partner and launchd revives it, so wait until it answers
+    again, then ask it to ask macOS once. Best effort by design: any failure
+    comes back None and the repair notice stays up, telling the human the
+    steps in order."""
+    end = time.time() + deadline_s
+    while time.time() < end:
+        st = status(force=True)
+        if st and not st.get("_status"):
+            return request_access()
+        time.sleep(poll_s)
+    logger.warning("partner repair: the Partner did not answer within %ss of the grant "
+                   "reset, so the re-ask did not happen", deadline_s)
+    return None
 
 
 def scan(front: bool = False) -> Optional[Dict[str, Any]]:

@@ -2453,10 +2453,17 @@ async def crew_accessibility_reset_grant():
 async def crew_accessibility_reset_partner_grant():
     """Guided repair, user-triggered: clear the XOD PARTNER's stale Accessibility entry.
     Xod performs it because Xod survives it; the Partner (the grant holder) is
-    expected to be killed by macOS at the reset, and launchd revives it. The
-    user finishes with one flip of the Xod Partner switch (see services/permissions.py)."""
+    expected to be killed by macOS at the reset, and launchd revives it. Step 2
+    of the ceremony runs as this reset's follow-up: once the Partner answers
+    again, Xod asks it to ask macOS again, which creates the fresh Xod Partner
+    row. The user finishes with one flip of that row (see services/permissions.py)."""
     from app.services import permissions
-    return permissions.reset_partner_grant()
+    out = permissions.reset_partner_grant()
+    if out.get("ok"):
+        import threading
+        from app.services import partner_client
+        threading.Thread(target=partner_client.ask_after_reset, daemon=True).start()
+    return out
 
 
 @app.post("/api/crew/settings/auto-approve/partner/note-planned-restart")
