@@ -1,114 +1,140 @@
-# xod-partner
+# Xod Partner
 
-The small companion that watches Xod so Xod never has to watch itself.
+A tiny companion app that ships with Xod and almost never changes. Since v1
+it has two jobs:
 
-Xod cannot reliably repair itself: the 2026-10-30 permission incident
-proved a process does not survive operating on its own foundations (the
-Accessibility reset killed Xod's own server mid-repair). The Partner
-stands outside that boundary. It is deliberately tiny and frozen: new
-features belong in Xod, never here.
+1. **Be Xod's hands.** It holds the macOS Accessibility grant in its own
+   name and does the physical acting for Muse approval cards, on Xod's
+   request, over an authenticated loopback API. Xod keeps every decision
+   (modes, away, pause, which cards, the record); the Partner only reads
+   the Muse app's accessibility tree and presses the one approving button
+   it is told to press, under frozen rules (below).
+2. **Watch Xod (since v0).** Probe Xod's health endpoint; when Xod is
+   really dead, restart it, with a rate limit and a hold switch, and keep
+   the shared log of every restart and refusal.
 
-## The charter (five jobs, from the design record)
+Why a separate app: Xod updates often, and every update used to risk
+making Xod's own Accessibility grant stale, which silently broke approval
+pressing. The Partner's build is frozen, so its grant survives Xod's
+updates; approvals now depend on the Partner's grant, not Xod's. The
+Partner's own repair is supervised from outside it: Xod carries a
+user-triggered action that resets the PARTNER's entry (Xod survives that
+reset; the Partner is the process macOS kills, and launchd revives it),
+after which the user flips the Partner's switch once. Applying Xod
+updates (the v0.5 design) is not in v1.
 
-1. Hold the TCC permissions and do the physical acting on Xod's request.
-2. Watch Xod's health and restart Xod when it dies or wedges.
-3. Apply Xod updates: stage, swap, restart, verify, roll back on failure.
-4. Keep the shared log both apps write to.
-5. Supervise permission repairs end to end.
+## Identity
 
-**v0 implements jobs 2 and 4, plus the launchd floor.** Permissions (job
-1 and 5) and update-swapping (job 3) arrive in later versions, only once
-this skeleton is proven live. v0 watches one target only: the installed
-Xod at http://127.0.0.1:8000/.
-
-## How v0 behaves
-
-- Probes Xod every 15 seconds. One failure is noise: a restart needs 3
-  consecutive failures spanning at least 30 seconds, so a Xod that is
-  itself mid-restart is never double-restarted.
-- Restart means: quit the app cleanly (escalating to a kill only if it
-  will not exit), reopen it, and poll for health for up to 90 seconds.
-  Every step of the episode is logged.
-- Anti-loop discipline: backoff between attempts (30s, 120s, 300s) and a
-  hard cap of 3 restarts in any rolling hour. Hitting the cap parks the
-  Partner in a HOLD: a loud log entry, `hold: "cap"` in the status file,
-  and no more restarts until a human intervenes or a `release_hold`
-  command arrives.
-- HOLD file: while a file named `HOLD` exists in the state dir, the
-  Partner probes and reports but never restarts. Delete the file to
-  release it. This switch is human-only; no command clears it.
-
-## State dir and files
-
-`~/Library/Application Support/XodPartner/` holds everything:
-
-- `app/` the installed copy of the watchdog (the repo is the source of
-  truth; the running Partner never reads the repo, so repo edits do not
-  silently change it)
-- `partner.log` append-only event log, ISO timestamps, one line per event
-- `status.json` rewritten on every state change: partner pid, last probe
-  and its result, consecutive failures, restarts this hour, Xod state,
-  last action and outcome. This is the file Xod and Tree read.
-- `token` the inbox pairing token (chmod 600, generated on first run)
-- `inbox/` command drop folder, `rejected/` where bad files land
-- `partner.out.log`, `partner.err.log` launchd stdout and stderr
-
-## Command inbox
-
-Drop a JSON file into `inbox/`. Shape:
-
-```json
-{"token": "<contents of the token file>", "cmd": "restart_xod"}
-```
-
-Commands in v0:
-
-- `restart_xod` run a restart cycle now (still respects the cap, the
-  backoff, and the HOLD file)
-- `verify` probe now and rewrite the status file
-- `release_hold` clear a cap HOLD and reset the restart budget
-
-Files with a wrong token, an unknown command, or malformed JSON are
-logged and moved to `rejected/`, never executed. Executed or rejected,
-no command file stays in the inbox.
-
-## Config
-
-`config.json` next to the watchdog (and optionally in the state dir,
-which wins) overrides the defaults in `xod_partner.py`: probe URL and
-interval, the failure gate, backoff schedule, hourly cap, timeouts.
+- App bundle: `~/Applications/Xod Partner.app`, bundle id
+  `dev.xod.partner`. It appears in the Accessibility list as **Xod
+  Partner**, and its grant binds to this bundle, to nothing else.
+- Signing: ad-hoc, with a fixed identifier:
+  `codesign --force --deep --sign - --identifier dev.xod.partner`
+  (Signature=adhoc, TeamIdentifier=not set). The build is frozen, so the
+  signing identity is stable across reinstalls of the same build. If a
+  future rebuild ever stales the grant, the supervised repair above is
+  the fix.
+- How the grant reaches the code: the bundle's executable is a small
+  Swift launcher. It SPAWNS `/usr/bin/python3` with the bundled partner
+  script and stays its parent for life (it never execs). macOS attributes
+  the child's Accessibility trust to the responsible process, the
+  launcher, so the Python partner reads and acts under dev.xod.partner.
+  The launcher forwards SIGTERM/SIGINT to the child, respawns it if it
+  dies alone, and the child exits on its own if it ever finds itself
+  orphaned, so two partner generations can never watch at once.
 
 ## Install
 
-```sh
-STATE="$HOME/Library/Application Support/XodPartner"
-mkdir -p "$STATE/app" "$STATE/inbox" "$STATE/rejected"
-cp partner/xod_partner.py partner/config.json "$STATE/app/"
-sed "s|__STATE_DIR__|$STATE|g" partner/dev.xod.partner.plist.template \
-  > "$HOME/Library/LaunchAgents/dev.xod.partner.plist"
-launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/dev.xod.partner.plist"
-```
+From the repo root on the Mac:
 
-launchd runs the Partner with RunAtLoad and KeepAlive: if the Partner
-itself dies, launchd is the dumb floor that brings it back.
+    sh partner/install.sh
 
-## Removal
+Builds the bundle in a temp stage (swiftc for the launcher), signs it,
+installs it to `~/Applications/Xod Partner.app`, renders the LaunchAgent
+(label `dev.xod.partner`, RunAtLoad + KeepAlive) to run the bundle
+executable, and reloads the job. State survives installs: same state dir,
+token, inbox, and log history (appended, never truncated).
 
-```sh
-launchctl bootout "gui/$(id -u)/dev.xod.partner"
-rm "$HOME/Library/LaunchAgents/dev.xod.partner.plist"
-rm -rf "$HOME/Library/Application Support/XodPartner"
-```
+State lives in `~/Library/Application Support/XodPartner/`:
 
-Removing the state dir deletes the log and the token with it; copy
-`partner.log` somewhere first if the history matters. Removing the
-Partner changes nothing about Xod itself.
+- `xod_partner.json` (optional config overrides)
+- `token`: the pairing token, mode 600, shared with Xod. It gates the
+  command inbox AND every API call.
+- `inbox/`: command files `{"token": "...", "command": "hold"}` with
+  commands `hold`, `release`, `restart-xod`.
+- `status.json`: the latest status (watchdog fields from v0, plus
+  `partner_trusted` and `ax` since v1).
+- `partner.log`: one append-only log for probes, restarts, refusals,
+  scans' presses, and API lifecycle lines.
+
+Config defaults (in `partner/config.json`): probe
+`http://127.0.0.1:8000/` every 15s; 3 consecutive failures over at least
+30s means down; at most 3 restarts per hour, 30s between attempts; the
+API listens on `127.0.0.1:8795`.
+
+## The API (all calls need `Authorization: Bearer <token>`)
+
+- `GET /status`: partner version, uptime, the watchdog's Xod health
+  summary, `partner_trusted` (the Partner's own AXIsProcessTrusted),
+  `bundle_id`.
+- `POST /ax/scan` `{front?: bool}`: read-only. Returns whether the Muse
+  app is running and, per card found, the card's title, summary, type,
+  parties, the labels of every action button, the button the frozen
+  rules WOULD press (or null), and whether the card already expired.
+  Never presses anything.
+- `POST /ax/press` `{card_id, front?: bool, away?: bool}`: re-walks the
+  live tree, finds exactly the named card, and presses its approving
+  button, once. Returns what was pressed, or why nothing was, and logs
+  every outcome to partner.log.
+
+Scan and press refuse with 403 `{error, trusted: false, bundle_id}` when
+macOS is not honoring the Partner's grant. A missing or wrong token is a
+401 on every route. The Partner takes no other inputs than this API and
+the token-gated inbox: no orders from files, web content, or task text.
+
+Frozen press rules (a faithful port of Xod's muse_app semantics): prefer
+"Always allow for this recipient/site" when offered; otherwise "Allow
+all once", then "Send", "Allow once", "Allow". NEVER press Deny,
+"Deny all", "Don't send", or anything else. Bring Muse forward first
+only when the request says so (Xod decides, from its away state); put
+the previously front app back afterwards when it was moved.
+
+## The watchdog's rules (unchanged from v0)
+
+Only a real death earns a restart: the probe must fail
+`fail_threshold` times in a row AND the outage must have lasted at
+least `min_down_s`. Connection refused, timeouts, HTTP 5xx, redirects
+that never resolve, and half-dead answers all count. A single good
+probe resets the failure streak. Restarts are rate-limited two ways:
+at most `max_restarts_per_hour` in any rolling hour, and at least
+`restart_cooldown_s` between attempts. The hour counter survives a
+watchdog restart through `status.json`. While Xod is down, `open -a
+Xod` is re-issued at most once per `relaunch_retry_s` until Xod answers
+or the rate limit stops it. A `hold` (from the inbox or a `hold` file in
+the state dir) disables all restarting until released.
 
 ## Tests
 
-```sh
-python3 tests/partner/run_partner_test.py
-```
+Under the system python (the Partner is stdlib-only):
 
-The suite drives the decision core with a fake probe, a fake restarter,
-and a hand-moved clock. It never touches the real Xod.
+    /usr/bin/python3 tests/partner/run_partner_test.py       # the v0 watchdog suite
+    /usr/bin/python3 tests/partner/run_partner_ax_test.py    # the API contract, fake AX trees
+
+Under the repo venv:
+
+    .venv/bin/python tests/partner/run_partner_delegation_test.py  # Xod delegates / falls back
+    .venv/bin/python tests/smoke/run_muse_app_test.py              # Xod's watcher suite, 61 checks
+    .venv/bin/python tests/self_heal/run_permissions_test.py       # incl. the partner reset target
+
+## Files
+
+- `xod_partner.py`: the watchdog, the API server, the entry point.
+- `partner_ax.py`: the ctypes Accessibility layer: trust, the tree
+  walk, the frozen card rules, scan, press.
+- `launcher/XodPartner.swift`: the bundle executable (spawn, stay
+  parent, forward signals, respawn).
+- `app/Info.plist`: the bundle's identity.
+- `dev.xod.partner.plist.template`: the LaunchAgent (the bundle
+  executable, the state dir).
+- `install.sh`: build, sign, install, reload.
+- `config.json`: the shipped defaults.
