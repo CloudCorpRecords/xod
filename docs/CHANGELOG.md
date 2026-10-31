@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.12
+
+**Missions: give Xod a goal, get a verified report**
+- A mission takes a goal in plain words. Xod writes a plan of steps first, shows it, then runs the steps one at a time through the same task queue it already uses.
+- Every step is checked against the disk before it counts, the same file check tasks already get. The mission report keeps what the agent said in one field and what was verified in another, so a finished mission means the work is really there.
+- If Xod stops in the middle of a mission, the mission resumes from its first unfinished step when Xod comes back, instead of starting over or dying quietly.
+
+**Your keys, your models, your spend**
+- Settings now holds named API key profiles for each provider. Your existing key became the Default profile in place; add more keys, switch which one is active, and each key remembers the models Detect Models found for it.
+- Every model call is written to a usage ledger on your machine: the tokens the provider reported, or a labeled estimate when it did not report, and a cost from the same dated price table the model picker uses. A model with no verified price tracks its tokens and says its cost is unpriced.
+- The Usage panel in Settings shows today's totals and the breakdown by model and by key, and refreshes itself. Before a chat runs, Xod shows a pre-flight estimate, labeled as an estimate, and later shows it next to what the call actually used.
+
+**Auto mode: the model picks itself, and shows its work**
+- Turn on Auto and Xod chooses the model for each job from the models your active key can call, ranked by the ViBench 2.0 benchmark (agents building whole products, feature by feature) with cost as the value check.
+- Every pick prints its reason in Settings, next to the full benchmark table with its source and snapshot date (2026-10-30). A model the benchmark has not covered is never dropped; it ranks last with "no benchmark data" as its stated reason. Picking a model yourself always wins over Auto.
+
+**Checked before it shipped**
+- The merged tree passed every local suite: the Muse approval smoke test (61 checks), the key and usage suite (37), the Auto mode suite (19), the missions suite (39), a new integration suite for the seams between them (10), the Partner watchdog, accessibility and delegation suites, the permission self-checks, and the task inbox suites. The release privacy scan is clean.
+- After the build was installed on a real Mac, the Brain features answered live in the installed app (key profiles, usage summary, an Auto pick with its reason, and the missions list), and Xod Partner's permission read true throughout.
+
 ## 0.9.11
 
 **Xod Partner: a companion that holds the permission**
