@@ -29,6 +29,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "partner"))
+import os
+os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
 import partner_ax as AX
 import xod_partner as XP
 
@@ -203,7 +205,7 @@ def main():
             code, st = _call(base, "/status", token=core.token)
             assert code == 200 and st["bundle_id"] == "dev.xod.partner", st
             assert st["partner_trusted"] is True and st["ax"]["trusted"] is True, st
-            assert st["version"] == XP.VERSION == "1.1" and st["xod_state"] in ("up", "unknown"), st
+            assert st["version"] == XP.VERSION == "1.2" and st["xod_state"] in ("up", "unknown"), st
             assert st["cap_spent"] == 0 and st["planned_revivals_last_hour"] == 0, st
             assert st["unplanned_revivals_last_hour"] == 0, st
             print("PASS: /status reports bundle id, trust, and the watchdog summary", flush=True)

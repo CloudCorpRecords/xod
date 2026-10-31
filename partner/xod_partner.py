@@ -22,6 +22,18 @@ And on a graceful exit the Partner writes its own planned-shutdown
 marker, so Xod's watchdog can keep the same accounts in the other
 direction (reciprocal supervision).
 
+v1.2 (2026-10-31) adds the brain (partner_brain.py): a judgment layer
+consulted at four ambiguity points only (wedge suspicion, a cap event,
+a third consecutive identical failure, post-revival triage). The floor
+above is untouched: with the brain off, unkeyed, malformed, or the API
+down, every path behaves byte-for-byte as v1.1. Default mode is shadow
+(the brain is consulted and logged; the floor acts as today). In active
+mode a decision may defer one restart by one probe cycle (never twice
+for one episode), clear a cap HOLD, or escalate; a hard ceiling of
+HARD_RESTART_CEILING_PER_HOUR total revivals per hour binds no matter
+what the brain decides, and the brain can never touch TCC, permissions,
+cards, or either app.
+
 Run: python3 xod_partner.py [state-dir]
 State dir default: ~/Library/Application Support/XodPartner
 """
@@ -55,10 +67,22 @@ DEFAULTS = {
     "app_name": "Xod",
     "api_host": "127.0.0.1",
     "api_port": 8795,
+    "partner_brain_mode": "shadow",
+    "brain_base_url": "https://api.openai.com/v1",
+    "brain_model": "gpt-6.1-terra",
+    "brain_provider": "openai",
+    "brain_timeout_s": 20,
+    "brain_usage_url": "",
 }
 
-VERSION = "1.1"
+VERSION = "1.2"
 BUNDLE_ID = "dev.xod.partner"
+
+# The hard hourly restart ceiling (v1.2): total revivals per hour, planned
+# and unplanned together. It binds no matter what the brain decides; the
+# brain can never raise it, and a brain release_hold is never consulted
+# once the ceiling is what stops a restart.
+HARD_RESTART_CEILING_PER_HOUR = 6
 
 KNOWN_COMMANDS = ("restart_xod", "verify", "release_hold", "note_planned_restart")
 
@@ -100,13 +124,21 @@ class Core:
     cycle is handed the current time, so the tests can drive each path
     without touching the real Xod or the real clock."""
 
-    def __init__(self, cfg, state_dir, probe, restart, log, trust=None):
+    def __init__(self, cfg, state_dir, probe, restart, log, trust=None,
+                 brain=None, process_alive=None, log_tail=None):
         self.cfg = cfg
         self.state_dir = Path(state_dir)
         self.probe = probe
         self.restart = restart
         self.log = log
         self.trust = trust  # callable -> True/False/None: is OUR Accessibility grant in effect?
+        self.brain = brain  # partner_brain.Brain or None: judgment layer, consulted at triggers only
+        self.process_alive = process_alive  # callable -> bool: can the watchdog see Xod's process?
+        self.log_tail = log_tail  # callable -> list of recent shared-log lines, for triage evidence
+        self._wait_deferred_for = None  # down_since value a brain wait already deferred once
+        self._consec_failed_restarts = 0  # consecutive revivals with the identical failure signature
+        self._brain_last = None  # last consultation summary, for /status
+        self._brain_escalation = None  # an active-mode escalate lands here, prominent in /status
         self.started_at = time.time()
         self.token = self._load_token()
         self.failures = 0
@@ -121,6 +153,7 @@ class Core:
         self.backoff_until = 0.0
         self.last_action = None
         self.last_outcome = None
+        self.updates_guardian = None  # partner_updates.UpdateGuardian, wired in main()
 
     def _load_token(self):
         path = self.state_dir / "token"
@@ -209,8 +242,111 @@ class Core:
             and now - self.first_fail_at >= self.cfg["fail_span_s"]
         )
         if forced or gate:
-            self._maybe_restart(now, "inbox command" if forced else "health gate")
+            if gate and not forced and self._brain_wedge_defers(now):
+                pass  # the brain deferred this restart by one probe cycle
+            else:
+                self._maybe_restart(now, "inbox command" if forced else "health gate")
         return self.status(now)
+
+    # -- the brain: consultation at ambiguity points only -----------------
+    # The brain never replaces a floor decision path. These helpers are
+    # the only places it is asked anything, and in shadow mode (the
+    # default) or on any malfunction the floor proceeds exactly as today.
+
+    def _brain_evidence(self, extra):
+        ev = {
+            "xod_state": "down" if self.xod_up is False else "up",
+            "consecutive_failures": self.failures,
+            "cap_hold": self.cap_hold,
+            "restarts_last_hour": len(self._in_window(time.time())),
+            "unplanned_last_hour": len(self._unplanned_in_window(time.time())),
+            "recent_restarts": [{"outcome": o, "planned": p} for _, o, p in self.restarts[-5:]],
+            "last_action": self.last_action,
+            "last_outcome": self.last_outcome,
+        }
+        ev.update(extra or {})
+        return ev
+
+    def _consult_brain(self, trigger, evidence):
+        """Ask the brain and meter the call. Returns the decision dict or
+        None (off, unkeyed, API down, malformed: the floor proceeds)."""
+        if self.brain is None:
+            return None
+        try:
+            result = self.brain.consult(trigger, evidence)
+        except Exception as exc:  # a broken brain must never kill the watcher
+            self.log("brain malfunction (trigger %s): consult raised: %s; the floor proceeds"
+                     % (trigger, exc))
+            return None
+        if result is None:
+            return None
+        self._brain_last = {"trigger": trigger, "decision": result["decision"],
+                            "reason": result["reason"], "mode": result["mode"],
+                            "at": iso()}
+        self._meter_brain(result)
+        return result
+
+    def _meter_brain(self, result):
+        """Report one brain call to Xod's usage ledger (context partner).
+        When Xod is down or unreachable, the same fields land in
+        partner.log as a brain_usage line, so no call is unmetered."""
+        url = self.cfg.get("brain_usage_url") or (
+            self.cfg["probe_url"].split("/")[0] + "//" + self.cfg["probe_url"].split("/")[2]
+            + "/api/partner/brain/usage")
+        payload = {"provider": result["provider"], "model": result["model"],
+                   "prompt_tokens": result["prompt_tokens"],
+                   "completion_tokens": result["completion_tokens"],
+                   "trigger": result["trigger"], "decision": result["decision"]}
+        try:
+            req = urllib.request.Request(url, data=json.dumps(payload).encode(),
+                                         method="POST",
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if 200 <= resp.status < 300:
+                    return
+        except Exception:
+            pass
+        self.log("brain_usage model=%s prompt_tokens=%d completion_tokens=%d "
+                 "trigger=%s decision=%s (Xod unreachable; ledgered in partner.log only)"
+                 % (result["model"], result["prompt_tokens"],
+                    result["completion_tokens"], result["trigger"], result["decision"]))
+
+    def _brain_escalate(self, result, trigger):
+        self._brain_escalation = {"trigger": trigger, "reason": result["reason"], "at": iso()}
+        self.log("BRAIN ESCALATION (trigger %s): %s" % (trigger, result["reason"]))
+
+    def _brain_wedge_defers(self, now):
+        """Trigger (a): the failure gate is met and Xod's process is alive
+        but its port is silent. In active mode a wait_and_reprobe defers
+        the restart by one probe cycle, never twice for one episode.
+        Returns True only when the restart should be deferred."""
+        if self.brain is None or self.process_alive is None:
+            return False
+        try:
+            alive = bool(self.process_alive())
+        except Exception:
+            alive = False
+        if not alive:
+            return False  # no process: not a wedge, just a death; the floor revives it
+        result = self._consult_brain("wedge_suspicion", self._brain_evidence({
+            "process_alive": True, "http_probes_failing": True,
+            "down_for_s": int(now - self.down_since) if self.down_since else None}))
+        if result is None or result["mode"] != "active":
+            return False
+        if result["decision"] == "escalate":
+            self._brain_escalate(result, "wedge_suspicion")
+            return False
+        if result["decision"] != "wait_and_reprobe":
+            return False  # restart concurs with the floor; release_hold means nothing here
+        if self._wait_deferred_for is not None and self._wait_deferred_for == self.down_since:
+            self.log("brain wait_and_reprobe: this episode already used its one deferral; "
+                     "the floor restarts now")
+            return False
+        self._wait_deferred_for = self.down_since
+        self.last_action, self.last_outcome = "restart deferred", "brain wait_and_reprobe"
+        self.log("brain wait_and_reprobe: restart deferred by one probe cycle (%s)"
+                 % result["reason"])
+        return True
 
     # -- restart discipline -------------------------------------------
     def _maybe_restart(self, now, why):
@@ -222,6 +358,17 @@ class Core:
             self.last_action, self.last_outcome = "restart skipped", "cap hold active"
             self.log("restart skipped (%s): cap hold active, waiting for a human or release_hold" % why)
             return
+        if len(self._in_window(now)) >= HARD_RESTART_CEILING_PER_HOUR:
+            # The hard ceiling binds before any brain consult: no decision,
+            # release_hold included, may restart past it.
+            self.cap_hold = True
+            self.last_action, self.last_outcome = "HOLD", "hard restart ceiling reached"
+            self.log(
+                "HOLD: hard restart ceiling reached (%d total restarts in the last hour, "
+                "ceiling %d); no brain decision can raise it"
+                % (len(self._in_window(now)), HARD_RESTART_CEILING_PER_HOUR)
+            )
+            return
         unplanned = self._unplanned_in_window(now)
         if len(unplanned) >= self.cfg["max_restarts_per_hour"]:
             self.cap_hold = True
@@ -230,7 +377,27 @@ class Core:
                 "HOLD: restart cap reached (%d unplanned restarts in the last hour); "
                 "no more restarts until a human or a release_hold command" % len(unplanned)
             )
-            return
+            # Trigger (b): a cap event. In active mode the brain may clear
+            # this hold (an operator's promotion work spending the budget is
+            # not a crash loop); shadow only logs its judgment.
+            result = self._consult_brain("cap_event", self._brain_evidence({
+                "unplanned_in_window": len(unplanned)}))
+            if result is not None and result["mode"] == "active":
+                if result["decision"] == "release_hold":
+                    self.cap_hold = False
+                    self.restarts = []  # the same budget reset a human release_hold performs
+                    self.backoff_until = 0.0
+                    self.log("brain release_hold: the cap hold is cleared (%s)"
+                             % result["reason"])
+                elif result["decision"] == "escalate":
+                    self._brain_escalate(result, "cap_event")
+                    return
+                else:
+                    return
+            else:
+                return
+            if self.cap_hold:
+                return
         if now < self.backoff_until:
             self.last_action, self.last_outcome = "restart deferred", "backoff"
             return
@@ -260,6 +427,42 @@ class Core:
             self.down_since = None
             self.xod_up = True
             self.last_probe_ok = True
+        self._brain_after_restart(now, outcome, planned)
+
+    def _brain_after_restart(self, now, outcome, planned):
+        """Triggers (c) and (d), after a revival outcome is known. (c) a
+        third consecutive failure with the identical signature (the same
+        outcome three revivals in a row); (d) post-revival triage on every
+        revival the repeated-failure consult did not already cover. In
+        active mode only an escalate has an effect here (a prominent log
+        and status entry); the floor's own discipline (gate, backoff,
+        caps) governs any further restart, as always."""
+        if outcome == "still down":
+            self._consec_failed_restarts += 1
+        else:
+            self._consec_failed_restarts = 0
+        if self.brain is None:
+            return
+        if self._consec_failed_restarts >= 3:
+            result = self._consult_brain("repeated_failure", self._brain_evidence({
+                "failure_signature": outcome,
+                "consecutive_identical_failures": self._consec_failed_restarts}))
+            if result is not None and result["mode"] == "active" \
+                    and result["decision"] == "escalate":
+                self._brain_escalate(result, "repeated_failure")
+            return  # the repeated-failure consult already assessed this revival
+        tail = []
+        if self.log_tail is not None:
+            try:
+                tail = list(self.log_tail())[-30:]
+            except Exception:
+                tail = []
+        result = self._consult_brain("post_revival_triage", self._brain_evidence({
+            "revival_outcome": outcome, "revival_planned": planned,
+            "log_tail": tail}))
+        if result is not None and result["mode"] == "active" \
+                and result["decision"] == "escalate":
+            self._brain_escalate(result, "post_revival_triage")
 
     # -- inbox ---------------------------------------------------------
     def _process_inbox(self, now):
@@ -335,7 +538,19 @@ class Core:
             "hold": hold,
             "last_action": self.last_action,
             "last_outcome": self.last_outcome,
+            "brain": self._brain_status(),
         }
+
+    def _brain_status(self):
+        if self.brain is None:
+            return {"mode": "off", "configured": False, "has_key": False,
+                    "hard_ceiling_per_hour": HARD_RESTART_CEILING_PER_HOUR,
+                    "last": None, "escalation": self._brain_escalation}
+        return {"mode": self.brain.mode(), "configured": True,
+                "has_key": self.brain.has_key(),
+                "model": self.brain.model(),
+                "hard_ceiling_per_hour": HARD_RESTART_CEILING_PER_HOUR,
+                "last": self._brain_last, "escalation": self._brain_escalation}
 
 
 # -- real side effects ---------------------------------------------------
@@ -398,6 +613,11 @@ def api_status(core):
     st = core.status(time.time())
     st["bundle_id"] = BUNDLE_ID
     st["uptime_s"] = int(time.time() - core.started_at)
+    if getattr(core, "updates_guardian", None) is not None:
+        try:
+            st["updates"] = core.updates_guardian.status()
+        except Exception:
+            st["updates"] = None
     return st
 
 
@@ -443,13 +663,29 @@ def make_server(cfg, core, walk, log):
 
         def do_POST(self):
             path = self.path.split("?")[0]
-            if path not in ("/ax/scan", "/ax/press", "/ax/request-access"):
+            if path not in ("/ax/scan", "/ax/press", "/ax/request-access", "/brain/key"):
                 return self._send(404, {"error": "not found"})
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
             body = self._json_body()
             if not isinstance(body, dict):
                 return self._send(400, {"error": "a JSON object body is required"})
+            if path == "/brain/key":
+                # Brain key provisioning (v1.2): Xod sends one key
+                # profile's key once, over this token-authenticated
+                # channel; the Partner stores it in its own Keychain
+                # item. The value is never logged and never echoed; the
+                # answer carries only the fact that a key is now held.
+                key = body.get("key")
+                if not isinstance(key, str) or not key.strip():
+                    return self._send(400, {"error": "a key is required"})
+                if core.brain is None:
+                    return self._send(503, {"error": "the brain is not configured on this Partner"})
+                profile = str(body.get("profile") or "")
+                log("brain key provisioning requested%s" % (" for profile " + profile if profile else ""))
+                if not core.brain.provision_key(key.strip()):
+                    return self._send(500, {"error": "the Partner could not store the key"})
+                return self._send(200, {"stored": True, "has_key": True})
             if path == "/ax/request-access":
                 # The one route that must answer while untrusted: asking
                 # is how the grant comes to exist at all. Token-gated like
@@ -509,7 +745,29 @@ def main(argv):
         walk = partner_ax.Walk(ax, log)
     except Exception as exc:  # no AX on this machine: the watchdog still watches
         log("ax service unavailable at startup: %s" % exc)
-    core = Core(cfg, state_dir, probe, make_restarter(cfg, probe, log), log, trust=trust)
+    brain = None
+    try:
+        import partner_brain
+        brain = partner_brain.Brain(cfg, log, partner_brain.KeychainBrainKeyStore())
+        log("brain layer present (mode %s, model %s); the floor is unchanged"
+            % (brain.mode(), brain.model()))
+    except Exception as exc:  # no brain on this machine: the watchdog still watches
+        log("brain layer unavailable at startup: %s" % exc)
+
+    def _log_tail():
+        try:
+            return (state_dir / "partner.log").read_text().splitlines()[-30:]
+        except Exception:
+            return []
+
+    core = Core(cfg, state_dir, probe, make_restarter(cfg, probe, log), log, trust=trust,
+                brain=brain, process_alive=lambda: _app_running(cfg["app_name"]),
+                log_tail=_log_tail)
+    try:  # the update guardian (v0.5): a broken guardian must never stop the watchdog
+        import partner_updates
+        core.updates_guardian = partner_updates.UpdateGuardian(cfg, state_dir, log)
+    except Exception as exc:
+        log("update guardian unavailable at startup: %s" % exc)
     stopping = {"flag": False}
     graceful = {"flag": False}
     server = None
@@ -555,6 +813,8 @@ def main(argv):
             break
         try:
             core.cycle(time.time())
+            if core.updates_guardian is not None:
+                core.updates_guardian.tick()
         except Exception as exc:  # the watcher must outlive its own bugs
             log("cycle error: %s" % exc)
         text = json.dumps(core.status(time.time()), indent=1, sort_keys=True)

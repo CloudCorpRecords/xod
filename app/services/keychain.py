@@ -74,7 +74,10 @@ def _load() -> Dict[str, object]:
         except ValueError:
             # Kept under another name before starting over, so nothing is lost for good.
             logger.error("Xod's Keychain vault is unreadable; kept it as _vault.unreadable and starting a new one")
-            set_item(SERVICE, f"{ACCOUNT}.unreadable", raw)
+            try:
+                set_item(SERVICE, f"{ACCOUNT}.unreadable", raw)
+            except Exception as e:
+                logger.error(f"Could not keep the unreadable vault copy either: {type(e).__name__}: {e}")
             vault = {}
         vault.setdefault("secrets", {})
         vault.setdefault("checked", [])
@@ -112,6 +115,21 @@ def set_item(service: str, account: str, value: str) -> None:
 
 
 def _store() -> None:
+    global _problem
+    try:
+        _write_vault()
+    except Unreadable:
+        raise
+    except Exception as e:
+        # Every unavailability failure (a refused save, no default keychain, interaction
+        # not allowed) explains itself through problem() instead of escaping raw.
+        _problem = (f"macOS didn't let Xod save its keys ({type(e).__name__}). Your previously "
+                    "saved keys were not changed. Choose Try again, then Always Allow when macOS asks.")
+        logger.warning(f"Keychain write failed: {type(e).__name__}: {e}")
+        raise Unreadable(_problem) from e
+
+
+def _write_vault() -> None:
     data = json.dumps(_vault)
     if not CHUNK:
         set_item(SERVICE, ACCOUNT, data)

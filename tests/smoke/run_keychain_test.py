@@ -126,6 +126,27 @@ def main():
     check("once macOS allows it, the next read finds them (Try again)", secret_store.get("fireworks_api_key") == "fw_test_value"
           and secret_store.health()["readable"])
 
+    # The write itself is refused (the no-default-keychain class): the read worked, the
+    # save cannot land. The layer converts it to the same Unreadable problem path.
+    real_set_item = keychain.set_item
+
+    def refused_set_item(service, account, value):
+        raise keyring.errors.KeyringError("A keychain cannot be found to store the item.")
+
+    keychain.set_item = refused_set_item
+    try:
+        secret_store.save("openai_api_key", "sk_never_stored")
+        check("a refused save raises Unreadable, not a raw keyring error", False)
+    except keychain.Unreadable:
+        check("a refused save raises Unreadable, not a raw keyring error", True)
+    finally:
+        keychain.set_item = real_set_item
+    check("...and problem() explains the save failure",
+          "save its keys" in (secret_store.health()["problem"] or ""), str(secret_store.health()))
+    check("...and the vault on disk is unchanged", vault_json() == before,
+          str(sorted(vault_json()["secrets"])))
+    keychain.reset_cache()
+
     failed = [n for n, ok in results if not ok]
     print(f"\nSUMMARY {'PASS' if not failed else 'FAIL'} {failed}")
     sys.exit(1 if failed else 0)

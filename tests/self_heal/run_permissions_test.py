@@ -16,6 +16,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+import os
+os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
 import app.services.permissions as P
 
 
@@ -45,6 +47,76 @@ class _FakeRunner:
         r = R()
         r.returncode, r.stderr, r.stdout = self.returncode, self.stderr, ""
         return r
+
+
+def _seam_trusted_with_prompt():
+    """The real _CTypesAX trusted_with_prompt with only its output half
+    faked: a stand-in prompt function receives the options dictionary the
+    seam built and inspects it with real CoreFoundation calls, so the
+    prompt option is proven to reach the framework call, not assumed. The
+    dictionary the callback receives is released when trusted_with_prompt
+    returns, so every observation is captured inside the callback."""
+    import ctypes
+    real = P._CTypesAX()
+    assert real._cf is not None and real._prompt is not None, "the real AX seam must load on this Mac"
+    cf = real._cf
+    cf.CFDictionaryGetCount.restype = ctypes.c_long
+    cf.CFDictionaryGetCount.argtypes = [ctypes.c_void_p]
+    cf.CFDictionaryGetValue.restype = ctypes.c_void_p
+    cf.CFDictionaryGetValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    cf.CFDictionaryGetKeysAndValues.restype = None
+    cf.CFDictionaryGetKeysAndValues.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+                                                ctypes.POINTER(ctypes.c_void_p)]
+
+    asv = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
+    real_key = ctypes.c_void_p.in_dll(asv, "kAXTrustedCheckOptionPrompt")
+    assert real_key, "the framework must export the prompt key constant"
+
+    for answer in (False, True):
+        ax = P._CTypesAX.__new__(P._CTypesAX)
+        ax._cf = cf
+        ax._prompt_key = real_key
+        seen = {}
+
+        def fake_prompt(options, _answer=answer):
+            # The framework looks the option up under its own exported
+            # constant and the dictionary compares keys by pointer, so
+            # look it up under that very constant: finding the value here
+            # is exactly what the real call does inside
+            # AXIsProcessTrustedWithOptions. (Before the fix the seam
+            # keyed the dictionary with a same-text CFString; this lookup
+            # then found nothing, which is the 2026-10-30 crash.)
+            seen["count"] = cf.CFDictionaryGetCount(options)
+            seen["value"] = cf.CFDictionaryGetValue(options, real_key)
+            keys = (ctypes.c_void_p * 1)()
+            values = (ctypes.c_void_p * 1)()
+            cf.CFDictionaryGetKeysAndValues(options, keys, values)
+            seen["key"] = keys[0]
+            return _answer
+
+        ax._prompt = fake_prompt
+        result = ax.trusted_with_prompt()
+        assert result is answer, (result, answer)
+        assert seen["count"] == 1, seen
+        assert seen["key"] == real_key.value, seen
+        assert seen["value"] == ctypes.c_void_p.in_dll(cf, "kCFBooleanTrue").value, seen
+    print("PASS: the re-ask passes the prompt option into the framework call, keyed by the framework constant itself", flush=True)
+
+    # Without the real key constant the seam must refuse to ask at all:
+    # asking with a same-text lookalike key is the 2026-10-30 crash.
+    ax = P._CTypesAX.__new__(P._CTypesAX)
+    ax._cf = cf
+    calls = []
+    ax._prompt = lambda options: calls.append(options) or True
+    ax._prompt_key = None
+    assert ax.trusted_with_prompt() is None
+    assert calls == [], calls
+    print("PASS: no real key constant, no ask: the re-ask answers None instead of risking the framework", flush=True)
+
+    ax = P._CTypesAX.__new__(P._CTypesAX)
+    ax._cf, ax._prompt, ax._prompt_key = cf, None, real_key
+    assert ax.trusted_with_prompt() is None
+    print("PASS: an unavailable framework answers None from the re-ask, never a crash", flush=True)
 
 
 def main():
@@ -127,6 +199,8 @@ def main():
         assert runner.calls == [["tccutil", "reset", "Accessibility", "dev.xod.partner"]], runner.calls
         assert out["ok"] is True and P._backend.prompt_calls == 0, out
         print("PASS: the partner reset targets dev.xod.partner once and never re-asks here", flush=True)
+
+        _seam_trusted_with_prompt()
     finally:
         P._backend, P.own_bundle_id = real_backend, real_bid_fn
 

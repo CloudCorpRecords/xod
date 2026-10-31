@@ -20,6 +20,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+import os
+os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
 from app.services import muse_app, partner_client
 
 CARD = {"card_id": "museapp-testcard", "title": "Approval request for Gmail",
