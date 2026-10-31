@@ -181,7 +181,8 @@ PLAN_PROMPT = """You are the planning part of Xod, a local assistant. Someone ga
 Break it into a short list of subtasks the agent can do one at a time, in order. Each subtask must be checkable:
 - "title": a few words.
 - "instruction": exactly what to do, in one or two sentences.
-- "expected_effects": the files this subtask will create, modify or delete, so the result can be checked on disk afterwards. Each effect is {{"kind": "create", "path": "/absolute/path", "content": null}} where kind is "create", "modify" or "delete", path is absolute or starts with ~/, and content is the exact file contents ONLY when the job dictates them word for word, otherwise null. If a subtask changes no files (looking something up, answering, deciding), expected_effects is [].
+- "expected_effects": the files this subtask will create, modify or delete, so the result can be checked on disk afterwards. Each effect is {{"kind": "create", "path": "/absolute/path", "content": null}} where kind is "create", "modify" or "delete", path is absolute or starts with ~/, and content is the exact file contents ONLY when the job dictates them word for word, otherwise null. An effect can instead prove that produced code works: {{"kind": "run", "command": "a single command line", "cwd": "/absolute/path", "expect_exit": 0}} where command is one plain command with no shell chaining, pipes or redirection, cwd is the directory the command runs from, and expect_exit (which defaults to 0) is the exit code that counts as success. If a subtask changes no files (looking something up, answering, deciding), expected_effects is [].
+- When a subtask creates a test file or an executable artifact, give it a "run" effect that runs what it made: run the test file with the project's test runner, or invoke the artifact harmlessly, with cwd set to the directory the subtask creates the file in. Creating a file is not proof it works; the run is the proof.
 
 Between 2 and 8 subtasks. Later subtasks may rely on earlier ones; nothing runs at the same time.
 Reply with JSON only: {{"subtasks": [{{"title": "...", "instruction": "...", "expected_effects": []}}]}}"""
@@ -236,6 +237,35 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
                 problems.append(f"{ewhere}: must be an object")
                 continue
             kind = e.get("kind")
+            if kind is None and e.get("type") == "run":
+                kind = "run"
+            if kind == "run":
+                command = e.get("command")
+                if not isinstance(command, str) or not command.strip():
+                    problems.append(f"{ewhere}: command must be a non-empty string")
+                    continue
+                command = command.strip()
+                if "\n" in command or "\r" in command:
+                    problems.append(f"{ewhere}: command must be a single line")
+                    continue
+                cwd = e.get("cwd")
+                if not isinstance(cwd, str) or not cwd.strip():
+                    problems.append(f"{ewhere}: cwd must be a non-empty string")
+                    continue
+                cwd = cwd.strip()
+                if not (cwd.startswith("/") or cwd.startswith("~/")):
+                    problems.append(f"{ewhere}: cwd must be absolute or start with ~/")
+                    continue
+                if ".." in _path_parts(cwd):
+                    problems.append(f"{ewhere}: cwd must not contain ..")
+                    continue
+                expect_exit = e.get("expect_exit", 0)
+                if isinstance(expect_exit, bool) or not isinstance(expect_exit, int):
+                    problems.append(f"{ewhere}: expect_exit must be an integer")
+                    continue
+                clean_effects.append({"kind": "run", "command": command, "cwd": cwd,
+                                      "expect_exit": expect_exit})
+                continue
             if kind not in _EFFECT_KINDS:
                 problems.append(f"{ewhere}: kind must be one of create, modify, delete")
                 continue
@@ -310,6 +340,11 @@ def render_request(subtask: Dict[str, Any]) -> str:
     limit of the check's vocabulary."""
     lines = [subtask["instruction"].rstrip()]
     for eff in subtask.get("expected_effects") or []:
+        if eff["kind"] == "run":
+            cwd = os.path.expanduser(eff["cwd"])
+            lines.append(f"Run exactly this command from the directory {cwd} "
+                         f"and require exit code {eff.get('expect_exit', 0)}: {eff['command']}")
+            continue
         p = os.path.expanduser(eff["path"])
         content = eff.get("content")
         if eff["kind"] == "delete":
@@ -337,11 +372,14 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
                 "evidence": ["The task record for this step is gone, so its result cannot be checked."]}
     result = task.get("result") or ""
     if task["status"] == "done":
-        if subtask.get("expected_effects"):
-            effects = subtask["expected_effects"]
-            dictated = [e for e in effects
+        effects = subtask.get("expected_effects") or []
+        files = [e for e in effects if e.get("kind") != "run"]
+        runs = [e for e in effects if e.get("kind") == "run"]
+        evidence: List[str] = []
+        if files:
+            dictated = [e for e in files
                         if e.get("content") is not None and "\n" not in str(e["content"]).strip()]
-            if len(dictated) == len(effects):
+            if len(dictated) == len(files):
                 checked = "every declared effect was true on disk, including the dictated text"
             elif dictated:
                 checked = ("the declared effects were true on disk; text matched exactly where "
@@ -349,8 +387,13 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
             else:
                 checked = ("the declared paths existed on disk when the task finished; "
                            "their contents were not checked against the instruction")
-            evidence = [f"The queue's file-effect check passed when the task finished: {checked}."]
-        else:
+            evidence.append(f"The queue's file-effect check passed when the task finished: {checked}.")
+        for e in runs:
+            cwd = os.path.expanduser(str(e.get("cwd", "")))
+            evidence.append(f"The queue also ran the declared check: '{e.get('command', '')}' "
+                            f"from {cwd} exited with code {e.get('expect_exit', 0)}, "
+                            "the code the plan required.")
+        if not evidence:
             evidence = ["This step claimed no file effects, and the queue's check found "
                         "nothing on disk to contradict the report."]
         return {"status": "done", "claimed": result, "verified_status": "verified", "evidence": evidence}
