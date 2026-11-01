@@ -108,6 +108,15 @@ def _emit(j: Dict[str, Any], event: Dict[str, Any]) -> None:
             f(j["id"], event)
         except Exception:
             pass
+    if event.get("type") == "done":
+        # Observability (services/event_log.py): every terminal Crew transition
+        # (done, failed, stopped, interrupted) funnels through this one emit.
+        from app.services import event_log
+        event_log.emit("crew.finished", actor=f"crew:{j.get('agent') or ''}",
+                       ids={"crew_job": j["id"]},
+                       payload={"status": event.get("status"), "agent": j.get("agent"),
+                                "title": (j.get("title") or "")[:200],
+                                "error": (j.get("error") or "")[:300] or None})
 
 
 def _step(j: Dict[str, Any], kind: str, text: str, **extra: Any) -> None:
@@ -350,6 +359,11 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
             j["worktree"] = wt
             j["folder"] = wt["cwd"]
     _jobs[jid] = j
+    from app.services import event_log
+    event_log.emit("crew.started", actor=f"crew:{agent}", ids={"crew_job": jid},
+                   payload={"agent": agent, "kind": kind or "", "title": j["title"],
+                            "folder": cwd,
+                            "seat_model_requested": (j.get("seat") or {}).get("model_requested")})
     if j.get("worktree"):
         w = j["worktree"]
         _step(j, "status", f"Working in its own copy of {w['repo_name']} (branch {w['branch']}, from {w['base']}): nothing reaches "

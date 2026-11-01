@@ -36,6 +36,13 @@ handoff gone says exactly that on the record.
 The family registry is unsigned interim data in F0 (see family_registry.py): it only PICKS the
 relay endpoint here. It authorizes nothing. The member's beacon independently whois-checks this
 machine before it cards the relayed task, and this port's two locks gate every call.
+
+Observability (surface v2): five read tools expose this Xod's own records to the attached
+agent: timeline (the append-only event log, services/event_log.py), task_read, mission_read
+and crew_read (deep grading reads over the task queue, the missions store and the crew jobs)
+and snapshot (the app's own view of itself). They read only what the app itself recorded; an
+activity class the app does not persist is never synthesized, and the gaps are named in the
+record that shipped the surface.
 """
 import hmac
 import json
@@ -299,6 +306,9 @@ def _submit_self(caller_ip: str, caller: str, rec: Dict[str, Any]) -> Tuple[int,
     with _lock:
         _load()[rec["ref"]] = rec
         _save()
+    from app.services import event_log
+    event_log.emit("harness.submitted", actor=caller, ids={"ref": rec["ref"]},
+                   payload={"target": "self", "kind": rec["kind"], "state": rec["state"]})
     return 200, _view(rec)
 
 
@@ -321,6 +331,9 @@ def _submit_relay(rec: Dict[str, Any], member: Dict[str, Any]) -> Tuple[int, Dic
         rec["updated_at"] = time.time()
         with _lock:
             _save()
+        from app.services import event_log
+        event_log.emit("harness.submitted", actor=rec["caller"], ids={"ref": rec["ref"]},
+                       payload={"target": member["id"], "kind": rec["kind"], "state": rec["state"]})
         return 202, _view(rec)
     try:
         r = _relay("POST", member["endpoint"], "/v1/tasks",
@@ -332,6 +345,9 @@ def _submit_relay(rec: Dict[str, Any], member: Dict[str, Any]) -> Tuple[int, Dic
         rec["updated_at"] = time.time()
         with _lock:
             _save()
+        from app.services import event_log
+        event_log.emit("harness.submitted", actor=rec["caller"], ids={"ref": rec["ref"]},
+                       payload={"target": member["id"], "kind": rec["kind"], "state": rec["state"]})
         return 202, _view(rec)
     rec["remote"]["remote_ref"] = r.get("ref")
     rec["remote"]["reachable"] = True
@@ -339,6 +355,9 @@ def _submit_relay(rec: Dict[str, Any], member: Dict[str, Any]) -> Tuple[int, Dic
     rec["updated_at"] = time.time()
     with _lock:
         _save()
+    from app.services import event_log
+    event_log.emit("harness.submitted", actor=rec["caller"], ids={"ref": rec["ref"]},
+                   payload={"target": member["id"], "kind": rec["kind"], "state": rec["state"]})
     return 200, _view(rec)
 
 
@@ -434,10 +453,13 @@ def _refresh_relay(rec: Dict[str, Any]) -> None:
 # anything consequential inside a page (a submit, a send, a purchase) is NOT offered on
 # this surface at all: it goes through task_submit, where the card decides, like every
 # other consequential action. Errors are machine-readable states, never dressed-up prose.
+# Surface v2 adds the observability tier: timeline, task_read, mission_read, crew_read and
+# snapshot, all reads over the app's own records (the event log, the task queue, the
+# missions store, the crew jobs, the ledgers). Nothing on this tier writes or approves.
 
 import asyncio
 
-SURFACE_VERSION = 1
+SURFACE_VERSION = 2
 
 TOOL_SURFACE = [
     {"name": "config_read", "version": 1, "kind": "read",
@@ -471,6 +493,26 @@ TOOL_SURFACE = [
      "args": {"url": "the page to open"}},
     {"name": "browser_state", "version": 1, "kind": "read",
      "description": "Where the local browser is now: running or not, the current URL and title, and a short read of the page text.",
+     "args": {}},
+    {"name": "timeline", "version": 1, "kind": "read",
+     "description": "This Xod's event log: task and mission lifecycle, tool calls, model calls, approval cards, config changes, network and Partner events, each stamped with its actor and correlation ids. Query by time window, kind prefix and correlation id; paginated by cursor in stable sequence order.",
+     "args": {"since": "epoch seconds (optional)", "until": "epoch seconds (optional)",
+              "kinds": "comma separated kind prefixes, e.g. task,model (optional)",
+              "task_id": "only this task's events (optional)", "mission_id": "only this mission's events (optional)",
+              "subtask_id": "only this subtask's events (optional)", "crew_job": "only this crew job's events (optional)",
+              "actor": "only this actor's events (optional)",
+              "limit": "page size, 1 to 1000 (default 200)", "cursor": "last seq from the previous page (optional)"}},
+    {"name": "task_read", "version": 1, "kind": "read",
+     "description": "One task's full grading record: the queue row, its mission link if any, every recorded step with its tool calls, the wedge state (stalled, quiet seconds), and the task's own timeline events.",
+     "args": {"task_id": "the task id"}},
+    {"name": "mission_read", "version": 1, "kind": "read",
+     "description": "One mission's full grading record: the plan, every subtask with its declared effects, evidence, claimed vs verified status and its linked task's live state (waiting text, wedge clock), the final report, mission usage totals, and the mission's timeline events.",
+     "args": {"mission_id": "the mission id"}},
+    {"name": "crew_read", "version": 1, "kind": "read",
+     "description": "One crew job's full record: every step, every approval and question in every state, the usage, the answer, and for board jobs the seat record (model requested, model that actually ran, and how that is known).",
+     "args": {"job": "the crew job id from crew_start"}},
+    {"name": "snapshot", "version": 1, "kind": "read",
+     "description": "This Xod's own view of itself: version, configuration (key presence only), server and beacon state, queue depths by state, the oldest waiting item's age, Partner reachability as the app sees it, family members with last seen, today's usage totals, and the event log's size.",
      "args": {}},
 ]
 
@@ -513,6 +555,154 @@ def _tool_config() -> Dict[str, Any]:
 def _tool_usage(rng: str) -> Dict[str, Any]:
     from app.services import usage_ledger
     return usage_ledger.summary(rng)
+
+
+# ------------------------------------------------------------- observability (surface v2)
+
+def _fnum(v: Any) -> Optional[float]:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _inum(v: Any, default: Optional[int] = None) -> Optional[int]:
+    try:
+        return int(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _tool_timeline(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import event_log
+    kinds = args.get("kinds")
+    if isinstance(kinds, str):
+        kinds = [k.strip() for k in kinds.split(",") if k.strip()]
+    return event_log.query(since=_fnum(args.get("since")), until=_fnum(args.get("until")),
+                           kinds=kinds if isinstance(kinds, list) else None,
+                           limit=_inum(args.get("limit"), 200) or 200,
+                           cursor=_inum(args.get("cursor")),
+                           task_id=str(args.get("task_id") or "") or None,
+                           mission_id=str(args.get("mission_id") or "") or None,
+                           subtask_id=str(args.get("subtask_id") or "") or None,
+                           crew_job=str(args.get("crew_job") or "") or None,
+                           actor=str(args.get("actor") or "") or None)
+
+
+def _tool_task_read(task_id: str) -> Dict[str, Any]:
+    from app.services import activity, agent_log, event_log, missions
+    from app.services.task_queue import task_queue
+    t = task_queue.get(task_id)
+    if t is None:
+        raise HarnessError(404, f"No task with id {task_id!r}.")
+    link = None
+    c = missions._conn()
+    row = c.execute("SELECT mission_id, id FROM mission_subtasks WHERE task_id = ?",
+                    (task_id,)).fetchone()
+    c.close()
+    if row:
+        link = {"mission_id": row["mission_id"], "subtask_id": row["id"]}
+    grouped = agent_log.steps_for(f"task:{task_id}")     # {agent: [steps]}, oldest first
+    steps = []
+    for ag, rows in grouped.items():
+        for s in rows:
+            steps.append({**s, "agent": ag})
+    steps.sort(key=lambda s: s.get("ts") or 0)
+    tool_calls = [{k: e.get(k) for k in ("tool", "args", "result_summary", "ok", "at", "error", "step_id")}
+                  for e in activity.entries_for_origin(f"task:{task_id}")]
+    last = task_queue._progress_at(t) or 0
+    wedge = {"stalled": bool(t.get("stalled")), "stalled_reason": t.get("stalled_reason"),
+             "last_progress_at": last or None,
+             "quiet_sec": round(time.time() - last) if last else None}
+    return {"task": t, "mission": link, "steps": steps, "tool_calls": tool_calls, "wedge": wedge,
+            "events": event_log.query(task_id=task_id, limit=200)}
+
+
+def _tool_mission_read(mission_id: str) -> Dict[str, Any]:
+    from app.services import event_log, missions, usage_ledger
+    from app.services.task_queue import task_queue
+    m = missions.get_mission(mission_id)
+    if m is None:
+        raise HarnessError(404, f"No mission with id {mission_id!r}.")
+    now = time.time()
+    subs = []
+    for s in m.get("subtasks") or []:
+        row = dict(s)
+        lt = task_queue.get(s["task_id"]) if s.get("task_id") else None
+        if lt:
+            last = task_queue._progress_at(lt) or 0
+            row["linked_task"] = {"status": lt.get("status"), "waiting_kind": lt.get("waiting_kind"),
+                                  "waiting_detail": lt.get("waiting_detail"),
+                                  "stalled": bool(lt.get("stalled")),
+                                  "stalled_reason": lt.get("stalled_reason"),
+                                  "quiet_sec": round(now - last) if last else None,
+                                  "now": lt.get("now")}
+        else:
+            row["linked_task"] = None
+        subs.append(row)
+    return {"mission": m, "report": missions.get_report(mission_id), "subtasks": subs,
+            "usage": usage_ledger.mission_totals(mission_id),
+            "events": event_log.query(mission_id=mission_id, limit=400)}
+
+
+def _tool_crew_read(job_id: str) -> Dict[str, Any]:
+    from app.services import crew, event_log
+    try:
+        j = crew.job(job_id)
+    except crew.CrewError as e:
+        raise HarnessError(404, str(e))
+    out = {k: j.get(k) for k in ("id", "title", "agent", "kind", "status", "cwd",
+                                 "started_at", "ended_at", "error", "seat", "usage", "answer")}
+    out["steps"] = [{k: s.get(k) for k in ("kind", "tool", "summary")} for s in j.get("steps") or []]
+    out["approvals"] = [{k: a.get(k) for k in ("id", "summary", "state", "auto", "decided_at")}
+                        for a in j.get("approvals") or []]
+    out["questions"] = [{k: q.get(k) for k in ("id", "question", "choices", "state", "answer", "answered_at")}
+                        for q in j.get("questions") or []]
+    out["events"] = event_log.query(crew_job=job_id, limit=200)
+    return out
+
+
+def _tool_snapshot() -> Dict[str, Any]:
+    from app.services import crew as crew_mod
+    from app.services import event_log, missions, partner_client, usage_ledger, xod_network
+    from app.services.task_queue import task_queue
+    cfg = _tool_config()
+    server: Dict[str, Any] = {}
+    try:
+        server = json.loads((DATA_DIR / "server.json").read_text(encoding="utf-8"))
+    except Exception:
+        server = {}
+    net = xod_network.status()
+    waiting = [t for t in task_queue.list() if t.get("status") == "waiting"]
+    oldest = None
+    if waiting:
+        now = time.time()
+        w = min(waiting, key=lambda t: t.get("updated_at") or now)
+        oldest = {"task_id": w["id"],
+                  "age_sec": round(now - (w.get("updated_at") or now)),
+                  "waiting_kind": w.get("waiting_kind")}
+    mc = missions._conn()
+    mcounts = {r["state"]: r["n"] for r in
+               mc.execute("SELECT state, COUNT(*) AS n FROM missions GROUP BY state")}
+    mc.close()
+    view = _members_view()
+    family = [{k: m.get(k) for k in ("id", "name", "platform", "endpoint", "last_seen", "status")}
+              for m in view["members"]]
+    ps = partner_client.summary() or {}
+    usage = usage_ledger.summary("today")
+    return {"version": cfg["version"], "config": cfg,
+            "server": {"url": server.get("url"), "pid": server.get("pid")},
+            "network": {"signed_in": net.get("signed_in"), "ip": net.get("ip"),
+                        "beacon_running": xod_network.beacon_running()},
+            "queues": {"tasks": task_queue.counts(), "missions": mcounts,
+                       "crew_active": len(crew_mod.jobs(active_only=True))},
+            "oldest_waiting": oldest,
+            "partner": {"answered": bool(ps), "trusted": ps.get("trusted"),
+                        "version": ps.get("version"), "watchdog": ps.get("watchdog")},
+            "family": family, "family_registry_state": view.get("state"),
+            "usage_today": {k: usage.get(k) for k in ("calls", "prompt_tokens", "completion_tokens",
+                                                      "total_tokens", "est_usd")},
+            "event_log": event_log.stats()}
 
 
 def _locate_impl(request: str) -> Dict[str, Any]:
@@ -625,6 +815,36 @@ async def invoke(caller_ip: str, headers: Optional[Dict[str, Any]],
                     out["text"] = str(page.get("text") or "")[:1500] if isinstance(page, dict) else str(page)[:1500]
                 except Exception:
                     out["text"] = ""
+            return 200, _envelope(tool, "ok", result=out, verified=out)
+        if tool == "timeline":
+            out = await asyncio.to_thread(_tool_timeline, args)
+            return 200, _envelope(tool, "ok", result=out, verified={"count": out.get("count")})
+        if tool == "task_read":
+            tid = str(args.get("task_id") or "").strip()
+            if not tid:
+                raise HarnessError(400, "No task_id given.")
+            out = await asyncio.to_thread(_tool_task_read, tid)
+            return 200, _envelope(tool, "ok", result=out,
+                                  claimed={"status": out["task"].get("status")},
+                                  verified={"wedge": out["wedge"]})
+        if tool == "mission_read":
+            mid = str(args.get("mission_id") or "").strip()
+            if not mid:
+                raise HarnessError(400, "No mission_id given.")
+            out = await asyncio.to_thread(_tool_mission_read, mid)
+            rep = out.get("report") or {}
+            return 200, _envelope(tool, "ok", result=out,
+                                  claimed={"state": out["mission"].get("state")},
+                                  verified={"totals": rep.get("totals")})
+        if tool == "crew_read":
+            jid = str(args.get("job") or "").strip()
+            if not jid:
+                raise HarnessError(400, "No job given.")
+            out = await asyncio.to_thread(_tool_crew_read, jid)
+            return 200, _envelope(tool, "ok", result=out,
+                                  verified={"status": out.get("status"), "seat": out.get("seat")})
+        if tool == "snapshot":
+            out = await asyncio.to_thread(_tool_snapshot)
             return 200, _envelope(tool, "ok", result=out, verified=out)
     except HarnessError:
         raise

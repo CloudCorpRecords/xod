@@ -13,6 +13,10 @@ The harness port (services/harness.py, the /v1/harness/* beacon routes), with a 
     a member with no endpoint queues for relay; an unknown target is refused
   - only the submitting caller can read a record back, and records survive a cache drop
     (they are read back from the store on disk)
+  - the observability tier (surface v2): a task's lifecycle, a model call, a tool call and
+    approval cards land on the timeline through the real choke points; deep reads return a
+    seeded wedged mission's plan, claimed vs verified and pause clock; unknown ids are 404s;
+    the snapshot carries presence booleans only; the timeline pages by cursor
   .venv/bin/python tests/smoke/run_harness_port_test.py
 """
 import asyncio
@@ -234,7 +238,9 @@ async def main():
     names = [t["name"] for t in man["tools"]]
     check("the manifest lists the curated surface, each tool versioned and kinded",
           names == ["config_read", "family_read", "usage_read", "locate", "task_submit", "task_status",
-                    "crew_start", "crew_status", "browser_open", "browser_state"]
+                    "crew_start", "crew_status", "browser_open", "browser_state",
+                    "timeline", "task_read", "mission_read", "crew_read", "snapshot"]
+          and man["version"] == 2
           and all(t["version"] == 1 and t["kind"] in ("read", "write") for t in man["tools"]), str(names))
     check("an unknown tool is a machine-readable 404",
           await aerr_status(lambda: harness.invoke(IP, HDRS, {"tool": "nope", "args": {}})) == 404)
@@ -319,6 +325,166 @@ async def main():
           code == 200 and out["result"]["running"] is True
           and out["result"]["url"] == "https://example.com/", str(out)[:200])
     harness._browser_service = real_browser
+
+    print("H10 the observability tier")
+    import time as _time
+    from app.services import activity as activity_mod, agent_log as agent_log_mod
+    from app.services import event_log, llm_routing, missions as missions_mod
+
+    check("timeline is refused without the token",
+          await aerr_status(lambda: harness.invoke(IP, {}, {"tool": "timeline", "args": {}})) == 401)
+
+    # A task through the queue's real choke points: created, waiting on a question, answered.
+    t = task_queue.create("observability probe task")
+    tid = t["id"]
+    task_queue._update(tid, note="Need a folder", status="waiting", waiting_kind="question",
+                       waiting_detail={"message": "which folder?"})
+    task_queue.answer(tid, "the blue one")
+
+    code, out = await harness.invoke(IP, HDRS, {"tool": "timeline", "args": {"task_id": tid}})
+    evs = (out.get("result") or {}).get("events") or []
+    kinds = [e["kind"] for e in evs]
+    check("the task lifecycle is on the timeline, in order",
+          code == 200 and kinds == ["task.created", "task.status", "task.status", "task.action"], str(kinds))
+    check("events carry the correlation shape and a stable order",
+          bool(evs) and all(set(("seq", "ts", "kind", "actor", "ids", "payload")) <= set(e) for e in evs)
+          and all(e["ids"].get("task_id") == tid for e in evs)
+          and [e["seq"] for e in evs] == sorted(e["seq"] for e in evs), str(evs)[:200])
+    waiting_ev = next((e for e in evs if e["kind"] == "task.status" and (e["payload"] or {}).get("to") == "waiting"), None)
+    check("the waiting event carries the question text",
+          waiting_ev is not None
+          and (waiting_ev["payload"].get("waiting_detail") or {}).get("message") == "which folder?",
+          str(waiting_ev))
+    action_ev = next((e for e in evs if e["kind"] == "task.action"), None)
+    check("the answer is an action by the user",
+          action_ev is not None and action_ev["payload"].get("action") == "answer"
+          and action_ev["actor"] == "user", str(action_ev))
+
+    # A model call, a tool call and an approval card, all under the task's origin.
+    tok = activity_mod.origin.set(f"task:{tid}")
+    try:
+        llm_routing.record("openai", "gpt-6.1-terra", {"prompt_tokens": 10, "completion_tokens": 5},
+                           task="", kind="", key_profile="")
+        agent_log_mod.step("read_file", {"path": "notes.md"}, {"success": True}, duration_ms=7)
+        agent_log_mod.approval_opened("h10-card", "tool", "Files", "Write notes.md?")
+        agent_log_mod.approval_decided("h10-card", "allowed")
+    finally:
+        activity_mod.origin.reset(tok)
+
+    code, out = await harness.invoke(IP, HDRS, {"tool": "timeline", "args": {"kinds": "model", "task_id": tid}})
+    mevs = (out.get("result") or {}).get("events") or []
+    check("a model call lands with provider, model, tokens and the ledger price",
+          len(mevs) == 1 and mevs[0]["payload"]["provider"] == "openai"
+          and mevs[0]["payload"]["model"] == "gpt-6.1-terra"
+          and mevs[0]["payload"]["total_tokens"] == 15
+          and abs((mevs[0]["payload"]["cost_usd"] or 0) - 0.000035) < 1e-9, str(mevs)[:300])
+    code, out = await harness.invoke(IP, HDRS, {"tool": "timeline", "args": {"kinds": "tool", "task_id": tid}})
+    tevs = (out.get("result") or {}).get("events") or []
+    check("a tool call lands with its duration and outcome",
+          len(tevs) == 1 and tevs[0]["payload"]["tool"] == "read_file"
+          and tevs[0]["payload"]["ok"] is True and tevs[0]["payload"]["duration_ms"] == 7,
+          str(tevs)[:200])
+    code, out = await harness.invoke(IP, HDRS, {"tool": "timeline", "args": {"kinds": "card"}})
+    cevs = (out.get("result") or {}).get("events") or []
+    ck = [e["kind"] for e in cevs]
+    answered = [e for e in cevs if e["kind"] == "card.answered" and (e["payload"] or {}).get("card_id") == "h10-card"]
+    check("approval cards open and are answered on the timeline",
+          "card.created" in ck and len(answered) == 1
+          and answered[0]["payload"]["decision"] == "allowed", str(ck))
+
+    code, out = await harness.invoke(IP, HDRS, {"tool": "task_read", "args": {"task_id": tid}})
+    tres = out.get("result") or {}
+    check("task_read returns the row, the steps, the wedge state and the events",
+          code == 200 and tres.get("task", {}).get("id") == tid
+          and any(s.get("tool") == "read_file" for s in tres.get("steps") or [])
+          and isinstance(tres.get("wedge"), dict) and "events" in tres, str(out)[:300])
+    check("task_read of an unknown id is a 404",
+          await aerr_status(lambda: harness.invoke(IP, HDRS, {"tool": "task_read", "args": {"task_id": "task_nope"}})) == 404)
+
+    # A seeded mission with a wedged step: subtask B waits on the probe task, paused 15 min ago.
+    now = _time.time()
+    mc = missions_mod._conn()
+    mc.execute("INSERT INTO missions (id, goal, state, continue_on_failure, plan_json, created_at, updated_at, started_at) "
+               "VALUES (?,?,?,?,?,?,?,?)",
+               ("m-h10", "seeded grading mission", "paused", 0,
+                json.dumps({"goal": "seeded grading mission", "subtasks": [
+                    {"title": "first step", "instruction": "do the first thing", "expected_effects": []},
+                    {"title": "second step", "instruction": "do the second thing", "expected_effects": []}]}),
+                now - 3600, now - 900, now - 3500))
+    mc.execute("INSERT INTO mission_subtasks (id, mission_id, idx, title, instruction, status, verified_status, "
+               "task_id, claimed, started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+               ("s-h10-a", "m-h10", 0, "first step", "do the first thing", "done", "verified",
+                None, "the first thing is done", now - 3500, now - 3000))
+    mc.execute("INSERT INTO mission_subtasks (id, mission_id, idx, title, instruction, status, verified_status, "
+               "task_id, claimed, paused_at, pause_resume_attempts, started_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+               ("s-h10-b", "m-h10", 1, "second step", "do the second thing", "waiting", None,
+                tid, None, now - 900, 1, now - 3400))
+    mc.commit()
+    mc.close()
+
+    code, out = await harness.invoke(IP, HDRS, {"tool": "mission_read", "args": {"mission_id": "m-h10"}})
+    mres = out.get("result") or {}
+    subs = mres.get("subtasks") or []
+    wedged = next((s for s in subs if s.get("id") == "s-h10-b"), {})
+    check("mission_read returns the plan, claimed vs verified, and the wedged subtask's clocks",
+          code == 200 and len((mres.get("mission", {}).get("plan") or {}).get("subtasks") or []) == 2
+          and subs and subs[0].get("verified_status") == "verified"
+          and subs[0].get("claimed") == "the first thing is done"
+          and wedged.get("linked_task", {}).get("status") == "queued"
+          and wedged.get("paused_at") is not None and wedged.get("pause_resume_attempts") == 1
+          and "usage" in mres and "events" in mres, str(out)[:400])
+    check("mission_read of an unknown id is a 404",
+          await aerr_status(lambda: harness.invoke(IP, HDRS, {"tool": "mission_read", "args": {"mission_id": "m-nope"}})) == 404)
+
+    crew_mod._jobs["job-h10"] = {
+        "id": "job-h10", "title": "board seat probe", "agent": "claude", "kind": "board",
+        "status": "working", "cwd": "/tmp", "started_at": now - 60, "ended_at": None, "error": None,
+        "seat": {"model_requested": "sonnet", "model_actual": "the-model-that-ran",
+                 "model_proof": "init event", "limitation": None},
+        "usage": {"cost_usd": 0.01}, "answer": None,
+        "steps": [{"kind": "tool", "tool": "Read", "summary": "read a file", "input": {"path": "x"}}],
+        "approvals": [{"id": "a1", "summary": "write a file", "state": "waiting", "auto": False,
+                       "decided_at": None, "input": {"cmd": "raw-shape"}},
+                      {"id": "a2", "summary": "run tests", "state": "allowed", "auto": True,
+                       "decided_at": now - 30}],
+        "questions": [{"id": "q1", "question": "which folder?", "choices": ["a", "b"], "state": "waiting",
+                       "answer": None, "answered_at": None, "suggestions": ["a"]}]}
+    code, out = await harness.invoke(IP, HDRS, {"tool": "crew_read", "args": {"job": "job-h10"}})
+    cres = out.get("result") or {}
+    check("crew_read returns every approval state, the question and the seat, raw shapes hidden",
+          code == 200 and cres.get("seat", {}).get("model_actual") == "the-model-that-ran"
+          and [a["state"] for a in cres.get("approvals") or []] == ["waiting", "allowed"]
+          and (cres.get("questions") or [{}])[0].get("question") == "which folder?"
+          and "raw-shape" not in json.dumps(cres) and "suggestions" not in json.dumps(cres),
+          str(out)[:300])
+    check("crew_read of an unknown job is a 404",
+          await aerr_status(lambda: harness.invoke(IP, HDRS, {"tool": "crew_read", "args": {"job": "job-nope"}})) == 404)
+    del crew_mod._jobs["job-h10"]
+
+    code, out = await harness.invoke(IP, HDRS, {"tool": "snapshot", "args": {}})
+    snap = out.get("result") or {}
+    check("snapshot answers with the app's own view, presence only",
+          code == 200 and bool(snap.get("version"))
+          and isinstance(snap.get("queues", {}).get("tasks"), dict)
+          and isinstance(snap.get("family"), list) and len(snap.get("family") or []) == 3
+          and isinstance(snap.get("config", {}).get("keys_present"), dict)
+          and "partner" in snap and "event_log" in snap
+          and TOKEN not in json.dumps(out), str(out)[:300])
+
+    for i in range(5):
+        event_log.emit("test.ping", actor="h10", payload={"i": i})
+    code, p1 = await harness.invoke(IP, HDRS, {"tool": "timeline", "args": {"kinds": "test", "limit": 2}})
+    r1 = p1.get("result") or {}
+    code, p2 = await harness.invoke(IP, HDRS, {"tool": "timeline",
+                                                "args": {"kinds": "test", "limit": 2, "cursor": r1.get("next_cursor")}})
+    r2 = p2.get("result") or {}
+    seqs = [e["seq"] for e in (r1.get("events") or [])] + [e["seq"] for e in (r2.get("events") or [])]
+    check("the timeline pages by cursor without overlap",
+          len(seqs) == 4 and len(set(seqs)) == 4 and seqs == sorted(seqs), str(seqs))
+    code, out = await harness.invoke(IP, HDRS, {"tool": "timeline", "args": {"kinds": "task"}})
+    tk = [e["kind"] for e in (out.get("result") or {}).get("events") or []]
+    check("kind prefixes filter exactly",
+          bool(tk) and all(k.startswith("task.") for k in tk), str(tk)[:200])
 
     set_setting(harness.TOKEN_SETTING, "")
     check("with no token configured, invoke closes too (503)",

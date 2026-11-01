@@ -299,6 +299,9 @@ def receive_task(caller_ip: str, body: Dict[str, Any]) -> Dict[str, Any]:
     _incoming[ref] = {"request": request, "sender": sender, "caller": who["host"] or caller_ip, "grant": grant,
                       "approval_id": held.get("approval_id"), "task_id": None, "kind": kind, "mission_id": None}
     logger.info(f"Xod network: task from {sender} is waiting for approval ({ref})")
+    from app.services import event_log
+    event_log.emit("network.task_received", actor=sender, ids={"ref": ref},
+                   payload={"kind": kind, "request": request[:300], "from": sender})
     return {"ref": ref, "status": "waiting_for_ok"}
 
 
@@ -313,12 +316,18 @@ def accept(ref: str, grant: str) -> Dict[str, Any]:
         m = missions.create_mission(inc["request"])
         inc.update(mission_id=m["id"], grant="")
         title = m.get("goal") or inc["request"][:80]
+        from app.services import event_log
+        event_log.emit("network.task_accepted", actor="user", ids={"ref": ref, "mission_id": m["id"]},
+                       payload={"kind": "mission", "from": inc["sender"]})
         return {"success": True, "mission_id": m["id"], "title": title,
                 "message": f"Added as a mission: {title}"}
     from app.services.task_queue import task_queue
     t = task_queue.create(inc["request"])
     task_queue._update(t["id"], note=f"Handed over by your Xod on {inc['sender']}, approved by you")
     inc.update(task_id=t["id"], grant="")
+    from app.services import event_log
+    event_log.emit("network.task_accepted", actor="user", ids={"ref": ref, "task_id": t["id"]},
+                   payload={"kind": "task", "from": inc["sender"]})
     return {"success": True, "task_id": t["id"], "title": t["title"], "message": f"Added to your tasks: {t['title']}"}
 
 
@@ -521,6 +530,9 @@ async def _stop_beacon() -> None:
     _beacon.update(server=None, task=None, ip="")
 
 
+_beacon_state: Optional[bool] = None     # last beacon running state the event log has seen
+
+
 async def sync_beacon() -> bool:
     """Beacon on when signed in and findable, on the current Tailscale address; off otherwise. Returns whether it runs."""
     st = await asyncio.to_thread(status)
@@ -529,7 +541,13 @@ async def sync_beacon() -> bool:
         await _stop_beacon()
     if want and not beacon_running():
         await _start_beacon(want)
-    return beacon_running()
+    running = beacon_running()
+    global _beacon_state
+    if _beacon_state is not None and running != _beacon_state:
+        from app.services import event_log
+        event_log.emit("network.beacon", actor="xod_network", payload={"running": running})
+    _beacon_state = running
+    return running
 
 
 async def run_forever(every: float = 60.0) -> None:

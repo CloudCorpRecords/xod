@@ -493,6 +493,16 @@ def _subtask_row(r: sqlite3.Row) -> Dict[str, Any]:
 
 
 def _save_mission(mission_id: str, **fields: Any) -> None:
+    # Observability (services/event_log.py): a plan landing or a state change is an
+    # event; the prior state is read first when this save carries either.
+    old_state: Optional[str] = None
+    watch = ("state" in fields) or ("plan" in fields)
+    if watch:
+        c0 = _conn()
+        r0 = c0.execute("SELECT state FROM missions WHERE id = ?", (mission_id,)).fetchone()
+        c0.close()
+        old_state = r0["state"] if r0 else None
+    plan = fields.get("plan")
     for k in ("plan", "report"):
         if k in fields:
             fields[k + "_json"] = json.dumps(fields.pop(k)) if fields[k] is not None else None
@@ -502,9 +512,30 @@ def _save_mission(mission_id: str, **fields: Any) -> None:
     c.execute(f"UPDATE missions SET {cols} WHERE id = ?", (*fields.values(), mission_id))
     c.commit()
     c.close()
+    if watch:
+        from app.services import event_log
+        if isinstance(plan, dict):
+            event_log.emit("mission.planned", actor="missions", ids={"mission_id": mission_id},
+                           payload={"subtasks": len(plan.get("subtasks") or [])})
+        if "state" in fields and fields["state"] != old_state:
+            payload: Dict[str, Any] = {"from": old_state, "to": fields["state"]}
+            if fields.get("failure_reason"):
+                payload["failure_reason"] = fields["failure_reason"]
+            event_log.emit("mission.status", actor="missions",
+                           ids={"mission_id": mission_id}, payload=payload)
 
 
 def _save_subtask(subtask_id: str, **fields: Any) -> None:
+    # Observability: status changes, a pause clock starting, and a spent resume are
+    # events; the prior row is read first when this save carries any of them.
+    old: Optional[Dict[str, Any]] = None
+    watch = ("status" in fields) or ("paused_at" in fields) or ("pause_resume_attempts" in fields)
+    if watch:
+        c0 = _conn()
+        r0 = c0.execute("SELECT mission_id, idx, status, task_id, paused_at, pause_resume_attempts "
+                        "FROM mission_subtasks WHERE id = ?", (subtask_id,)).fetchone()
+        c0.close()
+        old = dict(r0) if r0 else None
     for k in ("expected_effects", "evidence"):
         if k in fields and not isinstance(fields[k], str):
             fields[k] = json.dumps(fields[k])
@@ -513,6 +544,22 @@ def _save_subtask(subtask_id: str, **fields: Any) -> None:
     c.execute(f"UPDATE mission_subtasks SET {cols} WHERE id = ?", (*fields.values(), subtask_id))
     c.commit()
     c.close()
+    if old is not None:
+        from app.services import event_log
+        ids = {"mission_id": old["mission_id"], "subtask_id": subtask_id}
+        if old.get("task_id"):
+            ids["task_id"] = old["task_id"]
+        if "status" in fields and fields["status"] != old["status"]:
+            payload: Dict[str, Any] = {"from": old["status"], "to": fields["status"], "idx": old["idx"]}
+            if fields.get("verified_status"):
+                payload["verified_status"] = fields["verified_status"]
+            event_log.emit("subtask.status", actor="missions", ids=ids, payload=payload)
+        if fields.get("paused_at") is not None and old.get("paused_at") is None:
+            event_log.emit("subtask.wait", actor="missions", ids=ids,
+                           payload={"idx": old["idx"], "paused_at": fields["paused_at"]})
+        if (fields.get("pause_resume_attempts") or 0) > (old.get("pause_resume_attempts") or 0):
+            event_log.emit("subtask.resumed", actor="missions", ids=ids,
+                           payload={"idx": old["idx"], "attempts": fields["pause_resume_attempts"]})
 
 
 def get_mission(mission_id: str) -> Optional[Dict[str, Any]]:
@@ -1331,6 +1378,11 @@ class MissionRunner:
                       failure_reason=reason if state == "failed" else None)
         report = build_report(get_mission(mission_id))
         _save_mission(mission_id, report=report)
+        from app.services import event_log
+        event_log.emit("mission.verdict", actor="missions", ids={"mission_id": mission_id},
+                       payload={"state": state, "failure_reason": reason if state == "failed" else None,
+                                "totals": report.get("totals") or {},
+                                "duration_sec": report.get("duration_sec")})
 
 
 def build_report(mission: Dict[str, Any]) -> Dict[str, Any]:
@@ -1391,6 +1443,9 @@ def create_mission(goal: str, continue_on_failure: bool = False) -> Dict[str, An
               "VALUES (?,?,?,?,?,?)", (mid, goal, "planning", 1 if continue_on_failure else 0, now, now))
     c.commit()
     c.close()
+    from app.services import event_log
+    event_log.emit("mission.created", actor="missions", ids={"mission_id": mid},
+                   payload={"goal": goal[:300], "continue_on_failure": bool(continue_on_failure)})
     _spawn(mid)
     return get_mission(mid)
 

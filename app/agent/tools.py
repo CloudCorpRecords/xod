@@ -3241,6 +3241,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first.
     Sentinel (services/sentinel.py) looks at it first, against what the person asked; a hit waits for their OK
     (reviewed=True is that OK). What comes back from tools that read others' content is remembered for the next look."""
+    import time
+    _obs_t0 = time.time()          # the tool call's wall clock, for the observability step log
     from app.services import activity, sentinel
     arguments = _expand_path_args(_alias_args(name, arguments))
     bad = placeholder_argument(arguments)
@@ -3282,7 +3284,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         if hit:
             held = sentinel.hold(name, arguments or {}, hit)
             from app.services import agent_log
-            agent_log.step(name, arguments or {}, held)
+            agent_log.step(name, arguments or {}, held,
+                           duration_ms=round((time.time() - _obs_t0) * 1000))
             return held
     ctx = None
     try:
@@ -3296,7 +3299,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         logger.warning(f"activity log failed for {name}: {e}")
     sentinel.saw(name, result)
     from app.services import agent_log
-    agent_log.step(name, arguments or {}, result)      # the Agent page's step list (by job and by agent)
+    agent_log.step(name, arguments or {}, result,
+                   duration_ms=round((time.time() - _obs_t0) * 1000))      # the Agent page's step list (by job and by agent)
     return result
 
 

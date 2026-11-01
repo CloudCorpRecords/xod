@@ -417,6 +417,9 @@ class TaskQueue:
                   (json.dumps(hist[-40:]), entry["at"], task_id))
         c.commit()
         c.close()
+        from app.services import event_log
+        event_log.emit("task.step", actor="task_queue", ids={"task_id": task_id},
+                       payload={"text": line[:300]})
 
     def _touch_progress(self, task_id: str, at: Optional[float] = None) -> None:
         """Records genuine progress right now: a step advance, a progress
@@ -437,6 +440,19 @@ class TaskQueue:
 
     def _update(self, task_id: str, note: Optional[str] = None, **fields: Any) -> None:
         fields["updated_at"] = time.time()
+        # Observability (services/event_log.py): a status, waiting or stall change is an
+        # event, so the row's prior state is read before the write when this update
+        # carries one of those. Plain note and progress-clock updates stay unobserved
+        # here on purpose: _progress is their event.
+        watch = ("status" in fields) or ("waiting_kind" in fields) or ("stalled" in fields)
+        old: Optional[Dict[str, Any]] = None
+        if watch:
+            c0 = _conn()
+            r0 = c0.execute("SELECT status, waiting_kind, stalled FROM tasks WHERE id = ?",
+                            (task_id,)).fetchone()
+            c0.close()
+            old = dict(r0) if r0 else None
+        raw_waiting_detail = fields.get("waiting_detail")
         # Leaving "working" clears the stalled flag; only the watchdog sets it.
         # Note what is NOT done here: last_progress_at is never touched by a
         # plain row update, so notes and status pokes cannot fake progress.
@@ -456,6 +472,29 @@ class TaskQueue:
         c.execute(f"UPDATE tasks SET {cols} WHERE id = ?", (*fields.values(), task_id))
         c.commit()
         c.close()
+        if old is not None:
+            from app.services import event_log
+            if "status" in fields and fields["status"] != old["status"]:
+                payload: Dict[str, Any] = {"from": old["status"], "to": fields["status"]}
+                if note:
+                    payload["note"] = note[:300]
+                if fields["status"] == "waiting":
+                    payload["waiting_kind"] = fields.get("waiting_kind", old["waiting_kind"])
+                    wd = raw_waiting_detail
+                    if isinstance(wd, str):
+                        try:
+                            wd = json.loads(wd)
+                        except Exception:
+                            wd = None
+                    if isinstance(wd, dict):
+                        payload["waiting_detail"] = wd
+                if fields.get("result"):
+                    payload["has_result"] = True
+                event_log.emit("task.status", actor="task_queue",
+                               ids={"task_id": task_id}, payload=payload)
+            if fields.get("stalled") and not old.get("stalled"):
+                event_log.emit("task.stalled", actor="task_queue", ids={"task_id": task_id},
+                               payload={"reason": fields.get("stalled_reason") or note or ""})
 
     def list(self, limit: int = 60) -> List[Dict[str, Any]]:
         c = _conn()
@@ -488,7 +527,11 @@ class TaskQueue:
         c.commit()
         c.close()
         self._kick()
-        return self.get(task_id)
+        made = self.get(task_id)
+        from app.services import event_log
+        event_log.emit("task.created", actor="task_queue", ids={"task_id": task_id},
+                       payload={"title": title, "request": request[:300]})
+        return made
 
     def approve(self, task_id: str) -> Dict[str, Any]:
         t = self.get(task_id)
@@ -498,6 +541,9 @@ class TaskQueue:
                      waiting_kind=None, now="Approved; continuing")
         from app.services import agent_log
         agent_log.approval_decided(f"task-{task_id}-{t.get('steps') or 0}", "allowed")
+        from app.services import event_log
+        event_log.emit("task.action", actor="user", ids={"task_id": task_id},
+                       payload={"action": "approve"})
         self._kick()
         return {"success": True}
 
@@ -510,6 +556,9 @@ class TaskQueue:
             return {"success": False, "error": "Write an answer first."}
         self._update(task_id, note=f"You replied: {text}", status="queued",
                      next_action={"type": "continue", "text": text}, waiting_kind=None, now="Continuing with your answer")
+        from app.services import event_log
+        event_log.emit("task.action", actor="user", ids={"task_id": task_id},
+                       payload={"action": "answer", "text": text[:200]})
         self._kick()
         return {"success": True}
 
@@ -520,6 +569,9 @@ class TaskQueue:
         # A bot check the user cleared continues on the same page; everything else picks up where it stopped.
         self._update(task_id, note="Trying again", status="queued",
                      next_action={"type": "continue", "text": "continue"}, waiting_kind=None, now="Trying again")
+        from app.services import event_log
+        event_log.emit("task.action", actor="user", ids={"task_id": task_id},
+                       payload={"action": "retry"})
         self._kick()
         return {"success": True}
 

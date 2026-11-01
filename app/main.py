@@ -659,6 +659,14 @@ def _announce_server() -> None:
         (DATA_DIR / "server.json").write_text(_json.dumps({"url": f"http://127.0.0.1:{int(port)}", "pid": os.getpid()}))
     except (OSError, ValueError):
         pass
+    try:
+        from app.services import event_log
+        from app.version import VERSION
+        event_log.emit("backend.started", actor="xod",
+                       payload={"version": VERSION, "url": f"http://127.0.0.1:{int(port)}",
+                                "pid": os.getpid()})
+    except Exception:
+        pass
 
 
 @app.on_event("startup")
@@ -1939,9 +1947,20 @@ async def update_config(req: ConfigUpdateRequest):
     save answers with the vault's problem text instead of a bare 500."""
     from app.services import keychain
     try:
-        return await _update_config_apply(req)
+        out = await _update_config_apply(req)
     except keychain.Unreadable:
         raise _vault_refusal()
+    try:
+        # Observability (services/event_log.py): which configuration fields were
+        # set, by name only. Values never enter the log: a key field's name says
+        # a key was set, never what it is.
+        from app.services import event_log
+        changed = sorted(k for k, v in req.model_dump().items() if v is not None)
+        if changed:
+            event_log.emit("config.changed", actor="user", payload={"fields": changed})
+    except Exception:
+        pass
+    return out
 
 
 async def _update_config_apply(req: ConfigUpdateRequest):
