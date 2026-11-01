@@ -118,6 +118,40 @@ STOPWORDS = {
     "contains", "inside", "there", "was", "were", "this", "last", "not",
 }
 
+# Instruction frame: the requester's own phrasing about how to answer or
+# where to look, never part of the target's identity. "Reply with its full
+# path.", "somewhere on this computer", and "in its name" describe the
+# reply, the search space, and the matching mode; a file must never score
+# for containing those words. Frame phrases are stripped from the text
+# before name tokens are taken, and FRAME_TOKENS are skipped outright as
+# a backstop for phrasings the patterns do not cover, so no frame word
+# can land in name_tokens or content_words. Only name and content clues
+# are filtered this way: kind, year, season, and purpose detection still
+# read the full request text, exactly as before.
+FRAME_TOKENS = {
+    "reply", "full", "path", "its", "somewhere", "name", "computer",
+}
+
+FRAME_PHRASES = [
+    r"\b(?:reply|respond|answer)\s+with\s+(?:its|the)\s+(?:full\s+)?path\b",
+    r"\b(?:give|show|tell|provide|send|return)\s+(?:me\s+)?(?:its|the)\s+(?:full\s+)?path\b",
+    r"\b(?:its\s+|the\s+)?full\s+path\b",
+    r"\bsomewhere\s+on\s+this\s+computer\b",
+    r"\bon\s+this\s+computer\b",
+    r"\bin\s+(?:its|the)\s+name\b",
+]
+
+
+def strip_instruction_frame(text: str) -> str:
+    """Remove instruction-frame phrases from request text before clue
+    tokens are taken from it. Target words inside a frame phrase stay:
+    "with Sourdough in its name" keeps "Sourdough", because only the
+    trailing "in its name" is removed."""
+    cleaned = text or ""
+    for pattern in FRAME_PHRASES:
+        cleaned = re.sub(pattern, " ", cleaned)
+    return cleaned
+
 SEASONS = {"spring": (3, 5), "summer": (6, 8), "fall": (9, 11), "autumn": (9, 11), "winter": (12, 2)}
 MONTHS = {name: i + 1 for i, name in enumerate(
     ["january", "february", "march", "april", "may", "june", "july",
@@ -183,6 +217,14 @@ def parse_clues(request: str, extra: Optional[Dict[str, Any]] = None,
 
     for match in re.finditer(r"\b(?:not|except|but not)\s+(?:the\s+)?(\d{4})\b", low):
         clues.excluded_years.append(int(match.group(1)))
+    # A negated word names what to avoid, not what to find ("not the
+    # draft"), the same way a negated year lands in excluded_years above.
+    # It must never become a positive name clue: with the frame tokens
+    # gone, a lone negated word would otherwise collect the all-name-clues
+    # bonus in scoring and outrank the actual target.
+    excluded_words = set()
+    for match in re.finditer(r"\b(?:not|except|but not)\s+(?:the\s+|a\s+|an\s+)?([a-z][a-z0-9]*)\b", low):
+        excluded_words.add(match.group(1))
     years = [int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", low)]
     years = [y for y in years if y not in clues.excluded_years]
     if years:
@@ -212,13 +254,15 @@ def parse_clues(request: str, extra: Optional[Dict[str, Any]] = None,
     skip = set(STOPWORDS) | set(KIND_WORDS) | set(SEASONS) | set(MONTHS)
     skip |= {str(y) for y in ([clues.year] if clues.year else []) + clues.excluded_years}
     skip |= set(clues.purpose_terms)
-    for token in tokens_of(low):
+    skip |= FRAME_TOKENS
+    skip |= excluded_words
+    for token in tokens_of(strip_instruction_frame(low)):
         if token not in skip and token not in clues.name_tokens:
             clues.name_tokens.append(token)
 
     if extra.get("name") and not clues.name_tokens:
         for token in tokens_of(str(extra["name"])):
-            if token not in clues.name_tokens:
+            if token not in FRAME_TOKENS and token not in clues.name_tokens:
                 clues.name_tokens.append(token)
     if extra.get("kind") and not clues.kind:
         clues.kind = str(extra["kind"]).lower()
@@ -236,7 +280,7 @@ def parse_clues(request: str, extra: Optional[Dict[str, Any]] = None,
     if extra.get("content_words"):
         for word in extra["content_words"]:
             for token in tokens_of(str(word)):
-                if token not in clues.content_words:
+                if token not in FRAME_TOKENS and token not in clues.content_words:
                     clues.content_words.append(token)
     if extra.get("folder_by_contents"):
         clues.folder_by_contents = True
