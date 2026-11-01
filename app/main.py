@@ -2666,6 +2666,17 @@ async def xods_list():
     return {"success": True, "status": st, **(await xod_network.find() if st.get("signed_in") else {"xods": []})}
 
 
+@app.get("/api/family")
+async def family_list():
+    """Family Link F0: the read-only family registry view (services/family_registry.py).
+
+    Lists the signed-in machines and their capabilities from the registry in the
+    synced bus space. Read-only: joining, sync and task handoff are later phases.
+    F0 records are unsigned, so the payload flags them interim; display only."""
+    from app.services import family_registry
+    return {"success": True, **(await asyncio.to_thread(family_registry.load_registry))}
+
+
 @app.post("/api/xods/sign-in")
 async def xods_sign_in():
     """One click: opens Tailscale's sign-in page (Google, Microsoft, GitHub or Apple)."""
