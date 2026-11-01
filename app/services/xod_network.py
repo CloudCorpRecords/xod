@@ -463,6 +463,36 @@ async def _start_beacon(ip: str) -> None:
         except harness.HarnessError as e:
             raise HTTPException(e.status, e.message)
         return out
+
+    @app.get("/v1/harness/manifest")
+    async def harness_manifest(request: Request) -> Dict[str, Any]:
+        from app.services import harness
+        try:
+            _, out = await asyncio.to_thread(harness.manifest, request.client.host, dict(request.headers))
+        except harness.HarnessError as e:
+            raise HTTPException(e.status, e.message)
+        return out
+
+    @app.post("/v1/harness/invoke")
+    async def harness_invoke(request: Request):
+        from fastapi.responses import JSONResponse
+        from app.services import harness
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Send JSON.")
+        try:
+            code, out = await harness.invoke(request.client.host, dict(request.headers),
+                                             body if isinstance(body, dict) else {})
+        except harness.HarnessError as e:
+            codes = {400: "bad_request", 401: "unauthorized", 403: "forbidden",
+                     404: "not_found", 503: "not_configured"}
+            return JSONResponse(status_code=e.status,
+                                content={"tool": (body or {}).get("tool") if isinstance(body, dict) else None,
+                                         "surface_version": harness.SURFACE_VERSION, "state": "error",
+                                         "claimed": None, "verified": None, "evidence": [], "result": None,
+                                         "error": {"code": codes.get(e.status, "refused"), "message": e.message}})
+        return JSONResponse(status_code=code, content=out)
     try:
         with socket.socket() as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
