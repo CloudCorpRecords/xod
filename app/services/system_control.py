@@ -360,6 +360,19 @@ class SystemControlService:
                         signalled = True
                     except (ProcessLookupError, PermissionError, OSError):
                         pass
+                if WIN and not signalled:
+                    # No process groups to signal on Windows: taskkill /T is the
+                    # tree kill. Without it only the shell dies, and whatever the
+                    # job started (a dev server, say) keeps its port and runs on.
+                    try:
+                        killer = await asyncio.create_subprocess_exec(
+                            "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL)
+                        if await asyncio.wait_for(killer.wait(), timeout=5) == 0:
+                            signalled = True
+                    except Exception:
+                        pass
                 if not signalled:
                     try:
                         proc.terminate()
