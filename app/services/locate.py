@@ -13,8 +13,13 @@ Routes, in order:
   2. A bounded filename walk of the home tree (noise folders skipped).
   3. A content search over plausible text files for content-word clues.
 
-Scoring is additive and explainable. Name tokens and an explicit year are
-the strongest signals; kind and purpose expansions are next; season windows
+Scoring is additive and explainable, and target identity dominates: an
+exact name-token match on the target's own terms and a kind match outweigh
+any generic content-word overlap, instruction-frame words from the request
+itself earn nothing, and files inside package or module caches or build
+intermediates take a substantial scope penalty unless the clues name the
+cache. Name tokens and an explicit year are the strongest signals; kind and
+purpose expansions are next; season windows
 and other rough dates only nudge the ranking, they never hard-filter. When
 the top two candidates finish within ASK_MARGIN points of each other the
 result is "ask" (both are returned with a question) instead of a guess.
@@ -431,6 +436,72 @@ def _kind_of(path: str, is_dir: bool) -> str:
     return EXT_KIND.get(os.path.splitext(path)[1].lower(), "file")
 
 
+# Instruction-frame tokens: words that belong to the shape of the request
+# itself ("Reply with its full path", "somewhere on this computer", "in its
+# name", "the file that mentions ..."), not to the target. Until the clue
+# parser strips them upstream, scoring gives them no weight at all: a file
+# earns nothing for containing or being named with the request's own
+# phrasing. This is scoring-side robustness only; parse_clues is untouched.
+FRAME_TOKENS = {
+    "reply", "full", "path", "its", "name", "somewhere", "computer",
+    "mentions", "mentioned", "mention", "lives", "living",
+}
+
+# Cache and build-intermediate scopes: package and module caches and build
+# output trees. Files there are library internals, not user content, so
+# they take a substantial penalty and lose to user documents, project
+# folders, and ordinary directories at equal textual overlap. The penalty
+# is waived when the clue set itself names the scope (a name, purpose, or
+# content token matching the cache path segment that triggered it).
+# Each entry: (path parts that trigger it, penalty, label).
+_SCOPE_RULES = [
+    (("go", "pkg", "mod"), 90.0, "Go module cache"),
+    (("pkg", "mod"), 90.0, "module cache"),
+    (("node_modules",), 90.0, "node_modules package cache"),
+    (("mod", "cache"), 70.0, "module download cache"),
+    ((".gradle",), 70.0, "Gradle cache"),
+    (("intermediates",), 70.0, "build intermediates"),
+    (("deriveddata",), 70.0, "DerivedData build output"),
+    (("site-packages",), 70.0, "site-packages"),
+    ((".cache",), 70.0, "cache folder"),
+]
+
+
+def _distinctive_name_tokens(clues: Clues) -> List[str]:
+    """Name clues with instruction-frame tokens removed (scoring view)."""
+    return [t for t in clues.name_tokens if t not in FRAME_TOKENS]
+
+
+def _scope_penalty(path: str, clues: Clues) -> Tuple[float, str]:
+    """Penalty for cache or build-intermediate locations, else (0, '').
+
+    Waived when a clue token names the triggering segment, so a hunt that
+    is actually about the cache (its name is in the request) is unaffected.
+    """
+    parts = [p for p in path.lower().replace("\\", "/").split("/") if p]
+    clue_terms = (set(_distinctive_name_tokens(clues)) | set(clues.purpose_terms)
+                  | set(clues.content_words))
+    best: Tuple[float, str] = (0.0, "")
+    for trigger, penalty, label in _SCOPE_RULES:
+        n = len(trigger)
+        for i in range(len(parts) - n + 1):
+            if tuple(parts[i:i + n]) != trigger:
+                continue
+            segment_tokens = set()
+            for seg in trigger:
+                segment_tokens |= set(tokens_of(seg)) | {seg}
+            if clue_terms & segment_tokens:
+                return (0.0, "")
+            if penalty > best[0]:
+                best = (penalty, label)
+            break
+    return best
+
+
+def _is_cache_scoped(path: str, clues: Clues) -> bool:
+    return _scope_penalty(path, clues)[0] > 0
+
+
 def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[float, List[str]]:
     is_dir = os.path.isdir(path)
     kind = _kind_of(path, is_dir)
@@ -441,21 +512,52 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
     score = 0.0
     why: List[str] = []
 
-    name_hits = [t for t in clues.name_tokens if t in stem_tokens or t in stem]
-    for t in name_hits:
-        score += 30
+    # Target identity dominates: an exact name-token match on the target's
+    # own terms is worth far more than any amount of generic content-word
+    # overlap. A substring-only resemblance ("path" inside "paths") earns
+    # almost nothing, and frame tokens earn nothing at all.
+    name_tokens = _distinctive_name_tokens(clues)
+    exact_hits = [t for t in name_tokens if t in stem_tokens]
+    for t in exact_hits:
+        score += 60
         why.append(f"name matches '{t}'")
-    path_only = [t for t in clues.name_tokens if t not in name_hits and t in path_tokens]
+    sub_hits = [t for t in name_tokens if t not in exact_hits and len(t) >= 3 and t in stem]
+    for t in sub_hits:
+        score += 8
+        why.append(f"name partly matches '{t}'")
+    name_hits = exact_hits + sub_hits
+    path_only = [t for t in name_tokens if t not in name_hits and t in path_tokens]
     for t in path_only:
-        score += 12
+        score += 15
         why.append(f"folder path matches '{t}'")
-    if clues.name_tokens and len(name_hits) == len(clues.name_tokens):
-        score += 20
-        why.append("every name clue is in the name")
+    path_sub = [t for t in name_tokens if t not in name_hits and t not in path_only
+                and len(t) >= 3 and t in path.lower()]
+    for t in path_sub:
+        score += 3
+        why.append(f"folder path partly matches '{t}'")
+    # (There is deliberately no extra bonus for matching every name clue:
+    # with frame tokens still in the clue set that bonus almost never
+    # fires for the real target, and when it does fire it triple-counts a
+    # single mentioned word, which can be a negated one like "draft".)
+    # A name made only of clue terms (the name IS the thing described, like
+    # a folder named exactly "xod" or a file named "Invoice 1043") is the
+    # strongest identity signal there is.
+    identity_terms = set(name_tokens) | set(clues.purpose_terms)
+    if clues.year:
+        identity_terms.add(str(clues.year))
+    if stem_tokens and stem_tokens <= identity_terms:
+        score += 50
+        why.append("the name is exactly the thing described")
 
+    # A purpose term in the name earns the same per-term weight as a name
+    # token: both are descriptive terms for the target, and which bucket
+    # the parser filed a word in must not decide a close pair. (A signed
+    # contract and its draft share two terms and split the third; equal
+    # per-term weight keeps that pair inside the ask margin instead of
+    # letting the negated word in the request outrank the signed file.)
     purpose_hits = [t for t in clues.purpose_terms if t in stem or t in stem_tokens]
     for t in purpose_hits[:3]:
-        score += 25
+        score += 60
         why.append(f"name fits the purpose ('{t}')")
     purpose_path = [t for t in clues.purpose_terms if t not in purpose_hits and t in path_tokens]
     for t in purpose_path[:2]:
@@ -467,13 +569,16 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
             score += 25
             why.append(f"it is a {kind}")
         elif not is_dir:
-            score -= 30
+            # A stated kind mismatch is strong negative evidence: a hunt
+            # for a pdf or a spreadsheet must not be won by a text file
+            # that merely contains the right words.
+            score -= 60
             why.append(f"but it is a {kind}, not a {clues.kind}")
 
     if clues.year:
         year_s = str(clues.year)
         if year_s in stem or year_s in path.lower():
-            score += 40
+            score += 50
             why.append(f"year {clues.year} in the name or path")
         try:
             if datetime.fromtimestamp(os.path.getmtime(path)).year == clues.year:
@@ -485,7 +590,10 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
             pass
     for bad in clues.excluded_years:
         if str(bad) in stem or str(bad) in path.lower():
-            score -= 80
+            # An explicitly excluded year is near-disqualifying: the
+            # penalty must outweigh the full identity stack above, or a
+            # strongly named wrong-year file leaks back into the list.
+            score -= 200
             why.append(f"excluded year {bad}")
     if clues.date_window:
         try:
@@ -498,19 +606,32 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
         except OSError:
             pass
 
-    # Content hits help, but with diminishing returns: a file that merely
-    # talks about a thing must not outrank the file that is named for it.
-    # Words the person actually used (name/content clues) count fully;
+    # Content hits help, but with diminishing returns and a hard cap: a
+    # file that merely talks about a thing must not outrank the file that
+    # is named for it. Frame tokens in the contents earn nothing. Words
+    # the person actually used (name/content clues) count most;
     # purpose-expansion words found only in contents count a little.
-    strong_words = set(clues.name_tokens) | set(clues.content_words)
+    strong_words = (set(name_tokens) | set(clues.content_words)) - FRAME_TOKENS
     strong = sorted(w for w in content_hits if w in strong_words)
-    weak = sorted(w for w in content_hits if w not in strong_words)
+    weak = sorted(w for w in content_hits if w not in strong_words and w not in FRAME_TOKENS)
+    content_total = 0.0
     for i, word in enumerate(strong):
-        score += 20 if i == 0 else (10 if i == 1 else 5)
+        pts = 25 if i == 0 else (15 if i == 1 else (10 if i == 2 else 3))
+        if content_total + pts > 55:
+            pts = max(0.0, 55 - content_total)
+        if pts <= 0:
+            break
+        content_total += pts
+        score += pts
         why.append(f"contents mention '{word}'")
     for word in weak[:3]:
-        score += 5
+        score += 4
         why.append(f"contents mention '{word}'")
+
+    penalty, label = _scope_penalty(path, clues)
+    if penalty:
+        score -= penalty
+        why.append(f"it sits in a {label}, so it ranks below your own files")
     return score, why
 
 
@@ -657,10 +778,18 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
             score = best * 0.9 + bonus
             why = [f"holds {len(children)} matching file(s), best: {max(children)[1]}",
                    "promoted from the files inside it"]
-            name_hits = [t for t in clues.name_tokens if t in os.path.basename(parent).lower()]
-            for t in name_hits:
-                score += 30
-                why.append(f"folder name matches '{t}'")
+            parent_tokens = set(tokens_of(os.path.basename(parent).lower()))
+            for t in _distinctive_name_tokens(clues):
+                if t in parent_tokens:
+                    score += 60
+                    why.append(f"folder name matches '{t}'")
+                elif len(t) >= 3 and t in os.path.basename(parent).lower():
+                    score += 8
+                    why.append(f"folder name partly matches '{t}'")
+            penalty, label = _scope_penalty(parent, clues)
+            if penalty:
+                score -= penalty
+                why.append(f"it sits in a {label}, so it ranks below your own files")
             existing = next((c for c in scored if c["path"] == parent), None)
             cand = _candidate_dict(parent, score, why)
             if cand:
@@ -670,10 +799,13 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
                     scored.append(cand)
 
     scored = [c for c in scored if c["score"] >= FOUND_THRESHOLD]
-    # Fully deterministic order: score, then name, then the full path, so
-    # equal-score same-name candidates never keep pool insertion order
-    # (which depended on which route produced a path first).
-    scored.sort(key=lambda c: (-c["score"], c["name"].lower(), c["path"]))
+    # Fully deterministic order: score, then scope (user content before
+    # cache or build trees, so among same-named files the one inside a
+    # real project tree outranks ones inside module caches), then name,
+    # then the full path, so equal candidates never keep pool insertion
+    # order (which depended on which route produced a path first).
+    scored.sort(key=lambda c: (-c["score"], 1 if _is_cache_scoped(c["path"], clues) else 0,
+                               c["name"].lower(), c["path"]))
     top = scored[:MAX_CANDIDATES]
 
     missed = sorted(p for p in routes_by_path
