@@ -12,6 +12,7 @@ the companion's mouth follow the actual sound.
 """
 import asyncio
 import hashlib
+import io
 import json
 import logging
 import os
@@ -47,6 +48,30 @@ def _win_env(*values: str) -> dict:
 def _win_rate(wpm: int) -> str:
     """Words per minute (140-280, like macOS say) to System.Speech's -10..10."""
     return str(max(-10, min(10, round((int(wpm) - 175) / 12))))
+
+
+def speech_off() -> bool:
+    """The test-context hard off switch. XOD_SPEECH=off means this process never
+    spawns the speech engine at all: no voice list probe, no synthesis, and above
+    all nothing through the speakers, so a test, battery or graded run stays
+    silent by construction. Every smoke suite sets it (tests/smoke/), and the
+    dev instance's launchd environment sets it too. Interactive use never sets
+    it, and the feature stays fully available there."""
+    return (os.environ.get("XOD_SPEECH") or "").strip().lower() == "off"
+
+
+def _silent_wav_bytes(seconds: float = 0.3) -> bytes:
+    """A short valid WAV of silence, generated in process: the off switch's
+    answer to a synthesis request, so the caller's path is exercised (bytes
+    come back, in the usual format) with no speech engine involved."""
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(22050)
+        w.writeframes(b"\x00\x00" * int(22050 * seconds))
+    return buf.getvalue()
 CACHE = DATA_DIR / "cache" / "speech"
 MAX_CHARS = 1200
 RATE_MIN, RATE_MAX, RATE_DEFAULT = 140, 280, 190
@@ -85,6 +110,8 @@ def _parse_voices(out: str) -> List[Dict[str, str]]:
 
 
 async def list_voices(refresh: bool = False) -> List[Dict[str, str]]:
+    if speech_off():
+        return list(_voices_cache["list"])
     if not refresh and _voices_cache["list"] and time.time() - _voices_cache["at"] < 300:
         return _voices_cache["list"]
     try:
@@ -201,6 +228,8 @@ async def synthesize(text: str, voice: Optional[str] = None, rate: Optional[int]
     words = speakable(text)[:MAX_CHARS]
     if not re.search(r"[A-Za-z0-9]", words):
         return None
+    if speech_off():
+        return _silent_wav_bytes()
     settings = get_settings()
     voice = voice or settings["voice"] or await best_voice()
     if voice not in {v["name"] for v in await list_voices()}:
@@ -246,6 +275,8 @@ def _trim_cache(keep: int = 300) -> None:
 
 async def speak_out_loud(text: str, voice: Optional[str] = None) -> bool:
     """Plays text through the Mac's speakers (for the hands-free voice commands, which have no page to play in)."""
+    if speech_off():
+        return False          # a test context never reaches the speakers; see speech_off()
     words = speakable(text)[:MAX_CHARS]
     if not words:
         return False

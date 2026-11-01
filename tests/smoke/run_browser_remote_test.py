@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 os.environ.update({"XOD_DATA_DIR": tempfile.mkdtemp(prefix="xod-takeover-"), "XOD_NO_UPDATE_CHECK": "1",
                    "XOD_BROWSER_PORT": "9466"})
 sys.path.insert(0, str(ROOT))

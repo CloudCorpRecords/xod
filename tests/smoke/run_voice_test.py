@@ -26,6 +26,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "media"))
 from studio import Studio  # noqa: E402
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 
 SENTENCE = "What is the weather like in Kyoto this weekend"
 
@@ -48,7 +49,15 @@ def make_noise_wav(path: Path, seconds: int = 30):
 
 
 def make_wav(path: Path):
-    """The sentence as 16-bit mono WAV, with silence after it so the recorder notices the pause."""
+    """The sentence as 16-bit mono WAV, with silence after it so the recorder notices the pause.
+
+    The synthesis is cached under tests/fixtures/speech/: `say` writes to a file
+    here (it never reaches the speakers), and a cached run spawns no speech
+    process at all, which is what keeps test runs silent in the system log too."""
+    cache = Path(__file__).resolve().parent.parent / "fixtures" / "speech" / "kyoto-weekend.wav"
+    if cache.exists():
+        shutil.copyfile(cache, path)
+        return
     aiff = path.with_suffix(".aiff")
     subprocess.run(["say", "-o", str(aiff), SENTENCE], check=True)
     import imageio_ffmpeg
@@ -59,6 +68,11 @@ def make_wav(path: Path):
     with wave.open(str(path), "wb") as w:
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(48000)
         w.writeframes(np.concatenate([np.zeros(48000 // 2, np.int16), speech, silence]).tobytes())
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, cache)
+    except OSError:
+        pass
 
 
 async def run(base, wav, limit=120):

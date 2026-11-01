@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 sys.path.insert(0, str(ROOT))
 TMP = Path(tempfile.mkdtemp(prefix="xod-keys-usage-"))
 os.environ["HOME"] = str(TMP)

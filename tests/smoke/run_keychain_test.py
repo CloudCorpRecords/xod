@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 sys.path.insert(0, str(ROOT))
 TMP = Path(tempfile.mkdtemp(prefix="xod-keychain-"))
 os.environ.pop("XOD_SECRETS_SERVICE", None)  # the real vault's name, so the old-item migration runs (on the file keyring)

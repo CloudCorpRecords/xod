@@ -14,6 +14,8 @@ import re
 import sys
 from datetime import date
 from pathlib import Path
+import os
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 
 ROOT = Path(__file__).resolve().parents[2]
 
