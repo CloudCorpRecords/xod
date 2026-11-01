@@ -37,6 +37,10 @@ one saw. A candidate whose own evidence states it is not the kind the
 person asked for is likewise never presented as a match: it is recorded
 as checked-and-rejected and the hunt falls to "not_found" (the delivery
 layer in decisive_evidence.py enforces the same block on any payload).
+The kind block also reads the candidate's structured kind field, not
+only the evidence prose, and purpose credit in a name requires a
+whole-token match, so a purpose term cannot earn name credit as a
+substring of a longer token ("tax" inside "taxonomy").
 """
 import os
 import re
@@ -646,7 +650,8 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
     identity_terms = set(name_tokens) | set(clues.purpose_terms)
     if clues.year:
         identity_terms.add(str(clues.year))
-    if stem_tokens and stem_tokens <= identity_terms:
+    exact_bonus = bool(stem_tokens and stem_tokens <= identity_terms)
+    if exact_bonus:
         score += 50
         why.append("the name is exactly the thing described")
 
@@ -656,7 +661,22 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
     # contract and its draft share two terms and split the third; equal
     # per-term weight keeps that pair inside the ask margin instead of
     # letting the negated word in the request outrank the signed file.)
-    purpose_hits = [t for t in clues.purpose_terms if t in stem or t in stem_tokens]
+    # Purpose-in-name credit requires a whole-token match: every token
+    # of the term must appear as a whole token of the name. The old
+    # substring test paid the purpose term 'tax' its full 60 points
+    # inside the longer token 'taxonomy', which closed two re-run 4
+    # hunts (a W2 wage statement, a tax return summary) on an unrelated
+    # code file. Multi-token and hyphenated terms ('pay stub', 'w-2')
+    # still match names that carry their tokens.
+    stem_parts = set(re.findall(r"[a-z0-9]+", stem))
+
+    def _purpose_in_name(term: str) -> bool:
+        if term in stem_tokens:
+            return True
+        parts = [p for p in re.findall(r"[a-z0-9]+", term) if p]
+        return bool(parts) and all(p in stem_parts for p in parts)
+
+    purpose_hits = [t for t in clues.purpose_terms if _purpose_in_name(t)]
     for t in purpose_hits[:3]:
         score += 60
         why.append(f"name fits the purpose ('{t}')")
@@ -665,6 +685,7 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
         score += 10
         why.append(f"folder path fits the purpose ('{t}')")
 
+    kind_refuted = False
     if clues.kind:
         if kind == clues.kind or (clues.kind == "photo" and kind == "image"):
             score += 25
@@ -673,12 +694,15 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
             # A stated kind mismatch is strong negative evidence: a hunt
             # for a pdf or a spreadsheet must not be won by a text file
             # that merely contains the right words.
+            kind_refuted = True
             score -= 60
             why.append(f"but it is a {kind}, not a {clues.kind}")
 
+    year_in_name = False
     if clues.year:
         year_s = str(clues.year)
         if year_s in stem or year_s in path.lower():
+            year_in_name = True
             score += 50
             why.append(f"year {clues.year} in the name or path")
         try:
@@ -728,6 +752,37 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
     for word in weak[:3]:
         score += 4
         why.append(f"contents mention '{word}'")
+
+    # Found-threshold kind discipline. Credit that is not name identity
+    # (purpose terms in the name or path, content words) cannot carry a
+    # candidate over the found threshold in either of these shapes:
+    #   * The candidate's kind contradicts the requested kind. Such a
+    #     candidate needs name identity as well; purpose and content
+    #     credit alone is capped below FOUND_THRESHOLD here, on top of
+    #     the -60 deduction above, so no stack of content hits can
+    #     outvote the contradiction.
+    #   * The hunt names no kind at all, so no kind line or deduction
+    #     ever fired (the re-run 4 L4 and L9 prompts name none, which
+    #     is exactly how a code file closed both). There the ceiling
+    #     applies on the evidence that exists: a candidate with no
+    #     name-based evidence at all (no exact name token, no
+    #     exact-name shape, no whole-token purpose term in the name)
+    #     and no other real support (the person's own words inside the
+    #     file, a year in the name) is capped the same way: path-only
+    #     purpose nudges, purpose-expansion content words, and date
+    #     nudges cannot stack into a name. A whole-token purpose term
+    #     in the name IS real support ("find my W2" is won exactly
+    #     that way), so it is not capped.
+    has_identity = bool(exact_hits) or exact_bonus
+    if kind_refuted and not has_identity and score > FOUND_THRESHOLD - 1.0:
+        score = FOUND_THRESHOLD - 1.0
+        why.append("it is not the kind asked for, and no name match backs it up, "
+                   "so purpose or content credit alone cannot name it")
+    elif (not clues.kind and not has_identity and not purpose_hits and not strong
+            and not year_in_name and score > FOUND_THRESHOLD - 1.0):
+        score = FOUND_THRESHOLD - 1.0
+        why.append("no name evidence supports it, only path and content-expansion "
+                   "words, so that alone cannot name it")
 
     penalty, label = _scope_penalty(path, clues)
     if penalty:
@@ -784,6 +839,43 @@ def kind_mismatch(cand: Dict[str, Any], kind: str) -> bool:
         return False
     pat = re.compile(r"not an? " + re.escape(kind) + r"\b")
     return any(pat.search(str(w)) for w in (cand.get("why") or []))
+
+
+def kind_contradicts(cand: Dict[str, Any], kind: str) -> bool:
+    """Structured kind check: True when the candidate's own kind FIELD
+    contradicts the requested kind, whatever its why lines say. The
+    prose check above only fires when the scorer itself ran with a kind
+    clue and emitted the line; a candidate whose evidence never carried
+    that line (the re-run 4 L4 and L9 deliveries printed kind "code"
+    beside PDF hunts and still closed done) needs the field read
+    directly. Folders are exempt, mirroring score_candidate, which
+    never deducts for a folder."""
+    if not kind or cand.get("is_folder"):
+        return False
+    actual = str(cand.get("kind") or "")
+    if not actual or actual == kind:
+        return False
+    return not (kind == "photo" and actual == "image")
+
+
+def has_name_identity(cand: Dict[str, Any], clues: Clues) -> bool:
+    """Name identity, recomputed from fields: an exact name-token match
+    on one of the hunt's name tokens, or the exact-name shape (the
+    name's tokens are all clue terms, the shape score_candidate pays
+    the exact-name bonus for). Purpose and content credit are not
+    identity: a candidate carried only by those needs this check to
+    fail before the kind discipline can name it."""
+    stem = os.path.splitext(str(cand.get("name") or ""))[0].lower()
+    stem_tokens = set(tokens_of(stem))
+    if not stem_tokens:
+        return False
+    name_tokens = _distinctive_name_tokens(clues)
+    if any(t in stem_tokens for t in name_tokens):
+        return True
+    identity_terms = set(name_tokens) | set(clues.purpose_terms)
+    if clues.year:
+        identity_terms.add(str(clues.year))
+    return stem_tokens <= identity_terms
 
 
 _NAME_EXACT_PREFIXES = ("name matches '", "folder name matches '",
@@ -1026,13 +1118,18 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
     # The floor, the kind-mismatch block, and the partial-name block,
     # applied before the ask gate: a candidate is presentable only if it
     # clears ASK_FLOOR, its own evidence does not refute the requested
-    # kind, and its evidence is not one lone name token out of several
-    # with nothing else behind it. Everything else is recorded as
-    # checked-and-rejected, never presented.
+    # kind, its structured kind field does not contradict the requested
+    # kind without name identity behind it, and its evidence is not one
+    # lone name token out of several with nothing else behind it.
+    # Everything else is recorded as checked-and-rejected, never
+    # presented.
     eligible: List[Dict[str, Any]] = []
     rejected: List[Dict[str, Any]] = []
     for cand in top:
-        if (kind_mismatch(cand, clues.kind) or cand["score"] < ASK_FLOOR
+        if (kind_mismatch(cand, clues.kind)
+                or (kind_contradicts(cand, clues.kind)
+                    and not has_name_identity(cand, clues))
+                or cand["score"] < ASK_FLOOR
                 or partial_name_only(cand, clues)):
             rejected.append(cand)
         else:
