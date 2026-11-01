@@ -14,6 +14,8 @@ it. It runs while you're signed in and the setting xod_findable isn't "off":
   GET  /.well-known/xod     this computer's name and OS, nothing else
   POST /v1/tasks            {request, from}: a task from another of your Xods
   GET  /v1/tasks/{ref}      whether it was approved, and how the task is going
+  /v1/harness/*             the harness port (services/harness.py): the routes above plus a token
+                            only the operator holds; members, submit (self or relayed), status
   /v1/memory/*              shared memory between your Xods (services/memory_sync.py)
   GET/POST /v1/models       this Xod's model choices, and switching between them (services/remote_models.py)
 A handed task never runs by itself: it becomes an approval card on this computer (in the chat and on the phone), and
@@ -48,7 +50,7 @@ _URL_RE = re.compile(r"https://login\.tailscale\.com/\S+")
 
 _beacon = {"server": None, "task": None, "ip": ""}
 _login = {"proc": None}
-_incoming: Dict[str, Dict[str, Any]] = {}     # ref -> {request, sender, caller, grant, approval_id, task_id}
+_incoming: Dict[str, Dict[str, Any]] = {}     # ref -> {request, sender, caller, grant, approval_id, task_id, kind, mission_id}
 
 
 class NetworkError(Exception):
@@ -275,7 +277,8 @@ def _caller(ip: str) -> Dict[str, Any]:
 
 def receive_task(caller_ip: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """A task from another device: an approval card here when it's one of this account's own, else NetworkError.
-    {ref, status: "waiting_for_ok"}"""
+    {ref, status: "waiting_for_ok"}. The body's kind is "task" (the default) or "mission": the card
+    says which, and Approve creates that kind of work (see accept). Stock senders never send a kind."""
     who = _caller(caller_ip)
     if not who["same_account"]:
         raise NetworkError("Only your own devices can hand this Xod work.")
@@ -284,22 +287,34 @@ def receive_task(caller_ip: str, body: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError("No task given.")
     if len(request) > MAX_REQUEST:
         raise ValueError(f"The task is over {MAX_REQUEST} characters.")
+    kind = str(body.get("kind") or "task").strip().lower()
+    if kind not in ("task", "mission"):
+        raise ValueError(f"Unknown kind {kind!r}: task or mission.")
     sender = str(body.get("from") or who["host"] or caller_ip)[:60]
     from app.services import sentinel
     ref, grant = uuid.uuid4().hex[:12], uuid.uuid4().hex
+    what = "run a mission" if kind == "mission" else "do"
     held = sentinel.hold("xod_network_accept", {"ref": ref, "_grant": grant},
-                         {"rule": "xod_network_task", "why": f"Your Xod on {sender} wants this computer to do: {request[:300]}"})
+                         {"rule": "xod_network_task", "why": f"Your Xod on {sender} wants this computer to {what}: {request[:300]}"})
     _incoming[ref] = {"request": request, "sender": sender, "caller": who["host"] or caller_ip, "grant": grant,
-                      "approval_id": held.get("approval_id"), "task_id": None}
+                      "approval_id": held.get("approval_id"), "task_id": None, "kind": kind, "mission_id": None}
     logger.info(f"Xod network: task from {sender} is waiting for approval ({ref})")
     return {"ref": ref, "status": "waiting_for_ok"}
 
 
 def accept(ref: str, grant: str) -> Dict[str, Any]:
-    """The card's Approve: the task goes into the task inbox. Only with the card's own grant."""
+    """The card's Approve: the work goes into the task inbox, or (kind "mission") becomes a mission.
+    Only with the card's own grant."""
     inc = _incoming.get(ref)
-    if not inc or not grant or grant != inc["grant"] or inc["task_id"]:
+    if not inc or not grant or grant != inc["grant"] or inc["task_id"] or inc.get("mission_id"):
         return {"success": False, "error": "That handed-over task isn't waiting any more."}
+    if inc.get("kind") == "mission":
+        from app.services import missions
+        m = missions.create_mission(inc["request"])
+        inc.update(mission_id=m["id"], grant="")
+        title = m.get("goal") or inc["request"][:80]
+        return {"success": True, "mission_id": m["id"], "title": title,
+                "message": f"Added as a mission: {title}"}
     from app.services.task_queue import task_queue
     t = task_queue.create(inc["request"])
     task_queue._update(t["id"], note=f"Handed over by your Xod on {inc['sender']}, approved by you")
@@ -314,6 +329,18 @@ def read_task(caller_ip: str, ref: str) -> Dict[str, Any]:
     inc = _incoming.get(ref)
     if not inc or inc["caller"] not in (who["host"] or caller_ip, caller_ip):
         raise KeyError(ref)
+    if inc.get("mission_id"):
+        from app.services import missions
+        m = missions.get_mission(inc["mission_id"])
+        if not m:
+            return {"ref": ref, "status": "unknown", "mission_id": inc["mission_id"]}
+        out = {"ref": ref, "status": m.get("state") or "unknown", "mission_id": inc["mission_id"],
+               "title": m.get("goal") or ""}
+        if m.get("state") in ("done", "failed"):
+            report = missions.get_report(inc["mission_id"])
+            if report:
+                out["report"] = report
+        return out
     if not inc["task_id"]:
         from app.services.mcp_client import mcp_hub
         waiting = inc["approval_id"] in mcp_hub.pending
@@ -402,6 +429,40 @@ async def _start_beacon(ip: str) -> None:
             raise HTTPException(403, str(e))
         except KeyError:
             raise HTTPException(404, "No task like that was handed over from there.")
+
+    # The harness port (services/harness.py): the handoff above plus a token only the operator
+    # holds. Both locks are checked inside the service on every call.
+    @app.post("/v1/harness/tasks")
+    async def harness_submit(request: Request) -> Dict[str, Any]:
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Send JSON.")
+        from app.services import harness
+        try:
+            _, out = await asyncio.to_thread(harness.submit, request.client.host, dict(request.headers),
+                                             body if isinstance(body, dict) else {})
+        except harness.HarnessError as e:
+            raise HTTPException(e.status, e.message)
+        return out
+
+    @app.get("/v1/harness/tasks/{ref}")
+    async def harness_status(ref: str, request: Request) -> Dict[str, Any]:
+        from app.services import harness
+        try:
+            _, out = await asyncio.to_thread(harness.task_status, request.client.host, dict(request.headers), ref)
+        except harness.HarnessError as e:
+            raise HTTPException(e.status, e.message)
+        return out
+
+    @app.get("/v1/harness/members")
+    async def harness_members(request: Request) -> Dict[str, Any]:
+        from app.services import harness
+        try:
+            _, out = await asyncio.to_thread(harness.members, request.client.host, dict(request.headers))
+        except harness.HarnessError as e:
+            raise HTTPException(e.status, e.message)
+        return out
     try:
         with socket.socket() as s:
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
