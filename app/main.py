@@ -2601,6 +2601,26 @@ async def crew_set_models(req: CrewModels):
         return {"success": False, "error": str(e)}
 
 
+class CrewBoardModel(BaseModel):
+    model: Optional[str] = None
+
+
+@app.get("/api/crew/settings/board-model")
+async def crew_board_model():
+    """The board seat pin: which model the Claude participant in a board meeting is seated on."""
+    from app.services import crew
+    return {"model": crew.board_model()}
+
+
+@app.post("/api/crew/settings/board-model")
+async def crew_set_board_model(req: CrewBoardModel):
+    from app.services import crew
+    try:
+        return {"success": True, "model": crew.set_board_model(req.model or "")}
+    except crew.CrewError as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.get("/api/crew/loop")
 async def crew_loop():
     """Everything about the background loop in one place: is it handing work over, to which repos, what each repo's

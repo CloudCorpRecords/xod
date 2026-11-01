@@ -421,3 +421,214 @@ def _refresh_relay(rec: Dict[str, Any]) -> None:
         rec["title"] = t["title"]
     if t.get("result") is not None:
         rec["claimed_result"] = t["result"]
+
+
+# ------------------------------------------------------------------ tool surface
+# The harness generalized (agent-first design, section 1): beyond handing over tasks, an
+# attached Muse can call a curated set of this Xod's own capabilities as tools and get
+# structured results back: what was claimed, what was verified, and the evidence, kept
+# apart the same way task records keep them apart. Reads answer with what they read, so
+# the read itself is the verification. Writes keep the house approval semantics exactly:
+# task_submit goes through the beacon handoff and its card; a crew job cards its own
+# approvals as it works; browser navigation is the endorsed local-browser operation, and
+# anything consequential inside a page (a submit, a send, a purchase) is NOT offered on
+# this surface at all: it goes through task_submit, where the card decides, like every
+# other consequential action. Errors are machine-readable states, never dressed-up prose.
+
+import asyncio
+
+SURFACE_VERSION = 1
+
+TOOL_SURFACE = [
+    {"name": "config_read", "version": 1, "kind": "read",
+     "description": "This Xod's version and model configuration: provider, model, base URL, whether Auto picks the model, and which provider keys are present (presence only: never a key, never a masked key).",
+     "args": {}},
+    {"name": "family_read", "version": 1, "kind": "read",
+     "description": "The family registry's active members, their endpoints and advertised capabilities, and the registry's interim state.",
+     "args": {}},
+    {"name": "usage_read", "version": 1, "kind": "read",
+     "description": "The usage ledger summary: calls, tokens and estimated cost by model and by key profile. Written by the executor, not the agent.",
+     "args": {"range": "today | 7d | all (default today)"}},
+    {"name": "locate", "version": 1, "kind": "read",
+     "description": "Find files or folders from a plain description. Candidates are existence-verified and carry their evidence; an honest not_found lists what was tried.",
+     "args": {"request": "what to find, in plain words"}},
+    {"name": "task_submit", "version": 1, "kind": "write",
+     "description": "Hand this Xod (or a family member) a task or a mission. It becomes an approval card there; nothing runs until the person approves. Returns the harness record reference.",
+     "args": {"request": "the work, in plain words", "target": "self or a member id (default self)",
+              "kind": "task | mission (default task)"}},
+    {"name": "task_status", "version": 1, "kind": "read",
+     "description": "Read back a task_submit record: state, claimed result, verified status and evidence, kept apart.",
+     "args": {"ref": "the h-... reference from task_submit"}},
+    {"name": "crew_start", "version": 1, "kind": "write",
+     "description": "Start a Crew job (Claude Code or Muse) with a brief, in a folder. The job asks for its own approvals as it works. kind board seats the Claude participant as a board member: the board model pin applies and the job records the seat.",
+     "args": {"task": "the brief", "folder": "folder to work in (optional)",
+              "agent": "claude | muse (optional)", "kind": "board for a board seat (optional)"}},
+    {"name": "crew_status", "version": 1, "kind": "read",
+     "description": "Read back a Crew job: status, answer, usage, and for board jobs the seat record (model requested, model that actually ran, and how that is known).",
+     "args": {"job": "the crew job id from crew_start"}},
+    {"name": "browser_open", "version": 1, "kind": "write",
+     "description": "Open a page in this Xod's own local browser and read back where it landed (the verified URL and title). In-page actions that change anything are not offered here; use task_submit so the card decides.",
+     "args": {"url": "the page to open"}},
+    {"name": "browser_state", "version": 1, "kind": "read",
+     "description": "Where the local browser is now: running or not, the current URL and title, and a short read of the page text.",
+     "args": {}},
+]
+
+_TOOL_NAMES = {t["name"] for t in TOOL_SURFACE}
+
+
+def manifest(caller_ip: str, headers: Optional[Dict[str, Any]]) -> Tuple[int, Dict[str, Any]]:
+    """What this Xod offers an attached agent: the tool surface, versioned, plus the
+    endpoints beside it. Same two locks as every harness call."""
+    _authorize(caller_ip, headers)
+    return 200, {"surface": "xod-harness-tools", "version": SURFACE_VERSION,
+                 "tools": TOOL_SURFACE,
+                 "endpoints": {"manifest": "GET /v1/harness/manifest",
+                               "invoke": "POST /v1/harness/invoke",
+                               "submit": "POST /v1/harness/tasks",
+                               "status": "GET /v1/harness/tasks/{ref}",
+                               "members": "GET /v1/harness/members"},
+                 "how_to_read": HOW_TO_READ}
+
+
+# ------------------------------------------------------------- tool seams
+# Module-level so suites can stand in fakes, like the relay seam above.
+
+def _tool_config() -> Dict[str, Any]:
+    from app.config import settings
+    from app.services import auto_model
+    from app.version import VERSION
+    keys = {"openai": settings.openai_api_key, "anthropic": settings.anthropic_api_key,
+            "gemini": settings.gemini_api_key, "groq": settings.groq_api_key,
+            "openrouter": settings.openrouter_api_key, "fireworks": settings.fireworks_api_key,
+            "tavily": settings.tavily_api_key, "huggingface": settings.huggingface_token,
+            "trustmrr": settings.trustmrr_api_key, "you": settings.you_api_key,
+            "youtube": settings.youtube_api_key}
+    return {"version": VERSION, "llm_provider": settings.llm_provider,
+            "llm_base_url": settings.llm_base_url, "llm_model": settings.llm_model,
+            "llm_auto_model": bool(auto_model.auto_enabled()),
+            "keys_present": {k: bool(v) for k, v in keys.items()}}
+
+
+def _tool_usage(rng: str) -> Dict[str, Any]:
+    from app.services import usage_ledger
+    return usage_ledger.summary(rng)
+
+
+def _locate_impl(request: str) -> Dict[str, Any]:
+    from app.services import locate as locate_mod
+    return locate_mod.locate(request)
+
+
+def _browser_service():
+    from app.services.browser_sandbox import browser_sandbox_service
+    return browser_sandbox_service
+
+
+def _envelope(tool: str, state: str, result: Any = None, claimed: Any = None,
+              verified: Any = None, evidence: Optional[list] = None,
+              error: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {"tool": tool, "surface_version": SURFACE_VERSION, "state": state,
+            "claimed": claimed, "verified": verified, "evidence": evidence or [],
+            "result": result, "error": error}
+
+
+async def invoke(caller_ip: str, headers: Optional[Dict[str, Any]],
+                 body: Optional[Dict[str, Any]]) -> Tuple[int, Dict[str, Any]]:
+    """{tool, args} in; a structured envelope out. Both locks first, on every call.
+    Request-shape problems raise HarnessError (unknown tool 404, bad args 400, the locks
+    as usual); a tool that itself fails answers state "error" with a machine-readable
+    code, because the call was fine and the tool is what is broken."""
+    _authorize(caller_ip, headers)
+    body = body if isinstance(body, dict) else {}
+    tool = str(body.get("tool") or "").strip()
+    args = body.get("args") if isinstance(body.get("args"), dict) else {}
+    if tool not in _TOOL_NAMES:
+        raise HarnessError(404, f"Unknown tool {tool!r}. GET /v1/harness/manifest lists the surface.")
+    try:
+        if tool == "config_read":
+            out = await asyncio.to_thread(_tool_config)
+            return 200, _envelope(tool, "ok", result=out, verified=out)
+        if tool == "family_read":
+            _, view = members(caller_ip, headers)
+            return 200, _envelope(tool, "ok", result=view, verified=view)
+        if tool == "usage_read":
+            rng = str(args.get("range") or "today").strip()
+            from app.services import usage_ledger
+            if rng not in usage_ledger.RANGES:
+                raise HarnessError(400, f"range must be one of: {', '.join(sorted(usage_ledger.RANGES))}.")
+            out = await asyncio.to_thread(_tool_usage, rng)
+            return 200, _envelope(tool, "ok", result=out, verified=out)
+        if tool == "locate":
+            request = str(args.get("request") or "").strip()
+            if not request:
+                raise HarnessError(400, "No request given: say what to find.")
+            out = await asyncio.to_thread(_locate_impl, request)
+            slim = {k: out.get(k) for k in ("status", "candidates", "tried", "diagnostics")}
+            return 200, _envelope(tool, "ok", result=slim, verified=slim.get("candidates"))
+        if tool == "task_submit":
+            code, rec = await asyncio.to_thread(submit, caller_ip, headers, args)
+            return code, _envelope(tool, rec.get("state") or "submitted", result=rec,
+                                   verified={"verified_status": rec.get("verified_status")},
+                                   evidence=rec.get("evidence") or [])
+        if tool == "task_status":
+            ref = str(args.get("ref") or "").strip()
+            if not ref:
+                raise HarnessError(400, "No ref given.")
+            _, rec = await asyncio.to_thread(task_status, caller_ip, headers, ref)
+            return 200, _envelope(tool, rec.get("state") or "unknown", result=rec,
+                                  claimed=rec.get("claimed_result"),
+                                  verified={"verified_status": rec.get("verified_status")},
+                                  evidence=rec.get("evidence") or [])
+        if tool == "crew_start":
+            from app.services import crew
+            task = str(args.get("task") or "").strip()
+            if not task:
+                raise HarnessError(400, "No task given: the brief is the task.")
+            try:
+                view = await crew.start(task, folder=str(args.get("folder") or ""),
+                                        agent=str(args.get("agent") or ""),
+                                        kind=str(args.get("kind") or ""))
+            except crew.CrewError as e:
+                raise HarnessError(400, str(e))
+            return 200, _envelope(tool, "ok", result=view)
+        if tool == "crew_status":
+            from app.services import crew
+            jid = str(args.get("job") or "").strip()
+            if not jid:
+                raise HarnessError(400, "No job given.")
+            try:
+                view = crew._view(crew.job(jid))
+            except crew.CrewError as e:
+                raise HarnessError(404, str(e))
+            return 200, _envelope(tool, "ok", result=view,
+                                  verified={"status": view.get("status")})
+        if tool == "browser_open":
+            url = str(args.get("url") or "").strip()
+            if not url:
+                raise HarnessError(400, "No url given.")
+            svc = _browser_service()
+            res = await svc.navigate(url)
+            landed = {"url": svc.current_url, "title": svc.current_title}
+            if isinstance(res, dict) and res.get("success") is False:
+                return 200, _envelope(tool, "error", claimed=url, verified=landed,
+                                      error={"code": "navigation_failed",
+                                             "message": str(res.get("message") or res.get("error") or "the browser could not open it")[:300]})
+            return 200, _envelope(tool, "ok", claimed=url, verified=landed, result=landed)
+        if tool == "browser_state":
+            svc = _browser_service()
+            out = {"running": bool(getattr(svc, "proc", None)),
+                   "url": svc.current_url, "title": svc.current_title, "text": ""}
+            if out["running"]:
+                try:
+                    page = await svc.extract_content(max_length=1500)
+                    out["text"] = str(page.get("text") or "")[:1500] if isinstance(page, dict) else str(page)[:1500]
+                except Exception:
+                    out["text"] = ""
+            return 200, _envelope(tool, "ok", result=out, verified=out)
+    except HarnessError:
+        raise
+    except Exception as e:
+        return 200, _envelope(tool, "error",
+                              error={"code": "tool_failed", "message": str(e)[:300]})
+    raise HarnessError(404, f"Unknown tool {tool!r}.")

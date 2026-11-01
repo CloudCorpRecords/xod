@@ -216,6 +216,115 @@ async def main():
     harness._records = None     # forget the cache: the store on disk is the truth
     _, st = harness.task_status(IP, HDRS, rec["ref"])
     check("records are read back from the store", st["ref"] == rec["ref"] and st["state"] == "queued", str(st)[:200])
+    print("H9 the tool surface")
+    from app.services import crew as crew_mod
+
+    async def aerr_status(coro_fn):
+        try:
+            await coro_fn()
+        except harness.HarnessError as e:
+            return e.status
+        return None
+
+    check("the manifest is refused without the token",
+          err_status(lambda: harness.manifest(IP, {})) == 401)
+    check("invoke is refused without the token",
+          await aerr_status(lambda: harness.invoke(IP, {}, {"tool": "config_read", "args": {}})) == 401)
+    _, man = harness.manifest(IP, HDRS)
+    names = [t["name"] for t in man["tools"]]
+    check("the manifest lists the curated surface, each tool versioned and kinded",
+          names == ["config_read", "family_read", "usage_read", "locate", "task_submit", "task_status",
+                    "crew_start", "crew_status", "browser_open", "browser_state"]
+          and all(t["version"] == 1 and t["kind"] in ("read", "write") for t in man["tools"]), str(names))
+    check("an unknown tool is a machine-readable 404",
+          await aerr_status(lambda: harness.invoke(IP, HDRS, {"tool": "nope", "args": {}})) == 404)
+
+    code, out = await harness.invoke(IP, HDRS, {"tool": "config_read", "args": {}})
+    res = out.get("result") or {}
+    check("config_read answers with the configuration, presence only",
+          code == 200 and out["state"] == "ok" and "llm_provider" in res and "llm_model" in res
+          and "version" in res and "keys_present" in res
+          and "masked" not in json.dumps(out) and TOKEN not in json.dumps(out), str(out)[:300])
+    code, out = await harness.invoke(IP, HDRS, {"tool": "usage_read", "args": {}})
+    check("usage_read answers with the ledger summary",
+          code == 200 and out["state"] == "ok" and isinstance(out.get("result"), dict), str(out)[:200])
+    check("a bogus usage range is a 400, not a guess",
+          await aerr_status(lambda: harness.invoke(IP, HDRS, {"tool": "usage_read", "args": {"range": "bogus"}})) == 400)
+    code, out = await harness.invoke(IP, HDRS, {"tool": "family_read", "args": {}})
+    check("family_read answers with the registry's active members",
+          code == 200 and [m["id"] for m in out["result"]["members"]] == ["macbook-pro", "razer", "phone"],
+          str(out)[:200])
+
+    real_locate = harness._locate_impl
+    harness._locate_impl = lambda req: {"status": "not_found", "candidates": [], "tried": [{"route": "filename", "hits": 0}]}
+    code, out = await harness.invoke(IP, HDRS, {"tool": "locate", "args": {"request": "the zebrafish deck"}})
+    check("locate answers through the surface with the hunt's own shape",
+          code == 200 and out["state"] == "ok" and out["result"]["status"] == "not_found", str(out)[:200])
+    harness._locate_impl = real_locate
+
+    before_tasks, before_cards = len(task_queue.list()), len(mcp_hub.pending)
+    code, out = await harness.invoke(IP, HDRS, {"tool": "task_submit", "args": {"request": "surface task"}})
+    srec = out.get("result") or {}
+    check("task_submit through the surface still only makes a card",
+          out["state"] == "waiting_for_ok" and srec.get("ref", "").startswith("h-")
+          and len(task_queue.list()) == before_tasks and len(mcp_hub.pending) == before_cards + 1, str(out)[:300])
+    code, out = await harness.invoke(IP, HDRS, {"tool": "task_status", "args": {"ref": srec["ref"]}})
+    check("…and task_status reads it back, claimed apart from verified",
+          out["state"] == "waiting_for_ok" and out["claimed"] is None
+          and (out.get("verified") or {}).get("verified_status") == "not_checked", str(out)[:300])
+    card = next(p for p in mcp_hub.pending.values() if (p.get("args") or {}).get("ref") == srec.get("beacon_ref"))
+    await mcp_hub.approve(card["id"])
+    code, out = await harness.invoke(IP, HDRS, {"tool": "task_status", "args": {"ref": srec["ref"]}})
+    check("…following it to queued after Approve", out["state"] == "queued", str(out)[:200])
+
+    real_crew_start, real_crew_job = crew_mod.start, crew_mod.job
+
+    async def fake_crew_start(task, folder="", title="", approval_mode=None, agent="", isolate=None, kind=""):
+        return {"id": "fakejob1", "status": "working", "agent": agent or "claude", "kind": kind}
+
+    crew_mod.start = fake_crew_start
+    crew_mod.job = lambda jid: {"id": jid, "status": "done", "steps": [], "approvals": {}, "questions": {},
+                                "seat": {"model_requested": "sonnet", "model_actual": "the-model-that-ran"}}
+    code, out = await harness.invoke(IP, HDRS, {"tool": "crew_start", "args": {"task": "board brief", "kind": "board"}})
+    check("crew_start starts the job and hands back its view",
+          code == 200 and out["state"] == "ok" and out["result"]["id"] == "fakejob1"
+          and out["result"]["kind"] == "board", str(out)[:300])
+    code, out = await harness.invoke(IP, HDRS, {"tool": "crew_status", "args": {"job": "fakejob1"}})
+    check("crew_status reads the job back, seat record included",
+          code == 200 and out["result"]["seat"]["model_actual"] == "the-model-that-ran", str(out)[:200])
+    crew_mod.start, crew_mod.job = real_crew_start, real_crew_job
+
+    class FakeBrowser:
+        proc = object()
+        current_url = "about:blank"
+        current_title = "Empty Tab"
+
+        async def navigate(self, url):
+            self.current_url = url
+            self.current_title = "Example Domain"
+            return {"success": True}
+
+        async def extract_content(self, max_length=10000):
+            return {"text": "a page of text"}
+
+    fake_browser = FakeBrowser()
+    real_browser = harness._browser_service
+    harness._browser_service = lambda: fake_browser
+    code, out = await harness.invoke(IP, HDRS, {"tool": "browser_open", "args": {"url": "https://example.com/"}})
+    check("browser_open navigates and reads back where it landed",
+          code == 200 and out["state"] == "ok" and out["claimed"] == "https://example.com/"
+          and (out.get("verified") or {}).get("url") == "https://example.com/", str(out)[:300])
+    code, out = await harness.invoke(IP, HDRS, {"tool": "browser_state", "args": {}})
+    check("browser_state reports the browser's own state",
+          code == 200 and out["result"]["running"] is True
+          and out["result"]["url"] == "https://example.com/", str(out)[:200])
+    harness._browser_service = real_browser
+
+    set_setting(harness.TOKEN_SETTING, "")
+    check("with no token configured, invoke closes too (503)",
+          await aerr_status(lambda: harness.invoke(IP, HDRS, {"tool": "config_read", "args": {}})) == 503)
+    set_setting(harness.TOKEN_SETTING, TOKEN)
+
 
 
 asyncio.run(main())
