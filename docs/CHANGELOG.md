@@ -26,6 +26,9 @@
 - Suites re-run on the composed tree: clue hygiene 47 of 47, the locate suite at full marks, the ask floor 15 of 15, the scoring rig 12 of 12, kind discipline 27 of 27 (10 of 27 against the old code), the pool recall rig 12 of 12 (1 of 12 against the old code), missions 55 of 55, mission verdicts 24 of 24, planner integrity 27 of 27, the round 4 mission suite 27 of 27, the paused wedge 18 of 18 (8 of 18 before), the Family registry 24 of 24, looks 26 of 26, keys and usage 45 of 45, the network suite 25 of 25, and the harness port 31 of 31.
 - The two-instance mission suite is race-sensitive in its mixed old-and-new configuration by design. Across three samples on the composed tree it scored 20 of 20 once, and its other failures sit only inside that mixed configuration's two residual shapes named above, the same spread the fix round recorded on its own branch. With both instances on current code it is clean.
 
+**Known issue carried into 0.9.19, named plainly**
+- A mission write step can still be dispatched to a flow that reports it has no file tools available, and the step then fails honestly without creating its file. The fifth fix round's two-instance harness did not reproduce it and no speculative fix shipped for it; the graded run against the sealed 0.9.18 build then reproduced it twice in a single-writer run (a word-frequency mission's test-writing step and a proof-folder mission's write step), so the stale second instance does not explain it. This release ships with that routing defect known and unfixed. The named follow-up is a routing-layer fix: dispatch file-effect steps only to tool-equipped flows, and fail at assembly when they cannot be equipped.
+
 ## 0.9.18
 
 **File hunts now judge relevance, not just form**
