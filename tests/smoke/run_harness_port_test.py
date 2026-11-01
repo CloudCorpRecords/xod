@@ -470,6 +470,7 @@ async def main():
           and isinstance(snap.get("family"), list) and len(snap.get("family") or []) == 3
           and isinstance(snap.get("config", {}).get("keys_present"), dict)
           and "partner" in snap and "event_log" in snap
+          and (snap.get("usage_today") or {}).get("calls")
           and TOKEN not in json.dumps(out), str(out)[:300])
 
     for i in range(5):

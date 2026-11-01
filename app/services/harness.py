@@ -700,8 +700,7 @@ def _tool_snapshot() -> Dict[str, Any]:
             "partner": {"answered": bool(ps), "trusted": ps.get("trusted"),
                         "version": ps.get("version"), "watchdog": ps.get("watchdog")},
             "family": family, "family_registry_state": view.get("state"),
-            "usage_today": {k: usage.get(k) for k in ("calls", "prompt_tokens", "completion_tokens",
-                                                      "total_tokens", "est_usd")},
+            "usage_today": usage.get("totals") or {},
             "event_log": event_log.stats()}
 
 
