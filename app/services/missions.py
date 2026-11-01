@@ -163,6 +163,108 @@ def _run_effect_problem(eff: Dict[str, Any]) -> Optional[str]:
     return _tq._check_run_claim(claim)
 
 
+def _declares_directory(subtask: Dict[str, Any]) -> bool:
+    """The plan's own words call this create step a directory step (the
+    same test render_request uses when it words the step's task)."""
+    words = f"{subtask.get('title', '')} {subtask.get('instruction', '')}".lower()
+    return bool(re.search(r"\b(directory|folder)\b", words))
+
+
+def _fresh_effect_problems(subtask: Dict[str, Any]) -> List[str]:
+    """Ways this subtask's declared effects are NOT true on disk right
+    now, checked fresh at verdict time with the same rules the task
+    layer's gate uses (task_queue._verify_file_effects over declared
+    claims): a create or modify target must be on disk (as a directory
+    when the step is a directory step), dictated single-line content
+    must match byte for byte, a delete target must be absent, and a
+    declared run must exit with its required code. This is the only
+    source a verdict may compose contradiction reasons from: a reason
+    recorded when a task finished can be stale by verdict time (a
+    parallel step landed the file after that check ran), and a file
+    that exists at verdict time must never be named as missing."""
+    problems: List[str] = []
+    for eff in subtask.get("expected_effects") or []:
+        kind = eff.get("kind")
+        if kind == "run":
+            problem = _run_effect_problem(eff)
+            if problem:
+                problems.append(problem)
+            continue
+        if kind not in ("create", "modify", "delete"):
+            continue
+        p = Path(os.path.expanduser(str(eff.get("path", ""))))
+        if kind == "delete":
+            if p.exists():
+                problems.append(f"the task asked for {p.name} to be deleted, "
+                                "but it is still on disk")
+            continue
+        if kind == "create" and _declares_directory(subtask):
+            if not p.is_dir():
+                problems.append(f"the task asked for {p.name} to be created, "
+                                "but it is not on disk")
+            continue
+        if not p.is_file():
+            problems.append(f"the task asked for {p.name} to be created, "
+                            "but it is not on disk")
+            continue
+        content = eff.get("content")
+        if isinstance(content, str) and content == content.strip() and "\n" not in content:
+            try:
+                actual = p.read_bytes() if p.stat().st_size <= 1_000_000 else None
+            except OSError:
+                actual = None
+            if actual is not None and actual != content.encode("utf-8"):
+                problems.append(f"{p.name} does not contain exactly what the task asked for")
+    return problems
+
+
+def _recheck_failed_subtasks(mission_id: str) -> None:
+    """Verdict-time re-check of every subtask recorded failed and
+    contradicted (fix round 4, re-run 3 T1A): re-check its declared
+    effects fresh, the way _outcome_from_task now does when the task
+    finishes. A subtask whose effects are all true now (a parallel or
+    doubled step landed them after its own check ran) is upgraded to
+    done and verified, with the supersession stated in its evidence; a
+    subtask that still fails keeps its verdict, but any recorded
+    missing-file reason for a file that exists now is dropped, so the
+    mission's stated reasons match disk truth at verdict time. A
+    subtask whose own report admits incompletion, or whose deliverable
+    carries planner instruction text, is never upgraded: those are not
+    timing artifacts."""
+    for s in list_subtasks(mission_id):
+        if s["status"] != "failed" or s.get("verified_status") != "contradicted":
+            continue
+        if not (s.get("expected_effects") or []):
+            continue
+        if _incompletion_signal(s.get("claimed")):
+            continue
+        if _content_leak_for_subtask(s):
+            continue
+        fresh = _fresh_effect_problems(s)
+        if not fresh:
+            _save_subtask(s["id"], status="done", verified_status="verified",
+                          evidence=["A fresh check at verdict time found every declared "
+                                    "effect of this step true on disk. The problem recorded "
+                                    "when its task finished no longer held (the work landed "
+                                    "after that check ran), so it is not carried into the "
+                                    "verdict."])
+            continue
+        kept: List[str] = []
+        for e in s.get("evidence") or []:
+            stale = False
+            for eff in s.get("expected_effects") or []:
+                if eff.get("kind") in ("create", "modify"):
+                    p = Path(os.path.expanduser(str(eff.get("path", ""))))
+                    if (f"{p.name} to be created, but it is not on disk" in e
+                            and (p.is_file() or p.is_dir())):
+                        stale = True
+            if not stale:
+                kept.append(e)
+        if kept != (s.get("evidence") or []):
+            _save_subtask(s["id"], evidence=kept
+                          or [f"Checked on disk: {p}" for p in fresh])
+
+
 def _content_leak_for_subtask(subtask: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """Planner scaffolding inside a subtask's deliverable as a
     (path, line) pair, or None. Checks the content the plan declared and,
@@ -565,6 +667,86 @@ def _empty_declared_content_problem(subtask: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+# ------------------------------------------------------- write-tool assembly
+# Fix round 4 (2026-10-31, re-run 3 T1D): the write subtask reported it
+# had no tools to create files, and the file never landed, for the
+# fourth run in a row. The trace: MissionRunner creates a subtask's
+# task with queue.create(request, title) and nothing else; no tool set
+# is specified, checked, or guaranteed anywhere on the path from the
+# mission to the researcher or the worker lane, whose tool sets are
+# chosen per request by keyword affinity (app/agent/tools.py
+# select_tools_for_query caps its answer at 16 and, before this round,
+# its always-on foundational set carried computer_edit_file but not
+# computer_write_file, so a write phrased without the lucky keywords,
+# "Put the result in /abs/out/result.json", was offered no write tool
+# at all). A plain task and a mission write step take the same path,
+# so the guarantee has to be made where the mission assembles the
+# step: before a task is created, the tools that execution can offer
+# for the assembled request are checked for a tool that can perform
+# each declared file effect, and a step that cannot be equipped fails
+# here, at assembly, naming the problem, instead of being discovered
+# unequipped by the subtask itself.
+
+_FILE_WRITE_TOOLS = ("computer_write_file", "fs_write_workspace_file")
+_DIR_WRITE_TOOLS = ("computer_manage_file", "fs_create_folder", "computer_write_file")
+_DELETE_TOOLS = ("computer_manage_file",)
+
+
+def _available_tool_names(request: str) -> List[str]:
+    """The tool names the execution layers can offer for this request:
+    the same selector the researcher's follow-up and repair loops draw
+    their candidate tools from, at the same cap."""
+    try:
+        from app.agent.tools import select_tools_for_query
+        return [t["function"]["name"]
+                for t in select_tools_for_query(query=request or "", max_tools=16)]
+    except Exception:
+        pass
+    # The selector itself could not run (it reaches into the researcher
+    # for its routing regexes, so a replaced or broken researcher breaks
+    # it without saying anything about tools). Fall back to the tool
+    # catalog itself, pack-filtered: a tool that exists and is switched
+    # on can be equipped (the deliberator's tool list is drawn from the
+    # same catalog), and only a catalog with no usable file tool at all
+    # leaves a write step unequippable.
+    try:
+        from app.agent.tools import TOOL_DEFINITIONS
+        try:
+            from app.services import packs
+            return [t["function"]["name"] for t in TOOL_DEFINITIONS
+                    if packs.tool_allowed(t["function"]["name"])]
+        except Exception:
+            return [t["function"]["name"] for t in TOOL_DEFINITIONS]
+    except Exception:
+        return []
+
+
+def _write_tool_problem(subtask: Dict[str, Any], request: str) -> Optional[str]:
+    """A write step whose declared file effects no available file tool
+    can perform, or None. One problem per subtask is enough: assembly
+    stops at the first unequippable effect and names it."""
+    effects = [e for e in subtask.get("expected_effects") or []
+               if e.get("kind") in ("create", "modify", "delete")]
+    if not effects:
+        return None
+    names = set(_available_tool_names(request))
+    for eff in effects:
+        if eff.get("kind") == "delete":
+            needed, what = _DELETE_TOOLS, "delete"
+        elif eff.get("kind") == "create" and _declares_directory(subtask):
+            needed, what = _DIR_WRITE_TOOLS, "create the directory"
+        else:
+            needed, what = _FILE_WRITE_TOOLS, "write the file"
+        if not any(n in names for n in needed):
+            return (f"Assembly stopped this step before any task was created: subtask "
+                    f"\"{subtask.get('title', '')}\" must {what} {eff.get('path', '')}, "
+                    f"but none of the file tools that could do it "
+                    f"({', '.join(needed)}) is available for this step's assembled "
+                    f"request. A write step that cannot be equipped with file tools "
+                    f"fails here, at assembly, not inside the subtask.")
+    return None
+
+
 def assemble_request(mission_id: str, subtask: Dict[str, Any]) -> str:
     """The task text for one subtask, assembled at dispatch time. A
     write subtask (one with a create or modify effect) also carries the
@@ -653,6 +835,39 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
     if marker in result:
         claimed, _, tail = result.partition(marker)
         problems = [p.strip() for p in tail.strip().split(";") if p.strip()]
+        if subtask.get("expected_effects"):
+            # Fix round 4: the problems above were recorded when the task's
+            # own check ran. By verdict time they can be stale (re-run 3
+            # T1A: step 2 was contradicted for a sample.txt that a doubled
+            # plan's parallel step landed afterwards), so the verdict is
+            # composed from a fresh check of the declared effects, never
+            # from the recorded text. The step's own admissions and any
+            # planner instruction text on disk are not timing artifacts
+            # and still block verification, checked fresh here as well.
+            signal = _incompletion_signal(claimed.strip())
+            if signal:
+                return {"status": "failed", "claimed": claimed.strip(),
+                        "verified_status": "contradicted",
+                        "evidence": [f"The step's own report admits it did not finish: \"{signal}\" "
+                                     "A report of incompletion cannot be verified."]}
+            leak_hit = _content_leak_for_subtask(subtask)
+            if leak_hit:
+                leak_path, leak = leak_hit
+                return {"status": "failed", "claimed": claimed.strip(),
+                        "verified_status": "contradicted",
+                        "evidence": [f"Checked on disk: {leak_path} contains planner instruction "
+                                     f"text, not the requested artifact: \"{leak}\""]}
+            fresh = _fresh_effect_problems(subtask)
+            if fresh:
+                return {"status": "failed", "claimed": claimed.strip(),
+                        "verified_status": "contradicted",
+                        "evidence": [f"Checked on disk: {p}" for p in fresh]}
+            return {"status": "done", "claimed": claimed.strip(),
+                    "verified_status": "verified",
+                    "evidence": ["A fresh check at verdict time found every declared effect "
+                                 "true on disk. The problem the task recorded when it "
+                                 "finished no longer held (the work landed after that "
+                                 "check ran), so it is not carried into the verdict."]}
         return {"status": "failed", "claimed": claimed.strip(),
                 "verified_status": "contradicted",
                 "evidence": [f"Checked on disk: {p}" for p in problems]
@@ -707,6 +922,9 @@ class MissionRunner:
         """Fills in the plan and subtask rows. False means the mission failed."""
         if mission.get("plan"):
             return True
+        fresh = get_mission(mission["id"])
+        if fresh and fresh.get("plan"):
+            return True   # another driver planned it while this one was starting
         try:
             # Planning calls are this mission's own spend: stamp the activity
             # origin so the usage ledger records them under the mission's tag
@@ -728,8 +946,21 @@ class MissionRunner:
             return False
         now = time.time()
         c = _conn()
-        c.execute("UPDATE missions SET plan_json = ?, state = 'running', started_at = ?, updated_at = ? "
-                  "WHERE id = ?", (json.dumps(plan), now, now, mission["id"]))
+        # Fix round 4: the plan is claimed with one conditional update, so
+        # of two drivers planning at once (two driver loops can share this
+        # database: the installed app and a dev instance both scan for
+        # missions to drive, each with its own in-memory _driving set) only
+        # the first inserts subtask rows. Before this, both decomposed,
+        # both inserted, and the mission ran a doubled plan of interleaved
+        # paraphrased copies (re-run 3: six subtask rows, idx 0,0,1,1,2,2,
+        # for a three step plan stored once in plan_json).
+        cur = c.execute("UPDATE missions SET plan_json = ?, state = 'running', started_at = ?, updated_at = ? "
+                        "WHERE id = ? AND plan_json IS NULL",
+                        (json.dumps(plan), now, now, mission["id"]))
+        if cur.rowcount == 0:
+            c.commit()
+            c.close()
+            return True   # another driver won the claim; its plan and rows stand
         for i, s in enumerate(plan["subtasks"]):
             c.execute("INSERT INTO mission_subtasks (id, mission_id, idx, title, instruction, "
                       "expected_effects, status) VALUES (?,?,?,?,?,?,?)",
@@ -765,12 +996,24 @@ class MissionRunner:
     async def _run_subtask(self, mission_id: str, sub: Dict[str, Any]) -> bool:
         """Works one subtask to a recorded outcome. False means the mission
         paused because the subtask's task is waiting on the user."""
+        # Fix round 4: work from the stored row, not the caller's snapshot.
+        # Two drivers can hold snapshots of the same subtask at once; the
+        # stored row is the one that knows whether a task already exists
+        # (or the step already has an outcome), and dispatching from a
+        # stale snapshot is how a doubled plan dispatched steps twice.
+        stored = next((s for s in list_subtasks(mission_id) if s["id"] == sub["id"]), None)
+        if stored is not None:
+            if stored["status"] in ("done", "failed", "skipped"):
+                return True   # another driver already recorded this step's outcome
+            sub = stored
         if not sub.get("task_id"):
-            problem = _empty_declared_content_problem(sub)
+            request = assemble_request(mission_id, sub)
+            problem = (_empty_declared_content_problem(sub)
+                       or _write_tool_problem(sub, request))
             if problem:
                 # Assembly-time failure: the subtask is recorded failed
                 # with the problem as its evidence and no task is ever
-                # created, so the empty write cannot reach a tool. The
+                # created, so the bad write cannot reach a tool. The
                 # outcome flows through the same recording and
                 # stop-on-failure path as a task outcome below.
                 outcome = {"status": "failed", "claimed": "",
@@ -790,7 +1033,7 @@ class MissionRunner:
                                  reason=f"Step {sub['idx'] + 1} ({sub['title']}) failed: "
                                         + outcome["evidence"][0])
                 return True
-            task = self.queue.create(assemble_request(mission_id, sub),
+            task = self.queue.create(request,
                                      title=f"{sub['title']} (mission step {sub['idx'] + 1})")
             _save_subtask(sub["id"], task_id=task["id"], status="queued",
                           started_at=time.time())
@@ -828,6 +1071,8 @@ class MissionRunner:
         mission = get_mission(mission_id)
         if mission["state"] in ("done", "failed") and mission.get("finished_at"):
             return   # already finished (a stop-on-failure finish, then the loop's own)
+        _recheck_failed_subtasks(mission_id)
+        mission = get_mission(mission_id)
         subs = mission["subtasks"]
         failed = [s for s in subs if s["status"] == "failed"]
         if reason is None and failed:
