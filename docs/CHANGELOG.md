@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.9.21
+
+**Xod can now show its work: an observability tier on the harness surface**
+- The harness tool surface (surface v2) gains five read tools for an attached agent: timeline, task_read, mission_read, crew_read and snapshot. Behind them is an append-only event log the app writes as it works: task and mission lifecycle (created, planned, each step, waiting with the question text, wedged, resumed, the final verdict), tool calls with their durations and outcomes, model calls with token counts and the same price the usage ledger records, approval cards created and answered, Crew jobs started and finished, network handoffs and beacon transitions, Partner reachability as the app itself sees it, configuration changes by field name only (a key field's name says a key was set; its value never enters the log), backend starts, and harness submissions. Every event carries a timestamp, a kind, the actor (which member, agent or step), and the ids that correlate it, so a mission running parallel subtasks, a Crew job and a family relay read as one picture instead of fragments.
+- The deep reads end the guesswork: one call returns a task's full record (the queue row, its steps and tool calls, its waiting and wedge state), a mission's full record (the plan, every subtask with its declared effects, evidence, claimed status kept apart from verified status, its linked task's live waiting and pause clocks, the final report and the mission's usage), or a Crew job's full record (every step, every approval and question in every state, and the board seat record). The snapshot returns the app's own view of itself: version, configuration with key presence only, queue depths by state, the oldest waiting item's age, Partner and family state. Nothing on this tier writes, approves or navigates; it only reads what the app itself recorded.
+
+**Test runs are silent now**
+- The Mac could be heard speaking during test runs: suites that drive the worker and the voice paths with scripted replies reached the speech service's speaker path and read the replies aloud. The speech service gains a hard off switch for test contexts (XOD_SPEECH=off): with it set, the process never starts the speech engine at all, synthesis answers with generated silent audio so the path is still exercised, and nothing can reach the speakers. Every smoke suite sets the switch, the development instance's environment sets it for graded runs, and the voice suites cache their synthesized fixtures so repeat runs start no speech process either. Interactive speech is unchanged: outside test contexts nothing sets the switch.
+
+**Known issues carried into 0.9.21, named plainly**
+- The tool-less write routing defect named in 0.9.20 is unchanged; Fix Round 6 owns it.
+- The Windows NSIS self-update wedge named in 0.9.20 is unchanged: update Windows manually rather than by self-update.
+
 ## 0.9.20
 
 **The harness becomes a tool surface: an attached Muse can work Xod's own capabilities directly**
