@@ -169,7 +169,10 @@ def list_entry() -> Dict[str, Any]:
 
 
 def read_screen(ax=None) -> Dict[str, Any]:
-    if sys.platform != "darwin":
+    if sys.platform != "darwin" and ax is None and "ax" not in _injected:
+        # An injected Accessibility backend is the platform-neutral seam (the
+        # phone MCP tests drive a fake mirroring window through it on any OS).
+        # Without one, mirroring is a Mac feature and says so plainly.
         return {"success": False, "error": "iPhone Mirroring works on a Mac only."}
     if not enabled():
         return {"success": False, "error": "iPhone Mirroring is off. Switch it on in Xod's phone panel first."}
@@ -186,7 +189,8 @@ def read_screen(ax=None) -> Dict[str, Any]:
 
 
 def tap(x: int, y: int, ax=None) -> Dict[str, Any]:
-    if sys.platform != "darwin":
+    if sys.platform != "darwin" and ax is None and "ax" not in _injected:
+        # Same injected-backend seam as read_screen above.
         return {"success": False, "error": "iPhone Mirroring works on a Mac only."}
     if not enabled():
         return {"success": False, "error": "iPhone Mirroring is off. Switch it on in Xod's phone panel first."}
