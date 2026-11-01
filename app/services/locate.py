@@ -22,9 +22,14 @@ cache. Name tokens and an explicit year are the strongest signals; kind and
 purpose expansions are next; season windows
 and other rough dates only nudge the ranking, they never hard-filter. When
 the top two candidates finish within ASK_MARGIN points of each other the
-result is "ask" (both are returned with a question) instead of a guess.
-When nothing clears the bar the result is "not_found" with a tried list:
-which routes ran, with which terms, and how much each one saw.
+result is "ask" (both are returned with a question) instead of a guess,
+but only when both clear ASK_FLOOR: an ask between two irrelevant files
+is worse than no answer, so below the floor the result is "not_found"
+with a tried list: which routes ran, with which terms, and how much each
+one saw. A candidate whose own evidence states it is not the kind the
+person asked for is likewise never presented as a match: it is recorded
+as checked-and-rejected and the hunt falls to "not_found" (the delivery
+layer in decisive_evidence.py enforces the same block on any payload).
 """
 import os
 import re
@@ -39,6 +44,17 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 MAX_CANDIDATES = 8
 ASK_MARGIN = 12.0          # top two within this many points: ask, do not guess
 FOUND_THRESHOLD = 30.0      # a candidate needs at least this to be named at all
+# The ask/found floor, calibrated on the score_candidate scale. One bare
+# name-token hit scores exactly 30 (FOUND_THRESHOLD), and one such token
+# plus a 5-point content-scatter word scores 35: those are the shapes
+# that drove the re-run 3 asks (a lone 'path' token in a filename, tied
+# with another unrelated file). 40 is the weakest score a genuine match
+# in the regression corpus reaches: a kind match plus its season window
+# (25 + 15), or four strong content words (20 + 10 + 5 + 5). Real
+# contenders clear it with room (two name tokens 80, a name token plus a
+# kind match 55, a name-plus-year match 95 or more). Below the floor the
+# honest answers are a single candidate at or above it, or not_found.
+ASK_FLOOR = 40.0
 MAX_WALK_ENTRIES = 30000    # hard bounds so a hunt can never wedge
 MAX_WALK_DEPTH = 9
 MAX_CONTENT_FILES = 6000
@@ -698,6 +714,18 @@ def _content_hits_for(path: str, words: Set[str]) -> Set[str]:
     return {w for w in words if w in body_tokens or ("-" in w and w in body)}
 
 
+def kind_mismatch(cand: Dict[str, Any], kind: str) -> bool:
+    """True when the candidate's own evidence lines state it is NOT the
+    kind the hunt asked for. score_candidate phrases that evidence as
+    "but it is a {actual}, not a {wanted}" (see the kind branch there);
+    a candidate that refutes itself this way can never be presented as
+    a match, however high it scored on other clues."""
+    if not kind:
+        return False
+    pat = re.compile(r"not an? " + re.escape(kind) + r"\b")
+    return any(pat.search(str(w)) for w in (cand.get("why") or []))
+
+
 def _candidate_dict(path: str, score: float, why: List[str]) -> Optional[Dict[str, Any]]:
     try:
         st = os.stat(path)
@@ -879,8 +907,11 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
         "candidates": top,
         "diagnostics": diagnostics,
     }
-    if not top:
+    def _not_found(rejected: List[Dict[str, Any]]) -> Dict[str, Any]:
         result["status"] = "not_found"
+        result["candidates"] = []
+        if rejected:
+            result["rejected"] = rejected
         result["message"] = ("Nothing matched well enough to name. Tried: " +
                              "; ".join(f"{t['route']} ({t['hits']} hits)" for t in tried) + ".")
         for t in tried:
@@ -888,9 +919,33 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
                 result["message"] += (f" The content search was partial ({t.get('partial_reason', '')}), "
                                        "so more matches may exist than were seen.")
         return result
-    if len(top) >= 2 and (top[0]["score"] - top[1]["score"]) <= ASK_MARGIN:
+
+    if not top:
+        return _not_found([])
+
+    # The floor and the kind-mismatch block, applied before the ask
+    # gate: a candidate is presentable only if it clears ASK_FLOOR and
+    # its own evidence does not refute the requested kind. Everything
+    # else is recorded as checked-and-rejected, never presented.
+    eligible: List[Dict[str, Any]] = []
+    rejected: List[Dict[str, Any]] = []
+    for cand in top:
+        if kind_mismatch(cand, clues.kind) or cand["score"] < ASK_FLOOR:
+            rejected.append(cand)
+        else:
+            eligible.append(cand)
+    if not eligible:
+        return _not_found(rejected)
+    if rejected:
+        result["rejected"] = rejected
+    if len(eligible) == 1:
+        result["status"] = "found"
+        result["candidates"] = eligible
+        return result
+    result["candidates"] = eligible
+    if (eligible[0]["score"] - eligible[1]["score"]) <= ASK_MARGIN:
         result["status"] = "ask"
-        result["question"] = (f"Two close matches: {top[0]['name']} and {top[1]['name']}. "
+        result["question"] = (f"Two close matches: {eligible[0]['name']} and {eligible[1]['name']}. "
                               "Which one did you mean?")
         return result
     result["status"] = "found"
