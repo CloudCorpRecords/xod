@@ -117,6 +117,11 @@ REPORTS_DIR = DATA_DIR / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
 
+# Living Look packs (services/looks.py): pack assets are data in the data folder.
+LOOKS_DIR = DATA_DIR / "looks"
+LOOKS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/looks", StaticFiles(directory=str(LOOKS_DIR)), name="looks")
+
 from app.services.storage import (
     init_db,
     create_session,
@@ -1232,11 +1237,30 @@ async def companion_get():
 
 @app.post("/api/companion")
 async def companion_set(req: CompanionSettings):
+    from app.services import looks
     from app.services.storage import set_setting
-    if not re.fullmatch(r"[a-z]{2,16}", req.character or ""):
+    char = req.character or ""
+    if char not in looks.BUILTIN_LOOKS and not looks.is_pack(char):
         raise HTTPException(status_code=400, detail="Unknown look.")
-    set_setting("companion", req.character)
-    return {"success": True, "character": req.character}
+    set_setting("companion", char)
+    return {"success": True, "character": char}
+
+
+# ---- Living Look packs (services/looks.py): installed packs, verified as data
+
+@app.get("/api/looks")
+async def looks_list():
+    from app.services import looks
+    return {"packs": looks.list_packs(), "states": list(looks.PACK_STATES),
+            "mood_to_state": looks.MOOD_TO_STATE}
+
+
+@app.post("/api/looks/{pack_id}/verify")
+async def looks_verify(pack_id: str):
+    from app.services import looks
+    if not looks.is_pack(pack_id):
+        raise HTTPException(status_code=404, detail="No such pack.")
+    return looks.verify_pack(pack_id)
 
 
 # ---- Agent Mail (services/agent_mail.py): encrypted messages between Xods
