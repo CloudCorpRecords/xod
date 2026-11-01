@@ -13,6 +13,13 @@ Routes, in order:
   2. A bounded filename walk of the home tree (noise folders skipped).
   3. A content search over plausible text files for content-word clues.
 
+Route hits are prioritized inside pool construction, before any route
+cap or scan budget cuts: each route orders its hits by the identity part
+of scoring (exact name tokens, kind match, an explicit year, cache scope
+penalty) and only then truncates or spends its budget, so under heavy
+hit volume a cap keeps the strongest hits instead of whichever files
+the walk happened to reach first.
+
 Scoring is additive and explainable, and target identity dominates: an
 exact name-token match on the target's own terms and a kind match outweigh
 any generic content-word overlap, instruction-frame words from the request
@@ -42,6 +49,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 MAX_CANDIDATES = 8
+FILENAME_ROUTE_CAP = 2000   # prioritized filename hits kept per hunt
+SPOTLIGHT_ROUTE_CAP = 500   # prioritized Spotlight hits kept per root set
 ASK_MARGIN = 12.0          # top two within this many points: ask, do not guess
 FOUND_THRESHOLD = 30.0      # a candidate needs at least this to be named at all
 # The ask/found floor, calibrated on the score_candidate scale. One bare
@@ -333,7 +342,11 @@ class SpotlightBackend:
                         found.append(line)
             except Exception:
                 continue
-        return found[:500]
+        # The index returns hits in its own order, which is volume order,
+        # not relevance order: prioritize before the cap cuts, so the cap
+        # keeps the strongest hits instead of the first ones.
+        found.sort(key=lambda p: _pool_priority(p, clues))
+        return found[:SPOTLIGHT_ROUTE_CAP]
 
 
 def _walk(roots: Sequence[str], want_dirs: bool = False):
@@ -363,7 +376,15 @@ def _walk(roots: Sequence[str], want_dirs: bool = False):
 
 
 def filename_search(clues: Clues, roots: Sequence[str]) -> List[str]:
-    """Fallback 1: paths whose name or parent folders carry any clue term."""
+    """Fallback 1: paths whose name or parent folders carry any clue term.
+
+    Every matching path in the bounded walk is collected first, then the
+    hits are prioritized with _pool_priority and only then does the route
+    cap cut. The old shape returned the first FILENAME_ROUTE_CAP hits in
+    walk order, so on a home tree with thousands of files matching a
+    common term by folder name alone, the walk filled the cap on noise
+    before it ever reached the target's tree and the target never entered
+    the candidate pool at all."""
     terms = set(clues.name_tokens) | set(clues.purpose_terms) | set(clues.content_words)
     if clues.year:
         terms.add(str(clues.year))
@@ -375,9 +396,8 @@ def filename_search(clues: Clues, roots: Sequence[str]) -> List[str]:
         name = os.path.basename(low)
         if not terms or any(t in name or t in low for t in terms):
             found.append(path)
-        if len(found) >= 2000:
-            break
-    return found
+    found.sort(key=lambda p: _pool_priority(p, clues))
+    return found[:FILENAME_ROUTE_CAP]
 
 
 def content_search(clues: Clues, roots: Sequence[str],
@@ -441,6 +461,11 @@ def content_search(clues: Clues, roots: Sequence[str],
         partial_reason = "deadline"
         _record_stats()
         return hits
+    # Phase 1: collect the scannable text files in the bounded walk,
+    # applying the same entry, regularity, and size bounds as before.
+    # Nothing is opened in this phase, so the pathological-entry guards
+    # (no opens of non-regular files, no unbounded reads) are unchanged.
+    collect: List[str] = []
     for path, is_dir in _walk(roots):
         if is_dir:
             continue
@@ -451,10 +476,6 @@ def content_search(clues: Clues, roots: Sequence[str],
             break
         if os.path.splitext(path)[1].lower() not in TEXT_EXTS:
             continue
-        if scanned >= max_files:
-            partial = True
-            partial_reason = "file_cap"
-            break
         # Deadline is checked between files, before any stat or open.
         if time.monotonic() >= deadline_at:
             partial = True
@@ -472,6 +493,26 @@ def content_search(clues: Clues, roots: Sequence[str],
         if st.st_size > MAX_CONTENT_BYTES:
             skipped_oversized += 1
             continue
+        collect.append(path)
+    # Phase 2: scan in pool-priority order, not walk order. The old shape
+    # scanned in walk order until the file cap or the deadline cut, so a
+    # tree with thousands of scannable files ahead of the target's tree
+    # spent the whole budget on noise and the target was never even read.
+    # Priority here is the identity part of scoring only (name, kind,
+    # year, scope): contents are what the scan is about to learn.
+    collect.sort(key=lambda p: _pool_priority(p, clues))
+    for path in collect:
+        if scanned >= max_files:
+            if not partial:
+                partial = True
+                partial_reason = "file_cap"
+            break
+        # Deadline is checked between files, before any open.
+        if time.monotonic() >= deadline_at:
+            if not partial:
+                partial = True
+                partial_reason = "deadline"
+            break
         scanned += 1
         try:
             with open(path, "rb") as f:
@@ -693,6 +734,25 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
         score -= penalty
         why.append(f"it sits in a {label}, so it ranks below your own files")
     return score, why
+
+
+def _pool_priority(path: str, clues: Clues) -> Tuple[float, int, str]:
+    """Sort key for prioritizing route hits INSIDE pool construction,
+    before any route cap or scan budget cuts. The primary signal is the
+    identity part of the hunt's own scoring: score_candidate with no
+    content hits, so exact name tokens, kind match, an explicit year,
+    and the cache scope penalty all count, and generic content overlap
+    does not (contents are unknown at route time anyway). Ties break
+    toward shallower paths (top level user folders before deep archive
+    or cache nests), then by path, so the order is fully deterministic
+    and never depends on which route or walk position produced a hit
+    first. Higher identity wins: the key sorts ascending on the negated
+    score."""
+    try:
+        score = score_candidate(path, clues, set())[0]
+    except Exception:
+        score = 0.0
+    return (-score, path.count(os.sep), path)
 
 
 def _content_hits_for(path: str, words: Set[str]) -> Set[str]:
