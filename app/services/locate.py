@@ -726,6 +726,46 @@ def kind_mismatch(cand: Dict[str, Any], kind: str) -> bool:
     return any(pat.search(str(w)) for w in (cand.get("why") or []))
 
 
+_NAME_EXACT_PREFIXES = ("name matches '", "folder name matches '",
+                        "folder path matches '")
+_SUPPORT_PREFIXES = ("contents mention", "year ", "modified in",
+                     "it is a ")
+
+
+def partial_name_only(cand: Dict[str, Any], clues: "Clues") -> bool:
+    """True when a candidate's only positive evidence is an exact match
+    on ONE of several name tokens, with nothing else supporting it: no
+    exact-name bonus, no kind match, no year or season match, no content
+    or purpose evidence. Lane 2 pays 60 for a single exact name token,
+    so a file named board.dat clears the floor on a zebrafish deck hunt
+    even though it covers a quarter of the target's identity. The
+    exact-name bonus does not count as support here: it derives from
+    that same single token (a one-word stem is trivially made only of
+    clue terms), so it cannot rescue its own partial coverage. One-token
+    coverage of a multi-token description, alone, is not a candidate:
+    it is the re-run 3 noise shape in miniature. When the hunt has a
+    single name token, matching it is full coverage and this is False."""
+    tokens = clues.name_tokens or []
+    if len(tokens) < 2:
+        return False
+    why = [str(w) for w in (cand.get("why") or [])]
+    matched = set()
+    for w in why:
+        for prefix in _NAME_EXACT_PREFIXES:
+            if w.startswith(prefix) and w.endswith("'"):
+                matched.add(w[len(prefix):-1])
+    if len(matched) != 1 or not matched.issubset(set(tokens)):
+        return False
+    for w in why:
+        if w.startswith("but it is a "):
+            continue
+        if "fits the purpose" in w:
+            return False
+        if any(w.startswith(p) for p in _SUPPORT_PREFIXES):
+            return False
+    return True
+
+
 def _candidate_dict(path: str, score: float, why: List[str]) -> Optional[Dict[str, Any]]:
     try:
         st = os.stat(path)
@@ -923,14 +963,17 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
     if not top:
         return _not_found([])
 
-    # The floor and the kind-mismatch block, applied before the ask
-    # gate: a candidate is presentable only if it clears ASK_FLOOR and
-    # its own evidence does not refute the requested kind. Everything
-    # else is recorded as checked-and-rejected, never presented.
+    # The floor, the kind-mismatch block, and the partial-name block,
+    # applied before the ask gate: a candidate is presentable only if it
+    # clears ASK_FLOOR, its own evidence does not refute the requested
+    # kind, and its evidence is not one lone name token out of several
+    # with nothing else behind it. Everything else is recorded as
+    # checked-and-rejected, never presented.
     eligible: List[Dict[str, Any]] = []
     rejected: List[Dict[str, Any]] = []
     for cand in top:
-        if kind_mismatch(cand, clues.kind) or cand["score"] < ASK_FLOOR:
+        if (kind_mismatch(cand, clues.kind) or cand["score"] < ASK_FLOOR
+                or partial_name_only(cand, clues)):
             rejected.append(cand)
         else:
             eligible.append(cand)
