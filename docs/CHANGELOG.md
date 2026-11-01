@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.20
+
+**The harness becomes a tool surface: an attached Muse can work Xod's own capabilities directly**
+- The harness port from 0.9.19 handed Xod tasks. It now also answers a capability manifest and a tool invocation endpoint under the same two locks (the tailnet identity check plus the harness token, compared in constant time; with no token configured the surface answers 503, never open). The curated tools: read this Xod's configuration and status (key presence only, never a key or a masked key), read the family registry, read the usage ledger, locate files with the hunt's own evidence, submit and read back tasks and missions, start and read back Crew jobs, and drive the local browser (open a page, read where it landed, read the browser's current state). Every result is a structured envelope that keeps what was claimed apart from what was verified, with the evidence attached, and errors are machine-readable states rather than prose.
+- Approval semantics do not move. A task submission through the surface becomes the same approval card as any other handoff. A Crew job started through the surface asks for its own approvals as it works. Consequential steps inside a web page (a submit, a send, a purchase) are not offered on the surface at all: they go through a task, where the card decides. The browser an attached agent drives is this Xod's own browser on this machine; sessions and logins never leave the device.
+
+**Board meetings seat the Claude participant on a pinned model, and the seat proves it**
+- A board meeting's Claude participant is seated by configuration, not by habit: the board_claude_model setting names the model for Crew jobs of kind "board", the same way this Xod's own seat is pinned to its model. The job is started with that model, and the job record keeps both what was requested and the exact model string the run itself reported when it began, so a board session record can cite the model the seat actually ran instead of a client version number. When no pin is configured, or a run does not report its model, the record says that plainly rather than claiming a pin it cannot prove.
+
+**Known issues carried into 0.9.20, named plainly**
+- The mission routing defect from 0.9.19 is still open: a write step can still be dispatched to a flow that reports it has no file tools, and the step then fails honestly without creating its file. It is the first item of the next fix round (a capability contract at the dispatch layer), and it is not fixed here.
+- On Windows, the self-update into this release line can wedge: the 0.9.19 setup, staged by the updater and run silently, removed the old install's shortcuts and registry entry on one machine and then spun before copying a single file, across three reproductions. The suspicion, not yet proven, is the installer's early phase meeting a still-running process tree from the install folder. Until the discriminating test runs, update Windows copies manually (download the setup and run it with Xod fully closed) rather than by self-update. Mac self-update is unaffected.
+
+**Checked before it shipped**
+- The tool surface and the seat pin were built failing-first: the harness suite grew from 31 to 48 checks (manifest shape, both locks on the new endpoints, a read round trip, and a task submission through the surface that still only makes a card until Approve), and the Crew suite proves the pin end to end against a stand-in Claude Code: the run is asked for the pinned model, and the job record shows the requested model beside the model string the run reported for itself.
+
 ## 0.9.19
 
 **File hunts stop losing the real file in the crowd**
