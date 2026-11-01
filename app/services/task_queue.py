@@ -150,7 +150,13 @@ def _phone(task: Optional[Dict[str, Any]], event: str) -> None:
 _EFFECT_VERB = re.compile(r"\b(create|write|save|make|delete|remove|trash|erase)\b", re.I)
 _DELETE_VERB = re.compile(r"\b(delete|remove|trash|erase)\b", re.I)
 _NEGATION = re.compile(r"\b(do not|don't|never)\b", re.I)
-_PATH_RE = re.compile(r"(?:~|/)[^\s\"'<>|]+")
+# A backtick never belongs to a path: reports quote paths in backticks
+# ("Created `/abs/sample.txt`"), and a path extracted with its closing
+# backtick names a file that can never exist, which contradicted honest
+# work whose only fault was being quoted (re-run 3 T1A and T1D, where
+# the round 3 carry-forward pasted the earlier step's backticked report
+# into the next step's request and this parser believed it).
+_PATH_RE = re.compile(r"(?:~|/)[^\s\"'<>|`]+")
 _NAMED_INSIDE_RE = re.compile(r"file named ([^\s/]+?) inside the ([^\s/]+?) folder", re.I)
 _FOLDER_NAMED_RE = re.compile(r"folder named ([^\s/(]+)", re.I)
 _FILE_NAMED_RE = re.compile(r"file named ([^\s/]+)", re.I)
@@ -175,7 +181,7 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
     for m in _PATH_RE.finditer(text):
         if m.start() and text[m.start() - 1] in "/:":
             continue   # the tail of a longer path or a URL, not a path of its own
-        raw = m.group(0).rstrip(".,;:)")
+        raw = m.group(0).rstrip(".,;:)`")
         if raw not in ("", "~", "/"):
             paths.append(Path(os.path.expanduser(raw)))
     named = _NAMED_INSIDE_RE.search(text)
