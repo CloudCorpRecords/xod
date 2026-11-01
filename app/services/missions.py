@@ -265,6 +265,67 @@ def _recheck_failed_subtasks(mission_id: str) -> None:
                           or [f"Checked on disk: {p}" for p in fresh])
 
 
+def _repair_finished_verdict(mission_id: str) -> None:
+    """Fix round 5: reconcile a finished mission whose recorded verdict
+    a stale peer process wrote from superseded evidence. Two backend
+    processes share this database; a process running an older build in
+    memory composes verdicts the old way (re-run 4 T1A: its outcome
+    copied the task's recorded problems verbatim, backticked phantom
+    file included, and it finished the mission) while this build's
+    driver, polling the same subtask, composes the fresh outcome and
+    saves it to the subtask row moments later. The row then disagrees
+    with the mission's failure reason and report, and nothing ever
+    reconciles them, because a finished mission is never driven again.
+    This runs when a driver of this build reaches a finished mission
+    (its own finish call finding the mission already finished, or an
+    outcome save for a subtask of one): re-run the finish-time
+    re-check, and if the recorded verdict cites evidence no subtask
+    row carries any more, rebuild the report and the failure reason
+    from the current rows. A mission whose failed steps all verify
+    fresh is closed done. Nothing is rewritten when the recorded
+    verdict still matches the rows."""
+    mission = get_mission(mission_id)
+    if not mission or mission["state"] not in ("done", "failed"):
+        return
+    if not mission.get("finished_at"):
+        return
+    before = {s["id"]: (s["status"], s.get("verified_status"),
+                         tuple(s.get("evidence") or []))
+              for s in mission["subtasks"]}
+    _recheck_failed_subtasks(mission_id)
+    current = get_mission(mission_id)
+    after = {s["id"]: (s["status"], s.get("verified_status"),
+                        tuple(s.get("evidence") or []))
+             for s in current["subtasks"]}
+    rows_changed = before != after
+    reason = current.get("failure_reason") or ""
+    failed = [s for s in current["subtasks"] if s["status"] == "failed"]
+    new_reason, new_state = reason, current["state"]
+    if current["state"] == "failed" and not failed:
+        new_state, new_reason = "done", None
+    elif current["state"] == "failed" and reason.startswith("Step "):
+        cited = reason.split(" failed: ", 1)[-1] if " failed: " in reason else ""
+        step_no = None
+        matched = re.match(r"Step (\d+) ", reason)
+        if matched:
+            step_no = int(matched.group(1))
+        target = next((s for s in failed if s["idx"] + 1 == step_no), None)
+        if target is None and failed:
+            target = failed[0]
+        if target is not None and cited and cited not in (target.get("evidence") or []):
+            ev = target.get("evidence") or ["see the step report"]
+            new_reason = f"Step {target['idx'] + 1} ({target['title']}) failed: {ev[0]}"
+    if not rows_changed and new_reason == reason and new_state == current["state"]:
+        return
+    logger.warning(f"Mission {mission_id}: repairing a finished verdict that cited "
+                   "superseded evidence (a stale peer process finished it first); "
+                   "the verdict now follows the fresh row evidence.")
+    if new_state != current["state"] or new_reason != reason:
+        _save_mission(mission_id, state=new_state,
+                      failure_reason=new_reason if new_state == "failed" else None)
+    _save_mission(mission_id, report=build_report(get_mission(mission_id)))
+
+
 def _content_leak_for_subtask(subtask: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """Planner scaffolding inside a subtask's deliverable as a
     (path, line) pair, or None. Checks the content the plan declared and,
@@ -330,6 +391,29 @@ def _conn() -> sqlite3.Connection:
             started_at REAL,
             finished_at REAL
         )
+        """
+    )
+    # Fix round 5: one subtask row per (mission, step), enforced by the
+    # shared store itself. Two backend processes share this database
+    # (the installed app and a dev instance), and a process running an
+    # older build in memory does not implement the round 4 atomic plan
+    # claim: in re-run 4 the stale process planned right past the claim
+    # and inserted a second paraphrased plan, doubling two missions to
+    # six rows. Code-level claims can only bind processes that run the
+    # code; a trigger binds every writer of the store, including a
+    # stale one, whose duplicate insert now aborts inside its own
+    # planning call and leaves the winning plan's rows alone. The
+    # trigger fires only on new inserts, so doubled rows a stale peer
+    # already wrote into a legacy database do not block its creation.
+    c.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS mission_subtasks_one_row_per_step
+        BEFORE INSERT ON mission_subtasks
+        WHEN EXISTS (SELECT 1 FROM mission_subtasks
+                     WHERE mission_id = NEW.mission_id AND idx = NEW.idx)
+        BEGIN
+            SELECT RAISE(ABORT, 'a subtask row for this mission step already exists');
+        END
         """
     )
     return c
@@ -1054,6 +1138,11 @@ class MissionRunner:
         _save_subtask(sub["id"], status=outcome["status"], claimed=outcome["claimed"],
                       verified_status=outcome["verified_status"], evidence=outcome["evidence"],
                       finished_at=time.time())
+        # Fix round 5: if a stale peer process already finished this
+        # mission from its own older composition of this same outcome,
+        # the verdict of record is reconciled with the fresh outcome
+        # just saved (a no-op when the mission is still running).
+        _repair_finished_verdict(mission_id)
         if outcome["status"] == "failed":
             mission = get_mission(mission_id)
             if not mission["continue_on_failure"]:
@@ -1070,7 +1159,12 @@ class MissionRunner:
     def _finish(self, mission_id: str, reason: Optional[str] = None) -> None:
         mission = get_mission(mission_id)
         if mission["state"] in ("done", "failed") and mission.get("finished_at"):
-            return   # already finished (a stop-on-failure finish, then the loop's own)
+            # Already finished (a stop-on-failure finish, then the loop's
+            # own). Fix round 5: the finish may have been written by a
+            # stale peer process from evidence this build's fresh checks
+            # have since superseded; repair the recorded verdict if so.
+            _repair_finished_verdict(mission_id)
+            return
         _recheck_failed_subtasks(mission_id)
         mission = get_mission(mission_id)
         subs = mission["subtasks"]
