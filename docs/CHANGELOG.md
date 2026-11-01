@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.18
+
+**File hunts now judge relevance, not just form**
+- The third re-run of the Tier 1 baseline delivered the form perfectly (ranked candidates, evidence, a question when two were close, every hunt answered in about six seconds) and named the right file zero times in thirteen hunts. The scorer was crediting files for containing the request's own instruction words ("reply", "full", "path"), and a test-data file from a package cache outranked every real target. Three fixes land together. The instruction frame is stripped from the clues before scoring, so only the target description generates clues. Scoring now pays for target identity (the file's own name and kind, on the target's own terms) far above generic word overlap, and package caches and build intermediates rank below user content unless the request names them. And the ask gate gained a floor and a coverage rule: below a minimum relevance, or when a candidate's only evidence is one name word out of several with nothing behind it, the hunt answers not found with what it tried, and a candidate whose own evidence refutes the requested kind ("it is a document, not a pdf") can no longer be presented as the result.
+
+**Missions land their test files, and verdicts re-check the disk**
+- The word-frequency mission's test file failed four runs in a row, three different ways. The traced cause this time was two stacked defects: step reports quoted a file path in backticks, and the claim extractor kept the closing backtick as part of the path, so the mission contradicted a later step over a file (with a trailing backtick in its name) that could never exist, and stop-on-failure then skipped the test step entirely. The extractor now strips backticks. A second cause went with it: with two app instances sharing one task database, both could plan the same mission from a stale snapshot and insert duplicate steps; planning now claims the mission atomically and dispatches from the stored plan. Mission verdicts also re-check every declared file effect against the disk at verdict time, so a verdict can never name a file as missing that a parallel step has since landed. And write steps are guaranteed their tools: the file-writing tools are in the always-offered set, and a write step that cannot be equipped fails at assembly time, naming the problem, instead of discovering it mid-task.
+
+**Checked before it shipped**
+- New suites: clue hygiene against the thirteen real hunt requests (47 of 47; 33 of 47 against the 0.9.17 code), a scoring rig that rebuilds the planted 25-file forest beside the observed cache noise (every target in the delivered candidates and noise out of the top two; on the old code the noise sat in the top two on 6 of 13 hunts), the ask floor and honest branches (15 of 15; 3 of 15 before), and mission deliverables (27 of 27, including running pytest collection on the test file a mission actually produced; 5 of 22 before).
+- The full pre-release battery ran 99 suites on the merged tree: 86 passed, 11 failed, and 2 hit the battery time cap. Every suite carrying any failure mark, 15 in all, was re-run standalone on both this tree and the 0.9.17 tree and failed identically on both, so no failure is attributed to this round; the standing families are the local-engine suites, the browser and approval harnesses, and the suites that need a configured API key.
+- The promoted build then passed the proving suite against the installed app, 7 of 7.
+- This release is the fourth fix round of the escalation program. The same Tier 1 and Locate baseline is re-run against this build to grade the difference.
+
 ## 0.9.17
 
 **File hunts now take the find path**
