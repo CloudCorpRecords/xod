@@ -13,6 +13,13 @@ Routes, in order:
   2. A bounded filename walk of the home tree (noise folders skipped).
   3. A content search over plausible text files for content-word clues.
 
+Route hits are prioritized inside pool construction, before any route
+cap or scan budget cuts: each route orders its hits by the identity part
+of scoring (exact name tokens, kind match, an explicit year, cache scope
+penalty) and only then truncates or spends its budget, so under heavy
+hit volume a cap keeps the strongest hits instead of whichever files
+the walk happened to reach first.
+
 Scoring is additive and explainable, and target identity dominates: an
 exact name-token match on the target's own terms and a kind match outweigh
 any generic content-word overlap, instruction-frame words from the request
@@ -30,6 +37,10 @@ one saw. A candidate whose own evidence states it is not the kind the
 person asked for is likewise never presented as a match: it is recorded
 as checked-and-rejected and the hunt falls to "not_found" (the delivery
 layer in decisive_evidence.py enforces the same block on any payload).
+The kind block also reads the candidate's structured kind field, not
+only the evidence prose, and purpose credit in a name requires a
+whole-token match, so a purpose term cannot earn name credit as a
+substring of a longer token ("tax" inside "taxonomy").
 """
 import os
 import re
@@ -42,6 +53,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 MAX_CANDIDATES = 8
+FILENAME_ROUTE_CAP = 2000   # prioritized filename hits kept per hunt
+SPOTLIGHT_ROUTE_CAP = 500   # prioritized Spotlight hits kept per root set
 ASK_MARGIN = 12.0          # top two within this many points: ask, do not guess
 FOUND_THRESHOLD = 30.0      # a candidate needs at least this to be named at all
 # The ask/found floor, calibrated on the score_candidate scale. One bare
@@ -333,7 +346,11 @@ class SpotlightBackend:
                         found.append(line)
             except Exception:
                 continue
-        return found[:500]
+        # The index returns hits in its own order, which is volume order,
+        # not relevance order: prioritize before the cap cuts, so the cap
+        # keeps the strongest hits instead of the first ones.
+        found.sort(key=lambda p: _pool_priority(p, clues))
+        return found[:SPOTLIGHT_ROUTE_CAP]
 
 
 def _walk(roots: Sequence[str], want_dirs: bool = False):
@@ -363,7 +380,15 @@ def _walk(roots: Sequence[str], want_dirs: bool = False):
 
 
 def filename_search(clues: Clues, roots: Sequence[str]) -> List[str]:
-    """Fallback 1: paths whose name or parent folders carry any clue term."""
+    """Fallback 1: paths whose name or parent folders carry any clue term.
+
+    Every matching path in the bounded walk is collected first, then the
+    hits are prioritized with _pool_priority and only then does the route
+    cap cut. The old shape returned the first FILENAME_ROUTE_CAP hits in
+    walk order, so on a home tree with thousands of files matching a
+    common term by folder name alone, the walk filled the cap on noise
+    before it ever reached the target's tree and the target never entered
+    the candidate pool at all."""
     terms = set(clues.name_tokens) | set(clues.purpose_terms) | set(clues.content_words)
     if clues.year:
         terms.add(str(clues.year))
@@ -375,9 +400,8 @@ def filename_search(clues: Clues, roots: Sequence[str]) -> List[str]:
         name = os.path.basename(low)
         if not terms or any(t in name or t in low for t in terms):
             found.append(path)
-        if len(found) >= 2000:
-            break
-    return found
+    found.sort(key=lambda p: _pool_priority(p, clues))
+    return found[:FILENAME_ROUTE_CAP]
 
 
 def content_search(clues: Clues, roots: Sequence[str],
@@ -441,6 +465,11 @@ def content_search(clues: Clues, roots: Sequence[str],
         partial_reason = "deadline"
         _record_stats()
         return hits
+    # Phase 1: collect the scannable text files in the bounded walk,
+    # applying the same entry, regularity, and size bounds as before.
+    # Nothing is opened in this phase, so the pathological-entry guards
+    # (no opens of non-regular files, no unbounded reads) are unchanged.
+    collect: List[str] = []
     for path, is_dir in _walk(roots):
         if is_dir:
             continue
@@ -451,10 +480,6 @@ def content_search(clues: Clues, roots: Sequence[str],
             break
         if os.path.splitext(path)[1].lower() not in TEXT_EXTS:
             continue
-        if scanned >= max_files:
-            partial = True
-            partial_reason = "file_cap"
-            break
         # Deadline is checked between files, before any stat or open.
         if time.monotonic() >= deadline_at:
             partial = True
@@ -472,6 +497,26 @@ def content_search(clues: Clues, roots: Sequence[str],
         if st.st_size > MAX_CONTENT_BYTES:
             skipped_oversized += 1
             continue
+        collect.append(path)
+    # Phase 2: scan in pool-priority order, not walk order. The old shape
+    # scanned in walk order until the file cap or the deadline cut, so a
+    # tree with thousands of scannable files ahead of the target's tree
+    # spent the whole budget on noise and the target was never even read.
+    # Priority here is the identity part of scoring only (name, kind,
+    # year, scope): contents are what the scan is about to learn.
+    collect.sort(key=lambda p: _pool_priority(p, clues))
+    for path in collect:
+        if scanned >= max_files:
+            if not partial:
+                partial = True
+                partial_reason = "file_cap"
+            break
+        # Deadline is checked between files, before any open.
+        if time.monotonic() >= deadline_at:
+            if not partial:
+                partial = True
+                partial_reason = "deadline"
+            break
         scanned += 1
         try:
             with open(path, "rb") as f:
@@ -605,7 +650,8 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
     identity_terms = set(name_tokens) | set(clues.purpose_terms)
     if clues.year:
         identity_terms.add(str(clues.year))
-    if stem_tokens and stem_tokens <= identity_terms:
+    exact_bonus = bool(stem_tokens and stem_tokens <= identity_terms)
+    if exact_bonus:
         score += 50
         why.append("the name is exactly the thing described")
 
@@ -615,7 +661,22 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
     # contract and its draft share two terms and split the third; equal
     # per-term weight keeps that pair inside the ask margin instead of
     # letting the negated word in the request outrank the signed file.)
-    purpose_hits = [t for t in clues.purpose_terms if t in stem or t in stem_tokens]
+    # Purpose-in-name credit requires a whole-token match: every token
+    # of the term must appear as a whole token of the name. The old
+    # substring test paid the purpose term 'tax' its full 60 points
+    # inside the longer token 'taxonomy', which closed two re-run 4
+    # hunts (a W2 wage statement, a tax return summary) on an unrelated
+    # code file. Multi-token and hyphenated terms ('pay stub', 'w-2')
+    # still match names that carry their tokens.
+    stem_parts = set(re.findall(r"[a-z0-9]+", stem))
+
+    def _purpose_in_name(term: str) -> bool:
+        if term in stem_tokens:
+            return True
+        parts = [p for p in re.findall(r"[a-z0-9]+", term) if p]
+        return bool(parts) and all(p in stem_parts for p in parts)
+
+    purpose_hits = [t for t in clues.purpose_terms if _purpose_in_name(t)]
     for t in purpose_hits[:3]:
         score += 60
         why.append(f"name fits the purpose ('{t}')")
@@ -624,6 +685,7 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
         score += 10
         why.append(f"folder path fits the purpose ('{t}')")
 
+    kind_refuted = False
     if clues.kind:
         if kind == clues.kind or (clues.kind == "photo" and kind == "image"):
             score += 25
@@ -632,12 +694,15 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
             # A stated kind mismatch is strong negative evidence: a hunt
             # for a pdf or a spreadsheet must not be won by a text file
             # that merely contains the right words.
+            kind_refuted = True
             score -= 60
             why.append(f"but it is a {kind}, not a {clues.kind}")
 
+    year_in_name = False
     if clues.year:
         year_s = str(clues.year)
         if year_s in stem or year_s in path.lower():
+            year_in_name = True
             score += 50
             why.append(f"year {clues.year} in the name or path")
         try:
@@ -688,11 +753,61 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
         score += 4
         why.append(f"contents mention '{word}'")
 
+    # Found-threshold kind discipline. Credit that is not name identity
+    # (purpose terms in the name or path, content words) cannot carry a
+    # candidate over the found threshold in either of these shapes:
+    #   * The candidate's kind contradicts the requested kind. Such a
+    #     candidate needs name identity as well; purpose and content
+    #     credit alone is capped below FOUND_THRESHOLD here, on top of
+    #     the -60 deduction above, so no stack of content hits can
+    #     outvote the contradiction.
+    #   * The hunt names no kind at all, so no kind line or deduction
+    #     ever fired (the re-run 4 L4 and L9 prompts name none, which
+    #     is exactly how a code file closed both). There the ceiling
+    #     applies on the evidence that exists: a candidate with no
+    #     name-based evidence at all (no exact name token, no
+    #     exact-name shape, no whole-token purpose term in the name)
+    #     and no other real support (the person's own words inside the
+    #     file, a year in the name) is capped the same way: path-only
+    #     purpose nudges, purpose-expansion content words, and date
+    #     nudges cannot stack into a name. A whole-token purpose term
+    #     in the name IS real support ("find my W2" is won exactly
+    #     that way), so it is not capped.
+    has_identity = bool(exact_hits) or exact_bonus
+    if kind_refuted and not has_identity and score > FOUND_THRESHOLD - 1.0:
+        score = FOUND_THRESHOLD - 1.0
+        why.append("it is not the kind asked for, and no name match backs it up, "
+                   "so purpose or content credit alone cannot name it")
+    elif (not clues.kind and not has_identity and not purpose_hits and not strong
+            and not year_in_name and score > FOUND_THRESHOLD - 1.0):
+        score = FOUND_THRESHOLD - 1.0
+        why.append("no name evidence supports it, only path and content-expansion "
+                   "words, so that alone cannot name it")
+
     penalty, label = _scope_penalty(path, clues)
     if penalty:
         score -= penalty
         why.append(f"it sits in a {label}, so it ranks below your own files")
     return score, why
+
+
+def _pool_priority(path: str, clues: Clues) -> Tuple[float, int, str]:
+    """Sort key for prioritizing route hits INSIDE pool construction,
+    before any route cap or scan budget cuts. The primary signal is the
+    identity part of the hunt's own scoring: score_candidate with no
+    content hits, so exact name tokens, kind match, an explicit year,
+    and the cache scope penalty all count, and generic content overlap
+    does not (contents are unknown at route time anyway). Ties break
+    toward shallower paths (top level user folders before deep archive
+    or cache nests), then by path, so the order is fully deterministic
+    and never depends on which route or walk position produced a hit
+    first. Higher identity wins: the key sorts ascending on the negated
+    score."""
+    try:
+        score = score_candidate(path, clues, set())[0]
+    except Exception:
+        score = 0.0
+    return (-score, path.count(os.sep), path)
 
 
 def _content_hits_for(path: str, words: Set[str]) -> Set[str]:
@@ -724,6 +839,43 @@ def kind_mismatch(cand: Dict[str, Any], kind: str) -> bool:
         return False
     pat = re.compile(r"not an? " + re.escape(kind) + r"\b")
     return any(pat.search(str(w)) for w in (cand.get("why") or []))
+
+
+def kind_contradicts(cand: Dict[str, Any], kind: str) -> bool:
+    """Structured kind check: True when the candidate's own kind FIELD
+    contradicts the requested kind, whatever its why lines say. The
+    prose check above only fires when the scorer itself ran with a kind
+    clue and emitted the line; a candidate whose evidence never carried
+    that line (the re-run 4 L4 and L9 deliveries printed kind "code"
+    beside PDF hunts and still closed done) needs the field read
+    directly. Folders are exempt, mirroring score_candidate, which
+    never deducts for a folder."""
+    if not kind or cand.get("is_folder"):
+        return False
+    actual = str(cand.get("kind") or "")
+    if not actual or actual == kind:
+        return False
+    return not (kind == "photo" and actual == "image")
+
+
+def has_name_identity(cand: Dict[str, Any], clues: Clues) -> bool:
+    """Name identity, recomputed from fields: an exact name-token match
+    on one of the hunt's name tokens, or the exact-name shape (the
+    name's tokens are all clue terms, the shape score_candidate pays
+    the exact-name bonus for). Purpose and content credit are not
+    identity: a candidate carried only by those needs this check to
+    fail before the kind discipline can name it."""
+    stem = os.path.splitext(str(cand.get("name") or ""))[0].lower()
+    stem_tokens = set(tokens_of(stem))
+    if not stem_tokens:
+        return False
+    name_tokens = _distinctive_name_tokens(clues)
+    if any(t in stem_tokens for t in name_tokens):
+        return True
+    identity_terms = set(name_tokens) | set(clues.purpose_terms)
+    if clues.year:
+        identity_terms.add(str(clues.year))
+    return stem_tokens <= identity_terms
 
 
 _NAME_EXACT_PREFIXES = ("name matches '", "folder name matches '",
@@ -966,13 +1118,18 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
     # The floor, the kind-mismatch block, and the partial-name block,
     # applied before the ask gate: a candidate is presentable only if it
     # clears ASK_FLOOR, its own evidence does not refute the requested
-    # kind, and its evidence is not one lone name token out of several
-    # with nothing else behind it. Everything else is recorded as
-    # checked-and-rejected, never presented.
+    # kind, its structured kind field does not contradict the requested
+    # kind without name identity behind it, and its evidence is not one
+    # lone name token out of several with nothing else behind it.
+    # Everything else is recorded as checked-and-rejected, never
+    # presented.
     eligible: List[Dict[str, Any]] = []
     rejected: List[Dict[str, Any]] = []
     for cand in top:
-        if (kind_mismatch(cand, clues.kind) or cand["score"] < ASK_FLOOR
+        if (kind_mismatch(cand, clues.kind)
+                or (kind_contradicts(cand, clues.kind)
+                    and not has_name_identity(cand, clues))
+                or cand["score"] < ASK_FLOOR
                 or partial_name_only(cand, clues)):
             rejected.append(cand)
         else:

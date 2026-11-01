@@ -46,6 +46,44 @@ MISSION_STATES = ("planning", "running", "paused", "done", "failed")
 _EFFECT_KINDS = ("create", "modify", "delete")
 _TERMINAL_TASK = ("done", "failed", "cancelled")
 
+# ------------------------------------------------------- pause supervision
+# Fix round 5 (2026-10-31, from the Tier 1 re-run 4 record, T1B): a
+# research mission sat in state paused for the full 900 second
+# measurement cap and never produced a report, because its subtask's
+# task was waiting and nobody answered. The driver loop re-drives a
+# paused mission every couple of seconds, but all that did was enter
+# the same wait again: nothing kept a clock on the pause, so a wait
+# nobody answers had no terminal shape at all.
+#
+# The remedy is bounded. A subtask task that stays waiting past
+# PAUSE_WEDGE_THRESHOLD_SEC gets ONE automatic resume through the
+# queue's own retry path (the same "trying again" a person can ask
+# for; never a raw state edit, never an invented answer). If the task
+# waits again and that second wait also runs past
+# PAUSE_RESUME_WINDOW_SEC, the step fails honestly: the verdict names
+# the wedge, how long it sat, and that one resume was attempted.
+#
+# The numbers are the codebase's own. The task queue flags a working
+# task stalled at 600 seconds without progress (STALL_THRESHOLD_SEC)
+# and stops it at twice that (STALL_RECOVER_SEC); a waiting task has
+# already notified the user (Mac notification and phone) when it
+# started waiting, so 600 unattended seconds is a wedge, not a wait
+# in progress, and healthy missions finish whole steps in 60 to 90
+# seconds. Worst case to an honest failure is about 1200 seconds,
+# the same total budget the queue gives a wedged working task.
+#
+# One wait kind is exempt: a task waiting for approval is a person's
+# gate. Supervision never resumes it (an automatic retry must not
+# stand in for a person's OK on an irreversible step) and never times
+# it out. Question and blocked waits are supervised, but the resume
+# goes through the normal retry path, so a person can still answer
+# at any moment before the threshold and nothing here invents an
+# answer for them. What the code cannot do is tell an unattended
+# question from one a person is about to answer; the 600 second
+# threshold is the whole distinction, and it is recorded as a limit.
+PAUSE_WEDGE_THRESHOLD_SEC = 600
+PAUSE_RESUME_WINDOW_SEC = 600
+
 
 # ------------------------------------------------------- verdict integrity
 # Fix round 1 (2026-10-31, from the Tier 1 baseline): a mission closed
@@ -265,6 +303,67 @@ def _recheck_failed_subtasks(mission_id: str) -> None:
                           or [f"Checked on disk: {p}" for p in fresh])
 
 
+def _repair_finished_verdict(mission_id: str) -> None:
+    """Fix round 5: reconcile a finished mission whose recorded verdict
+    a stale peer process wrote from superseded evidence. Two backend
+    processes share this database; a process running an older build in
+    memory composes verdicts the old way (re-run 4 T1A: its outcome
+    copied the task's recorded problems verbatim, backticked phantom
+    file included, and it finished the mission) while this build's
+    driver, polling the same subtask, composes the fresh outcome and
+    saves it to the subtask row moments later. The row then disagrees
+    with the mission's failure reason and report, and nothing ever
+    reconciles them, because a finished mission is never driven again.
+    This runs when a driver of this build reaches a finished mission
+    (its own finish call finding the mission already finished, or an
+    outcome save for a subtask of one): re-run the finish-time
+    re-check, and if the recorded verdict cites evidence no subtask
+    row carries any more, rebuild the report and the failure reason
+    from the current rows. A mission whose failed steps all verify
+    fresh is closed done. Nothing is rewritten when the recorded
+    verdict still matches the rows."""
+    mission = get_mission(mission_id)
+    if not mission or mission["state"] not in ("done", "failed"):
+        return
+    if not mission.get("finished_at"):
+        return
+    before = {s["id"]: (s["status"], s.get("verified_status"),
+                         tuple(s.get("evidence") or []))
+              for s in mission["subtasks"]}
+    _recheck_failed_subtasks(mission_id)
+    current = get_mission(mission_id)
+    after = {s["id"]: (s["status"], s.get("verified_status"),
+                        tuple(s.get("evidence") or []))
+             for s in current["subtasks"]}
+    rows_changed = before != after
+    reason = current.get("failure_reason") or ""
+    failed = [s for s in current["subtasks"] if s["status"] == "failed"]
+    new_reason, new_state = reason, current["state"]
+    if current["state"] == "failed" and not failed:
+        new_state, new_reason = "done", None
+    elif current["state"] == "failed" and reason.startswith("Step "):
+        cited = reason.split(" failed: ", 1)[-1] if " failed: " in reason else ""
+        step_no = None
+        matched = re.match(r"Step (\d+) ", reason)
+        if matched:
+            step_no = int(matched.group(1))
+        target = next((s for s in failed if s["idx"] + 1 == step_no), None)
+        if target is None and failed:
+            target = failed[0]
+        if target is not None and cited and cited not in (target.get("evidence") or []):
+            ev = target.get("evidence") or ["see the step report"]
+            new_reason = f"Step {target['idx'] + 1} ({target['title']}) failed: {ev[0]}"
+    if not rows_changed and new_reason == reason and new_state == current["state"]:
+        return
+    logger.warning(f"Mission {mission_id}: repairing a finished verdict that cited "
+                   "superseded evidence (a stale peer process finished it first); "
+                   "the verdict now follows the fresh row evidence.")
+    if new_state != current["state"] or new_reason != reason:
+        _save_mission(mission_id, state=new_state,
+                      failure_reason=new_reason if new_state == "failed" else None)
+    _save_mission(mission_id, report=build_report(get_mission(mission_id)))
+
+
 def _content_leak_for_subtask(subtask: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """Planner scaffolding inside a subtask's deliverable as a
     (path, line) pair, or None. Checks the content the plan declared and,
@@ -332,6 +431,39 @@ def _conn() -> sqlite3.Connection:
         )
         """
     )
+    # Fix round 5: one subtask row per (mission, step), enforced by the
+    # shared store itself. Two backend processes share this database
+    # (the installed app and a dev instance), and a process running an
+    # older build in memory does not implement the round 4 atomic plan
+    # claim: in re-run 4 the stale process planned right past the claim
+    # and inserted a second paraphrased plan, doubling two missions to
+    # six rows. Code-level claims can only bind processes that run the
+    # code; a trigger binds every writer of the store, including a
+    # stale one, whose duplicate insert now aborts inside its own
+    # planning call and leaves the winning plan's rows alone. The
+    # trigger fires only on new inserts, so doubled rows a stale peer
+    # already wrote into a legacy database do not block its creation.
+    c.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS mission_subtasks_one_row_per_step
+        BEFORE INSERT ON mission_subtasks
+        WHEN EXISTS (SELECT 1 FROM mission_subtasks
+                     WHERE mission_id = NEW.mission_id AND idx = NEW.idx)
+        BEGIN
+            SELECT RAISE(ABORT, 'a subtask row for this mission step already exists');
+        END
+        """
+    )
+    # Pause supervision stamps (fix round 5): when the current wait
+    # began on the supervision clock, and how many automatic resumes
+    # this subtask has already spent. Added the way the task queue
+    # adds its own later columns, so existing databases pick them up.
+    cols = [r[1] for r in c.execute("PRAGMA table_info(mission_subtasks)").fetchall()]
+    if "paused_at" not in cols:
+        c.execute("ALTER TABLE mission_subtasks ADD COLUMN paused_at REAL")
+    if "pause_resume_attempts" not in cols:
+        c.execute("ALTER TABLE mission_subtasks ADD COLUMN pause_resume_attempts INTEGER DEFAULT 0")
+    c.commit()
     return c
 
 
@@ -905,10 +1037,24 @@ class MissionRunner:
     database (an app restart) picks a mission up exactly where it stopped.
     The queue and the model are injectable so tests can fake both."""
 
-    def __init__(self, queue: Any = None, ask: Optional[Callable] = None, poll_sec: float = 1.0):
+    def __init__(self, queue: Any = None, ask: Optional[Callable] = None, poll_sec: float = 1.0,
+                 pause_threshold_sec: float = PAUSE_WEDGE_THRESHOLD_SEC,
+                 pause_resume_window_sec: float = PAUSE_RESUME_WINDOW_SEC,
+                 clock: Optional[Callable[[], float]] = None):
         self._queue = queue
         self._ask = ask or _default_ask
         self.poll_sec = poll_sec
+        # Pause supervision knobs (fix round 5): how long a subtask's
+        # task may sit waiting before the one automatic resume, how
+        # long a post-resume wait may sit before the honest failure,
+        # and the clock both are measured on. Injectable so tests can
+        # run the wedge on a short fake clock.
+        self.pause_threshold_sec = pause_threshold_sec
+        self.pause_resume_window_sec = pause_resume_window_sec
+        self.clock = clock
+
+    def _now(self) -> float:
+        return self.clock() if self.clock is not None else time.time()
 
     @property
     def queue(self) -> Any:
@@ -1042,6 +1188,11 @@ class MissionRunner:
             task = self.queue.get(sub["task_id"])
             status = (task or {}).get("status")
             if status == "waiting":
+                verdict = self._supervise_pause(mission_id, sub, task)
+                if verdict == "resume":
+                    continue   # the task is queued again; keep watching it in this drive
+                if verdict == "fail":
+                    return True   # the wedge verdict is recorded; the mission is finished or moves on
                 _save_subtask(sub["id"], status="waiting")
                 _save_mission(mission_id, state="paused")
                 return False
@@ -1054,6 +1205,11 @@ class MissionRunner:
         _save_subtask(sub["id"], status=outcome["status"], claimed=outcome["claimed"],
                       verified_status=outcome["verified_status"], evidence=outcome["evidence"],
                       finished_at=time.time())
+        # Fix round 5: if a stale peer process already finished this
+        # mission from its own older composition of this same outcome,
+        # the verdict of record is reconciled with the fresh outcome
+        # just saved (a no-op when the mission is still running).
+        _repair_finished_verdict(mission_id)
         if outcome["status"] == "failed":
             mission = get_mission(mission_id)
             if not mission["continue_on_failure"]:
@@ -1066,11 +1222,101 @@ class MissionRunner:
                 return True
         return True
 
+    # ------------------------------------------------------- pause supervision
+    def _supervise_pause(self, mission_id: str, sub: Dict[str, Any], task: Dict[str, Any]) -> str:
+        """Watches one waiting subtask task (fix round 5; see the
+        PAUSE_WEDGE_THRESHOLD_SEC note at the top of this module).
+        Returns "wait" (leave the mission paused), "resume" (the one
+        automatic resume was just issued through the queue's retry
+        path; the caller keeps watching the task), or "fail" (the
+        wedge verdict has been recorded by _fail_paused_wedge).
+
+        The wait clock lives on the subtask row (paused_at), not in
+        memory and not on the mission's updated_at: the driver loop
+        rewrites the mission row on every re-drive, so its stamp can
+        never say how long the pause has lasted, and a wedge that
+        survives an app restart must keep its clock and its spent
+        resume across the restart."""
+        fresh = next((s for s in list_subtasks(mission_id) if s["id"] == sub["id"]), sub)
+        if task.get("waiting_kind") == "approval":
+            # A person's approval gate is never timed out and never
+            # auto-answered. Clear the wedge clock while approval is
+            # what is being waited on, so time spent at the gate never
+            # counts against a later, different wait.
+            if fresh.get("paused_at") is not None:
+                _save_subtask(sub["id"], paused_at=None)
+            return "wait"
+        now = self._now()
+        paused_at = fresh.get("paused_at")
+        if paused_at is None:
+            _save_subtask(sub["id"], paused_at=now)
+            return "wait"
+        waited = now - paused_at
+        attempts = fresh.get("pause_resume_attempts") or 0
+        window = self.pause_threshold_sec if attempts == 0 else self.pause_resume_window_sec
+        if waited < window:
+            return "wait"
+        if attempts == 0:
+            try:
+                res = self.queue.retry(sub["task_id"])
+                ok = isinstance(res, dict) and bool(res.get("success"))
+            except Exception:
+                logger.exception(f"Mission {mission_id}: the automatic resume of "
+                                 f"task {sub['task_id']} raised")
+                ok = False
+            if ok:
+                _save_subtask(sub["id"], paused_at=None, pause_resume_attempts=1)
+                logger.warning(f"Mission {mission_id}: step {fresh['idx'] + 1} "
+                               f"({fresh['title']}) sat waiting {int(waited)}s "
+                               f"({task.get('waiting_kind') or 'waiting'}); one automatic "
+                               "resume attempted through the queue retry path")
+                return "resume"
+            self._fail_paused_wedge(mission_id, fresh, task, waited, resume_failed=True)
+            return "fail"
+        self._fail_paused_wedge(mission_id, fresh, task, waited, resume_failed=False)
+        return "fail"
+
+    def _fail_paused_wedge(self, mission_id: str, sub: Dict[str, Any], task: Dict[str, Any],
+                           waited: float, resume_failed: bool) -> None:
+        """Records the honest terminal shape for a paused wedge: the
+        subtask fails with the wedge as its evidence, and the mission
+        follows the same stop-or-continue path as a subtask whose task
+        failed, with the wedge named in the mission's failure reason."""
+        kind = task.get("waiting_kind") or "waiting"
+        detail = task.get("waiting_detail") or {}
+        note = detail.get("message") if isinstance(detail, dict) else None
+        where = f" ({note})" if note else ""
+        if resume_failed:
+            why = (f"wedged in paused: its task sat waiting {int(waited)} seconds for "
+                   f"{kind}{where} and nobody answered; the one automatic resume "
+                   "attempt failed, so the step fails here instead of waiting forever")
+        else:
+            why = (f"wedged in paused: its task sat waiting {int(waited)} seconds for "
+                   f"{kind}{where}, one automatic resume was attempted, and the task "
+                   "waited again past the resume window with nobody answering; the "
+                   "step fails here instead of waiting forever")
+        logger.warning(f"Mission {mission_id}: step {sub['idx'] + 1} ({sub['title']}) {why}")
+        _save_subtask(sub["id"], status="failed", verified_status="failed",
+                      claimed=(task.get("result") or ""), evidence=[why],
+                      finished_at=time.time(), paused_at=None)
+        mission = get_mission(mission_id)
+        if mission and not mission["continue_on_failure"]:
+            for rest in list_subtasks(mission_id):
+                if rest["status"] in ("pending", "queued"):
+                    _save_subtask(rest["id"], status="skipped")
+            self._finish(mission_id,
+                         reason=f"Step {sub['idx'] + 1} ({sub['title']}) failed: {why}")
+
     # ------------------------------------------------------------ finishing
     def _finish(self, mission_id: str, reason: Optional[str] = None) -> None:
         mission = get_mission(mission_id)
         if mission["state"] in ("done", "failed") and mission.get("finished_at"):
-            return   # already finished (a stop-on-failure finish, then the loop's own)
+            # Already finished (a stop-on-failure finish, then the loop's
+            # own). Fix round 5: the finish may have been written by a
+            # stale peer process from evidence this build's fresh checks
+            # have since superseded; repair the recorded verdict if so.
+            _repair_finished_verdict(mission_id)
+            return
         _recheck_failed_subtasks(mission_id)
         mission = get_mission(mission_id)
         subs = mission["subtasks"]
