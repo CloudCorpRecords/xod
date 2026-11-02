@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.9.22
+
+**Desktop control comes to Windows: Xod can use the screen, mouse and keyboard on Windows like it does on a Mac**
+- The desktop service gains a Windows engine behind the same contract the Mac has always used: read the screen, list and focus windows, read and work the controls of the app in front (through UI Automation), move and click the mouse, scroll, type and press keys, and use the clipboard. It is built from the standard library (ctypes against user32 and gdi32) plus Pillow, which Xod already carries: no new dependencies.
+- Every safety rule travels with it. The capability is off until its pack is on, the first use against a new app asks on an approval card, a never list matched by program name refuses Settings, the credential broker, password managers and remote-desktop tools outright, password fields are refused (seen through UI Automation, with the edit-style check behind it), risky keys (Alt+F4, Win+L, Ctrl+Alt+Del, Ctrl+Shift+Esc) go only when they were asked for in words, and taking the mouse over stops the hand at once.
+- Sessions are reported honestly. Windows keeps the visible desktop in the console session, so from a background or remote-shell session the status answers supported, with screen and accessibility false, and names the console session that does hold them, instead of pretending a screen is there. From the console session itself, screen and accessibility answer true.
+- The setup card and the desktop task gate now read the same supported flag on both platforms, and the desktop panel on Windows names the session state in plain words. Reading a terminal's exact text and the terminal windows Xod owns stay Mac-only for now and say so clearly when asked on Windows; the screen path covers terminals meanwhile.
+
+**Checked before it shipped**
+- A new Windows suite, run_windows_desktop_test.py, passes 38 of 38, and the Windows workflow now runs it beside the existing suites. Verified live on a Windows machine in its interactive session: the status reported the console session with screen and accessibility true, a look returned a real screenshot with its windows and controls, the cursor moved to a point and back, and a typed marker was read back two independent ways. From a background session the same build answered supported with the session caveat named. The existing Windows tools suite is unchanged by this work, line for line in its results.
+
+**Known issues carried into 0.9.22, named plainly**
+- The tool-less write routing defect named in 0.9.20 and 0.9.21 is unchanged; Fix Round 6 owns it.
+- The Windows NSIS self-update wedge named in 0.9.20 and 0.9.21 is unchanged: update Windows manually (download the setup and run it with Xod fully closed, including the background process it runs from its install folder) rather than by self-update.
+- On Windows, reading a terminal's exact text and Xod-owned terminal windows are not in this release; both answer with a clear error instead of a guess, and the screen path covers terminals meanwhile.
+
 ## 0.9.21
 
 **Xod can now show its work: an observability tier on the harness surface**
