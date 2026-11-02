@@ -52,8 +52,13 @@ async def main():
     acts = {f["name"]: set((f.get("parameters", {}).get("properties", {}).get("action", {}) or {}).get("enum") or [])
             for f in (t["function"] for t in tools.TOOL_DEFINITIONS)}
     # The devices cases name the built-in Mac server's tools by their MCP-exposed
-    # names (mcp__mac__<tool>); those exist when the bare tool does.
+    # names (mcp__mac__<tool>); those exist when the bare tool does. Tools the
+    # product ships for macOS only (platform_info.MAC_ONLY_TOOLS) are stripped
+    # from this host's catalog at import on Windows; they still exist in the
+    # product, so the cases may name them (fix round 6).
+    from app import platform_info as _plat
     real = lambda n: n in ("answer", "web") or n in mac_names or n in acts \
+        or n in _plat.MAC_ONLY_TOOLS \
         or (n.startswith("mcp__mac__") and n[len("mcp__mac__"):] in mac_names) \
         or (n.split(".")[0] in acts and n.split(".", 1)[-1] in acts[n.split(".")[0]])
     check("the devices cases name tools and actions that exist", dev.get("by_tool") and all(
