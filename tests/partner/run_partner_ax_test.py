@@ -15,7 +15,14 @@ API reports. Also covered: the request-access ask (token-gated like every
 route, answered while untrusted because that is the state it exists for,
 the prompt option genuinely passed into the framework call at the seam,
 the framework's answer surfaced verbatim, and a clean error, never a
-crash, when the framework cannot be asked).
+crash, when the framework cannot be asked). Also covered: the
+task-scoped approvals the Muse app puts on computer control cards
+("Allow for this task" is picked and pressed; "Allow all web access
+for this task" is picked over an unscoped "Allow always", which is
+never picked), and the fronted retry: a press that fails on a stale
+element (-25202) and a card the unfronted walk cannot see at all are
+each retried once with Muse in front when the caller allows
+fronting, and stay single-attempt clean failures when it does not.
 
 Run: python3 tests/partner/run_partner_ax_test.py
 """
@@ -89,6 +96,40 @@ def card_tree(buttons, texts=("From: ada@example.com", "To: bob@example.com", "S
     card = El("AXGroup", "Approval request for Gmail", kids)
     window = El("AXWindow", "", [card])
     return El("AXApplication", "", [window])
+
+
+def cc_tree(buttons, text="Allow Tree to proceed with this Mac?"):
+    kids = [El("AXStaticText", text)] + [El("AXButton", b) for b in buttons]
+    card = El("AXGroup", "Approval request for Computer control", kids)
+    window = El("AXWindow", "", [card])
+    return El("AXApplication", "", [window])
+
+
+class FlakyAx(FakeAx):
+    """perform() fails with -25202 (kAXErrorInvalidElement: the element
+    went stale between the walk and the press) on the first call, then works."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.perform_calls = 0
+
+    def perform(self, el, action):
+        self.perform_calls += 1
+        if self.perform_calls == 1:
+            return -25202
+        return super().perform(el, action)
+
+
+class RevealAx(FakeAx):
+    """The card is absent from the tree until reveal() (what bringing Muse
+    to the front does for a card the unfronted walk cannot see at all)."""
+
+    def __init__(self, empty_root, card_root, **kw):
+        super().__init__(empty_root, **kw)
+        self._card_root = card_root
+
+    def reveal(self):
+        self.root = self._card_root
 
 
 def _core(tmp, trust):
@@ -351,6 +392,104 @@ def main():
             print("PASS: an unaskable framework is a clean error and the API survives it", flush=True)
         finally:
             server.shutdown()
+
+    # the pick rules, directly: task-scoped approvals are one-time approvals;
+    # an unscoped "Allow always" is never one of them
+    assert AX.pick_button(["Allow always"]) is None
+    assert AX.pick_button(["Allow always", "Deny"]) is None
+    assert AX.pick_button(["See details", "Allow for this task"]) == "Allow for this task"
+    assert AX.pick_button(["Allow", "Allow for this task"]) == "Allow for this task"
+    assert AX.pick_button(["Allow all web access for this task", "Allow"]) == "Allow"
+    assert AX.pick_button(["Allow all web access for this task", "Allow always"]) == \
+        "Allow all web access for this task"
+    assert AX.pick_button(["Don't send", "Allow for this task"]) == "Allow for this task"
+    print("PASS: pick_button takes the task-scoped approvals and never an unscoped Allow always", flush=True)
+
+    # a computer control card whose only approval is "Allow for this task"
+    # (the shape that timed out three times on 2026-11-01): picked and pressed
+    with tempfile.TemporaryDirectory() as tmp:
+        ax = FakeAx(cc_tree(["See details", "Allow for this task", "Deny"]))
+        walk = AX.Walk(ax, pid_of=lambda: 4242)
+        cfg, core = _core(tmp, True)
+        server, base = _serve(cfg, core, walk)
+        try:
+            code, out = _call(base, "/ax/scan", token=core.token, body={})
+            assert code == 200 and len(out["cards"]) == 1, out
+            card = out["cards"][0]
+            assert card["type"] == "Computer control", card
+            assert card["button"] == "Allow for this task", card
+            code, out = _call(base, "/ax/press", token=core.token, body={"card_id": card["card_id"]})
+            assert code == 200 and out["pressed"] is True and out["button"] == "Allow for this task", out
+            assert ax.pressed == ["Allow for this task"], ax.pressed
+            print("PASS: a card offering only 'Allow for this task' is picked and pressed", flush=True)
+        finally:
+            server.shutdown()
+
+    # the web-access variant: the task-scoped grant beats "Allow always"
+    with tempfile.TemporaryDirectory() as tmp:
+        ax = FakeAx(cc_tree(["See details", "Allow all web access for this task",
+                             "Allow always", "Deny"]))
+        walk = AX.Walk(ax, pid_of=lambda: 4242)
+        cfg, core = _core(tmp, True)
+        server, base = _serve(cfg, core, walk)
+        try:
+            code, out = _call(base, "/ax/scan", token=core.token, body={})
+            card = out["cards"][0]
+            assert card["button"] == "Allow all web access for this task", card
+            code, out = _call(base, "/ax/press", token=core.token, body={"card_id": card["card_id"]})
+            assert code == 200 and out["pressed"] is True, out
+            assert ax.pressed == ["Allow all web access for this task"], ax.pressed
+            print("PASS: 'Allow all web access for this task' beats 'Allow always' and is pressed", flush=True)
+        finally:
+            server.shutdown()
+
+    # fronted retries through the real Walk: a press that fails on a stale
+    # element and a card the unfronted walk cannot see each get exactly one
+    # fronted retry when the caller allows fronting, and neither retries
+    # when it does not. Fronting itself is faked at the module seam.
+    real_frontmost, real_activate = AX._frontmost_pid, AX._activate
+    holder = {}
+
+    def fake_activate(pid):
+        ax = holder.get("ax")
+        if ax is not None and hasattr(ax, "reveal"):
+            ax.reveal()
+
+    try:
+        AX._frontmost_pid = lambda: 999999
+        AX._activate = fake_activate
+        cid = AX.Walk(FakeAx(card_tree(["Allow", "Deny"])),
+                      pid_of=lambda: 4242).scan()["cards"][0]["card_id"]
+
+        ax = FlakyAx(card_tree(["Allow", "Deny"]))
+        holder["ax"] = ax
+        out = AX.Walk(ax, pid_of=lambda: 4242).press(cid, front=True)
+        assert out["pressed"] is True and ax.pressed == ["Allow"], out
+        assert ax.perform_calls == 2, ax.perform_calls
+        print("PASS: a press failing on a stale element (-25202) is retried fronted and lands", flush=True)
+
+        ax = FlakyAx(card_tree(["Allow", "Deny"]))
+        holder["ax"] = ax
+        out = AX.Walk(ax, pid_of=lambda: 4242).press(cid, front=False)
+        assert out["pressed"] is False and "-25202" in out["reason"], out
+        assert ax.perform_calls == 1 and ax.pressed == [], (ax.perform_calls, ax.pressed)
+        print("PASS: without fronting, a stale-element press stays one attempt", flush=True)
+
+        empty = El("AXApplication", "", [El("AXWindow", "", [])])
+        ax = RevealAx(empty, card_tree(["Allow", "Deny"]))
+        holder["ax"] = ax
+        out = AX.Walk(ax, pid_of=lambda: 4242).press(cid, front=True)
+        assert out["pressed"] is True and ax.pressed == ["Allow"], out
+        print("PASS: a card the unfronted walk cannot see is pressed on the fronted retry", flush=True)
+
+        ax = RevealAx(empty, card_tree(["Allow", "Deny"]))
+        holder["ax"] = ax
+        out = AX.Walk(ax, pid_of=lambda: 4242).press(cid, front=False)
+        assert out["pressed"] is False and out["reason"] == "card not showing", out
+        assert ax.pressed == [], ax.pressed
+        print("PASS: without fronting, an unseen card stays a clean not-showing refusal", flush=True)
+    finally:
+        AX._frontmost_pid, AX._activate = real_frontmost, real_activate
 
     _seam_request_access()
 
