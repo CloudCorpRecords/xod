@@ -376,6 +376,51 @@ def case_backend_watchdog():
     check("D watchdog: recovery is recorded", bool(wd.status().get("healthy", True)) or True, "")
 
 
+def case_backend_watchdog_live_probe():
+    """The standalone probe itself, against a real HTTP server. The
+    0.9.23 install found the shipped probe reads a healthy production
+    backend as dead forever: it probed /api/health (404 on the
+    production backend) and urllib raises for 4xx, so the "any HTTP
+    answer is alive" branch was unreachable. Any HTTP answer below
+    500 proves a live backend; only silence (or a 5xx) is dead."""
+    import socket
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    try:
+        from app.services import backend_watchdog as BW
+    except Exception as e:
+        check("D watchdog probe: the backend watchdog module exists", False, str(e))
+        return
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response({"/ok": 200, "/missing": 404, "/broken": 500}.get(self.path, 200))
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    port = srv.server_address[1]
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        check("D watchdog probe: the probed route is one the production backend serves",
+              BW.HEALTH_URL.endswith("/api/config"), BW.HEALTH_URL)
+        check("D watchdog probe: a 200 answer is alive",
+              BW._http_probe(f"http://127.0.0.1:{port}/ok") is True)
+        check("D watchdog probe: a 404 answer is still a live backend",
+              BW._http_probe(f"http://127.0.0.1:{port}/missing") is True)
+        check("D watchdog probe: a 500 answer is not alive",
+              BW._http_probe(f"http://127.0.0.1:{port}/broken") is False)
+    finally:
+        srv.shutdown()
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead = s.getsockname()[1]
+    check("D watchdog probe: no listener is dead",
+          BW._http_probe(f"http://127.0.0.1:{dead}/api/config") is False)
+
+
 async def guarded(name, coro):
     try:
         await coro
@@ -396,6 +441,7 @@ async def main():
     await guarded("D blocked", case_blocked_self_reports())
     await guarded("D evidence", case_positive_evidence())
     case_backend_watchdog()
+    case_backend_watchdog_live_probe()
     import shutil
     shutil.rmtree(WORK, ignore_errors=True)
     failed = [n for n, ok in results if not ok]
