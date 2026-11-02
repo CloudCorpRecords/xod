@@ -2963,7 +2963,7 @@ async def terminal_command_uninstall():
 
 @app.get("/api/desktop/status")
 async def desktop_status():
-    """The real screen, mouse and keyboard (services/desktop.py): macOS permissions, the apps Xod may use, the task running."""
+    """The real screen, mouse and keyboard (services/desktop.py): the platform's permissions (macOS switches, or the Windows desktop session), the apps Xod may use, the task running."""
     from app.services import desktop
     return desktop.status()
 

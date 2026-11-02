@@ -3428,11 +3428,11 @@ def _desktop_setup_card(a: Dict[str, Any]) -> Dict[str, Any]:
     if token and token in _setup_grants:
         _setup_grants.discard(token)
         packs.set_enabled(desktop.PACK, True)
-        res = desktop.request_permissions(force=True) if desktop.MAC else desktop.permissions()
+        res = desktop.request_permissions(force=True) if desktop.SUPPORTED else desktop.permissions()
         return {"success": True, "enabled": True, **{k: res.get(k) for k in ("screen", "accessibility", "app", "message")},
                 "note": "The screen tools are available from the next message."}
-    if not desktop.MAC:
-        return {"success": False, "error": "Using the screen, mouse and keyboard works on a Mac for now."}
+    if not desktop.SUPPORTED:
+        return {"success": False, "error": "Using the screen, mouse and keyboard works on a Mac or Windows for now."}
     t = uuid.uuid4().hex
     _setup_grants.add(t)
     held = sentinel.hold("desktop_setup", {"_grant": t}, {"rule": "desktop_setup",
@@ -3552,7 +3552,7 @@ async def _crew_tool(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
 
 def _screen_on() -> bool:
     from app.services import desktop
-    return desktop.MAC and desktop.enabled()
+    return desktop.SUPPORTED and desktop.enabled()
 
 
 async def _cli_start(ac, agent: str, folder: str, visible: bool, name: str = "", new: bool = False) -> Dict[str, Any]:
