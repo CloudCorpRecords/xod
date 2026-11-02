@@ -20,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "media"))
 from studio import Studio  # noqa: E402
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 
 LOOKS = ["moon", "cat", "ghost", "robot", "owl", "sprout"]
 results = []

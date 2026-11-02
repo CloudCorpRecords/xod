@@ -45,6 +45,22 @@ function savePrefs() {
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(PREFS_FILE, JSON.stringify(prefs, null, 1)); } catch (e) { /* not fatal */ }
 }
 let prefs = loadPrefs();
+
+// Xod's Accessibility grant belongs to this process, the app's GUI main. The Python backend is a
+// child this process spawns, and macOS does not attribute the app's grant to it, so the backend's
+// own trust check read false against a provably good grant (2026-11-02). The GUI therefore
+// evaluates its own trust here and leaves the verdict in the data dir, rewritten on an interval;
+// the backend (app/services/permissions.py) surfaces this reading and never its own.
+const AX_TRUST_FILE = path.join(DATA_DIR, "ax_trust.json");
+function writeAxTrust() {
+  if (process.platform !== "darwin" || !PACKAGED) return;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmp = AX_TRUST_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify({ trusted: !!systemPreferences.isTrustedAccessibilityClient(false), checked_at: Date.now() / 1000, app_version: app.getVersion() }));
+    fs.renameSync(tmp, AX_TRUST_FILE);
+  } catch (e) { /* a missing verdict reads as unknown in the backend, never as false */ }
+}
 // Started by "Start Xod when I log in": stay in the tray, don't open the window.
 const startedHidden = process.argv.includes("--hidden") ||
   (process.platform === "darwin" && (() => { try { return app.getLoginItemSettings().wasOpenedAtLogin; } catch (e) { return false; } })());
@@ -459,6 +475,8 @@ function setMenu(checkForUpdates) {
 app.whenReady().then(async () => {
   if (offerMoveToApplications()) return;    // macOS relaunches it from Applications
   lockDown();
+  writeAxTrust();
+  setInterval(writeAxTrust, 15000).unref();
   showSplash();
   try {
     appUrl = await startServer();

@@ -26,6 +26,7 @@ HOMEDIR = TMP / "home"
 BIN = HOMEDIR / ".local" / "bin"
 BIN.mkdir(parents=True)
 (TMP / "state").mkdir()
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 os.environ.update({"HOME": str(HOMEDIR), "XOD_DATA_DIR": str(TMP / "data"), "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring",
                    "XOD_TEST_KEYRING_FILE": str(TMP / "keys.json"), "XOD_NO_UPDATE_CHECK": "1", "FAKE_STATE": str(TMP / "state"),
                    "PATH": os.pathsep.join(p for p in os.environ.get("PATH", "").split(os.pathsep)
@@ -321,6 +322,30 @@ async def main():
     argv = json.loads((TMP / "state" / "claude.log").read_text().splitlines()[-1])
     check("…and after Claude Code stopped (a restart), it resumes that conversation",
           "--resume" in argv and "message 3 in this session" in j["answer"], f"{argv} {j['answer']}")
+
+    print("K7b the board seat: pinned by configuration, proven from the run")
+    crew.set_board_model("sonnet-test")
+    check("the board pin is a setting of its own", crew.board_model() == "sonnet-test")
+    check("pick_model seats board jobs on the pin", crew.pick_model("board")[0] == "sonnet-test")
+    j = await crew.start("board session brief", str(work), agent="claude", kind="board")
+    j = await crew.wait(j["id"], 15)
+    seat = j.get("seat") or {}
+    argv = json.loads((TMP / "state" / "claude.log").read_text().splitlines()[-1])
+    check("a board job asks Claude Code for the pinned model",
+          "--model" in argv and argv[argv.index("--model") + 1] == "sonnet-test", str(argv))
+    check("the job records what was requested and what actually ran",
+          seat.get("model_requested") == "sonnet-test" and seat.get("model_actual") == "fake"
+          and bool(seat.get("model_proof")), str(seat))
+    crew.set_board_model("")
+    j = await crew.start("board session brief", str(work), agent="claude", kind="board")
+    j = await crew.wait(j["id"], 15)
+    seat = j.get("seat") or {}
+    check("with no pin configured, the record says so instead of claiming one",
+          seat.get("model_requested") == "" and "no board model pin" in (seat.get("limitation") or "").lower(),
+          str(seat))
+    j = await crew.start("ordinary job", str(work), agent="claude")
+    j = await crew.wait(j["id"], 15)
+    check("an ordinary job carries no seat record", j.get("seat") is None, str(j.get("seat")))
 
     print("K8 GitHub, one click, shared with jobs")
     from app.services import connectors, mcp_client, keychain

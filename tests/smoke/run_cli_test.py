@@ -32,6 +32,7 @@ DATA = TMP / "data"
 DATA.mkdir()
 KEYS = TMP / "keys.json"
 KEYS.write_text("{}")
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 os.environ.update(XOD_DATA_DIR=str(DATA), PYTHON_KEYRING_BACKEND="tests.support.filekeyring.FileKeyring",
                   XOD_TEST_KEYRING_FILE=str(KEYS))
 os.environ.pop("XOD_URL", None)

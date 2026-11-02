@@ -26,6 +26,7 @@ and one browser), on this machine only, with no bus. Usage and cost are not
 tracked here; the report says so until a usage ledger exists to read from.
 """
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -45,6 +46,44 @@ DB = DATA_DIR / "xod.db"
 MISSION_STATES = ("planning", "running", "paused", "done", "failed")
 _EFFECT_KINDS = ("create", "modify", "delete")
 _TERMINAL_TASK = ("done", "failed", "cancelled")
+
+# ------------------------------------------------------- pause supervision
+# Fix round 5 (2026-10-31, from the Tier 1 re-run 4 record, T1B): a
+# research mission sat in state paused for the full 900 second
+# measurement cap and never produced a report, because its subtask's
+# task was waiting and nobody answered. The driver loop re-drives a
+# paused mission every couple of seconds, but all that did was enter
+# the same wait again: nothing kept a clock on the pause, so a wait
+# nobody answers had no terminal shape at all.
+#
+# The remedy is bounded. A subtask task that stays waiting past
+# PAUSE_WEDGE_THRESHOLD_SEC gets ONE automatic resume through the
+# queue's own retry path (the same "trying again" a person can ask
+# for; never a raw state edit, never an invented answer). If the task
+# waits again and that second wait also runs past
+# PAUSE_RESUME_WINDOW_SEC, the step fails honestly: the verdict names
+# the wedge, how long it sat, and that one resume was attempted.
+#
+# The numbers are the codebase's own. The task queue flags a working
+# task stalled at 600 seconds without progress (STALL_THRESHOLD_SEC)
+# and stops it at twice that (STALL_RECOVER_SEC); a waiting task has
+# already notified the user (Mac notification and phone) when it
+# started waiting, so 600 unattended seconds is a wedge, not a wait
+# in progress, and healthy missions finish whole steps in 60 to 90
+# seconds. Worst case to an honest failure is about 1200 seconds,
+# the same total budget the queue gives a wedged working task.
+#
+# One wait kind is exempt: a task waiting for approval is a person's
+# gate. Supervision never resumes it (an automatic retry must not
+# stand in for a person's OK on an irreversible step) and never times
+# it out. Question and blocked waits are supervised, but the resume
+# goes through the normal retry path, so a person can still answer
+# at any moment before the threshold and nothing here invents an
+# answer for them. What the code cannot do is tell an unattended
+# question from one a person is about to answer; the 600 second
+# threshold is the whole distinction, and it is recorded as a limit.
+PAUSE_WEDGE_THRESHOLD_SEC = 600
+PAUSE_RESUME_WINDOW_SEC = 600
 
 
 # ------------------------------------------------------- verdict integrity
@@ -147,6 +186,60 @@ def _incompletion_signal(claimed: Any) -> Optional[str]:
     return None
 
 
+# ------------------------------------------------------- blocked signal
+# Fix round 6 (BOARD-001, Lane D): a worker that reports it could not
+# run for a missing input or a missing tool is not "done", and it is
+# not an ordinary failure either: it is blocked, a typed state the
+# verdict layer honours, so the mission names the block instead of
+# dressing the step up as verified (the BOARD-001 mission's subtask 3
+# reported it had no tools to create files and still closed verified)
+# or routing around it through some other flow. The patterns are
+# conservative on purpose, in the _incompletion_signal style: a
+# self-report of missing capability or missing input, in the worker's
+# own words. Ordinary incompletion ("could not finish") stays with
+# _incompletion_signal; this fires only when the report names WHY in
+# capability/input terms.
+_BLOCKED_RES = (
+    r"\b(?:have|has|had) no (?:tools?|way) to\b",
+    r"\bno (?:file )?(?:write|create|writing) tool\b",
+    r"\bnot (?:included|provided|given|delivered|attached) (?:in|to) (?:me|this step|what i received)\b",
+    r"\b(?:evidence pack|evidence|brief|input|inputs|file|context) (?:was|were|is) not (?:included|provided|given|attached|delivered)\b",
+    r"\bmissing (?:input|inputs|evidence|context|file) (?:needed|required|to)\b",
+    r"\bcannot (?:assess|evaluate|complete|proceed) without\b",
+    r"\bwithout the (?:tools?|input|evidence|file|context) (?:needed|required|to)\b",
+)
+
+
+def _blocked_signal(claimed: Any) -> Optional[str]:
+    """The sentence of a subtask report that says the step was blocked
+    by a missing input or a missing tool, or None."""
+    if not claimed or not isinstance(claimed, str):
+        return None
+    for sentence in re.split(r"[.\n]", claimed):
+        low = sentence.lower()
+        if any(re.search(p, low) for p in _BLOCKED_RES):
+            return sentence.strip()[:200]
+    return None
+
+
+def _has_decisive_evidence(task: Dict[str, Any]) -> bool:
+    """Positive evidence a no-effect step can be verified on (fix round
+    6, Lane D): the task carries a decisive-evidence payload (the tool
+    result blocks the hunt layer renders and the queue stores on the
+    task), something the verdict can inspect, as opposed to the mere
+    absence of a contradiction on disk."""
+    raw = task.get("evidence_json")
+    if raw:
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            data = None
+        if isinstance(data, (list, dict)) and data:
+            return True
+    ev = task.get("evidence")
+    return isinstance(ev, list) and bool(ev)
+
+
 def _run_effect_problem(eff: Dict[str, Any]) -> Optional[str]:
     """Re-executes one declared run effect through the queue's own run
     check; returns its problem text, or None when the exit code is the
@@ -170,7 +263,7 @@ def _declares_directory(subtask: Dict[str, Any]) -> bool:
     return bool(re.search(r"\b(directory|folder)\b", words))
 
 
-def _fresh_effect_problems(subtask: Dict[str, Any]) -> List[str]:
+def _fresh_effect_problems(subtask: Dict[str, Any], types_only: bool = False) -> List[str]:
     """Ways this subtask's declared effects are NOT true on disk right
     now, checked fresh at verdict time with the same rules the task
     layer's gate uses (task_queue._verify_file_effects over declared
@@ -182,39 +275,49 @@ def _fresh_effect_problems(subtask: Dict[str, Any]) -> List[str]:
     recorded when a task finished can be stale by verdict time (a
     parallel step landed the file after that check ran), and a file
     that exists at verdict time must never be named as missing."""
+    from app.services.task_queue import _file_type_problem
     problems: List[str] = []
     for eff in subtask.get("expected_effects") or []:
         kind = eff.get("kind")
         if kind == "run":
-            problem = _run_effect_problem(eff)
-            if problem:
-                problems.append(problem)
+            if not types_only:
+                problem = _run_effect_problem(eff)
+                if problem:
+                    problems.append(problem)
             continue
         if kind not in ("create", "modify", "delete"):
             continue
         p = Path(os.path.expanduser(str(eff.get("path", ""))))
         if kind == "delete":
-            if p.exists():
+            if p.exists() and not types_only:
                 problems.append(f"the task asked for {p.name} to be deleted, "
                                 "but it is still on disk")
             continue
         if kind == "create" and _declares_directory(subtask):
-            if not p.is_dir():
+            if not p.is_dir() and not types_only:
                 problems.append(f"the task asked for {p.name} to be created, "
                                 "but it is not on disk")
             continue
         if not p.is_file():
-            problems.append(f"the task asked for {p.name} to be created, "
-                            "but it is not on disk")
+            if not types_only:
+                problems.append(f"the task asked for {p.name} to be created, "
+                                "but it is not on disk")
             continue
         content = eff.get("content")
-        if isinstance(content, str) and content == content.strip() and "\n" not in content:
+        if not types_only and isinstance(content, str) and content == content.strip() and "\n" not in content:
             try:
                 actual = p.read_bytes() if p.stat().st_size <= 1_000_000 else None
             except OSError:
                 actual = None
             if actual is not None and actual != content.encode("utf-8"):
                 problems.append(f"{p.name} does not contain exactly what the task asked for")
+        # Type validation (fix round 6, BOARD-001 Design 2): existence is
+        # not enough. A .py that does not compile, a test file that
+        # collects no tests, or a .json that does not parse is not the
+        # artifact the step declared, whatever its name.
+        type_problem = _file_type_problem(p)
+        if type_problem:
+            problems.append(type_problem)
     return problems
 
 
@@ -263,6 +366,75 @@ def _recheck_failed_subtasks(mission_id: str) -> None:
         if kept != (s.get("evidence") or []):
             _save_subtask(s["id"], evidence=kept
                           or [f"Checked on disk: {p}" for p in fresh])
+
+
+def _repair_finished_verdict(mission_id: str) -> None:
+    """Fix round 5: reconcile a finished mission whose recorded verdict
+    a stale peer process wrote from superseded evidence. Two backend
+    processes share this database; a process running an older build in
+    memory composes verdicts the old way (re-run 4 T1A: its outcome
+    copied the task's recorded problems verbatim, backticked phantom
+    file included, and it finished the mission) while this build's
+    driver, polling the same subtask, composes the fresh outcome and
+    saves it to the subtask row moments later. The row then disagrees
+    with the mission's failure reason and report, and nothing ever
+    reconciles them, because a finished mission is never driven again.
+    This runs when a driver of this build reaches a finished mission
+    (its own finish call finding the mission already finished, or an
+    outcome save for a subtask of one): re-run the finish-time
+    re-check, and if the recorded verdict cites evidence no subtask
+    row carries any more, rebuild the report and the failure reason
+    from the current rows. A mission whose failed steps all verify
+    fresh is closed done. Nothing is rewritten when the recorded
+    verdict still matches the rows."""
+    mission = get_mission(mission_id)
+    if not mission or mission["state"] not in ("done", "failed"):
+        return
+    if not mission.get("finished_at"):
+        return
+    before = {s["id"]: (s["status"], s.get("verified_status"),
+                         tuple(s.get("evidence") or []))
+              for s in mission["subtasks"]}
+    _recheck_failed_subtasks(mission_id)
+    current = get_mission(mission_id)
+    after = {s["id"]: (s["status"], s.get("verified_status"),
+                        tuple(s.get("evidence") or []))
+             for s in current["subtasks"]}
+    rows_changed = before != after
+    reason = current.get("failure_reason") or ""
+    failed = [s for s in current["subtasks"] if s["status"] == "failed"]
+    # Blocked steps (fix round 6) stand exactly as failed ones do here:
+    # a mission with a blocked step is not done, and its citation is
+    # reconciled against the blocked row, never repaired away.
+    blocked = [s for s in current["subtasks"] if s["status"] == "blocked"]
+    new_reason, new_state = reason, current["state"]
+    if current["state"] == "failed" and not failed and not blocked:
+        new_state, new_reason = "done", None
+    elif current["state"] == "failed" and reason.startswith("Step "):
+        word = " blocked: " if " blocked: " in reason else " failed: "
+        cited = reason.split(word, 1)[-1] if word in reason else ""
+        step_no = None
+        matched = re.match(r"Step (\d+) ", reason)
+        if matched:
+            step_no = int(matched.group(1))
+        pool = blocked if word == " blocked: " else failed
+        if not pool:
+            pool = failed + blocked
+        target = next((s for s in pool if s["idx"] + 1 == step_no), None)
+        if target is None and pool:
+            target = pool[0]
+        if target is not None and cited and cited not in (target.get("evidence") or []):
+            ev = target.get("evidence") or ["see the step report"]
+            new_reason = f"Step {target['idx'] + 1} ({target['title']}){word}{ev[0]}"
+    if not rows_changed and new_reason == reason and new_state == current["state"]:
+        return
+    logger.warning(f"Mission {mission_id}: repairing a finished verdict that cited "
+                   "superseded evidence (a stale peer process finished it first); "
+                   "the verdict now follows the fresh row evidence.")
+    if new_state != current["state"] or new_reason != reason:
+        _save_mission(mission_id, state=new_state,
+                      failure_reason=new_reason if new_state == "failed" else None)
+    _save_mission(mission_id, report=build_report(get_mission(mission_id)))
 
 
 def _content_leak_for_subtask(subtask: Dict[str, Any]) -> Optional[Tuple[str, str]]:
@@ -332,6 +504,47 @@ def _conn() -> sqlite3.Connection:
         )
         """
     )
+    # Fix round 5: one subtask row per (mission, step), enforced by the
+    # shared store itself. Two backend processes share this database
+    # (the installed app and a dev instance), and a process running an
+    # older build in memory does not implement the round 4 atomic plan
+    # claim: in re-run 4 the stale process planned right past the claim
+    # and inserted a second paraphrased plan, doubling two missions to
+    # six rows. Code-level claims can only bind processes that run the
+    # code; a trigger binds every writer of the store, including a
+    # stale one, whose duplicate insert now aborts inside its own
+    # planning call and leaves the winning plan's rows alone. The
+    # trigger fires only on new inserts, so doubled rows a stale peer
+    # already wrote into a legacy database do not block its creation.
+    c.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS mission_subtasks_one_row_per_step
+        BEFORE INSERT ON mission_subtasks
+        WHEN EXISTS (SELECT 1 FROM mission_subtasks
+                     WHERE mission_id = NEW.mission_id AND idx = NEW.idx)
+        BEGIN
+            SELECT RAISE(ABORT, 'a subtask row for this mission step already exists');
+        END
+        """
+    )
+    # Pause supervision stamps (fix round 5): when the current wait
+    # began on the supervision clock, and how many automatic resumes
+    # this subtask has already spent. Added the way the task queue
+    # adds its own later columns, so existing databases pick them up.
+    cols = [r[1] for r in c.execute("PRAGMA table_info(mission_subtasks)").fetchall()]
+    if "paused_at" not in cols:
+        c.execute("ALTER TABLE mission_subtasks ADD COLUMN paused_at REAL")
+    if "pause_resume_attempts" not in cols:
+        c.execute("ALTER TABLE mission_subtasks ADD COLUMN pause_resume_attempts INTEGER DEFAULT 0")
+    # Capability contract (fix round 6, BOARD-001 Design 1): the step's
+    # declared inputs and tools as validated at planning, and the
+    # input-delivery read-back recorded at dispatch (one entry per
+    # delivered input: source, ref, sha256 of the delivered text).
+    if "contract" not in cols:
+        c.execute("ALTER TABLE mission_subtasks ADD COLUMN contract TEXT DEFAULT '{}'")
+    if "input_delivery" not in cols:
+        c.execute("ALTER TABLE mission_subtasks ADD COLUMN input_delivery TEXT DEFAULT '[]'")
+    c.commit()
     return c
 
 
@@ -352,6 +565,15 @@ def _mission_row(r: sqlite3.Row) -> Dict[str, Any]:
 
 def _subtask_row(r: sqlite3.Row) -> Dict[str, Any]:
     d = dict(r)
+    for k in ("contract",):
+        try:
+            d[k] = json.loads(d.get(k) or "{}")
+        except Exception:
+            d[k] = {}
+    try:
+        d["input_delivery"] = json.loads(d.get("input_delivery") or "[]")
+    except Exception:
+        d["input_delivery"] = []
     for k in ("expected_effects", "evidence"):
         try:
             d[k] = json.loads(d.get(k) or "[]")
@@ -361,6 +583,16 @@ def _subtask_row(r: sqlite3.Row) -> Dict[str, Any]:
 
 
 def _save_mission(mission_id: str, **fields: Any) -> None:
+    # Observability (services/event_log.py): a plan landing or a state change is an
+    # event; the prior state is read first when this save carries either.
+    old_state: Optional[str] = None
+    watch = ("state" in fields) or ("plan" in fields)
+    if watch:
+        c0 = _conn()
+        r0 = c0.execute("SELECT state FROM missions WHERE id = ?", (mission_id,)).fetchone()
+        c0.close()
+        old_state = r0["state"] if r0 else None
+    plan = fields.get("plan")
     for k in ("plan", "report"):
         if k in fields:
             fields[k + "_json"] = json.dumps(fields.pop(k)) if fields[k] is not None else None
@@ -370,10 +602,31 @@ def _save_mission(mission_id: str, **fields: Any) -> None:
     c.execute(f"UPDATE missions SET {cols} WHERE id = ?", (*fields.values(), mission_id))
     c.commit()
     c.close()
+    if watch:
+        from app.services import event_log
+        if isinstance(plan, dict):
+            event_log.emit("mission.planned", actor="missions", ids={"mission_id": mission_id},
+                           payload={"subtasks": len(plan.get("subtasks") or [])})
+        if "state" in fields and fields["state"] != old_state:
+            payload: Dict[str, Any] = {"from": old_state, "to": fields["state"]}
+            if fields.get("failure_reason"):
+                payload["failure_reason"] = fields["failure_reason"]
+            event_log.emit("mission.status", actor="missions",
+                           ids={"mission_id": mission_id}, payload=payload)
 
 
 def _save_subtask(subtask_id: str, **fields: Any) -> None:
-    for k in ("expected_effects", "evidence"):
+    # Observability: status changes, a pause clock starting, and a spent resume are
+    # events; the prior row is read first when this save carries any of them.
+    old: Optional[Dict[str, Any]] = None
+    watch = ("status" in fields) or ("paused_at" in fields) or ("pause_resume_attempts" in fields)
+    if watch:
+        c0 = _conn()
+        r0 = c0.execute("SELECT mission_id, idx, status, task_id, paused_at, pause_resume_attempts "
+                        "FROM mission_subtasks WHERE id = ?", (subtask_id,)).fetchone()
+        c0.close()
+        old = dict(r0) if r0 else None
+    for k in ("expected_effects", "evidence", "contract", "input_delivery"):
         if k in fields and not isinstance(fields[k], str):
             fields[k] = json.dumps(fields[k])
     cols = ", ".join(f"{k} = ?" for k in fields)
@@ -381,6 +634,22 @@ def _save_subtask(subtask_id: str, **fields: Any) -> None:
     c.execute(f"UPDATE mission_subtasks SET {cols} WHERE id = ?", (*fields.values(), subtask_id))
     c.commit()
     c.close()
+    if old is not None:
+        from app.services import event_log
+        ids = {"mission_id": old["mission_id"], "subtask_id": subtask_id}
+        if old.get("task_id"):
+            ids["task_id"] = old["task_id"]
+        if "status" in fields and fields["status"] != old["status"]:
+            payload: Dict[str, Any] = {"from": old["status"], "to": fields["status"], "idx": old["idx"]}
+            if fields.get("verified_status"):
+                payload["verified_status"] = fields["verified_status"]
+            event_log.emit("subtask.status", actor="missions", ids=ids, payload=payload)
+        if fields.get("paused_at") is not None and old.get("paused_at") is None:
+            event_log.emit("subtask.wait", actor="missions", ids=ids,
+                           payload={"idx": old["idx"], "paused_at": fields["paused_at"]})
+        if (fields.get("pause_resume_attempts") or 0) > (old.get("pause_resume_attempts") or 0):
+            event_log.emit("subtask.resumed", actor="missions", ids=ids,
+                           payload={"idx": old["idx"], "attempts": fields["pause_resume_attempts"]})
 
 
 def get_mission(mission_id: str) -> Optional[Dict[str, Any]]:
@@ -428,10 +697,12 @@ Break it into a short list of subtasks the agent can do one at a time, in order.
 - "title": a few words.
 - "instruction": exactly what to do, in one or two sentences.
 - "expected_effects": the files this subtask will create, modify or delete, so the result can be checked on disk afterwards. Each effect is {{"kind": "create", "path": "/absolute/path", "content": null}} where kind is "create", "modify" or "delete", path is absolute or starts with ~/, and content is the exact file contents ONLY when the job dictates them word for word, otherwise null. An effect can instead prove that produced code works: {{"kind": "run", "command": "a single command line", "cwd": "/absolute/path", "expect_exit": 0}} where command is one plain command with no shell chaining, pipes or redirection, cwd is the directory the command runs from, and expect_exit (which defaults to 0) is the exit code that counts as success. If a subtask changes no files (looking something up, answering, deciding), expected_effects is [].
+- "inputs": what this subtask must be given to work. Each input is {{"source": "goal"}} (the mission goal itself, which carries any evidence pack or brief the user supplied), {{"source": "prior_step", "ref": "1"}} (the reported result of an earlier step, by its number), or {{"source": "file", "ref": "/absolute/path"}} (a file whose contents the step needs). The goal is always delivered; declare prior_step or file inputs whenever the step's work depends on them. A step whose declared input cannot be delivered never starts.
+- "tools": the tools this subtask needs, by name (for example "computer_write_file" for a step that writes a file, "computer_read_file" for one that only reads). A step whose declared file effects need a tool its "tools" list leaves out never starts.
 - When a subtask creates a test file or an executable artifact, give it a "run" effect that runs what it made: run the test file with the project's test runner, or invoke the artifact harmlessly, with cwd set to the directory the subtask creates the file in. Creating a file is not proof it works; the run is the proof.
 
 Between 2 and 8 subtasks. Later subtasks may rely on earlier ones; nothing runs at the same time.
-Reply with JSON only: {{"subtasks": [{{"title": "...", "instruction": "...", "expected_effects": []}}]}}"""
+Reply with JSON only: {{"subtasks": [{{"title": "...", "instruction": "...", "expected_effects": [], "inputs": [{{"source": "goal"}}], "tools": []}}]}}"""
 
 
 class PlanRejected(Exception):
@@ -499,7 +770,7 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
                     problems.append(f"{ewhere}: cwd must be a non-empty string")
                     continue
                 cwd = cwd.strip()
-                if not (cwd.startswith("/") or cwd.startswith("~/")):
+                if not _looks_absolute(cwd):
                     problems.append(f"{ewhere}: cwd must be absolute or start with ~/")
                     continue
                 if ".." in _path_parts(cwd):
@@ -520,7 +791,7 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
                 problems.append(f"{ewhere}: path must be a non-empty string")
                 continue
             path = path.strip()
-            if not (path.startswith("/") or path.startswith("~/")):
+            if not _looks_absolute(path):
                 problems.append(f"{ewhere}: path must be absolute or start with ~/")
                 continue
             if ".." in _path_parts(path):
@@ -543,8 +814,55 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
                                     f"requested artifact: \"{leak}\"")
                     continue
             clean_effects.append({"kind": kind, "path": path, "content": content})
+        # Capability contract (fix round 6, BOARD-001 Design 1): the
+        # step declares the inputs it must be given and the tools it
+        # needs. Both are validated here so a plan that cannot be
+        # honoured is re-asked at planning, and what survives is what
+        # assembly enforces at dispatch.
+        clean_inputs: List[Dict[str, Any]] = []
+        raw_inputs = s.get("inputs")
+        if raw_inputs is not None:
+            if not isinstance(raw_inputs, list) or len(raw_inputs) > 6:
+                problems.append(f"{where}: inputs must be a list of at most 6 declared inputs")
+                raw_inputs = []
+            for j, inp in enumerate(raw_inputs):
+                iwhere = f"{where} input {j + 1}"
+                if not isinstance(inp, dict):
+                    problems.append(f"{iwhere}: must be an object")
+                    continue
+                source = inp.get("source")
+                if source not in ("goal", "prior_step", "file"):
+                    problems.append(f"{iwhere}: source must be one of goal, prior_step, file")
+                    continue
+                if source == "goal":
+                    clean_inputs.append({"source": "goal"})
+                    continue
+                ref = inp.get("ref")
+                if not isinstance(ref, str) or not ref.strip():
+                    problems.append(f"{iwhere}: a {source} input needs a ref")
+                    continue
+                ref = ref.strip()
+                if source == "prior_step":
+                    if not ref.isdigit() or not (1 <= int(ref) <= i):
+                        problems.append(f"{iwhere}: ref must be the number of an earlier step")
+                        continue
+                    clean_inputs.append({"source": "prior_step", "ref": ref})
+                else:
+                    if not _looks_absolute(ref) or ".." in _path_parts(ref):
+                        problems.append(f"{iwhere}: ref must be an absolute path or start with ~/")
+                        continue
+                    clean_inputs.append({"source": "file", "ref": ref})
+        clean_tools: Optional[List[str]] = None
+        raw_tools = s.get("tools")
+        if raw_tools is not None:
+            if (not isinstance(raw_tools, list) or len(raw_tools) > 24
+                    or any(not isinstance(t, str) or not t.strip() for t in raw_tools)):
+                problems.append(f"{where}: tools must be a list of tool names")
+            else:
+                clean_tools = [t.strip() for t in raw_tools]
         out.append({"title": str(title).strip(), "instruction": str(instruction).strip(),
-                    "expected_effects": clean_effects})
+                    "expected_effects": clean_effects,
+                    "inputs": clean_inputs, "tools": clean_tools})
     if problems:
         return None, problems
     # A merged double plan (the baseline's interleaved 1,1,2,2,3,3) repeats
@@ -560,6 +878,15 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
         seen.add(key)
         deduped.append(s)
     return {"subtasks": deduped}, []
+
+
+def _looks_absolute(path: str) -> bool:
+    """Absolute for plan purposes: POSIX root, ~/ home form, or a Windows
+    drive-letter path (C:\\ or C:/). Before fix round 6 the checks below
+    accepted only the first two, so a plan naming a native Windows path
+    was rejected at planning on the Windows build."""
+    return (path.startswith("/") or path.startswith("~/")
+            or bool(re.match(r"^[A-Za-z]:[\\/]", path)))
 
 
 def _path_parts(path: str) -> List[str]:
@@ -747,30 +1074,164 @@ def _write_tool_problem(subtask: Dict[str, Any], request: str) -> Optional[str]:
     return None
 
 
+# The delivered-inputs reference fence (fix round 6). The task
+# queue strips lines between these markers when it parses a request
+# for file/run claims; keep the two in step (task_queue.py has the
+# same literals).
+INPUT_FENCE_START = "----- delivered inputs (reference only; not this step's instructions) -----"
+INPUT_FENCE_END = "----- end of delivered inputs -----"
+
+
+def _contract_tool_problem(subtask: Dict[str, Any]) -> Optional[str]:
+    """Capability contract (fix round 6, BOARD-001 Design 1): when the
+    plan declared a tools list for this step, every declared file
+    effect must be performable by a tool ON that list. A step whose
+    contract excludes the tool its effect needs fails at assembly,
+    naming the gap, exactly like a step no available flow can equip
+    (_write_tool_problem, the fix round 4 check this generalises)."""
+    contract = subtask.get("contract") or {}
+    tools = contract.get("tools")
+    if tools is None:
+        return None
+    names = set(tools)
+    for eff in subtask.get("expected_effects") or []:
+        if eff.get("kind") == "delete":
+            needed, what = _DELETE_TOOLS, "delete"
+        elif eff.get("kind") == "create" and _declares_directory(subtask):
+            needed, what = _DIR_WRITE_TOOLS, "create the directory"
+        elif eff.get("kind") in ("create", "modify"):
+            needed, what = _FILE_WRITE_TOOLS, "write the file"
+        else:
+            continue
+        if not any(n in names for n in needed):
+            return (f"Assembly stopped this step before any task was created: subtask "
+                    f"\"{subtask.get('title', '')}\" must {what} {eff.get('path', '')}, "
+                    f"but its declared capability contract (tools: "
+                    f"{', '.join(sorted(names)) or 'none'}) includes none of the tools "
+                    f"that could do it ({', '.join(needed)}). A step is dispatched only "
+                    f"to a flow its contract equips; the contract and the effects must "
+                    f"be fixed in the plan, not worked around at run time.")
+    return None
+
+
+def assemble_step(mission_id: str, subtask: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
+    """Assembles one subtask's task text under its capability contract
+    (fix round 6, BOARD-001 Design 1). Returns (request, delivery,
+    problem): delivery is the input-delivery read-back, one record per
+    declared input actually placed into the request (source, ref,
+    sha256 of the delivered text); problem is a typed assembly failure
+    when a declared input cannot be delivered, and no task may be
+    created from it.
+
+    The mission goal is an implicit input for steps with no file
+    effects: the goal is where a brief or evidence pack the user
+    supplied lives, and before this round it reached NO subtask at
+    all (the BOARD-001 mission's workers assessed an evidence pack
+    they had never been given, and said so). A step WITH file effects
+    gets the goal only when its plan declares it: a goal normally
+    names every artifact in the mission, and a write step flooded
+    with all of them is a step whose request mentions other steps'
+    files (the two-instance gate's proofdir step, whose request
+    suddenly "mentioned note.txt", is the standing example).
+    Declared prior_step and file inputs are delivered to every step
+    that declares them, not only to write steps. Write steps
+    additionally keep the fix round 4 behaviour: the reported
+    results of earlier finished steps ride along as the content the
+    write exists to land."""
+    mission = get_mission(mission_id)
+    goal = (mission or {}).get("goal") or ""
+    subs = list_subtasks(mission_id)
+    contract = subtask.get("contract") or {}
+    declared: List[Dict[str, Any]] = list(contract.get("inputs") or [])
+    has_file_effects = any(e.get("kind") in ("create", "modify", "delete")
+                           for e in subtask.get("expected_effects") or [])
+    if not has_file_effects and not any(d.get("source") == "goal" for d in declared):
+        declared = [{"source": "goal"}] + declared
+    sections: List[Tuple[str, str]] = []
+    delivery: List[Dict[str, Any]] = []
+    declared_prior_refs = set()
+    for d in declared:
+        source = d.get("source")
+        if source == "goal":
+            label, text = "Mission goal (declared input)", goal
+        elif source == "prior_step":
+            ref = str(d.get("ref") or "")
+            declared_prior_refs.add(ref)
+            prior = next((s for s in subs if s["idx"] == int(ref) - 1), None) if ref.isdigit() else None
+            if prior is None or prior["status"] != "done" or not (prior.get("claimed") or "").strip():
+                return (render_request(subtask), [],
+                        f"Assembly stopped this step before any task was created: subtask "
+                        f"\"{subtask.get('title', '')}\" declares step {ref}'s result as an "
+                        f"input, but that step has no finished result to deliver. A step "
+                        f"whose declared inputs cannot be delivered does not start.")
+            label = f"Result of step {ref} ({prior['title']}) (declared input)"
+            text = prior["claimed"].strip()
+        elif source == "file":
+            ref = str(d.get("ref") or "")
+            try:
+                text = Path(os.path.expanduser(ref)).read_text(
+                    encoding="utf-8", errors="replace")[:8000]
+            except OSError:
+                return (render_request(subtask), [],
+                        f"Assembly stopped this step before any task was created: subtask "
+                        f"\"{subtask.get('title', '')}\" declares the file {ref} as an "
+                        f"input, but it could not be read. A step whose declared inputs "
+                        f"cannot be delivered does not start.")
+            label = f"Contents of {ref} (declared input)"
+        else:
+            continue
+        delivery.append({"source": source, "ref": d.get("ref"),
+                         "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                         "chars": len(text)})
+        sections.append((label, text))
+    parts = [render_request(subtask)]
+    tools = contract.get("tools")
+    if tools is not None:
+        parts += ["", "Declared tools for this step (its capability contract): "
+                  + (", ".join(tools) if tools else "none")]
+    if sections:
+        # Delivered inputs are reference material, fenced as such: the
+        # task queue's claim parsers strip the fence, so a claim can
+        # only come from this step's own rendered request, never from
+        # what it was handed (a goal dictating an exact text for one
+        # step must not become a claim against the read-back step).
+        parts += ["", INPUT_FENCE_START]
+        for label, text in sections:
+            parts += ["", f"{label}:", text]
+        parts += ["", INPUT_FENCE_END]
+    # Input-delivery read-back: every delivered input's text must be
+    # present in the assembled request, verified here at dispatch,
+    # not assumed from the assembly code above.
+    request = "\n".join(parts)
+    for (label, text), rec in zip(sections, delivery):
+        if text and text not in request:
+            return (request, [],
+                    f"Assembly stopped this step before any task was created: the "
+                    f"declared input \"{label}\" was assembled but is missing from "
+                    f"the request at read-back. The step does not start on an "
+                    f"undelivered input.")
+    if any(e.get("kind") in ("create", "modify")
+           for e in subtask.get("expected_effects") or []):
+        prior = [s for s in subs
+                 if s["idx"] < subtask["idx"] and s["status"] == "done"
+                 and (s.get("claimed") or "").strip()
+                 and str(s["idx"] + 1) not in declared_prior_refs]
+        if prior:
+            lines = [request, "",
+                     "Results from the earlier steps of this mission, for use in this step:"]
+            for s in prior:
+                lines.append(f"- Step {s['idx'] + 1} ({s['title']}): "
+                             f"{s['claimed'].strip()[:2000]}")
+            request = "\n".join(lines)
+    return request, delivery, None
+
+
 def assemble_request(mission_id: str, subtask: Dict[str, Any]) -> str:
-    """The task text for one subtask, assembled at dispatch time. A
-    write subtask (one with a create or modify effect) also carries the
-    reported results of the mission's earlier finished steps, in order:
-    those results are the content the write exists to land (research
-    findings, a draft, a decision), and before this they never left
-    their own task, so the write step started from its instruction
-    alone and could assemble a write with nothing in it. Steps that
-    change no files get their plain rendered request, unchanged."""
-    request = render_request(subtask)
-    if not any(e.get("kind") in ("create", "modify")
-               for e in subtask.get("expected_effects") or []):
-        return request
-    prior = [s for s in list_subtasks(mission_id)
-             if s["idx"] < subtask["idx"] and s["status"] == "done"
-             and (s.get("claimed") or "").strip()]
-    if not prior:
-        return request
-    lines = [request, "",
-             "Results from the earlier steps of this mission, for use in this step:"]
-    for s in prior:
-        lines.append(f"- Step {s['idx'] + 1} ({s['title']}): "
-                     f"{s['claimed'].strip()[:2000]}")
-    return "\n".join(lines)
+    """The task text for one subtask, assembled at dispatch time. Kept
+    as the text-only view of assemble_step (fix round 6) for callers
+    that render a request without dispatching it."""
+    request, _delivery, _problem = assemble_step(mission_id, subtask)
+    return request
 
 
 def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) -> Dict[str, Any]:
@@ -788,6 +1249,13 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
         # Verdict integrity: a finished task is not automatically a verified
         # subtask. The subtask's own report, its deliverable content and its
         # declared run proof are all checked before "verified" is said.
+        blocked = _blocked_signal(result)
+        if blocked:
+            return {"status": "blocked", "claimed": result, "verified_status": "blocked",
+                    "evidence": [f"The step reported itself blocked: \"{blocked}\" "
+                                 "A step that could not run for a missing input or a "
+                                 "missing tool is recorded blocked, not done, and no "
+                                 "other flow is substituted for it."]}
         signal = _incompletion_signal(result)
         if signal:
             return {"status": "failed", "claimed": result, "verified_status": "contradicted",
@@ -799,6 +1267,16 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
             return {"status": "failed", "claimed": result, "verified_status": "contradicted",
                     "evidence": [f"Checked on disk: {leak_path} contains planner instruction "
                                  f"text, not the requested artifact: \"{leak}\""]}
+        # Lane B at the verdict layer: the queue's finish-time check
+        # established existence, dictated content and runs; what it
+        # never produced is type evidence, so the fresh check here is
+        # scoped to types only (types_only) rather than re-trying the
+        # queue's verdict against a disk that parallel steps may
+        # still be landing on.
+        fresh = _fresh_effect_problems(subtask, types_only=True)
+        if fresh:
+            return {"status": "failed", "claimed": result, "verified_status": "contradicted",
+                    "evidence": [f"Checked on disk: {p}" for p in fresh]}
         evidence: List[str] = []
         if files:
             dictated = [e for e in files
@@ -825,8 +1303,22 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
                             f"from {cwd} exited with code {e.get('expect_exit', 0)}, "
                             "the code the plan required.")
         if not evidence:
-            evidence = ["This step claimed no file effects, and the queue's check found "
-                        "nothing on disk to contradict the report."]
+            # Positive-evidence standard (fix round 6, Lane D): a step
+            # with no file effects verifies only when its task carries
+            # decisive evidence the verdict can inspect. Nothing on
+            # disk contradicting the report is not verification; the
+            # step closes done on the agent's word, marked
+            # unverifiable, and the report says so.
+            if _has_decisive_evidence(task):
+                return {"status": "done", "claimed": result, "verified_status": "verified",
+                        "evidence": ["The step's task carried decisive evidence for its "
+                                     "result (a tool-result payload the verdict layer "
+                                     "can inspect), and nothing on disk contradicts it."]}
+            return {"status": "done", "claimed": result, "verified_status": "unverifiable",
+                    "evidence": ["This step claimed no file effects and its task carried "
+                                 "no decisive evidence, so nothing positively verified "
+                                 "the report; it is recorded done on the agent's word "
+                                 "alone. Absence of contradiction is not verification."]}
         return {"status": "done", "claimed": result, "verified_status": "verified", "evidence": evidence}
     if task["status"] == "cancelled":
         return {"status": "failed", "claimed": result, "verified_status": "failed",
@@ -844,6 +1336,13 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
             # from the recorded text. The step's own admissions and any
             # planner instruction text on disk are not timing artifacts
             # and still block verification, checked fresh here as well.
+            blocked = _blocked_signal(claimed)
+            if blocked:
+                return {"status": "blocked", "claimed": claimed.strip(),
+                        "verified_status": "blocked",
+                        "evidence": [f"The step reported itself blocked: \"{blocked}\" "
+                                     "A step that could not run for a missing input or a "
+                                     "missing tool is recorded blocked, not done."]}
             signal = _incompletion_signal(claimed.strip())
             if signal:
                 return {"status": "failed", "claimed": claimed.strip(),
@@ -868,6 +1367,13 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
                                  "true on disk. The problem the task recorded when it "
                                  "finished no longer held (the work landed after that "
                                  "check ran), so it is not carried into the verdict."]}
+        blocked = _blocked_signal(claimed)
+        if blocked:
+            return {"status": "blocked", "claimed": claimed.strip(),
+                    "verified_status": "blocked",
+                    "evidence": [f"The step reported itself blocked: \"{blocked}\" "
+                                 "A step that could not run for a missing input or a "
+                                 "missing tool is recorded blocked, not done."]}
         return {"status": "failed", "claimed": claimed.strip(),
                 "verified_status": "contradicted",
                 "evidence": [f"Checked on disk: {p}" for p in problems]
@@ -905,10 +1411,24 @@ class MissionRunner:
     database (an app restart) picks a mission up exactly where it stopped.
     The queue and the model are injectable so tests can fake both."""
 
-    def __init__(self, queue: Any = None, ask: Optional[Callable] = None, poll_sec: float = 1.0):
+    def __init__(self, queue: Any = None, ask: Optional[Callable] = None, poll_sec: float = 1.0,
+                 pause_threshold_sec: float = PAUSE_WEDGE_THRESHOLD_SEC,
+                 pause_resume_window_sec: float = PAUSE_RESUME_WINDOW_SEC,
+                 clock: Optional[Callable[[], float]] = None):
         self._queue = queue
         self._ask = ask or _default_ask
         self.poll_sec = poll_sec
+        # Pause supervision knobs (fix round 5): how long a subtask's
+        # task may sit waiting before the one automatic resume, how
+        # long a post-resume wait may sit before the honest failure,
+        # and the clock both are measured on. Injectable so tests can
+        # run the wedge on a short fake clock.
+        self.pause_threshold_sec = pause_threshold_sec
+        self.pause_resume_window_sec = pause_resume_window_sec
+        self.clock = clock
+
+    def _now(self) -> float:
+        return self.clock() if self.clock is not None else time.time()
 
     @property
     def queue(self) -> Any:
@@ -963,9 +1483,11 @@ class MissionRunner:
             return True   # another driver won the claim; its plan and rows stand
         for i, s in enumerate(plan["subtasks"]):
             c.execute("INSERT INTO mission_subtasks (id, mission_id, idx, title, instruction, "
-                      "expected_effects, status) VALUES (?,?,?,?,?,?,?)",
+                      "expected_effects, contract, status) VALUES (?,?,?,?,?,?,?,?)",
                       (f"msub-{uuid.uuid4().hex[:10]}", mission["id"], i, s["title"], s["instruction"],
-                       json.dumps(s["expected_effects"]), "pending"))
+                       json.dumps(s["expected_effects"]),
+                       json.dumps({"inputs": s.get("inputs") or [], "tools": s.get("tools")}),
+                       "pending"))
         c.commit()
         c.close()
         return True
@@ -986,7 +1508,7 @@ class MissionRunner:
             _save_mission(mission_id, state="running")
         while True:
             subs = list_subtasks(mission_id)
-            current = next((s for s in subs if s["status"] not in ("done", "failed", "skipped")), None)
+            current = next((s for s in subs if s["status"] not in ("done", "failed", "skipped", "blocked")), None)
             if current is None:
                 self._finish(mission_id)
                 return
@@ -1003,13 +1525,15 @@ class MissionRunner:
         # stale snapshot is how a doubled plan dispatched steps twice.
         stored = next((s for s in list_subtasks(mission_id) if s["id"] == sub["id"]), None)
         if stored is not None:
-            if stored["status"] in ("done", "failed", "skipped"):
+            if stored["status"] in ("done", "failed", "skipped", "blocked"):
                 return True   # another driver already recorded this step's outcome
             sub = stored
         if not sub.get("task_id"):
-            request = assemble_request(mission_id, sub)
+            request, delivery, input_problem = assemble_step(mission_id, sub)
             problem = (_empty_declared_content_problem(sub)
-                       or _write_tool_problem(sub, request))
+                       or _contract_tool_problem(sub)
+                       or _write_tool_problem(sub, request)
+                       or input_problem)
             if problem:
                 # Assembly-time failure: the subtask is recorded failed
                 # with the problem as its evidence and no task is ever
@@ -1036,12 +1560,17 @@ class MissionRunner:
             task = self.queue.create(request,
                                      title=f"{sub['title']} (mission step {sub['idx'] + 1})")
             _save_subtask(sub["id"], task_id=task["id"], status="queued",
-                          started_at=time.time())
+                          started_at=time.time(), input_delivery=delivery)
             sub = {**sub, "task_id": task["id"]}
         while True:
             task = self.queue.get(sub["task_id"])
             status = (task or {}).get("status")
             if status == "waiting":
+                verdict = self._supervise_pause(mission_id, sub, task)
+                if verdict == "resume":
+                    continue   # the task is queued again; keep watching it in this drive
+                if verdict == "fail":
+                    return True   # the wedge verdict is recorded; the mission is finished or moves on
                 _save_subtask(sub["id"], status="waiting")
                 _save_mission(mission_id, state="paused")
                 return False
@@ -1054,37 +1583,140 @@ class MissionRunner:
         _save_subtask(sub["id"], status=outcome["status"], claimed=outcome["claimed"],
                       verified_status=outcome["verified_status"], evidence=outcome["evidence"],
                       finished_at=time.time())
-        if outcome["status"] == "failed":
+        # Fix round 5: if a stale peer process already finished this
+        # mission from its own older composition of this same outcome,
+        # the verdict of record is reconciled with the fresh outcome
+        # just saved (a no-op when the mission is still running).
+        _repair_finished_verdict(mission_id)
+        if outcome["status"] in ("failed", "blocked"):
             mission = get_mission(mission_id)
             if not mission["continue_on_failure"]:
                 for rest in list_subtasks(mission_id):
                     if rest["status"] in ("pending", "queued"):
                         _save_subtask(rest["id"], status="skipped")
                 self._finish(mission_id,
-                             reason=f"Step {sub['idx'] + 1} ({sub['title']}) failed: "
+                             reason=f"Step {sub['idx'] + 1} ({sub['title']}) {outcome['status']}: "
                                     + (outcome["evidence"][0] if outcome["evidence"] else "see the step report"))
                 return True
         return True
+
+    # ------------------------------------------------------- pause supervision
+    def _supervise_pause(self, mission_id: str, sub: Dict[str, Any], task: Dict[str, Any]) -> str:
+        """Watches one waiting subtask task (fix round 5; see the
+        PAUSE_WEDGE_THRESHOLD_SEC note at the top of this module).
+        Returns "wait" (leave the mission paused), "resume" (the one
+        automatic resume was just issued through the queue's retry
+        path; the caller keeps watching the task), or "fail" (the
+        wedge verdict has been recorded by _fail_paused_wedge).
+
+        The wait clock lives on the subtask row (paused_at), not in
+        memory and not on the mission's updated_at: the driver loop
+        rewrites the mission row on every re-drive, so its stamp can
+        never say how long the pause has lasted, and a wedge that
+        survives an app restart must keep its clock and its spent
+        resume across the restart."""
+        fresh = next((s for s in list_subtasks(mission_id) if s["id"] == sub["id"]), sub)
+        if task.get("waiting_kind") == "approval":
+            # A person's approval gate is never timed out and never
+            # auto-answered. Clear the wedge clock while approval is
+            # what is being waited on, so time spent at the gate never
+            # counts against a later, different wait.
+            if fresh.get("paused_at") is not None:
+                _save_subtask(sub["id"], paused_at=None)
+            return "wait"
+        now = self._now()
+        paused_at = fresh.get("paused_at")
+        if paused_at is None:
+            _save_subtask(sub["id"], paused_at=now)
+            return "wait"
+        waited = now - paused_at
+        attempts = fresh.get("pause_resume_attempts") or 0
+        window = self.pause_threshold_sec if attempts == 0 else self.pause_resume_window_sec
+        if waited < window:
+            return "wait"
+        if attempts == 0:
+            try:
+                res = self.queue.retry(sub["task_id"])
+                ok = isinstance(res, dict) and bool(res.get("success"))
+            except Exception:
+                logger.exception(f"Mission {mission_id}: the automatic resume of "
+                                 f"task {sub['task_id']} raised")
+                ok = False
+            if ok:
+                _save_subtask(sub["id"], paused_at=None, pause_resume_attempts=1)
+                logger.warning(f"Mission {mission_id}: step {fresh['idx'] + 1} "
+                               f"({fresh['title']}) sat waiting {int(waited)}s "
+                               f"({task.get('waiting_kind') or 'waiting'}); one automatic "
+                               "resume attempted through the queue retry path")
+                return "resume"
+            self._fail_paused_wedge(mission_id, fresh, task, waited, resume_failed=True)
+            return "fail"
+        self._fail_paused_wedge(mission_id, fresh, task, waited, resume_failed=False)
+        return "fail"
+
+    def _fail_paused_wedge(self, mission_id: str, sub: Dict[str, Any], task: Dict[str, Any],
+                           waited: float, resume_failed: bool) -> None:
+        """Records the honest terminal shape for a paused wedge: the
+        subtask fails with the wedge as its evidence, and the mission
+        follows the same stop-or-continue path as a subtask whose task
+        failed, with the wedge named in the mission's failure reason."""
+        kind = task.get("waiting_kind") or "waiting"
+        detail = task.get("waiting_detail") or {}
+        note = detail.get("message") if isinstance(detail, dict) else None
+        where = f" ({note})" if note else ""
+        if resume_failed:
+            why = (f"wedged in paused: its task sat waiting {int(waited)} seconds for "
+                   f"{kind}{where} and nobody answered; the one automatic resume "
+                   "attempt failed, so the step fails here instead of waiting forever")
+        else:
+            why = (f"wedged in paused: its task sat waiting {int(waited)} seconds for "
+                   f"{kind}{where}, one automatic resume was attempted, and the task "
+                   "waited again past the resume window with nobody answering; the "
+                   "step fails here instead of waiting forever")
+        logger.warning(f"Mission {mission_id}: step {sub['idx'] + 1} ({sub['title']}) {why}")
+        _save_subtask(sub["id"], status="failed", verified_status="failed",
+                      claimed=(task.get("result") or ""), evidence=[why],
+                      finished_at=time.time(), paused_at=None)
+        mission = get_mission(mission_id)
+        if mission and not mission["continue_on_failure"]:
+            for rest in list_subtasks(mission_id):
+                if rest["status"] in ("pending", "queued"):
+                    _save_subtask(rest["id"], status="skipped")
+            self._finish(mission_id,
+                         reason=f"Step {sub['idx'] + 1} ({sub['title']}) failed: {why}")
 
     # ------------------------------------------------------------ finishing
     def _finish(self, mission_id: str, reason: Optional[str] = None) -> None:
         mission = get_mission(mission_id)
         if mission["state"] in ("done", "failed") and mission.get("finished_at"):
-            return   # already finished (a stop-on-failure finish, then the loop's own)
+            # Already finished (a stop-on-failure finish, then the loop's
+            # own). Fix round 5: the finish may have been written by a
+            # stale peer process from evidence this build's fresh checks
+            # have since superseded; repair the recorded verdict if so.
+            _repair_finished_verdict(mission_id)
+            return
         _recheck_failed_subtasks(mission_id)
         mission = get_mission(mission_id)
         subs = mission["subtasks"]
         failed = [s for s in subs if s["status"] == "failed"]
-        if reason is None and failed:
-            names = "; ".join(f"Step {s['idx'] + 1} ({s['title']})" for s in failed)
-            reason = (f"{len(failed)} of {len(subs)} steps failed: {names}; the rest were run "
+        blocked = [s for s in subs if s["status"] == "blocked"]
+        if reason is None and (failed or blocked):
+            bad = failed + blocked
+            names = "; ".join(f"Step {s['idx'] + 1} ({s['title']})" for s in bad)
+            reason = (f"{len(bad)} of {len(subs)} steps did not complete "
+                      f"({len(failed)} failed, {len(blocked)} blocked): {names}; the rest were run "
                       "because this mission was set to keep going past failures.")
-        state = "failed" if (reason or failed) else "done"
+        state = "failed" if (reason or failed or blocked) else "done"
         finished = time.time()
         _save_mission(mission_id, state=state, finished_at=finished,
                       failure_reason=reason if state == "failed" else None)
         report = build_report(get_mission(mission_id))
         _save_mission(mission_id, report=report)
+        from app.services import event_log
+        event_log.emit("mission.verdict", actor="missions", ids={"mission_id": mission_id},
+                       payload={"state": state, "failure_reason": reason if state == "failed" else None,
+                                "totals": report.get("totals") or {},
+                                "duration_sec": report.get("duration_sec")})
 
 
 def build_report(mission: Dict[str, Any]) -> Dict[str, Any]:
@@ -1100,6 +1732,8 @@ def build_report(mission: Dict[str, Any]) -> Dict[str, Any]:
             "instruction": s["instruction"],
             "expected_effects": s["expected_effects"],
             "task_id": s.get("task_id"),
+            "contract": s.get("contract") or {},
+            "input_delivery": s.get("input_delivery") or [],
             "status": s["status"],
             "claimed_result": s.get("claimed") or "",
             "verified_status": s.get("verified_status"),
@@ -1119,6 +1753,8 @@ def build_report(mission: Dict[str, Any]) -> Dict[str, Any]:
             "done": sum(1 for s in rows if s["status"] == "done"),
             "verified": sum(1 for s in rows if s["verified_status"] == "verified"),
             "failed": sum(1 for s in rows if s["status"] == "failed"),
+            "blocked": sum(1 for s in rows if s["status"] == "blocked"),
+            "unverifiable": sum(1 for s in rows if s["verified_status"] == "unverifiable"),
         },
         "started_at": started,
         "finished_at": finished,
@@ -1126,7 +1762,10 @@ def build_report(mission: Dict[str, Any]) -> Dict[str, Any]:
         "usage": _usage_section(mission["id"]),
         "how_to_read": ("claimed_result is what the agent reported. verified_status and evidence "
                         "are what the task queue's file-effect check found on disk. A step with no "
-                        "file effects can only be verified as 'nothing contradicted it'."),
+                        "file effects is verified only when its task carried decisive evidence; "
+                        "otherwise it is marked unverifiable, because absence of contradiction is "
+                        "not verification. A step that reported a missing input or tool is "
+                        "blocked, a state of its own, never done."),
     }
 
 
@@ -1145,6 +1784,9 @@ def create_mission(goal: str, continue_on_failure: bool = False) -> Dict[str, An
               "VALUES (?,?,?,?,?,?)", (mid, goal, "planning", 1 if continue_on_failure else 0, now, now))
     c.commit()
     c.close()
+    from app.services import event_log
+    event_log.emit("mission.created", actor="missions", ids={"mission_id": mid},
+                   payload={"goal": goal[:300], "continue_on_failure": bool(continue_on_failure)})
     _spawn(mid)
     return get_mission(mid)
 

@@ -163,6 +163,9 @@ def _call(method: str, path: str, body: Optional[Dict[str, Any]] = None,
         return None
 
 
+_last_partner_answered: Optional[bool] = None
+
+
 def status(force: bool = False) -> Optional[Dict[str, Any]]:
     """The Partner's own /status (watchdog summary + trust), cached for 5s:
     the watcher asks on every scan and must not hammer the Partner for it."""
@@ -171,6 +174,16 @@ def status(force: bool = False) -> Optional[Dict[str, Any]]:
         return _cache["status"]
     out = _call("GET", "/status", timeout=2.0)
     _cache.update({"at": now, "status": out})
+    global _last_partner_answered
+    answered = out is not None
+    if _last_partner_answered is not None and answered != _last_partner_answered:
+        # Observability (services/event_log.py): the Partner going quiet or
+        # answering again, as this app sees it on its own polling.
+        from app.services import event_log
+        event_log.emit("partner.reachable", actor="partner_client",
+                       payload={"answered": answered,
+                                "http_status": (out or {}).get("_status") if out else None})
+    _last_partner_answered = answered
     return out
 
 

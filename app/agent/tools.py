@@ -3165,7 +3165,19 @@ def _missing_required(name: str, arguments: Dict[str, Any]) -> List[str]:
         except Exception:
             schema = None
     required = (schema or {}).get("required") or [] if isinstance(schema, dict) else []
-    return [k for k in required if (arguments or {}).get(k) in (None, "", [], {})]
+    missing = []
+    for k in required:
+        if (arguments or {}).get(k) not in (None, "", [], {}):
+            continue
+        # computer_write_file: an explicitly passed empty content is a real
+        # write, not a missing argument — its handler makes a folder of a bare
+        # path and an empty file of a .gitkeep or Makefile. Only an absent (or
+        # None) content is missing. Plan-level empty content is a different
+        # fault, stopped at assembly in services/missions.py before tools run.
+        if name == "computer_write_file" and k == "content" and (arguments or {}).get(k) == "":
+            continue
+        missing.append(k)
+    return missing
 
 
 # ------------------------------------------------------------------ placeholder arguments
@@ -3241,6 +3253,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first.
     Sentinel (services/sentinel.py) looks at it first, against what the person asked; a hit waits for their OK
     (reviewed=True is that OK). What comes back from tools that read others' content is remembered for the next look."""
+    import time
+    _obs_t0 = time.time()          # the tool call's wall clock, for the observability step log
     from app.services import activity, sentinel
     arguments = _expand_path_args(_alias_args(name, arguments))
     bad = placeholder_argument(arguments)
@@ -3282,7 +3296,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         if hit:
             held = sentinel.hold(name, arguments or {}, hit)
             from app.services import agent_log
-            agent_log.step(name, arguments or {}, held)
+            agent_log.step(name, arguments or {}, held,
+                           duration_ms=round((time.time() - _obs_t0) * 1000))
             return held
     ctx = None
     try:
@@ -3296,7 +3311,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         logger.warning(f"activity log failed for {name}: {e}")
     sentinel.saw(name, result)
     from app.services import agent_log
-    agent_log.step(name, arguments or {}, result)      # the Agent page's step list (by job and by agent)
+    agent_log.step(name, arguments or {}, result,
+                   duration_ms=round((time.time() - _obs_t0) * 1000))      # the Agent page's step list (by job and by agent)
     return result
 
 
@@ -3424,11 +3440,11 @@ def _desktop_setup_card(a: Dict[str, Any]) -> Dict[str, Any]:
     if token and token in _setup_grants:
         _setup_grants.discard(token)
         packs.set_enabled(desktop.PACK, True)
-        res = desktop.request_permissions(force=True) if desktop.MAC else desktop.permissions()
+        res = desktop.request_permissions(force=True) if desktop.SUPPORTED else desktop.permissions()
         return {"success": True, "enabled": True, **{k: res.get(k) for k in ("screen", "accessibility", "app", "message")},
                 "note": "The screen tools are available from the next message."}
-    if not desktop.MAC:
-        return {"success": False, "error": "Using the screen, mouse and keyboard works on a Mac for now."}
+    if not desktop.SUPPORTED:
+        return {"success": False, "error": "Using the screen, mouse and keyboard works on a Mac or Windows for now."}
     t = uuid.uuid4().hex
     _setup_grants.add(t)
     held = sentinel.hold("desktop_setup", {"_grant": t}, {"rule": "desktop_setup",
@@ -3548,7 +3564,7 @@ async def _crew_tool(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
 
 def _screen_on() -> bool:
     from app.services import desktop
-    return desktop.MAC and desktop.enabled()
+    return desktop.SUPPORTED and desktop.enabled()
 
 
 async def _cli_start(ac, agent: str, folder: str, visible: bool, name: str = "", new: bool = False) -> Dict[str, Any]:

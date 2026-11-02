@@ -1,5 +1,5 @@
-// Xod at this Mac's real screen (backend: services/desktop.py, desktop_task.py).
-//  - Add-ons → "Use this computer's screen": macOS permissions (Screen Recording, Accessibility) with Allow, and the apps
+// Xod at this computer's real screen (backend: services/desktop.py, desktop_task.py).
+//  - Add-ons → "Use this computer's screen": the platform's permissions (macOS: Screen Recording and Accessibility, with Allow; Windows: running in the signed-in desktop session), and the apps
 //    Xod may use (each asked for the first time), with Remove.
 //  - While Xod is working on the screen, a chip shows what it's doing, with Stop. Moving the mouse stops it too.
 (() => {
@@ -17,9 +17,9 @@
     const apps = (s.apps || []).map((b) => `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-700 text-[11px] text-zinc-300">${esc(b)}
       <button data-desktop-forget="${esc(b)}" class="text-zinc-500 hover:text-red-300" title="Ask again before using it">×</button></span>`).join(" ");
     box.innerHTML = `
-      <div class="flex flex-wrap items-center gap-3">${perm(s.screen, "Screen Recording")}${perm(s.accessibility, "Accessibility")}
-        ${s.screen && s.accessibility ? "" : `<button data-desktop-allow class="px-2.5 py-1 rounded-lg text-[12px] bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Allow in macOS</button>`}</div>
-      ${s.screen && s.accessibility ? "" : `<p class="text-[11px] text-zinc-500 mt-1">In System Settings → Privacy & Security, switch on <b class="text-zinc-300">${esc(s.app)}</b> under both (if it isn't listed, press + and pick <span class="font-mono break-all">${esc(s.app_path)}</span>). macOS may ask you to reopen it.${s.app !== "Xod" ? ` <span class="text-zinc-400">This Xod was started from ${esc(s.app)}, so macOS asks for ${esc(s.app)}; in the Xod app it's listed as Xod.</span>` : ""}</p>`}
+      <div class="flex flex-wrap items-center gap-3">${perm(s.screen, s.platform === "windows" ? "Desktop session" : "Screen Recording")}${perm(s.accessibility, s.platform === "windows" ? "Mouse and keyboard" : "Accessibility")}
+        ${s.screen && s.accessibility ? "" : (s.platform === "windows" ? "" : `<button data-desktop-allow class="px-2.5 py-1 rounded-lg text-[12px] bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Allow in macOS</button>`)}</div>
+      ${s.screen && s.accessibility ? "" : (s.platform === "windows" ? `<p class="text-[11px] text-zinc-500 mt-1">${esc(s.message || "")}</p>` : `<p class="text-[11px] text-zinc-500 mt-1">In System Settings → Privacy & Security, switch on <b class="text-zinc-300">${esc(s.app)}</b> under both (if it isn't listed, press + and pick <span class="font-mono break-all">${esc(s.app_path)}</span>). macOS may ask you to reopen it.${s.app !== "Xod" ? ` <span class="text-zinc-400">This Xod was started from ${esc(s.app)}, so macOS asks for ${esc(s.app)}; in the Xod app it's listed as Xod.</span>` : ""}</p>`)}
       <p class="text-[11px] text-zinc-500 mt-2">Apps Xod may use: ${apps || "none yet (it asks the first time)"}</p>`;
     if (window.lucide) lucide.createIcons();
   };
