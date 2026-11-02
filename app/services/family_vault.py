@@ -75,6 +75,19 @@ class VaultError(Exception):
     """A vault refusal with a plain reason. Never carries key material."""
 
 
+KEYSTORE_UNREACHABLE_MESSAGE = (
+    "the OS keystore could not be reached from this process, so the bundle was not applied. "
+    "The backend must run in a session that can reach the keystore (on Windows, the signed-in "
+    "user's interactive session: Credential Manager refuses writes from service and SSH "
+    "sessions). Nothing was marked applied; run the apply again from such a session.")
+"""Why an apply stops when the keystore refuses: on Windows the
+Electron-spawned backend's token cannot write Credential Manager
+(error 1312's family), and the keyring error used to escape apply()
+untyped, surfacing as a bare HTTP 500 (0.9.23 production ceremony).
+The service now returns this as the typed keystore_unreachable
+state instead: honest about the cause, and actionable."""
+
+
 def bundle_path() -> Path:
     env = os.environ.get("XOD_FAMILY_VAULT_PATH", "").strip()
     if env:
@@ -247,7 +260,11 @@ def apply(my_id: str, view=None, identity=None, path=None) -> dict:
     if version <= applied:
         return {"state": "current", "version": version,
                 "message": "the applied bundle is already this version"}
-    identity = identity or family_registry.device_identity()
+    try:
+        identity = identity or family_registry.device_identity()
+    except Exception as e:
+        return {"state": "keystore_unreachable",
+                "message": f"{KEYSTORE_UNREACHABLE_MESSAGE} ({type(e).__name__})"}
     creator = family_registry.trusted_member(view, bundle.get("created_by") or "")
     if creator is None:
         return {"state": "not_trusted",
@@ -263,12 +280,22 @@ def apply(my_id: str, view=None, identity=None, path=None) -> dict:
     from app.services import secret_store
     pins = pinned_fields()
     applied_fields, skipped = [], []
-    for field, value in secrets.items():
-        if field in pins:
-            skipped.append(field)
-            continue
-        secret_store.save(field, value)
-        applied_fields.append(field)
+    try:
+        for field, value in secrets.items():
+            if field in pins:
+                skipped.append(field)
+                continue
+            secret_store.save(field, value)
+            applied_fields.append(field)
+    except Exception as e:
+        # A keystore that refuses mid-apply is a typed state, never a
+        # bare failure: fields already written stay written, the rest
+        # did not land, and the version is NOT marked applied, so a
+        # retry from a session that can reach the keystore completes
+        # the same bundle cleanly.
+        return {"state": "keystore_unreachable",
+                "message": f"{KEYSTORE_UNREACHABLE_MESSAGE} ({type(e).__name__})",
+                "fields_written": sorted(applied_fields)}
     _set_setting(VERSION_SETTING, str(version))
     return {"state": "applied", "version": version,
             "fields": sorted(applied_fields), "pinned_skipped": sorted(skipped)}

@@ -17,7 +17,8 @@ process beside the app:
 
     python -m app.services.backend_watchdog
 
-which probes the local /api/health endpoint and restarts the app the
+which probes the local /api/config endpoint (a route the production
+backend actually serves — /api/health is a 404 there) and restarts the app the
 platform way (launchctl on macOS, the scheduled task / service on
 Windows) when a stall is proven. The restart action there is
 install-time wiring: this module ships the supervision logic and the
@@ -38,6 +39,7 @@ import json
 import logging
 import os
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -46,7 +48,11 @@ from app.paths import DATA_DIR
 
 logger = logging.getLogger("xod.backend_watchdog")
 
-HEALTH_URL = "http://127.0.0.1:8000/api/health"
+# Probed route: /api/config answers 200 on the production backend on both
+# platforms (verified live at the 0.9.23 install and again in the 0.9.24 fix
+# lane); /api/health returns 404 there, which is how the shipped watchdog
+# came to read a healthy backend as dead.
+HEALTH_URL = "http://127.0.0.1:8000/api/config"
 DEFAULT_STATE = DATA_DIR / "backend_watchdog.json"
 
 
@@ -158,9 +164,17 @@ class BackendWatchdog:
 
 # ------------------------------------------------------------ standalone run
 def _http_probe(url: str = HEALTH_URL) -> bool:
+    """Alive = the backend ANSWERED. Any HTTP status below 500 proves a
+    live backend — including a 404, which urllib raises as HTTPError
+    instead of returning a response (the shipped probe let that
+    exception fall into the blanket except and read "dead", so a
+    healthy backend looked permanently stalled). Only a connection
+    failure (nothing listening) or a 5xx answer is dead."""
     try:
         with urllib.request.urlopen(url, timeout=5) as r:
             return 200 <= r.status < 500
+    except urllib.error.HTTPError as e:
+        return e.code < 500
     except Exception:
         return False
 
@@ -192,7 +206,14 @@ def main(poll_sec: float = 15.0) -> None:
     wd = BackendWatchdog(probe=_http_probe, restart=_platform_restart)
     logger.info("backend watchdog running (state: %s)", wd._state_path)
     while True:
-        outcome = wd.tick()
+        try:
+            outcome = wd.tick()
+        except Exception:
+            # A watcher that dies silently supervises nothing (the first
+            # install's loop went quiet after one tick, unexplained).
+            logger.exception("backend watchdog: tick failed")
+            time.sleep(poll_sec)
+            continue
         if outcome not in ("healthy", "dead"):
             logger.warning("backend watchdog: %s", outcome)
         time.sleep(poll_sec)

@@ -286,8 +286,11 @@ async def check() -> Dict[str, Any]:
         if freed:
             _event("fixed", f"Freed {freed} that a crashed Ollama had left in use.")
 
-        # An API key you saved beats a local model while the choice is still Xod's (setup_wizard.prefer_key).
-        pk = setup_wizard.prefer_key()
+        # Boot pass: a provider saved in settings always wins here (respect_saved) — this pass never
+        # re-defaults a member's provider because a key exists; prefer_key only defaults a device that
+        # has no saved provider at all. (The Settings path, where the person saves a key themselves,
+        # keeps the takeover-while-Xod's-pick behaviour: main.py's config update.)
+        pk = setup_wizard.prefer_key(respect_saved=True)
         if pk["switched"]:
             _event("connected", f"Using your {pk['label']} (your saved API key), so no local model needs to run.")
 

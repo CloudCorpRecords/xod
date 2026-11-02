@@ -204,6 +204,67 @@ def main():
           and secret_store.get("openai_api_key") == "sk-test-not-real-v2", str(got))
     set_setting(fv.LOCAL_ONLY_SETTING, "off")
 
+    # ---- V1: a keystore this process cannot reach is a typed state,
+    # never a bare failure. The 0.9.23 production apply on Windows
+    # returned HTTP 500: the Electron-spawned backend's token could not
+    # write Credential Manager, and the keyring error escaped apply()
+    # untyped. The service must answer keystore_unreachable instead,
+    # name the remedy, and leave the bundle unapplied so a retry from
+    # a context that can reach the keystore applies it cleanly.
+    from app.services import keychain as kc
+    fv.publish({"openai_api_key": "<redacted>"},
+               "macbook-pro", view=view, identity=mac)
+    applied_before = fv._setting(fv.VERSION_SETTING, "0")
+    real_save = secret_store.save
+
+    def locked_save(name, value):
+        raise kc.Unreadable("test: the OS keystore refused the write")
+
+    secret_store.save = locked_save
+    try:
+        got = fv.apply("razer", view=view, identity=razer)
+        escaped = None
+    except Exception as e:
+        got, escaped = {}, e
+    finally:
+        secret_store.save = real_save
+    check("apply with an unreachable keystore returns a typed state, never raises",
+          escaped is None and got.get("state") == "keystore_unreachable",
+          str(escaped or got))
+    check("the typed state names the remedy (a session that can reach the keystore)",
+          "keystore" in (got.get("message") or "") and "session" in (got.get("message") or ""),
+          str(got))
+    check("a failed apply does not mark the bundle applied",
+          fv._setting(fv.VERSION_SETTING, "0") == applied_before,
+          fv._setting(fv.VERSION_SETTING, "0"))
+    got = fv.apply("razer", view=view, identity=razer)
+    check("the same apply succeeds once the keystore answers",
+          got["state"] == "applied"
+          and secret_store.get("openai_api_key") == "<redacted>", str(got))
+
+    # the identity load failing is the same typed state, not a 500 either
+    fv.publish({"openai_api_key": "<redacted>"},
+               "macbook-pro", view=view, identity=mac)
+    real_identity = fr.device_identity
+
+    def locked_identity():
+        raise kc.Unreadable("test: the OS keystore refused the read")
+
+    fr.device_identity = locked_identity
+    try:
+        got = fv.apply("razer", view=view)
+        escaped = None
+    except Exception as e:
+        got, escaped = {}, e
+    finally:
+        fr.device_identity = real_identity
+    check("apply with an unreadable device identity is the same typed state",
+          escaped is None and got.get("state") == "keystore_unreachable",
+          str(escaped or got))
+    got = fv.apply("razer", view=view, identity=razer)
+    check("identity-blocked apply also retries clean",
+          got["state"] == "applied", str(got))
+
     # ---- V2: revocation rotates the bundle away from the removed device
     revoked = json.loads(json.dumps(approved))
     revoked["revocations"] = [fr.sign_revocation(revoked, mac, "macbook-pro", "razer")]
