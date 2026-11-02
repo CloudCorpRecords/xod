@@ -3,7 +3,7 @@
 ## 0.9.24
 
 **Xod replies to people on X and LinkedIn, with your approval on every post**
-- Xod now keeps a social reply queue: mentions and comments it could answer are collected as drafts, each draft waits for your approval, and only an approved reply is posted, from inside the app, with the result read back. Dry-run is the default until posting is turned on, and the copy rules Rene set (plain words, no em dashes, nothing claimed that is not in the record) are enforced as constraints on the drafts, not as suggestions. (PR #33)
+- Xod now keeps a social reply queue: mentions and comments it could answer are collected as drafts, each draft waits for your approval, and only an approved reply is posted, from inside the app, with the result read back. Dry-run is the default until posting is turned on, and the house copy rules (plain words, no em dashes, nothing claimed that is not in the record) are enforced as constraints on the drafts, not as suggestions. (PR #33)
 
 **Accessibility trust now reads true when it is true**
 - Xod asked macOS about its Accessibility access from its background helper process, and macOS answered for the helper instead of the app: a good grant, switched on and bound to the running build, could read as blocked, and the auto-approver showed a stale-grant warning that no switch flip could clear. The app itself now answers the question (its own GUI process checks and leaves the verdict where the helper reads it), and the helper never presents its own answer as the app's. The fix was proven live against the existing grant before this release was cut: the corrected reading flipped to true with no grant change and no repair ceremony. (PR #35)
