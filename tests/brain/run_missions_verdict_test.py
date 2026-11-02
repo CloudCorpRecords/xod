@@ -212,8 +212,12 @@ async def case_not_complete():
           m2["state"] == "failed" and "1 of 2" in (m2["failure_reason"] or "")
           and "Run the tests" in (m2["failure_reason"] or ""),
           f"state={m2['state']} reason={m2['failure_reason']}")
-    check("not complete: the clean subtask after it still verifies",
-          m2["subtasks"][1]["status"] == "done" and m2["subtasks"][1]["verified_status"] == "verified",
+    # Fix round 6 (BOARD-001 Lane D): a no-effect step with no
+    # decisive evidence no longer verifies on absence of
+    # contradiction alone; it closes done and unverifiable. The
+    # mission still ends failed on the first step either way.
+    check("not complete: the clean subtask after it closes done, unverifiable (no positive evidence)",
+          m2["subtasks"][1]["status"] == "done" and m2["subtasks"][1]["verified_status"] == "unverifiable",
           str(m2["subtasks"][1]))
 
 
@@ -286,7 +290,8 @@ async def case_clean_mission():
           all(s["status"] == "done" and s["verified_status"] == "verified" for s in m["subtasks"]),
           str([(s["title"], s["status"], s["verified_status"]) for s in m["subtasks"]]))
     check("clean: report totals are all verified",
-          rep and rep["totals"] == {"subtasks": 2, "done": 2, "verified": 2, "failed": 0},
+          rep and rep["totals"] == {"subtasks": 2, "done": 2, "verified": 2, "failed": 0,
+                                    "blocked": 0, "unverifiable": 0},
           str(rep and rep["totals"]))
 
 

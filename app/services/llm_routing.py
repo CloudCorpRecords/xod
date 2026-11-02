@@ -184,6 +184,32 @@ def record(provider: str, model: str, usage: Optional[Dict[str, Any]], prompt_ch
                                    prompt_chars=prompt_chars, completion_chars=completion_chars, context=ctx)
     except Exception as e:
         logger.debug(f"usage ledger skipped: {e}")
+    try:
+        # Observability (services/event_log.py): the same call, as an event on the
+        # timeline, with the ledger's own token counts and price so the two records
+        # can never disagree. The correlation context is resolved exactly the way
+        # the ledger resolves it above.
+        from app.services import activity, event_log, pricing
+        from app.services import usage as _usage_mod
+        from app.services import usage_ledger as _ledger
+        ectx = task or kind or "chat"
+        try:
+            if activity.origin.get():
+                ectx = activity.origin.get()
+            elif _usage_mod.purpose.get():
+                ectx = _usage_mod.purpose.get()
+        except Exception:
+            pass
+        pt, ct, source = _ledger._counts(u or usage, prompt_chars, completion_chars)
+        event_log.emit("model.call", actor=ectx, ids=event_log.ids_from_origin(ectx),
+                       payload={"provider": provider, "model": model, "context": ectx,
+                                "prompt_tokens": pt, "completion_tokens": ct,
+                                "total_tokens": pt + ct, "tokens_source": source,
+                                "cost_usd": pricing.cost_usd(provider, model, pt, ct),
+                                "key_profile": key_profile or "",
+                                "duration_ms": round((time.time() - started) * 1000) if started else None})
+    except Exception as e:
+        logger.debug(f"model call event skipped: {e}")
     if provider in LOCAL_PROVIDERS:
         return
     estimated = not usage

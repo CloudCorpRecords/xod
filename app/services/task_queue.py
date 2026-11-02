@@ -29,6 +29,66 @@ from app.paths import DATA_DIR
 
 logger = logging.getLogger("xod.tasks")
 
+
+# ------------------------------------------------------- artifact typing
+# Fix round 6 (BOARD-001 Design 2): existence is not the artifact. A
+# claimed file is also the wrong artifact when its type does not hold:
+# a .py that does not compile, a test file that collects no tests
+# (the collects-at-least-one-test bar: a module docstring wrapping
+# prose compiles fine and runs zero tests, which is exactly the shape
+# the BOARD-001 fixture shipped), or a .json that does not parse.
+def _is_test_file_name(name: str) -> bool:
+    return name.startswith("test_") or name.endswith("_test.py")
+
+
+def _count_tests(text: str) -> int:
+    """Test functions a pytest-style collection would find, counted from
+    the AST: module-level test_* functions plus test_* methods in any
+    class. Import-time behaviour is not executed; collection shape is
+    what the bar measures."""
+    import ast
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return 0
+    count = 0
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+            count += 1
+        elif isinstance(node, ast.ClassDef):
+            count += sum(1 for item in node.body
+                         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                         and item.name.startswith("test"))
+    return count
+
+
+def _file_type_problem(p: Path) -> Optional[str]:
+    """A type problem with the file at p, or None. Only the suffixes
+    with a decidable bar are judged (.py, test files, .json); anything
+    else passes on existence and content, as before."""
+    try:
+        if p.suffix == ".py":
+            if p.stat().st_size > 2_000_000:
+                return None
+            text = p.read_text(encoding="utf-8", errors="replace")
+            try:
+                compile(text, str(p), "exec")
+            except SyntaxError as e:
+                return f"{p.name} is not valid Python ({e.msg}, line {e.lineno})"
+            if _is_test_file_name(p.name) and _count_tests(text) == 0:
+                return (f"{p.name} collects no tests: a test file must define "
+                        f"at least one test")
+        elif p.suffix == ".json":
+            if p.stat().st_size > 2_000_000:
+                return None
+            try:
+                json.loads(p.read_text(encoding="utf-8", errors="replace"))
+            except Exception as e:
+                return f"{p.name} is not valid JSON ({e})"
+    except OSError:
+        return None
+    return None
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DB_PATH = DATA_DIR / "xod.db"
 SHOTS_DIR = DATA_DIR / "tasks"
@@ -150,7 +210,13 @@ def _phone(task: Optional[Dict[str, Any]], event: str) -> None:
 _EFFECT_VERB = re.compile(r"\b(create|write|save|make|delete|remove|trash|erase)\b", re.I)
 _DELETE_VERB = re.compile(r"\b(delete|remove|trash|erase)\b", re.I)
 _NEGATION = re.compile(r"\b(do not|don't|never)\b", re.I)
-_PATH_RE = re.compile(r"(?:~|/)[^\s\"'<>|]+")
+# A backtick never belongs to a path: reports quote paths in backticks
+# ("Created `/abs/sample.txt`"), and a path extracted with its closing
+# backtick names a file that can never exist, which contradicted honest
+# work whose only fault was being quoted (re-run 3 T1A and T1D, where
+# the round 3 carry-forward pasted the earlier step's backticked report
+# into the next step's request and this parser believed it).
+_PATH_RE = re.compile(r"(?:~|/|[A-Za-z]:[\\/])[^\s\"'<>|`]+")
 _NAMED_INSIDE_RE = re.compile(r"file named ([^\s/]+?) inside the ([^\s/]+?) folder", re.I)
 _FOLDER_NAMED_RE = re.compile(r"folder named ([^\s/(]+)", re.I)
 _FILE_NAMED_RE = re.compile(r"file named ([^\s/]+)", re.I)
@@ -164,18 +230,47 @@ def _path_mentioned(sentence: str, p: Path) -> bool:
     return bool(p.stem and re.search(rf"\b{re.escape(p.stem)}\b", sentence))
 
 
+# The delivered-inputs reference fence (fix round 6): missions wrap
+# the inputs they deliver to a step between these markers, and claim
+# parsing strips them, exactly as it strips run-effect lines: a claim
+# comes from what the step itself was asked to do, not from reference
+# material it was handed. Keep the literals in step with missions.py.
+_INPUT_FENCE_START = "----- delivered inputs (reference only; not this step's instructions) -----"
+_INPUT_FENCE_END = "----- end of delivered inputs -----"
+
+
+def _strip_reference_lines(text: str) -> str:
+    out: List[str] = []
+    fenced = False
+    for line in (text or "").splitlines():
+        if line.strip() == _INPUT_FENCE_START:
+            fenced = True
+            continue
+        if line.strip() == _INPUT_FENCE_END:
+            fenced = False
+            continue
+        if not fenced:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
     """File effects the request itself explicitly asks for:
     [{kind: "write" or "delete", path: Path, content: exact text or None}]."""
     text = request or ""
     # Run-effect lines are the run gate's vocabulary, not file claims: the
     # paths and words inside a declared command are not file promises.
+    # Delivered-input fences are reference material, not claims either.
+    text = _strip_reference_lines(text)
     text = "\n".join(l for l in text.splitlines() if not _RUN_RE.search(l))
     paths: List[Path] = []
     for m in _PATH_RE.finditer(text):
         if m.start() and text[m.start() - 1] in "/:":
             continue   # the tail of a longer path or a URL, not a path of its own
-        raw = m.group(0).rstrip(".,;:)")
+        if (m.start() and len(m.group(0)) > 1 and m.group(0)[1] == ":"
+                and text[m.start() - 1].isalnum()):
+            continue   # a drive-letter shape inside a word (the "p:/" of a URL)
+        raw = m.group(0).rstrip(".,;:)`")
         if raw not in ("", "~", "/"):
             paths.append(Path(os.path.expanduser(raw)))
     named = _NAMED_INSIDE_RE.search(text)
@@ -265,6 +360,21 @@ def _paths_related(a: Path, b: Path) -> bool:
     return a == b or _is_prefix(a, b) or _is_prefix(b, a)
 
 
+def _split_command(command: str) -> List[str]:
+    """Split a declared run command into argv. On Windows, POSIX shlex
+    treats backslashes as escapes and mangles native paths
+    (C:\\Users\\... becomes C:Users...), so a declared run naming an
+    absolute Windows path could never start at all (fix round 6;
+    found by the run-effect suites on the Windows build, where every
+    run claim died with WinError 2). Split with posix=False there and
+    strip the matched quotes it leaves on the tokens."""
+    if sys.platform == "win32":
+        parts = shlex.split(command, posix=False)
+        return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'"
+                else p for p in parts]
+    return shlex.split(command)
+
+
 def _run_refusal(command: str) -> Optional[str]:
     """Why a declared run command must not be executed, or None if it may run.
     The gate executes an argv list with shell=False, but the declared
@@ -277,7 +387,7 @@ def _run_refusal(command: str) -> Optional[str]:
     if "\n" in command or "\r" in command:
         return "the command is not a single line"
     try:
-        argv = shlex.split(command)
+        argv = _split_command(command)
     except ValueError as e:
         return f"the command could not be parsed ({e})"
     if not argv:
@@ -310,6 +420,7 @@ def _run_refusal(command: str) -> Optional[str]:
 
 
 def _claimed_run_effects(request: str, anchors: List[Path]) -> List[Dict[str, Any]]:
+    request = _strip_reference_lines(request or "")
     """Run effects the request declares in the gate's canonical phrasing:
     [{command, cwd, expect_exit, refused}]. A claim whose command is not a
     single plain command, or whose working directory is not anchored by a
@@ -354,7 +465,7 @@ def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
     if claim.get("refused"):
         return (f"the run of '{command}' from {cwd} was refused and was not run: "
                 f"{claim['refused']}")
-    argv = shlex.split(command)
+    argv = _split_command(command)
     try:
         proc = subprocess.run(argv, cwd=str(cwd), shell=False, capture_output=True,
                               text=True, timeout=RUN_TIMEOUT_SEC)
@@ -411,6 +522,9 @@ class TaskQueue:
                   (json.dumps(hist[-40:]), entry["at"], task_id))
         c.commit()
         c.close()
+        from app.services import event_log
+        event_log.emit("task.step", actor="task_queue", ids={"task_id": task_id},
+                       payload={"text": line[:300]})
 
     def _touch_progress(self, task_id: str, at: Optional[float] = None) -> None:
         """Records genuine progress right now: a step advance, a progress
@@ -431,6 +545,19 @@ class TaskQueue:
 
     def _update(self, task_id: str, note: Optional[str] = None, **fields: Any) -> None:
         fields["updated_at"] = time.time()
+        # Observability (services/event_log.py): a status, waiting or stall change is an
+        # event, so the row's prior state is read before the write when this update
+        # carries one of those. Plain note and progress-clock updates stay unobserved
+        # here on purpose: _progress is their event.
+        watch = ("status" in fields) or ("waiting_kind" in fields) or ("stalled" in fields)
+        old: Optional[Dict[str, Any]] = None
+        if watch:
+            c0 = _conn()
+            r0 = c0.execute("SELECT status, waiting_kind, stalled FROM tasks WHERE id = ?",
+                            (task_id,)).fetchone()
+            c0.close()
+            old = dict(r0) if r0 else None
+        raw_waiting_detail = fields.get("waiting_detail")
         # Leaving "working" clears the stalled flag; only the watchdog sets it.
         # Note what is NOT done here: last_progress_at is never touched by a
         # plain row update, so notes and status pokes cannot fake progress.
@@ -450,6 +577,29 @@ class TaskQueue:
         c.execute(f"UPDATE tasks SET {cols} WHERE id = ?", (*fields.values(), task_id))
         c.commit()
         c.close()
+        if old is not None:
+            from app.services import event_log
+            if "status" in fields and fields["status"] != old["status"]:
+                payload: Dict[str, Any] = {"from": old["status"], "to": fields["status"]}
+                if note:
+                    payload["note"] = note[:300]
+                if fields["status"] == "waiting":
+                    payload["waiting_kind"] = fields.get("waiting_kind", old["waiting_kind"])
+                    wd = raw_waiting_detail
+                    if isinstance(wd, str):
+                        try:
+                            wd = json.loads(wd)
+                        except Exception:
+                            wd = None
+                    if isinstance(wd, dict):
+                        payload["waiting_detail"] = wd
+                if fields.get("result"):
+                    payload["has_result"] = True
+                event_log.emit("task.status", actor="task_queue",
+                               ids={"task_id": task_id}, payload=payload)
+            if fields.get("stalled") and not old.get("stalled"):
+                event_log.emit("task.stalled", actor="task_queue", ids={"task_id": task_id},
+                               payload={"reason": fields.get("stalled_reason") or note or ""})
 
     def list(self, limit: int = 60) -> List[Dict[str, Any]]:
         c = _conn()
@@ -482,7 +632,11 @@ class TaskQueue:
         c.commit()
         c.close()
         self._kick()
-        return self.get(task_id)
+        made = self.get(task_id)
+        from app.services import event_log
+        event_log.emit("task.created", actor="task_queue", ids={"task_id": task_id},
+                       payload={"title": title, "request": request[:300]})
+        return made
 
     def approve(self, task_id: str) -> Dict[str, Any]:
         t = self.get(task_id)
@@ -492,6 +646,9 @@ class TaskQueue:
                      waiting_kind=None, now="Approved; continuing")
         from app.services import agent_log
         agent_log.approval_decided(f"task-{task_id}-{t.get('steps') or 0}", "allowed")
+        from app.services import event_log
+        event_log.emit("task.action", actor="user", ids={"task_id": task_id},
+                       payload={"action": "approve"})
         self._kick()
         return {"success": True}
 
@@ -504,6 +661,9 @@ class TaskQueue:
             return {"success": False, "error": "Write an answer first."}
         self._update(task_id, note=f"You replied: {text}", status="queued",
                      next_action={"type": "continue", "text": text}, waiting_kind=None, now="Continuing with your answer")
+        from app.services import event_log
+        event_log.emit("task.action", actor="user", ids={"task_id": task_id},
+                       payload={"action": "answer", "text": text[:200]})
         self._kick()
         return {"success": True}
 
@@ -514,6 +674,9 @@ class TaskQueue:
         # A bot check the user cleared continues on the same page; everything else picks up where it stopped.
         self._update(task_id, note="Trying again", status="queued",
                      next_action={"type": "continue", "text": "continue"}, waiting_kind=None, now="Trying again")
+        from app.services import event_log
+        event_log.emit("task.action", actor="user", ids={"task_id": task_id},
+                       payload={"action": "retry"})
         self._kick()
         return {"success": True}
 
@@ -592,6 +755,7 @@ class TaskQueue:
             except BaseException:
                 pass
             self._running_id = None
+        await self._sweep_tool_children(task_id)
         fields: Dict[str, Any] = {"status": status, "finished_at": time.time(), "now": now_text,
                                   "next_action": None, "waiting_kind": None}
         if result is not None:
@@ -609,6 +773,18 @@ class TaskQueue:
             else:
                 asyncio.create_task(self._respawn_worker(worker))
         return True
+
+    async def _sweep_tool_children(self, task_id: str) -> None:
+        """Task end means tool-child end: reap any computer-tool process this task
+        spawned that is still running, so a finished, cancelled, or watchdog-stopped
+        task can never leave orphans behind (the whole-home find processes that
+        outlived their tasks in the eval runs). Only this task's own origin is
+        swept; chat and other tasks keep their children."""
+        try:
+            from app.services.system_control import system_control_service
+            await system_control_service.reap_tool_children(origin=f"task:{task_id}")
+        except Exception:
+            pass
 
     async def _respawn_worker(self, old_worker: asyncio.Task) -> None:
         """Restarts the worker loop once a force-cancelled worker finishes
@@ -772,6 +948,11 @@ class TaskQueue:
                     self._running_id = None
                     self._update(r["id"], note=f"Error: {e}", status="failed", finished_at=time.time(),
                                  result=f"Something went wrong inside Xod: {e}", now="Stopped", next_action=None)
+                finally:
+                    # Every _run exit path lands here (done, failed, waiting, and a
+                    # forced cancel unwinding through this loop): no tool child of
+                    # this task survives the task.
+                    await self._sweep_tool_children(r["id"])
             except Exception as e:
                 logger.exception(f"Task worker error: {e}")
                 await asyncio.sleep(3)
@@ -830,13 +1011,17 @@ class TaskQueue:
 
     def _verify_file_effects(self, task: Dict[str, Any], started: float) -> List[str]:
         """Ways this task's declared effects are NOT true (empty list = verified).
-        Three layers, all factual: (1) the file ops the activity log recorded for this
+        Layers, all factual: (1) the file ops the activity log recorded for this
         task must match the disk now; (2) file effects the request itself spells out
         (a path plus create/write/delete wording, exact contents when dictated) must
         hold on disk, whether or not any tool ran; (3) run effects the request
-        declares must exit with the required code when executed. The agent has
-        reported tasks done without calling a single file tool; this check trusts
-        the disk and the exit code, not the report."""
+        declares must exit with the required code when executed; (4) a claimed
+        file must be the artifact its type promises (fix round 6: a .py compiles,
+        a test file collects at least one test, a .json parses); (5) provenance:
+        when this task used the write tools at all, a claimed file no tool call
+        from this task touched is not its artifact, whoever put it there. The
+        agent has reported tasks done without calling a single file tool; this
+        check trusts the disk, the type and the write boundary, not the report."""
         from app.services import activity
         problems: List[str] = []
         try:
@@ -845,12 +1030,20 @@ class TaskQueue:
             logger.exception("file-effect check: activity read failed")
             entries = []
         expect: Dict[str, str] = {}
+        written_by_tool: set = set()
+        touched: set = set()
         for e in entries:
             if not e.get("ok"):
                 continue
             for op in e.get("ops") or []:
                 kind = op.get("kind")
-                if kind in ("restore_file", "remove_created"):
+                for key in ("path", "now_at", "from", "src"):
+                    if op.get(key):
+                        touched.add(os.path.normcase(str(op[key])))
+                if kind == "write_file":
+                    written_by_tool.add(os.path.normcase(str(op.get("path"))))
+                    expect[str(op.get("path"))] = "file"
+                elif kind in ("restore_file", "remove_created"):
                     expect[str(op.get("path"))] = "file"
                 elif kind == "untrash":
                     expect[str(op.get("path"))] = "absent"
@@ -885,6 +1078,23 @@ class TaskQueue:
                         actual = None
                     if actual is not None and actual != claim["content"].encode("utf-8"):
                         problems.append(f"{p.name} does not contain exactly what the task asked for")
+                if claim["kind"] != "delete" and claim.get("target") != "directory" and p.is_file():
+                    type_problem = _file_type_problem(p)
+                    if type_problem:
+                        problems.append(type_problem)
+                    # Provenance (fix round 6): files become artifacts
+                    # through the write tools. When this task's activity
+                    # shows it used those tools, a claimed file outside
+                    # every tool call's reach did not come through the
+                    # boundary and is not credited to the task. A task
+                    # that never used the write tools (a shell-only
+                    # flow) proves nothing either way and is not judged
+                    # on this layer.
+                    if written_by_tool and os.path.normcase(str(p)) not in touched:
+                        problems.append(
+                            f"Provenance: {p.name} is on disk, but no tool call from "
+                            f"this task wrote it; this task's files came through the "
+                            f"write tools, and {p.name} did not")
         # (3) run effects the request declares: the command is executed with
         # an argv list (never a shell) and its exit code must be the required
         # one. A contradicted run is a problem exactly like a missing file,

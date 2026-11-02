@@ -195,6 +195,21 @@ def get_setting(key: str, default: str = "") -> str:
         return row["value"] or default
     return default
 
+def has_setting(key: str) -> bool:
+    """True when a settings row exists, even if its value is empty.
+
+    An empty value can be a real saved choice (an empty llm_base_url means
+    "use the provider's own endpoint"), so existence is not the same as
+    truthiness: get_setting returns its default for an empty stored value.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+
 def set_setting(key: str, value: str):
     conn = get_db_connection()
     cursor = conn.cursor()

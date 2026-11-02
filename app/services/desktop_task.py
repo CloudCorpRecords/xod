@@ -1,5 +1,5 @@
 """
-desktop_task: Xod works toward a goal on this Mac's real screen, a step at a time: look (services/desktop.py), choose
+desktop_task: Xod works toward a goal on this computer's real screen, a step at a time: look (services/desktop.py), choose
 one action, do it, look again. Like the browser's missions, but on the whole computer.
 
 What the model sees each step: the goal, what it did so far, the front app, its numbered controls, the windows, and
@@ -30,7 +30,7 @@ FAIL_TRIES = 3            # the same step failing this many times is a reason to
 BAD_REPLY_TRIES = 5       # replies that aren't actions: told each time, stopped after 5 in a row
 PERMISSION_WAIT = 120     # seconds to wait for you to switch Xod on in System Settings
 
-SYSTEM = """You are using a Mac's real screen, mouse and keyboard to do what the person asked. Each turn you get the
+SYSTEM = """You are using this computer's real screen, mouse and keyboard to do what the person asked. Each turn you get the
 screen (the front app's controls, numbered, and a screenshot or a description of it) and reply with ONE action as JSON:
 {"thought": "<one short line: what you see and why this step>", "action": "<name>", ...arguments}
 
@@ -41,7 +41,7 @@ Actions:
   scroll {"direction": "down|up|left|right", "amount": 5, "element": n (optional)}
   drag {"from_element": n, "to_element": m}  or with x1, y1, x2, y2
   open_app {"name": "Terminal"}
-  terminals {}                                        (lists Terminal and iTerm windows (by id) and tabs)
+  terminals {}                                        (lists terminal windows (by id) and tabs: Terminal/iTerm on a Mac, Windows Terminal/PowerShell/Command Prompt on Windows; read_terminal is Mac-only for now)
   read_terminal {"app": "Terminal|iTerm", "window": <id>, "tab": n, "lines": 80}
   send_terminal {"text": "a command", "app": "...", "window": <id>, "tab": n}   (types it and presses Return; name the window by its id)
   wait {"seconds": 2}
@@ -119,12 +119,12 @@ async def run(goal: str, max_steps: int = MAX_STEPS) -> Dict[str, Any]:
     """Works on the goal until it's done or something stops it. Returns what it did."""
     from app.services import vision, sentinel
     from app.services.llm import llm_service
-    if not desktop.enabled() or not desktop.MAC:
+    if not desktop.enabled() or not desktop.SUPPORTED:
         desktop._ready()
     perms = desktop.permissions()
     if not (perms["screen"] and perms["accessibility"]):
         # Open what's missing and wait a little for you to switch it on, rather than stop and send you looking.
-        desktop._state["task"] = {"running": True, "goal": goal, "step": 0, "now": "Waiting for you to allow Xod in System Settings…",
+        desktop._state["task"] = {"running": True, "goal": goal, "step": 0, "now": "Waiting for you to allow Xod to use the screen…",
                                   "started": time.time(), "shot": None}
         ok = await desktop.wait_for_permissions(PERMISSION_WAIT, on_wait=lambda m: desktop._state["task"].update(now=m))
         desktop._state["task"]["running"] = False

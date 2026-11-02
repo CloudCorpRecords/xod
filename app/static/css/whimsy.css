@@ -127,6 +127,15 @@ h3.font-bold, h2.font-bold { font-weight: 600; }
   -webkit-tap-highlight-color: transparent;
 }
 .xod-mascot svg { display: block; width: 100%; height: 100%; overflow: visible; }
+/* Living Look packs: a pack look is a generated clip, not the SVG rig. The clip is a
+   portrait stage shot; cover fills the mascot box and crops the empty stage. */
+.xod-mascot video.xm-pack-media { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 24%; }
+.xc-pack-preview { display: block; width: 64px; height: 64px; margin: 0 auto; }
+.xc-pack-preview img { width: 100%; height: 100%; object-fit: cover; border-radius: 24%; display: block; }
+.xc-states { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+.xc-state { margin: 0; }
+.xc-state video { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 14px; display: block; }
+.xc-state figcaption { text-align: center; font-size: 11px; color: #a1a1aa; margin-top: 0.25rem; text-transform: capitalize; }
 .xod-mascot--small { width: 30px; height: 30px; }
 .xod-mascot--hero { width: 92px; height: 92px; animation: moonFloat 6s ease-in-out infinite; }
 .xod-mascot:focus-visible { outline: 2px solid var(--lamp); outline-offset: 6px; border-radius: 50%; }

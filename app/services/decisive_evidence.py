@@ -26,8 +26,25 @@ Rendering for locate_files:
   found     ranked candidates in order, each with full path, kind,
             modified date, size, and its why lines.
   ask       both top candidates with paths, plus the tool's question.
-  not_found the tried list (routes and terms), stated plainly.
+  not_found the tried list (routes and terms), stated plainly, plus any
+            checked-and-rejected candidates with their evidence.
+
+Kind-mismatch block: a candidate whose own why lines state it is not
+the kind the hunt asked for ("but it is a document, not a pdf", the
+phrasing app/services/locate.py score_candidate produces) can never be
+delivered as a found match. capture() downgrades such a payload before
+any consumer (the task layer's done close included) can act on it, and
+render_locate() applies the same partition again, so the block holds
+at this layer even for a payload that never passed through locate().
+The block also reads structured kind data: the candidate's kind field
+against the payload's recorded requested kind. A payload whose why
+lines carry no mismatch prose at all (the re-run 4 L4 and L9 shape:
+kind printed as "code" beside a PDF hunt, no refutation line) is
+refuted here when the field contradicts the request and the candidate
+carries no name identity; payloads that record no clues keep the
+prose check only.
 """
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +57,72 @@ EXACT_OUTPUT_RE = re.compile(
     r"reply with only|respond with only|answer with only", re.I)
 
 DECISIVE_TOOLS = {"locate_files"}
+
+# The scorer's kind-mismatch phrasing: "but it is a {actual}, not a
+# {wanted}". The wanted kind named in the line is the refutation; the
+# candidate is refuted whatever kind the hunt's clues recorded.
+_KIND_MISMATCH_RE = re.compile(r"but it is an? .+?, not an? [a-z]+\b")
+
+
+def _tokens(text: str) -> List[str]:
+    return [t for t in re.findall(r"[a-z0-9]+", (text or "").lower()) if len(t) > 1]
+
+
+def _structured_kind_refuted(cand: Dict[str, Any], clues: Optional[Dict[str, Any]]) -> bool:
+    """Structured kind check: the candidate's kind field against the
+    payload's recorded requested kind, no prose involved. A candidate
+    that contradicts the requested kind is refuted unless it carries
+    name identity: an exact match on a recorded name token, or the
+    exact-name shape (its name's tokens are all recorded clue terms,
+    the shape the scorer pays the exact-name bonus for)."""
+    clues = clues or {}
+    kind = str(clues.get("kind") or "")
+    if not kind or cand.get("is_folder"):
+        return False
+    actual = str(cand.get("kind") or "")
+    if not actual or actual == kind or (kind == "photo" and actual == "image"):
+        return False
+    stem_tokens = set(_tokens(os.path.splitext(str(cand.get("name") or ""))[0]))
+    if not stem_tokens:
+        return True
+    name_tokens = [str(t) for t in (clues.get("name_tokens") or [])]
+    if any(t in stem_tokens for t in name_tokens):
+        return False
+    identity_terms = set(name_tokens) | {str(t) for t in (clues.get("purpose_terms") or [])}
+    if clues.get("year"):
+        identity_terms.add(str(clues["year"]))
+    return not (stem_tokens <= identity_terms)
+
+
+def _kind_refuted(cand: Dict[str, Any], clues: Optional[Dict[str, Any]] = None) -> bool:
+    return (any(_KIND_MISMATCH_RE.search(str(w)) for w in (cand.get("why") or []))
+            or _structured_kind_refuted(cand, clues))
+
+
+def sanitize_locate(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Partition a locate payload's candidates by the kind-mismatch
+    block. Returns the payload unchanged when nothing is refuted;
+    otherwise returns a copy with refuted candidates moved to
+    "rejected", downgrading found/ask to not_found when no presentable
+    candidate remains (and an ask with one survivor to found)."""
+    if payload.get("status") not in ("found", "ask"):
+        return payload
+    cands = payload.get("candidates") or []
+    clues = payload.get("clues")
+    refuted = [c for c in cands if _kind_refuted(c, clues)]
+    if not refuted:
+        return payload
+    kept = [c for c in cands if not _kind_refuted(c, clues)]
+    out = dict(payload)
+    out["rejected"] = list(payload.get("rejected") or []) + refuted
+    out["candidates"] = kept
+    if not kept:
+        out["status"] = "not_found"
+        out.pop("question", None)
+    elif payload.get("status") == "ask" and len(kept) == 1:
+        out["status"] = "found"
+        out.pop("question", None)
+    return out
 
 
 def exact_format_requested(text: str) -> bool:
@@ -56,7 +139,7 @@ def capture(tool_name: str, result: Any) -> Optional[Dict[str, Any]]:
             return None
         if not isinstance(result.get("candidates"), list) or not isinstance(result.get("tried"), list):
             return None
-        return {"tool": tool_name, "payload": result}
+        return {"tool": tool_name, "payload": sanitize_locate(result)}
     return None
 
 
@@ -103,6 +186,7 @@ def _candidate_lines(cand: Dict[str, Any], rank: int) -> List[str]:
 
 
 def render_locate(payload: Dict[str, Any]) -> str:
+    payload = sanitize_locate(payload)
     status = payload.get("status")
     cands = payload.get("candidates") or []
     if status == "found" and cands:
@@ -131,6 +215,11 @@ def render_locate(payload: Dict[str, Any]) -> str:
                 if t.get("error"):
                     line += f" - error: {t['error']}"
                 lines.append(line)
+        rejected = payload.get("rejected") or []
+        if rejected:
+            lines.append("Checked and rejected:")
+            for i, cand in enumerate(rejected, 1):
+                lines.extend(_candidate_lines(cand, i))
         return "\n".join(lines)
     return ""
 

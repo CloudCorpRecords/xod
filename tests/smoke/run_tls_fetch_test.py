@@ -14,6 +14,8 @@ from pathlib import Path
 import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
+import os
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 sys.path.insert(0, str(ROOT))
 results = []
 

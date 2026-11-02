@@ -258,8 +258,27 @@ def _effort_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int,
 # evidence for the other rows of the pricing table (gpt-6-astra,
 # gpt-6.1-terra, gpt-6-luna, gpt-6-sol, the 5.6, 5.5 and 5.4 rows); the
 # reactive handler below covers a model if an endpoint ever teaches it.
+#
+# Round 3 (2026-10-31): the match is on the BASE model id, not the raw
+# string. Model ids reach this layer in routed forms: _build_endpoint
+# prefixes a Fireworks model with "accounts/fireworks/models/", other
+# routes carry "provider/model" ids, and the pricing table attests dated
+# snapshot ids (lookup_price: "gpt-4o-2024-08-06" shares the "gpt-4o"
+# row). The exact-string match silently missed every one of those forms,
+# so a tools call for the evidenced model went out without the
+# prescribed "none" and depended on the reactive handler to survive;
+# on a path with no retry loop (model_scores._ask before round 3) it
+# simply died, the re-run 2 mission subtask shape.
 _TOOLS_EFFORT_NONE_MODELS = ("gpt-6.1-sol",)
 _tools_effort_learned: Dict[Tuple[str, str], str] = {}   # (provider, model) -> "none" or "omit", tools calls only
+
+
+def _base_model_id(model: Any) -> str:
+    """The model id with any route prefix and dated snapshot suffix
+    removed: "accounts/fireworks/models/gpt-6.1-sol", "openai/gpt-6.1-sol"
+    and "gpt-6.1-sol-2026-10-31" are the same model as "gpt-6.1-sol"."""
+    m = str(model or "").lower().rsplit("/", 1)[-1]
+    return re.sub(r"-\d{4}-\d{2}-\d{2}$", "", m)
 
 
 def _tools_effort_mode(info: Dict[str, Any], has_tools: bool) -> Optional[str]:
@@ -272,7 +291,7 @@ def _tools_effort_mode(info: Dict[str, Any], has_tools: bool) -> Optional[str]:
     pair = (info.get("provider"), info.get("model"))
     if pair in _tools_effort_learned:
         return _tools_effort_learned[pair]
-    if str(info.get("model") or "").lower() in _TOOLS_EFFORT_NONE_MODELS:
+    if _base_model_id(info.get("model")) in _TOOLS_EFFORT_NONE_MODELS:
         return "none"
     return None
 
@@ -1057,6 +1076,8 @@ class LLMService:
         task: Optional[str] = None,
         group_id: Optional[str] = None,
         think: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str = "auto",
         _rescue: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Streams text chunks and reasoning tokens directly. task: see chat_completion.
@@ -1105,8 +1126,11 @@ class LLMService:
         if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini", "ollama", "lm_studio", "local", "custom"):
             payload["stream_options"] = {"include_usage": True}   # token counts (cost, and the Usage tab for local models too)
         _usage: Optional[Dict[str, Any]] = None
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
         _quiet_thinking(payload, info, think)
-        _apply_tools_effort(payload, info)   # no tools on this path today; kept so a future tools parameter is covered
+        _apply_tools_effort(payload, info)
 
         restarted = False
         async with httpx.AsyncClient(timeout=XOD_TIMEOUT if info["provider"] == "xod" else LLM_TIMEOUT) as client:

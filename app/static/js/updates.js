@@ -88,6 +88,7 @@
   function render(next) {
     if (!next) return;
     st = next;
+    window.__xodUpdating = ["downloading", "installing"].includes(next.state);   // mascot.js: a look pack shows its upgrading state meanwhile
     pill();
     banner();
   }

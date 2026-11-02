@@ -108,6 +108,15 @@ def _emit(j: Dict[str, Any], event: Dict[str, Any]) -> None:
             f(j["id"], event)
         except Exception:
             pass
+    if event.get("type") == "done":
+        # Observability (services/event_log.py): every terminal Crew transition
+        # (done, failed, stopped, interrupted) funnels through this one emit.
+        from app.services import event_log
+        event_log.emit("crew.finished", actor=f"crew:{j.get('agent') or ''}",
+                       ids={"crew_job": j["id"]},
+                       payload={"status": event.get("status"), "agent": j.get("agent"),
+                                "title": (j.get("title") or "")[:200],
+                                "error": (j.get("error") or "")[:300] or None})
 
 
 def _step(j: Dict[str, Any], kind: str, text: str, **extra: Any) -> None:
@@ -274,9 +283,34 @@ def set_models(default: Optional[str] = None, cheap: Optional[str] = None, cheap
     return cfg
 
 
+BOARD_MODEL_SETTING = "board_claude_model"
+
+
+def board_model() -> str:
+    """The board seat pin: the model the Claude participant is seated on for a board meeting
+    (crew jobs of kind "board"). A configuration rule of the owner's, set like the crew model
+    settings; empty means no pin is configured, and board jobs then run the agent's own
+    default and say so on the record instead of claiming a pin that is not there."""
+    from app.services.storage import get_setting
+    return (get_setting(BOARD_MODEL_SETTING, "") or "").strip()
+
+
+def set_board_model(value: str) -> str:
+    from app.services.storage import set_setting
+    v = (value or "").strip()
+    if v and not MODEL_RE.match(v):
+        raise CrewError(f"'{v}' doesn't look like a model id (e.g. sonnet).")
+    set_setting(BOARD_MODEL_SETTING, v)
+    return v
+
+
 def pick_model(kind: str = "") -> Tuple[str, str]:
     """(model, why) for a new Muse job of this kind. Empty model = Muse's own default."""
     cfg = models()
+    if kind == "board":
+        pin = board_model()
+        if pin:
+            return pin, "the board seat pin"
     if cfg["cheap"]:
         if kind and kind in cfg["cheap_for"]:
             return cfg["cheap"], f"the cheaper model for {kind} jobs"
@@ -310,6 +344,12 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
     j = {"id": jid, "name": f"{agent}-job-{n}", "agent": agent, "title": (title or task.strip().splitlines()[0])[:100], "task": task,
          "folder": cwd, "project": cwd, "status": "starting", "started": time.time(), "updated": time.time(), "session_id": None,
          "turn_id": None, "steps": [], "approvals": {}, "questions": {}, "_text": "", "answer": "", "usage": {}, "error": None}
+    if kind == "board":
+        j["seat"] = {"role": "board", "agent": agent, "model_requested": board_model(),
+                     "model_actual": None, "model_proof": None, "limitation": None}
+        if not j["seat"]["model_requested"]:
+            j["seat"]["limitation"] = ("No board model pin is configured (the board_claude_model setting is "
+                                       "empty): this seat ran the agent's own default model.")
     if isolate is not False:
         try:
             wt = await asyncio.to_thread(worktrees.create, cwd, j["name"], jid)
@@ -319,6 +359,11 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
             j["worktree"] = wt
             j["folder"] = wt["cwd"]
     _jobs[jid] = j
+    from app.services import event_log
+    event_log.emit("crew.started", actor=f"crew:{agent}", ids={"crew_job": jid},
+                   payload={"agent": agent, "kind": kind or "", "title": j["title"],
+                            "folder": cwd,
+                            "seat_model_requested": (j.get("seat") or {}).get("model_requested")})
     if j.get("worktree"):
         w = j["worktree"]
         _step(j, "status", f"Working in its own copy of {w['repo_name']} (branch {w['branch']}, from {w['base']}): nothing reaches "
@@ -345,6 +390,16 @@ async def _run_start(j: Dict[str, Any], approval_mode: Optional[str]) -> None:
                          "headers": {"Authorization": f"Bearer {c['token']}"}} for name, c in _shared().items()}
         s = await h.start_session(j["folder"], approval_mode=approval_mode, mcp_servers=shared or None, model=j.get("model") or "")
         j["session_id"] = s["sessionId"]
+        if j.get("seat") is not None:
+            actual = s.get("modelId") or s.get("model") or ""
+            if actual:
+                j["seat"]["model_actual"] = actual
+                j["seat"]["model_proof"] = "reported by Muse when the session started"
+                if j["seat"].get("model_requested"):
+                    j["seat"]["limitation"] = None
+            elif not j["seat"].get("limitation"):
+                j["seat"]["limitation"] = ("Muse did not report its model when the session started, so this "
+                                           "seat's model cannot be proven from the job record.")
         _by_session[s["sessionId"]] = j["id"]
         _step(j, "status", "Muse is working on it")
         await _send(j, j["task"])
@@ -747,7 +802,8 @@ async def _claude_run(j: Dict[str, Any], resume: str = "") -> ClaudeRun:
     if not path:
         raise CrewError("Claude Code isn't installed. Xod can set it up: Tools → Agent setup.")
     env, mcp = _claude_env_and_config()
-    r = ClaudeRun(path, j["folder"], env=env, resume=resume, mcp_config=mcp)
+    seat_model = (j.get("seat") or {}).get("model_requested") or ""
+    r = ClaudeRun(path, j["folder"], env=env, resume=resume, mcp_config=mcp, model=seat_model)
     jid = j["id"]
 
     async def on_event(m: Dict[str, Any]) -> None:
@@ -875,6 +931,15 @@ async def _claude_event(j: Optional[Dict[str, Any]], m: Dict[str, Any]) -> None:
         if m.get("session_id") and j.get("session_id") != m["session_id"]:
             j["session_id"] = m["session_id"]
             _save()
+        if m.get("model"):
+            j["model_actual"] = m["model"]
+            seat = j.get("seat")
+            if seat is not None:
+                seat["model_actual"] = m["model"]
+                seat["model_proof"] = "reported by Claude Code in its session init event"
+                if seat.get("model_requested"):
+                    seat["limitation"] = None
+            _save()
         return
     if t == "assistant":
         for c in (m.get("message") or {}).get("content") or []:
@@ -930,6 +995,10 @@ async def _claude_event(j: Optional[Dict[str, Any]], m: Dict[str, Any]) -> None:
             why = m.get("result") or "; ".join(m.get("errors") or []) or str(m.get("subtype") or "it stopped")
             j.update(status="failed", error=str(why)[:400], ended=time.time())
             _step(j, "error", j["error"])
+        seat = j.get("seat")
+        if seat is not None and not seat.get("model_actual") and not seat.get("limitation"):
+            seat["limitation"] = ("Claude Code did not report its model in the session init event, so this "
+                                  "seat's model cannot be proven from the job record.")
         _save()
         _emit(j, {"type": "done", "status": j["status"]})
 

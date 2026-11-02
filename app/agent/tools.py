@@ -3165,7 +3165,87 @@ def _missing_required(name: str, arguments: Dict[str, Any]) -> List[str]:
         except Exception:
             schema = None
     required = (schema or {}).get("required") or [] if isinstance(schema, dict) else []
-    return [k for k in required if (arguments or {}).get(k) in (None, "", [], {})]
+    missing = []
+    for k in required:
+        if (arguments or {}).get(k) not in (None, "", [], {}):
+            continue
+        # computer_write_file: an explicitly passed empty content is a real
+        # write, not a missing argument — its handler makes a folder of a bare
+        # path and an empty file of a .gitkeep or Makefile. Only an absent (or
+        # None) content is missing. Plan-level empty content is a different
+        # fault, stopped at assembly in services/missions.py before tools run.
+        if name == "computer_write_file" and k == "content" and (arguments or {}).get(k) == "":
+            continue
+        missing.append(k)
+    return missing
+
+
+# ------------------------------------------------------------------ placeholder arguments
+# A literal placeholder passed as a real value (the L7 hunt shape: the model
+# called computer_read_file on "<matching file path from search results>",
+# the search result's rendering having dropped the actual path) is a hard
+# failure at this dispatch layer, never something to execute as a real path.
+# The rule: a string argument that IS an angle-bracketed placeholder (its
+# whole value is one <...> chunk whose inner text is a multi-word phrase or
+# a known placeholder token), or a path argument CONTAINING such a chunk, is
+# unresolved template text. Payload keys (content, text, message, ...) are
+# exempt from the whole-value rule: their text is data, not a reference.
+_PLACEHOLDER_TOKENS = {"path", "filepath", "file path", "filename", "file name", "name", "value",
+                       "result", "output", "input", "todo", "placeholder", "x", "id", "url",
+                       "the path", "file", "folder", "directory", "location"}
+_PLACEHOLDER_PAYLOAD_KEYS = {"content", "text", "message", "body", "html", "command", "prompt",
+                             "instructions", "description", "title", "caption"}
+_PLACEHOLDER_WHOLE_RE = re.compile(r"^<([^<>\n]{1,200})>$")
+_PLACEHOLDER_PART_RE = re.compile(r"<([^<>\n]{1,200})>")
+
+
+def _is_placeholder_inner(inner: str) -> bool:
+    inner = (inner or "").strip().lower()
+    if not inner:
+        return False
+    if inner in _PLACEHOLDER_TOKENS:
+        return True
+    # a phrase: two or more words joined by spaces, underscores or hyphens
+    return bool(re.fullmatch(r"[a-z0-9]+(?:[ _\-]+[a-z0-9]+)+", inner))
+
+
+def placeholder_argument(arguments):
+    """The first (key, value) argument that is unresolved placeholder text, or None."""
+    def scan(value, key):
+        if isinstance(value, str):
+            s = value.strip()
+            m = _PLACEHOLDER_WHOLE_RE.match(s)
+            if m and key not in _PLACEHOLDER_PAYLOAD_KEYS and _is_placeholder_inner(m.group(1)):
+                return value
+            if key in PATH_ARGS or key == "cwd":
+                for part in _PLACEHOLDER_PART_RE.finditer(value):
+                    if _is_placeholder_inner(part.group(1)):
+                        return value
+            return None
+        if isinstance(value, dict):
+            for k, v in value.items():
+                hit = scan(v, str(k))
+                if hit is not None:
+                    return hit
+        if isinstance(value, (list, tuple)):
+            for v in value:
+                hit = scan(v, key)
+                if hit is not None:
+                    return hit
+        return None
+
+    for k, v in (arguments or {}).items():
+        hit = scan(v, str(k))
+        if hit is not None:
+            return str(k), hit
+    return None
+
+
+def placeholder_error(name: str, key: str, value: str) -> Dict[str, Any]:
+    return {"success": False, "error_code": "placeholder_argument",
+            "error": (f"PlaceholderArgumentError: argument '{key}' for {name} is an unresolved "
+                      f"placeholder ({value!r}), not a real value. Nothing was run. Use the actual "
+                      "value an earlier tool result returned, or run the search that produces it first.")}
 
 
 async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None,
@@ -3173,8 +3253,28 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first.
     Sentinel (services/sentinel.py) looks at it first, against what the person asked; a hit waits for their OK
     (reviewed=True is that OK). What comes back from tools that read others' content is remembered for the next look."""
+    import time
+    _obs_t0 = time.time()          # the tool call's wall clock, for the observability step log
     from app.services import activity, sentinel
     arguments = _expand_path_args(_alias_args(name, arguments))
+    bad = placeholder_argument(arguments)
+    if bad:
+        return placeholder_error(name, bad[0], bad[1])
+    if name == "computer_run_applescript":
+        # Permission guard (services/abilities.py applescript_block), after the placeholder guard above
+        # (a malformed call is rejected before any permission state is read or surfaced) and before
+        # anything here can reach _execute_tool: a script telling an app macOS has not allowed Xod to
+        # control (ask or denied) must not fire, because firing it is what shows the Automation prompt
+        # mid-task. The guard is a no-prompt pre-check, so it sits before the spawn; Lane 4's bounded,
+        # reaped osascript run in SystemControlService.run_applescript is untouched below it.
+        try:
+            from app.services import abilities
+            block = await asyncio.to_thread(abilities.applescript_block, arguments.get("script") or "")
+        except Exception as e:
+            logger.warning(f"applescript permission guard skipped for {name}: {e}")
+            block = None
+        if block:
+            return block
     missing = _missing_required(name, arguments)
     if missing:
         # A call without what the tool needs only fails, or worse does something nobody asked for (a delete with no
@@ -3196,7 +3296,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         if hit:
             held = sentinel.hold(name, arguments or {}, hit)
             from app.services import agent_log
-            agent_log.step(name, arguments or {}, held)
+            agent_log.step(name, arguments or {}, held,
+                           duration_ms=round((time.time() - _obs_t0) * 1000))
             return held
     ctx = None
     try:
@@ -3210,7 +3311,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         logger.warning(f"activity log failed for {name}: {e}")
     sentinel.saw(name, result)
     from app.services import agent_log
-    agent_log.step(name, arguments or {}, result)      # the Agent page's step list (by job and by agent)
+    agent_log.step(name, arguments or {}, result,
+                   duration_ms=round((time.time() - _obs_t0) * 1000))      # the Agent page's step list (by job and by agent)
     return result
 
 
@@ -3338,11 +3440,11 @@ def _desktop_setup_card(a: Dict[str, Any]) -> Dict[str, Any]:
     if token and token in _setup_grants:
         _setup_grants.discard(token)
         packs.set_enabled(desktop.PACK, True)
-        res = desktop.request_permissions(force=True) if desktop.MAC else desktop.permissions()
+        res = desktop.request_permissions(force=True) if desktop.SUPPORTED else desktop.permissions()
         return {"success": True, "enabled": True, **{k: res.get(k) for k in ("screen", "accessibility", "app", "message")},
                 "note": "The screen tools are available from the next message."}
-    if not desktop.MAC:
-        return {"success": False, "error": "Using the screen, mouse and keyboard works on a Mac for now."}
+    if not desktop.SUPPORTED:
+        return {"success": False, "error": "Using the screen, mouse and keyboard works on a Mac or Windows for now."}
     t = uuid.uuid4().hex
     _setup_grants.add(t)
     held = sentinel.hold("desktop_setup", {"_grant": t}, {"rule": "desktop_setup",
@@ -3462,7 +3564,7 @@ async def _crew_tool(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
 
 def _screen_on() -> bool:
     from app.services import desktop
-    return desktop.MAC and desktop.enabled()
+    return desktop.SUPPORTED and desktop.enabled()
 
 
 async def _cli_start(ac, agent: str, folder: str, visible: bool, name: str = "", new: bool = False) -> Dict[str, Any]:
@@ -4847,7 +4949,9 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
         "locate_files",
         "computer_directory_tree",
         "computer_read_file",
+        "computer_write_file",
         "computer_edit_file",
+        "computer_manage_file",
         "fs_list_workspace_files",
         "fs_read_workspace_file",
         "fs_search_workspace",

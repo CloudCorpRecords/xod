@@ -11,7 +11,7 @@ the AX backend are fakes throughout.
 
 Run: .venv/bin/python tests/self_heal/run_permissions_test.py
 """
-import plistlib, sys, tempfile
+import json, plistlib, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -199,6 +199,69 @@ def main():
         assert runner.calls == [["tccutil", "reset", "Accessibility", "dev.xod.partner"]], runner.calls
         assert out["ok"] is True and P._backend.prompt_calls == 0, out
         print("PASS: the partner reset targets dev.xod.partner once and never re-asks here", flush=True)
+
+        # The GUI verdict: inside the app bundle, trusted() is the GUI main
+        # process's own reading, never this backend child's. (2026-11-02: the
+        # installed app's grant stood allowed in the TCC database, bound to
+        # the running build, while the spawned backend read False.)
+        real_gui_fn = getattr(P, "gui_trusted", None)
+        try:
+            P.own_bundle_id = lambda: "dev.xod.desktop"
+            P._backend = _FakeAX(False)
+            P.gui_trusted = lambda: True
+            assert P.trusted() is True, P.trusted()
+            st = P.accessibility_status(auto_approve_on=True)
+            assert st["trusted"] is True and st["notice"] is None, st
+            print("PASS: in the app, the GUI's true verdict surfaces over the backend child's false", flush=True)
+
+            P.gui_trusted = lambda: False
+            P._backend = _FakeAX(True)
+            assert P.trusted() is False
+            st = P.accessibility_status(auto_approve_on=True)
+            assert st["notice"] == P.STALE_NOTICE, st
+            print("PASS: in the app, the GUI's false verdict is a real stale grant (notice shows); the child's true is ignored", flush=True)
+
+            P.gui_trusted = lambda: None
+            assert P.trusted() is None, P.trusted()
+            st = P.accessibility_status(auto_approve_on=True)
+            assert st["trusted"] is None and st["notice"] is None, st
+            print("PASS: in the app, no GUI verdict means unknown, never the backend child's own answer", flush=True)
+
+            # Outside a bundle the verdict is not consulted: a dev
+            # interpreter reports its own process's access, as before.
+            P.own_bundle_id = lambda: None
+            P.gui_trusted = lambda: True
+            P._backend = _FakeAX(False)
+            assert P.trusted() is False
+            print("PASS: outside the app, the GUI verdict is not consulted and the process reports itself", flush=True)
+        finally:
+            if real_gui_fn is None:
+                try:
+                    del P.gui_trusted
+                except AttributeError:
+                    pass
+            else:
+                P.gui_trusted = real_gui_fn
+
+        # The verdict file itself: only this build's current word counts.
+        from app.version import VERSION as _V
+        now = 1_700_000_000.0
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "ax_trust.json"
+            assert P._read_gui_trust(p, now) is None
+            p.write_text(json.dumps({"trusted": True, "checked_at": now - 5, "app_version": _V}))
+            assert P._read_gui_trust(p, now) is True
+            p.write_text(json.dumps({"trusted": False, "checked_at": now - 5, "app_version": _V}))
+            assert P._read_gui_trust(p, now) is False
+            p.write_text(json.dumps({"trusted": True, "checked_at": now - 5, "app_version": "0.0.0-other"}))
+            assert P._read_gui_trust(p, now) is None
+            p.write_text(json.dumps({"trusted": True, "checked_at": now - P.GUI_TRUST_MAX_AGE_S - 1, "app_version": _V}))
+            assert P._read_gui_trust(p, now) is None
+            p.write_text(json.dumps({"trusted": "yes", "checked_at": now, "app_version": _V}))
+            assert P._read_gui_trust(p, now) is None
+            p.write_text("{not json")
+            assert P._read_gui_trust(p, now) is None
+        print("PASS: the GUI verdict counts only when it is this build's, current, and well-formed", flush=True)
 
         _seam_trusted_with_prompt()
     finally:

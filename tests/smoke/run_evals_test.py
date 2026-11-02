@@ -20,6 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 TMP = Path(tempfile.mkdtemp(prefix="xod-evals-"))
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 os.environ.update({"XOD_DATA_DIR": str(TMP / "data"), "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring",
                    "XOD_TEST_KEYRING_FILE": str(TMP / "keys.json"), "XOD_NO_UPDATE_CHECK": "1"})
 (TMP / "data").mkdir()
@@ -50,7 +51,16 @@ async def main():
     dev = evals.suite("devices")
     acts = {f["name"]: set((f.get("parameters", {}).get("properties", {}).get("action", {}) or {}).get("enum") or [])
             for f in (t["function"] for t in tools.TOOL_DEFINITIONS)}
-    real = lambda n: n in ("answer", "web") or n in mac_names or n in acts or (n.split(".")[0] in acts and n.split(".", 1)[-1] in acts[n.split(".")[0]])
+    # The devices cases name the built-in Mac server's tools by their MCP-exposed
+    # names (mcp__mac__<tool>); those exist when the bare tool does. Tools the
+    # product ships for macOS only (platform_info.MAC_ONLY_TOOLS) are stripped
+    # from this host's catalog at import on Windows; they still exist in the
+    # product, so the cases may name them (fix round 6).
+    from app import platform_info as _plat
+    real = lambda n: n in ("answer", "web") or n in mac_names or n in acts \
+        or n in _plat.MAC_ONLY_TOOLS \
+        or (n.startswith("mcp__mac__") and n[len("mcp__mac__"):] in mac_names) \
+        or (n.split(".")[0] in acts and n.split(".", 1)[-1] in acts[n.split(".")[0]])
     check("the devices cases name tools and actions that exist", dev.get("by_tool") and all(
           real(n) for c in dev["cases"] for n in c["want"] + c.get("never", []) if n not in ("open_app", "apps_open")),
           str([n for c in dev["cases"] for n in c["want"] + c.get("never", []) if not real(n)]))

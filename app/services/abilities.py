@@ -1,6 +1,6 @@
 """
 Everyday abilities on this Mac, one Allow each (Tools → Abilities): Messages, Location, Calendar, Home, Reminders,
-Contacts. Each is a part of the "This Mac" connector (app/connectors/mac.py); Allow switches the connector on and has
+Contacts, Music. Each is a part of the "This Mac" connector (app/connectors/mac.py); Allow switches the connector on and has
 macOS ask its own question once ("Xod wants to control Calendar", Location Services), or opens the right page of
 System Settings when macOS won't ask (Full Disk Access, for reading Messages).
 
@@ -11,6 +11,7 @@ database can be opened.
 import ctypes
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -40,8 +41,103 @@ ABILITIES: List[Dict[str, Any]] = [
     {"id": "contacts", "name": "Contacts", "icon": "contact", "blurb": "Find and add contacts",
      "app": "com.apple.AddressBook", "probe": 'tell application "Contacts" to count people',
      "try": "What's Alex's phone number?"},
+    {"id": "music", "name": "Music", "icon": "music", "blurb": "Play and control your music",
+     "app": "com.apple.Music", "probe": 'tell application "Music" to count playlists',
+     "try": "Play some music"},
 ]
 _BY_ID = {a["id"]: a for a in ABILITIES}
+
+# ------------------------------------------------------------------ AppleScript automation targets
+# The apps the generic AppleScript tool (computer_run_applescript) commonly tells, beyond the Abilities above.
+# They share the same machinery: the no-prompt automation() check, the one-time Allow flow in allow(), and the
+# remembered state below. They are not listed on the Abilities screen up front; one appears there once a task
+# has been held back for it (see surface_automation_target), so the person has exactly one place to allow it.
+_EXTRA_TARGETS: List[Dict[str, Any]] = [
+    {"id": "finder", "name": "Finder", "icon": "folder", "blurb": "Work with files and folders",
+     "app": "com.apple.finder", "probe": 'tell application "Finder" to count windows',
+     "try": "Show my Downloads folder"},
+    {"id": "safari", "name": "Safari", "icon": "compass", "blurb": "Control Safari windows and tabs",
+     "app": "com.apple.Safari", "probe": 'tell application "Safari" to count windows',
+     "try": "Open this page in Safari"},
+    {"id": "notes", "name": "Notes", "icon": "sticky-note", "blurb": "Read and add notes",
+     "app": "com.apple.Notes", "probe": 'tell application "Notes" to count folders',
+     "try": "Add this to my notes"},
+    {"id": "mail", "name": "Mail", "icon": "mail", "blurb": "Read and send mail in Mail",
+     "app": "com.apple.mail", "probe": 'tell application "Mail" to count accounts',
+     "try": "Check my Mail inbox"},
+    {"id": "terminal", "name": "Terminal", "icon": "terminal", "blurb": "Run commands in Terminal",
+     "app": "com.apple.Terminal", "probe": 'tell application "Terminal" to count windows',
+     "try": "Run this in Terminal"},
+    {"id": "system_events", "name": "System Events", "icon": "cog", "blurb": "Keystrokes and UI scripting",
+     "app": "com.apple.systemevents", "probe": 'tell application "System Events" to count processes',
+     "try": "Press play for me"},
+    {"id": "system_settings", "name": "System Settings", "icon": "settings", "blurb": "Change settings",
+     "app": "com.apple.systempreferences", "probe": 'tell application "System Settings" to count panes',
+     "try": "Open the Wi-Fi settings"},
+]
+AUTOMATION_TARGETS: List[Dict[str, Any]] = [a for a in ABILITIES if a.get("app")] + _EXTRA_TARGETS
+_TARGET_BY_ID = {a["id"]: a for a in AUTOMATION_TARGETS}
+_TARGET_BY_NAME = {a["name"].lower(): a for a in AUTOMATION_TARGETS}
+_TARGET_BY_BUNDLE = {a["app"].lower(): a for a in AUTOMATION_TARGETS}
+_TELL_RE = re.compile(r"tell\s+(?:application|app)\s+(?:id\s+)?\"([^\"]+)\"", re.I)
+
+
+def applescript_target(script: str) -> Optional[Dict[str, Any]]:
+    """The known automation target a script tells, from its first tell application (or tell app, or
+    tell application id "bundle") line, or None. A script with no tell, or one telling an app Xod has
+    no bundle id for, has no target the no-prompt check can look up, so it is left alone."""
+    m = _TELL_RE.search(script or "")
+    if not m:
+        return None
+    who = m.group(1).strip()
+    return _TARGET_BY_NAME.get(who.lower()) or _TARGET_BY_BUNDLE.get(who.lower())
+
+
+def _guard_remembered() -> Dict[str, str]:
+    from app.services.storage import get_setting
+    try:
+        return json.loads(get_setting("applescript_guard", "") or "{}")
+    except ValueError:
+        return {}
+
+
+def _guard_remember(aid: str, state: str) -> None:
+    from app.services.storage import set_setting
+    r = _guard_remembered()
+    r[aid] = state
+    set_setting("applescript_guard", json.dumps(r))
+
+
+def surface_automation_target(target: Dict[str, Any], state: str) -> bool:
+    """Surface a held-back target on the Abilities screen, once. The first hold for a target records it
+    (status() then lists it, with its Allow) and returns True; later holds for the same target return
+    False and change nothing, so a dismissal or a no is not re-surfaced task after task. A later grant
+    needs no clearing here: the pre-check runs every time and an allowed state proceeds regardless."""
+    if target["id"] in _guard_remembered():
+        return False
+    _guard_remember(target["id"], state)
+    return True
+
+
+def applescript_block(script: str) -> Optional[Dict[str, Any]]:
+    """The permission guard for the generic AppleScript tool: the named result that replaces running
+    the script, or None when the script may run. Untargeted scripts (no known tell target) and targets
+    macOS cannot report on (unknown: the app is not running, or this is not a Mac) run as before. An
+    allowed target runs. An ask or denied target does NOT run: firing it from inside a task is what
+    makes macOS show its Automation prompt mid-task, and nothing would remember a dismissal."""
+    target = applescript_target(script)
+    if not target:
+        return None
+    st = automation(target["app"])
+    if st not in ("ask", "denied"):
+        return None
+    surfaced = surface_automation_target(target, st)
+    return {"success": False, "error_code": "applescript_permission_not_granted",
+            "error": (f"AppleScriptPermissionNotGranted: Xod is not allowed to control {target['name']} "
+                      f"yet (macOS Automation says {st}), so the script was not run and no prompt was "
+                      f"shown. {target['name']} can be allowed once on the Abilities screen; until then, "
+                      "do not retry scripts that target it."),
+            "target": target["name"], "target_id": target["id"], "state": st, "surfaced": surfaced}
 
 
 def _fourcc(s: str) -> int:
@@ -154,6 +250,18 @@ def status() -> Dict[str, Any]:
         if st == "allowed" and not on:
             st, note = "ask", "One click switches it on."
         out.append({**{k: a[k] for k in ("id", "name", "icon", "blurb", "try")}, "state": st, "note": note})
+    # Targets a task was held back for (the AppleScript guard) surface here once, with the same Allow.
+    held = _guard_remembered()
+    for a in _EXTRA_TARGETS:
+        if a["id"] not in held:
+            continue
+        st = automation(a["app"])
+        if st == "unknown":
+            st = held[a["id"]] if held[a["id"]] in ("ask", "denied") else "ask"
+        note = "A task asked to control this app and was held back instead of prompting mid-task. Allow it here, once."
+        if st == "allowed" and not on:
+            st, note = "ask", "One click switches it on."
+        out.append({**{k: a[k] for k in ("id", "name", "icon", "blurb", "try")}, "state": st, "note": note})
     return {"supported": True, "connector": on, "abilities": out}
 
 
@@ -164,7 +272,7 @@ def _open(url: str) -> None:
 async def allow(aid: str) -> Dict[str, Any]:
     """The person's Allow: switches the This Mac connector on, then has macOS ask its question (or opens Settings)."""
     import asyncio
-    a = _BY_ID.get(aid)
+    a = _BY_ID.get(aid) or _TARGET_BY_ID.get(aid)
     if not a:
         return {"success": False, "error": "Unknown ability."}
     if not MAC:

@@ -86,7 +86,7 @@ def title_for(tool: str, args: Dict[str, Any], result: Any) -> (str, str):
         return tool.replace("_", " ").capitalize(), ""
 
 
-def step(tool: str, args: Dict[str, Any], result: Any) -> None:
+def step(tool: str, args: Dict[str, Any], result: Any, duration_ms: Optional[int] = None) -> None:
     """Records one tool call (from tools.execute_tool). Never fails the call."""
     try:
         from app.services import activity
@@ -98,6 +98,12 @@ def step(tool: str, args: Dict[str, Any], result: Any) -> None:
         with _conn() as c:
             c.execute("INSERT INTO agent_steps VALUES (?,?,?,?,?,?,?,?)",
                       (uuid.uuid4().hex[:12], time.time(), activity.origin.get(), agent.get(), tool, t[:200], (d or "")[:300], int(ok)))
+        from app.services import event_log
+        origin = activity.origin.get()
+        event_log.emit("tool.call", actor=agent.get(), ids=event_log.ids_from_origin(origin),
+                       payload={"tool": tool, "title": t[:200], "detail": (d or "")[:300], "ok": ok,
+                                "origin": origin, "held": bool(r.get("needs_approval")),
+                                "duration_ms": duration_ms})
     except Exception as e:
         logger.debug(f"step not recorded: {e}")
 
@@ -131,6 +137,11 @@ def approval_opened(pid: str, kind: str, app: str, title: str, detail: str = "")
         with _conn() as c:
             c.execute("INSERT OR REPLACE INTO agent_approvals VALUES (?,?,?,?,?,?,?,?,?)",
                       (pid, time.time(), kind, app[:80], title[:200], (detail or "")[:2000], activity.origin.get(), "waiting", None))
+        from app.services import event_log
+        origin = activity.origin.get()
+        event_log.emit("card.created", actor="xod", ids=event_log.ids_from_origin(origin),
+                       payload={"card_id": pid, "kind": kind, "app": app[:80],
+                                "title": title[:200], "origin": origin})
     except Exception as e:
         logger.debug(f"approval not recorded: {e}")
 
@@ -140,6 +151,15 @@ def approval_decided(pid: str, decision: str) -> None:
         with _conn() as c:
             c.execute("UPDATE agent_approvals SET decision = ?, decided_at = ? WHERE id = ? AND decision = 'waiting'",
                       (decision, time.time(), pid))
+        from app.services import event_log
+        ids: Dict[str, str] = {}
+        if pid.startswith("task-task-"):
+            ids["task_id"] = pid[5:].rsplit("-", 1)[0]
+        # The decision text is the caller's own: the Crew's auto-approvals say
+        # "allowed by Xod"; every other decision arrives from the person.
+        by = "xod" if "by Xod" in (decision or "") else "user"
+        event_log.emit("card.answered", actor=by, ids=ids,
+                       payload={"card_id": pid, "decision": decision})
     except Exception as e:
         logger.debug(f"approval decision not recorded: {e}")
 
