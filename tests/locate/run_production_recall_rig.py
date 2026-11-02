@@ -180,7 +180,30 @@ def build_forest():
 class EmulatedSpotlight(loc.SpotlightBackend):
     """mdfind semantics over the same tree: a path matches when every
     query term appears in its name, a parent folder's name, or its
-    text content; results get the route's own priority sort and cap."""
+    text content; results get the route's own priority sort and cap.
+    The index (path -> name+body haystack) is built once and shared,
+    the way a real index is: mdfind does not rescan the disk per
+    query, and neither does the emulation."""
+
+    _index = None
+
+    @classmethod
+    def _build_index(cls, roots):
+        index = {}
+        for root in roots:
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if d not in loc.NOISE_DIRS]
+                for name in filenames:
+                    p = os.path.join(dirpath, name)
+                    hay = (name + " " + dirpath).lower()
+                    body = ""
+                    try:
+                        if os.path.getsize(p) <= 256 * 1024:
+                            body = Path(p).read_text(encoding="utf-8", errors="replace").lower()
+                    except OSError:
+                        pass
+                    index[p] = hay + "\n" + body
+        return index
 
     def search(self, clues, roots):
         terms = clues.name_tokens + clues.purpose_terms + clues.content_words
@@ -189,23 +212,10 @@ class EmulatedSpotlight(loc.SpotlightBackend):
         terms = [t.lower() for t in terms[:6] if len(t) > 1]
         if not terms:
             return []
-        found = []
-        for root in roots:
-            for dirpath, dirnames, filenames in os.walk(root):
-                dirnames[:] = [d for d in dirnames if d not in loc.NOISE_DIRS]
-                for name in filenames:
-                    p = os.path.join(dirpath, name)
-                    hay = (name + " " + dirpath).lower()
-                    if all(t in hay for t in terms):
-                        found.append(p)
-                        continue
-                    try:
-                        if os.path.getsize(p) <= 256 * 1024:
-                            body = Path(p).read_text(encoding="utf-8", errors="replace").lower()
-                            if all(t in body or t in hay for t in terms):
-                                found.append(p)
-                    except OSError:
-                        pass
+        if EmulatedSpotlight._index is None:
+            EmulatedSpotlight._index = self._build_index(roots)
+        found = [p for p, hay in EmulatedSpotlight._index.items()
+                 if all(t in hay for t in terms)]
         found.sort(key=lambda p: loc._pool_priority(p, clues))
         return found[:loc.SPOTLIGHT_ROUTE_CAP]
 
@@ -261,6 +271,8 @@ def main():
         rows.append((label, stage_of_exit(target, result, route_pool),
                      "Y" if in_route else "-", "Y" if delivered else "-",
                      "PASS" if delivered else "FAIL"))
+        print(f"{label}: {rows[-1][1]} (route {'Y' if in_route else '-'}, "
+              f"delivered {'Y' if delivered else '-'})", flush=True)
     print(f"root: {root}")
     print(f"{'hunt':5} {'stage of exit / status':58} {'route':5} {'deliv':5} grade")
     for label, stage, r, d, g in rows:

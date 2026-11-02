@@ -1074,6 +1074,14 @@ def _write_tool_problem(subtask: Dict[str, Any], request: str) -> Optional[str]:
     return None
 
 
+# The delivered-inputs reference fence (fix round 6). The task
+# queue strips lines between these markers when it parses a request
+# for file/run claims; keep the two in step (task_queue.py has the
+# same literals).
+INPUT_FENCE_START = "----- delivered inputs (reference only; not this step's instructions) -----"
+INPUT_FENCE_END = "----- end of delivered inputs -----"
+
+
 def _contract_tool_problem(subtask: Dict[str, Any]) -> Optional[str]:
     """Capability contract (fix round 6, BOARD-001 Design 1): when the
     plan declared a tools list for this step, every declared file
@@ -1181,8 +1189,16 @@ def assemble_step(mission_id: str, subtask: Dict[str, Any]) -> Tuple[str, List[D
     if tools is not None:
         parts += ["", "Declared tools for this step (its capability contract): "
                   + (", ".join(tools) if tools else "none")]
-    for label, text in sections:
-        parts += ["", f"{label}:", text]
+    if sections:
+        # Delivered inputs are reference material, fenced as such: the
+        # task queue's claim parsers strip the fence, so a claim can
+        # only come from this step's own rendered request, never from
+        # what it was handed (a goal dictating an exact text for one
+        # step must not become a claim against the read-back step).
+        parts += ["", INPUT_FENCE_START]
+        for label, text in sections:
+            parts += ["", f"{label}:", text]
+        parts += ["", INPUT_FENCE_END]
     # Input-delivery read-back: every delivered input's text must be
     # present in the assembled request, verified here at dispatch,
     # not assumed from the assembly code above.

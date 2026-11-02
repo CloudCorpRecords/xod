@@ -230,12 +230,38 @@ def _path_mentioned(sentence: str, p: Path) -> bool:
     return bool(p.stem and re.search(rf"\b{re.escape(p.stem)}\b", sentence))
 
 
+# The delivered-inputs reference fence (fix round 6): missions wrap
+# the inputs they deliver to a step between these markers, and claim
+# parsing strips them, exactly as it strips run-effect lines: a claim
+# comes from what the step itself was asked to do, not from reference
+# material it was handed. Keep the literals in step with missions.py.
+_INPUT_FENCE_START = "----- delivered inputs (reference only; not this step's instructions) -----"
+_INPUT_FENCE_END = "----- end of delivered inputs -----"
+
+
+def _strip_reference_lines(text: str) -> str:
+    out: List[str] = []
+    fenced = False
+    for line in (text or "").splitlines():
+        if line.strip() == _INPUT_FENCE_START:
+            fenced = True
+            continue
+        if line.strip() == _INPUT_FENCE_END:
+            fenced = False
+            continue
+        if not fenced:
+            out.append(line)
+    return "\n".join(out)
+
+
 def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
     """File effects the request itself explicitly asks for:
     [{kind: "write" or "delete", path: Path, content: exact text or None}]."""
     text = request or ""
     # Run-effect lines are the run gate's vocabulary, not file claims: the
     # paths and words inside a declared command are not file promises.
+    # Delivered-input fences are reference material, not claims either.
+    text = _strip_reference_lines(text)
     text = "\n".join(l for l in text.splitlines() if not _RUN_RE.search(l))
     paths: List[Path] = []
     for m in _PATH_RE.finditer(text):
@@ -394,6 +420,7 @@ def _run_refusal(command: str) -> Optional[str]:
 
 
 def _claimed_run_effects(request: str, anchors: List[Path]) -> List[Dict[str, Any]]:
+    request = _strip_reference_lines(request or "")
     """Run effects the request declares in the gate's canonical phrasing:
     [{command, cwd, expect_exit, refused}]. A claim whose command is not a
     single plain command, or whose working directory is not anchored by a
