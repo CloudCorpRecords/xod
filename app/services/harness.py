@@ -514,6 +514,9 @@ TOOL_SURFACE = [
     {"name": "snapshot", "version": 1, "kind": "read",
      "description": "This Xod's own view of itself: version, configuration (key presence only), server and beacon state, queue depths by state, the oldest waiting item's age, Partner reachability as the app sees it, family members with last seen, today's usage totals, and the event log's size.",
      "args": {}},
+    {"name": "social_read", "version": 1, "kind": "read",
+     "description": "The social reply queue (X and LinkedIn): item counts by state and platform, and the oldest awaiting-approval item's age. Counts only; draft text never rides this surface.",
+     "args": {}},
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_SURFACE}
@@ -690,6 +693,11 @@ def _tool_snapshot() -> Dict[str, Any]:
               for m in view["members"]]
     ps = partner_client.summary() or {}
     usage = usage_ledger.summary("today")
+    try:
+        from app.services import social_reply
+        social = social_reply.queue_summary()
+    except Exception:
+        social = {}
     return {"version": cfg["version"], "config": cfg,
             "server": {"url": server.get("url"), "pid": server.get("pid")},
             "network": {"signed_in": net.get("signed_in"), "ip": net.get("ip"),
@@ -701,7 +709,13 @@ def _tool_snapshot() -> Dict[str, Any]:
                         "version": ps.get("version"), "watchdog": ps.get("watchdog")},
             "family": family, "family_registry_state": view.get("state"),
             "usage_today": usage.get("totals") or {},
+            "social": social,
             "event_log": event_log.stats()}
+
+
+def _tool_social() -> Dict[str, Any]:
+    from app.services import social_reply
+    return social_reply.queue_summary()
 
 
 def _locate_impl(request: str) -> Dict[str, Any]:
@@ -844,6 +858,9 @@ async def invoke(caller_ip: str, headers: Optional[Dict[str, Any]],
                                   verified={"status": out.get("status"), "seat": out.get("seat")})
         if tool == "snapshot":
             out = await asyncio.to_thread(_tool_snapshot)
+            return 200, _envelope(tool, "ok", result=out, verified=out)
+        if tool == "social_read":
+            out = await asyncio.to_thread(_tool_social)
             return 200, _envelope(tool, "ok", result=out, verified=out)
     except HarnessError:
         raise
