@@ -2191,10 +2191,21 @@ async def test_trustmrr_connection():
     res = await trustmrr_client.verify_key()
     return res
 
+class YouTestRequest(BaseModel):
+    you_api_key: Optional[str] = None
+
 @app.post("/api/you/test")
-async def test_you_connection():
-    """Tests the You.com API key."""
-    res = await you_client.verify_key()
+async def test_you_connection(payload: Optional[YouTestRequest] = None):
+    """Tests the You.com API key. A pasted key is verified before it is stored and saved
+    only if it works, so a typo can't overwrite a working saved key (the Tavily test has
+    always worked this way; the Settings page used to save first and test second)."""
+    k = payload.you_api_key if payload else None
+    res = await you_client.verify_key(k)
+    if res.get("valid") and (k or you_client.api_key):
+        clean_key = (k or you_client.api_key).strip()
+        settings.you_api_key = clean_key
+        update_env_variable("YOU_API_KEY", clean_key)
+        you_client.set_api_key(clean_key)
     return res
 
 @app.get("/api/trustmrr/categories")

@@ -3973,9 +3973,9 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                 res = {"results": [], "error": str(e)}
             if res.get("results"):
                 return res
-            if tavily_client.is_configured():
-                return await tavily_client.search(query=query, count=count)
-            return await you_client.search(query=query, count=count)
+            # API fallback order lives in services/search_providers.py (You.com first when keyed).
+            from app.services.search_providers import preferred_search
+            return await preferred_search(query, count=count)
 
         elif name == "you_news_search":
             query = arguments.get("query") or arguments.get("q") or ""
