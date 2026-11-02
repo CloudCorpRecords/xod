@@ -167,6 +167,18 @@ def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> D
             return {"success": False, "error": "Pick one of the built-in models."}
         if not is_downloaded(model):
             return {"success": False, "error": "That model isn't downloaded yet."}
+    if how == "auto":
+        # An automatic pick — autoconnect's boot pass, prefer_key, any boot-path
+        # caller — may fill a choice nobody has saved yet, and may revise Xod's
+        # OWN pick (chosen_by "auto": the designed self-healing). It must never
+        # persist over a provider the person saved (chosen_by "you"), whatever
+        # the caller believed about the saved state: the 0.9.24 ship's relaunch
+        # rewrote a member's saved lm_studio/bonsai to a cloud default through
+        # a boot-path caller whose own guard did not cover it. The guard lives
+        # here, at the only write path, so no caller's mis-read can reopen it.
+        from app.services.storage import get_setting
+        if get_setting("llm_provider", "") and chosen_by() != "auto":
+            return {"success": False, "error": "The model on this computer was picked by its owner; Xod won't replace it on its own."}
     # Ollama's address before switching: the one in use if Ollama is already the provider, else OLLAMA_HOST or the default.
     from app.services.ollama_hub import root as ollama_root
     ollama_url = f"{ollama_root()}/v1"
