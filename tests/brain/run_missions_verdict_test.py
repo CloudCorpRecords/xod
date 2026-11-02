@@ -290,7 +290,8 @@ async def case_clean_mission():
           all(s["status"] == "done" and s["verified_status"] == "verified" for s in m["subtasks"]),
           str([(s["title"], s["status"], s["verified_status"]) for s in m["subtasks"]]))
     check("clean: report totals are all verified",
-          rep and rep["totals"] == {"subtasks": 2, "done": 2, "verified": 2, "failed": 0},
+          rep and rep["totals"] == {"subtasks": 2, "done": 2, "verified": 2, "failed": 0,
+                                    "blocked": 0, "unverifiable": 0},
           str(rep and rep["totals"]))
 
 
