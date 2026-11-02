@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.9.24
+
+**Xod replies to people on X and LinkedIn, with your approval on every post**
+- Xod now keeps a social reply queue: mentions and comments it could answer are collected as drafts, each draft waits for your approval, and only an approved reply is posted, from inside the app, with the result read back. Dry-run is the default until posting is turned on, and the copy rules Rene set (plain words, no em dashes, nothing claimed that is not in the record) are enforced as constraints on the drafts, not as suggestions. (PR #33)
+
+**Accessibility trust now reads true when it is true**
+- Xod asked macOS about its Accessibility access from its background helper process, and macOS answered for the helper instead of the app: a good grant, switched on and bound to the running build, could read as blocked, and the auto-approver showed a stale-grant warning that no switch flip could clear. The app itself now answers the question (its own GUI process checks and leaves the verdict where the helper reads it), and the helper never presents its own answer as the app's. The fix was proven live against the existing grant before this release was cut: the corrected reading flipped to true with no grant change and no repair ceremony. (PR #35)
+
+**Three fixes from the 0.9.23 ship report**
+- A saved provider and model win at startup. With cloud keys present, the startup path could promote the app to openai/gpt-4o over a saved choice (the Windows machine's local-model setup hit this, and started in an incoherent state). What you saved is what starts. (PR #34)
+- The backend watchdog's health probe asked for an address the app does not serve and read a healthy backend as dead, which would have restart-looped it; the watchdog was stood down for that reason. The probe now checks an endpoint that exists and treats any real answer as alive. (PR #34)
+- Applying family-vault keys on Windows could fail with a bare 500 error when the key store could not be reached from a background session. It now reports the key-store problem and its remedy as a proper state, and never marks a bundle version applied when it was not. (PR #34)
+
+**Checked before it shipped**
+- Each fix was built failing-first: the provider suite went 6 of 9 on the old tree to 10 of 10, the watchdog suite 32 of 34 to 34 of 34, the family vault suite 38 of 41 to 41 of 41, and the new permissions checks reproduced the false reading exactly before the fix and pass after (16 of 16 in that suite, including the live-verdict cases). The social reply suite passes 51 of 51. The full battery on the merged tree is diffed against the 0.9.23 battery in the release record.
+
+**Known issues carried into 0.9.24, named plainly**
+- Windows copies still update manually: the NSIS self-update wedge named since 0.9.20 is unchanged, so download the setup and run it with Xod fully closed rather than using self-update. Mac self-update is unaffected.
+- Every build still re-asks for its Accessibility switch once after an update: Xod's builds are ad-hoc signed, so a new build is a new identity to macOS and the previous grant does not carry over. Flip Xod on once in the Accessibility settings after updating; with this release, the app's own reading then agrees with the switch.
+- The family's sign-in still rides the interim registry in the synced drive space (rdrive pull request #14 remains open), unchanged from 0.9.23.
+- The companion suite's live-UI checks still want a real desktop session; they are re-run in one at install time and their state is recorded in the release record rather than claimed here.
+
 ## 0.9.23
 
 **Missions get a capability contract, and files carry their provenance (Fix Round 6)**
