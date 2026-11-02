@@ -22,6 +22,7 @@
           <span class="size-2 rounded-full bg-emerald-400"></span>
           <span class="text-white text-[13px] font-semibold">${esc(m.name)}</span>
           <span class="text-zinc-500 text-[11px]">${esc(m.platform)}</span>
+          ${m.verified ? `<span class="px-1.5 py-0.5 rounded-md bg-emerald-900 text-emerald-300 text-[11px]">signature verified</span>` : `<span class="px-1.5 py-0.5 rounded-md bg-surface-700 text-zinc-400 text-[11px]">unsigned</span>`}
         </div>
         <p class="text-[12px] text-zinc-400">${m.endpoint ? `Tailnet <span class="font-mono text-zinc-200">${esc(m.endpoint)}</span> · ` : ""}last seen ${ago(m.last_seen)}</p>
         ${caps ? `<div class="flex flex-wrap gap-1">${caps}</div>` : `<p class="text-[12px] text-zinc-500">No capabilities listed.</p>`}
@@ -66,9 +67,11 @@
       <section class="space-y-3">
         <div class="task-card space-y-1.5">
           <p class="task-title">Your machines, one family</p>
-          <p class="text-[12px] text-zinc-400">This list comes from the family registry. In this first step the
-            registry is unsigned, so treat it as a directory of your machines, not proof of identity.
-            Joining, settings and task handoff arrive in later steps; this screen only reads.</p>
+          <p class="text-[12px] text-zinc-400">This list comes from the family registry.
+            ${r.interim_unsigned ? "Some records are still unsigned, so treat those as a directory of your machines, not proof of identity."
+              : "Every member's record is signature-verified and covered by the family approval."}
+            The family vault shares provider keys between verified members only; borrowed inference is signed the same way.</p>
+          ${r.vault ? `<p class="text-[12px] text-zinc-400">Family vault: ${r.vault.state === "ok" ? `bundle v${esc(r.vault.version)} for ${(r.vault.recipients || []).length} member(s); this device has applied v${esc(r.vault.applied_version)}${r.vault.local_only ? " (pinned local-only)" : ""}` : "no bundle published yet"}.</p>` : ""}
         </div>
         <p class="text-[12px] font-semibold text-zinc-300">Family members</p>
         ${(r.members || []).length ? `<ul class="space-y-2">${r.members.map(memberRow).join("")}</ul>`
