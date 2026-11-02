@@ -15,13 +15,24 @@ only ever runs when the user asks for it, and it names only Xod's own
 bundle id, resolved from the running app bundle. When that cannot be
 determined (a dev interpreter, a bare python), the reset refuses instead
 of guessing: resetting the wrong app's entry would be worse than none.
+
+The second lesson, 2026-11-02: even a correct in-process check can answer
+for the wrong process. The installed app's grant stood allowed in the TCC
+database, bound to the running build, while this backend (a child the GUI
+spawns) read False, because macOS attributes the grant to the app, not to
+its spawned children. Inside the app, the reading therefore comes from the
+GUI main process itself, which leaves its verdict in the data dir
+(ax_trust.json); this module surfaces that verdict and never presents the
+backend child's own answer as the app's.
 """
 import ctypes
+import json
 import logging
 import plistlib
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -141,8 +152,17 @@ def _get_backend() -> _CTypesAX:
 
 
 def trusted() -> Optional[bool]:
-    """Is THIS process's Accessibility access in effect right now?
-    True or False, or None when macOS cannot be asked (not macOS, calls missing)."""
+    """Is Xod's Accessibility access in effect right now?
+    True or False, or None when the question cannot be answered.
+
+    Inside the app bundle the answer is the GUI main process's own verdict
+    (see the GUI section below): this process is the GUI's spawned child,
+    and its own in-process check answers for the child, not the app, so it
+    is never presented as the app's trust. Outside a bundle there is no
+    app grant to speak of, and the in-process check answers for this
+    process itself, which is all a dev interpreter can honestly say."""
+    if own_bundle_id() is not None:
+        return gui_trusted()
     try:
         return _get_backend().trusted()
     except Exception:
@@ -156,6 +176,62 @@ def trusted_with_prompt() -> Optional[bool]:
     except Exception:
         return None
 
+
+
+# ------------------------------------------------------------------ the GUI's own reading
+# The grant belongs to the app, so the only process that can truthfully
+# report it is the app's own GUI main process. This backend is a child the
+# GUI spawned, and macOS does not attribute the app's grant to it: on
+# 2026-11-02 the installed app's grant stood allowed in the TCC database,
+# bound to the running build, while this module's in-process check read
+# False (the Partner, evaluating from its own native launcher, read True
+# on an identically shaped entry). So in the app the GUI evaluates its
+# own trust (systemPreferences.isTrustedAccessibilityClient in
+# electron/main.js) and leaves the verdict in the data dir; trusted()
+# surfaces THAT reading. Outside the app (the dev venv, a bare
+# interpreter) there is no verdict and none is consulted.
+GUI_TRUST_FILE = "ax_trust.json"
+GUI_TRUST_MAX_AGE_S = 120.0   # the GUI rewrites its verdict every 15 seconds
+
+
+def _gui_trust_path() -> Path:
+    from app.paths import DATA_DIR
+    return DATA_DIR / GUI_TRUST_FILE
+
+
+def _read_gui_trust(path: Path, now: float) -> Optional[bool]:
+    """The GUI main process's trust verdict from its file, or None when the
+    file cannot speak for this build right now: missing, unreadable,
+    malformed, written by another version (an update orphans the old
+    build's answer along with its grant), or stale. A verdict that cannot
+    be relied on is unknown, never a guess in either direction."""
+    try:
+        raw = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(raw, dict) or not isinstance(raw.get("trusted"), bool):
+        return None
+    from app.version import VERSION
+    if str(raw.get("app_version") or "") != VERSION:
+        return None
+    ts = raw.get("checked_at")
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+        return None
+    age = now - float(ts)
+    if age < -30.0 or age > GUI_TRUST_MAX_AGE_S:
+        return None
+    return bool(raw["trusted"])
+
+
+def gui_trusted() -> Optional[bool]:
+    """The GUI main process's own Accessibility verdict, when it has left a
+    current one for this build. None when it has not: not yet (the backend
+    can start a moment before the GUI's first write), or never (a backend
+    running outside the GUI's app has no verdict to read)."""
+    try:
+        return _read_gui_trust(_gui_trust_path(), time.time())
+    except Exception:
+        return None
 
 # ------------------------------------------------------------------ which app is this process?
 def bundle_id_for_executable(executable: Optional[str] = None) -> Optional[str]:
