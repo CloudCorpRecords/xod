@@ -14,7 +14,7 @@ Shape:
     a state (draft, awaiting_approval, approved, posting, posted, verified,
     unknown, failed) with a full history.
   - The copy rules are code, not prompts: validate_draft refuses em dashes
-    and en dashes, the reserved "- Rene the human" signature, and any email
+    and en dashes, the owner's reserved signature (the sign-off that means the owner typed it personally), and any email
     or phone number shape (a public reply never needs either, and no private
     identifier of the owner's is stored here to check against). split_for_x
     enforces the free account's 280 characters by splitting only at
@@ -89,6 +89,9 @@ NOTIFICATIONS_URL = {
 CALL_APPS = {"zoom.us", "Microsoft Teams", "FaceTime", "Cisco Webex Meetings"}
 MEETING_URL_HINTS = ("meet.google.com", "zoom.us/j/", "teams.microsoft.com")
 
+# The owner's reserved sign-off ("- <name> the human") is matched by shape, never by a stored
+# name: this file ships publicly, and the tag must stay refused in any casing and for any name.
+_RESERVED_SIGN_OFF_RE = re.compile(r"-\s*\S+\s+the\s+human\b", re.I)
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _PHONE_RE = re.compile(r"(\+?1[\s.\-]?)?(\(\d{3}\)|\d{3})[\s.\-]\d{3}[\s.\-]\d{4}")
 _EM_DASH = "—"   # the em dash character itself, refused in drafts
@@ -128,8 +131,8 @@ def validate_draft(platform: str, text: str) -> str:
         raise ConstraintError("the draft is empty")
     if _EM_DASH in text or _EN_DASH in text:
         raise ConstraintError("reply text may not contain an em dash or en dash")
-    if "rene the human" in text.lower():
-        raise ConstraintError("replies are never signed as Rene the human; that tag is the owner typing")
+    if _RESERVED_SIGN_OFF_RE.search(text):
+        raise ConstraintError("replies are never signed with the owner's reserved tag; that tag means the owner typed it personally")
     if _EMAIL_RE.search(text):
         raise ConstraintError("a public reply never carries an email address; private data stays out")
     if _PHONE_RE.search(text):

@@ -9,7 +9,7 @@ Covered here:
     only at paragraph boundaries with words unedited; a single
     paragraph over 280 characters is refused, never cut
   - draft validation: em dash and en dash refused, the reserved
-    "- Rene the human" signature refused in any casing, an email
+    the owner's reserved signature refused in any casing, an email
     shape or a phone shape refused (no private data in a public
     reply), a clean draft passes untouched
   - LinkedIn policy: reaction photos refused for Mariane Bekker,
@@ -98,9 +98,9 @@ def refused(text, platform="x"):
 
 check("S2 em dash refused", refused("Fixed now — thanks for the report"))
 check("S2 en dash refused", refused("Pages 3 – 5 cover it"))
-check("S2 reserved signature refused", refused("All set.\n- Rene the human"))
-check("S2 reserved signature refused in any casing", refused("All set. - RENE THE HUMAN"))
-check("S2 email shape refused", refused("Write me at rene@example.com and I will send it"))
+check("S2 reserved signature refused", refused("All set.\n- Alex the human"))
+check("S2 reserved signature refused in any casing", refused("All set. - ALEX THE HUMAN"))
+check("S2 email shape refused", refused("Write me at alex@example.com and I will send it"))
 check("S2 phone shape refused", refused("Call me at (417) 555-1963 about it"))
 check("S2 empty draft refused", refused("   "))
 clean = "Shipped in 0.9.22. The relaunch test passes now; notes in the changelog."
@@ -146,7 +146,7 @@ check("S4 an unapproved item never posts", res.get("state") == "refused"
 
 store.request_approval(item["id"], actor="tree")
 check("S4 approval requested", store.get(item["id"])["state"] == "awaiting_approval")
-store.approve(item["id"], actor="rene")
+store.approve(item["id"], actor="owner")
 check("S4 approval lands", store.get(item["id"])["state"] == "approved")
 
 store2 = sr.SocialStore(TMP / "queue.json")
@@ -177,7 +177,7 @@ it_b = store_b.add_item(platform="linkedin", kind="comment", target_id="li-7",
                         target_url="https://www.linkedin.com/feed/update/urn:li:activity:7",
                         author="Sam Ortiz", text_in="great writeup")
 store_b.set_draft(it_b["id"], "Thank you. The receipts are in the repo if useful.", actor="tree")
-store_b.approve(it_b["id"], actor="rene")
+store_b.approve(it_b["id"], actor="owner")
 fx_b = sr.FixtureExecutor(post_behavior="timeout_found")
 res_b = asyncio.run(sr.run_post(it_b["id"], actor="tree", executor=fx_b,
                                 dry_run=False, store=store_b))
@@ -193,7 +193,7 @@ it_c = store_c.add_item(platform="x", kind="mention", target_id="tw-200",
                         target_url="https://x.com/b/status/200",
                         author="Lee Park", text_in="does it work on windows")
 store_c.set_draft(it_c["id"], "It does. The Windows build is in the same release.", actor="tree")
-store_c.approve(it_c["id"], actor="rene")
+store_c.approve(it_c["id"], actor="owner")
 fx_c = sr.FixtureExecutor(post_behavior="timeout_absent")
 res_c1 = asyncio.run(sr.run_post(it_c["id"], actor="tree", executor=fx_c,
                                  dry_run=False, store=store_c))
@@ -213,7 +213,7 @@ it_d = store_d.add_item(platform="x", kind="mention", target_id="tw-300",
                         target_url="https://x.com/c/status/300",
                         author="Ana Ruiz", text_in="love the scorecard")
 store_d.set_draft(it_d["id"], long_text, actor="tree")
-store_d.approve(it_d["id"], actor="rene")
+store_d.approve(it_d["id"], actor="owner")
 fx_d = sr.FixtureExecutor()
 res_d = asyncio.run(sr.run_post(it_d["id"], actor="tree", executor=fx_d,
                                 dry_run=True, store=store_d))
@@ -232,7 +232,7 @@ def make_approved(store, tid):
                         target_url=f"https://x.com/d/status/{tid}",
                         author="Kim Fox", text_in="ping")
     store.set_draft(it["id"], "Thanks, looking now.", actor="tree")
-    store.approve(it["id"], actor="rene")
+    store.approve(it["id"], actor="owner")
     return it
 
 i1 = make_approved(store_e, "tw-401")
@@ -280,7 +280,7 @@ check("S11 social events landed in the event log",
       {"social.item_added", "social.approved", "social.verified"} <= kinds,
       f"kinds={sorted(kinds)}")
 actors = {json.loads(ln)["actor"] for ln in social_lines}
-check("S11 the audit names the actor", "rene" in actors and "tree" in actors)
+check("S11 the audit names the actor", "owner" in actors and "tree" in actors)
 
 # ---------------------------------------------------------------- S12 harness seam
 
