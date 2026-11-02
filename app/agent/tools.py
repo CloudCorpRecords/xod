@@ -3165,7 +3165,19 @@ def _missing_required(name: str, arguments: Dict[str, Any]) -> List[str]:
         except Exception:
             schema = None
     required = (schema or {}).get("required") or [] if isinstance(schema, dict) else []
-    return [k for k in required if (arguments or {}).get(k) in (None, "", [], {})]
+    missing = []
+    for k in required:
+        if (arguments or {}).get(k) not in (None, "", [], {}):
+            continue
+        # computer_write_file: an explicitly passed empty content is a real
+        # write, not a missing argument — its handler makes a folder of a bare
+        # path and an empty file of a .gitkeep or Makefile. Only an absent (or
+        # None) content is missing. Plan-level empty content is a different
+        # fault, stopped at assembly in services/missions.py before tools run.
+        if name == "computer_write_file" and k == "content" and (arguments or {}).get(k) == "":
+            continue
+        missing.append(k)
+    return missing
 
 
 # ------------------------------------------------------------------ placeholder arguments
