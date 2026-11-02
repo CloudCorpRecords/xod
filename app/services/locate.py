@@ -356,27 +356,68 @@ class SpotlightBackend:
 def _walk(roots: Sequence[str], want_dirs: bool = False):
     """Bounded walk yielding (path, is_dir). Noise folders are never entered,
     but a folder is yielded before its own noise children are skipped, so a
-    repo checkout full of .git and node_modules is still findable itself."""
+    repo checkout full of .git and node_modules is still findable itself.
+
+    Breadth-interleaved, not depth-first (fix round 6, Lane C): the old
+    depth-first walk let a few fat subtrees (a Go module cache took
+    18,618 of the 30,000-entry budget on the measured home; build logs
+    and backup bundles took most of the rest) drain the shared budget
+    before the walk ever descended into the folders hunts actually
+    target, so routes reported full hit counts while the target tree
+    was never walked at all. Here a directory's entries are yielded
+    when it expands and its subdirectories queue behind every other
+    pending directory, so the budget buys every subtree's shallow
+    levels before any subtree's depths. Entries are name-sorted per
+    directory, which also makes the walk order reproducible."""
+    from collections import deque
     seen = 0
+    queue = deque()
     for root in roots:
-        if not root or not os.path.isdir(root):
+        if root and os.path.isdir(root):
+            queue.append((root, 0))
+    while queue:
+        dirpath, depth = queue.popleft()
+        try:
+            with os.scandir(dirpath) as it:
+                entries = sorted(it, key=lambda e: e.name)
+        except OSError:
             continue
-        for dirpath, dirnames, filenames in os.walk(root):
-            depth = dirpath[len(root):].count(os.sep)
-            dirnames[:] = [d for d in dirnames if d not in NOISE_DIRS and not d.startswith(".")]
-            if depth >= MAX_WALK_DEPTH:
-                dirnames[:] = []
-            if want_dirs:
-                for d in list(dirnames):
-                    seen += 1
-                    yield (os.path.join(dirpath, d), True)
-            for name in filenames:
+        subdirs = []
+        files = []
+        for entry in entries:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    subdirs.append(entry.name)
+                elif entry.is_symlink() and entry.is_dir(follow_symlinks=True):
+                    # os.walk lists a symlinked dir without descending
+                    # into it; keep that shape.
+                    subdirs.append(entry.name)
+                else:
+                    files.append(entry.name)
+            except OSError:
+                continue
+        descend = depth < MAX_WALK_DEPTH
+        kept = [d for d in subdirs
+                if d not in NOISE_DIRS and not d.startswith(".")]
+        if want_dirs:
+            for d in (kept if descend else []):
                 seen += 1
                 if seen > MAX_WALK_ENTRIES:
                     return
-                yield (os.path.join(dirpath, name), False)
+                yield (os.path.join(dirpath, d), True)
+        for name in files:
+            seen += 1
             if seen > MAX_WALK_ENTRIES:
                 return
+            yield (os.path.join(dirpath, name), False)
+        if descend:
+            for d in kept:
+                full = os.path.join(dirpath, d)
+                try:
+                    if not os.path.islink(full):
+                        queue.append((full, depth + 1))
+                except OSError:
+                    continue
 
 
 def filename_search(clues: Clues, roots: Sequence[str]) -> List[str]:

@@ -40,6 +40,7 @@ target hunts (the delivery seam is closed); 1 while a gap remains,
 with the table showing where it lives.
 """
 import os, sys, tempfile, time
+os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
 from datetime import datetime
 from pathlib import Path
 
@@ -49,9 +50,13 @@ sys.path.insert(0, str(ROOT))
 import app.services.locate as loc
 from app.services import hunt_routing
 
-BASE = Path(tempfile.mkdtemp(prefix="xod_prod_rig_"))
-HOME = BASE / "home"
-HOME.mkdir(parents=True)
+# The tree is cached across runs (keyed by a marker file): building
+# ~36k files is minutes of pure filesystem time on some machines,
+# and the fix/re-grade loop needs to be fast. Delete the cache dir
+# to rebuild from scratch.
+CACHE = Path(tempfile.gettempdir()) / "xod_prod_rig_cache"
+HOME = CACHE / "home"
+HOME.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------- forest
 # The exact 25 graded files of the re-run series (rerun3_driver.py
@@ -130,15 +135,37 @@ def write(rel_base: Path, rel: str, content: str, mtime: str = None):
     return p
 
 
+def _write_many(jobs):
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(24) as ex:
+        list(ex.map(lambda j: write(*j), jobs))
+
+
 def build_noise():
     """Created FIRST, like a real home that existed before the forest:
     a large generic tree, vocabulary decoys, the xod backup bundles
     the production R1/R2 asks were lost between, and the real project
-    folder the R hunts target."""
-    for d in range(40):
-        for i in range(150):
-            write(HOME, f"noise-tree/batch-{d:02d}/document-{d:02d}-{i:03d}.txt",
-                  f"Generic document {d}-{i}. Meeting notes, lists and drafts.\n")
+    folder the R hunts target.
+
+    Scale is a production condition, not decoration: the filename and
+    content routes share a bounded walk (MAX_WALK_ENTRIES = 30,000),
+    and a real home holds far more entries than that, so the walks
+    spend their whole budget in whichever subtrees come first and may
+    never reach a target tree at all. The first version of this rig
+    built 6,200 files, the caps never bound, and it graded 12/12 —
+    the old rig's blind spot reproduced. The noise trees here hold
+    ~36,000 entries and sort before "xod-locate-forest" in directory
+    order, the shape a lived-in home presents. (The production Mac's
+    exact directory order is not reproduced and does not need to be:
+    what re-run 5 measured is the outcome, caps binding before the
+    forest, and that is the condition under test.)"""
+    jobs = []
+    for tree in ("a-noise", "archive-deep", "Library"):
+        for d in range(60):
+            for i in range(200):
+                jobs.append((HOME, f"{tree}/batch-{d:02d}/document-{d:02d}-{i:03d}.txt",
+                             f"Generic document {d}-{i}. Meeting notes, lists and drafts.\n"))
+    _write_many(jobs)
     decoys = [
         ("Documents/leases/Lease Agreement 2026.pdf", "Lease Agreement 2026 term."),
         ("Documents/leases/Lease Agreement 2019.pdf", "Lease Agreement 2019 term."),
@@ -236,12 +263,21 @@ def stage_of_exit(target: Path, result, route_pool: set) -> str:
         return f"below the MAX_CANDIDATES cut (score {below[t]})"
     if t in route_pool:
         return "pooled but below threshold (or beyond trace window)"
-    return "never pooled (routes missed it under production shape)"
+    tried = {x["route"]: x for x in result.get("tried") or []}
+    fn_hits = (tried.get("filename") or {}).get("hits", "?")
+    ct = tried.get("content") or {}
+    return (f"never pooled (filename hits {fn_hits}, content hits {ct.get('hits', '?')}, "
+            f"content partial: {ct.get('partial', False)} {ct.get('partial_reason', '')})")
 
 
 def main():
-    build_noise()
-    build_forest()
+    marker = CACHE / "built.ok"
+    if marker.exists():
+        print(f"reusing cached tree at {HOME}", flush=True)
+    else:
+        build_noise()
+        build_forest()
+        marker.write_text("ok", encoding="utf-8")
     root = str(HOME)
     backend = EmulatedSpotlight()
     rows = []
