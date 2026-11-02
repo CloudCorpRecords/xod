@@ -1062,6 +1062,7 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
                 else:
                     scored.append(cand)
 
+    scored_total = len(scored)
     scored = [c for c in scored if c["score"] >= FOUND_THRESHOLD]
     # Fully deterministic order: score, then scope (user content before
     # cache or build trees, so among same-named files the one inside a
@@ -1075,7 +1076,24 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
     missed = sorted(p for p in routes_by_path
                     if "spotlight" not in routes_by_path[p]
                     and routes_by_path[p] & {"filename", "content"})
+    # Differential trace (fix round 6, Lane C): the funnel a pooled
+    # candidate travels, so a target that entered the routes but was
+    # never delivered can be attributed to the stage that dropped it
+    # (pool, threshold, the MAX_CANDIDATES cut, or the gates) instead
+    # of the hunt reading as a featureless not_found.
+    trace: Dict[str, Any] = {
+        "routes": {t["route"]: t["hits"] for t in tried},
+        "pooled": len(pool),
+        "scored": scored_total,
+        "above_threshold": len(scored),
+        "top": [c["path"] for c in top],
+        "below_cut": [{"path": c["path"], "score": c["score"]}
+                      for c in scored[MAX_CANDIDATES:MAX_CANDIDATES + 24]],
+        "rejected": [],
+        "eligible": 0,
+    }
     diagnostics: Dict[str, Any] = {
+        "trace": trace,
         "candidates": [
             {"path": c["path"],
              "routes": sorted(routes_by_path.get(c["path"], set())),
@@ -1100,6 +1118,7 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
         "diagnostics": diagnostics,
     }
     def _not_found(rejected: List[Dict[str, Any]]) -> Dict[str, Any]:
+        trace["rejected"] = [c["path"] for c in rejected]
         result["status"] = "not_found"
         result["candidates"] = []
         if rejected:
@@ -1136,6 +1155,8 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
             eligible.append(cand)
     if not eligible:
         return _not_found(rejected)
+    trace["rejected"] = [c["path"] for c in rejected]
+    trace["eligible"] = len(eligible)
     if rejected:
         result["rejected"] = rejected
     if len(eligible) == 1:
