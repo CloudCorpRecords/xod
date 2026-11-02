@@ -5,7 +5,7 @@ The family registry is a small JSON file in the synced bus space (the
 interim home until rdrive carries it in F1). One record per device:
 
   id            stable machine id ("macbook-pro")
-  name          display name ("Renes-MacBook-Pro-2")
+  name          display name ("Owners-MacBook-Pro")
   platform      "macOS", "Windows 11", "Android", ...
   endpoint      tailnet address, or null when none is recorded
   capabilities  bus-style free text list ("cloud model: ...", "macOS hands")
@@ -41,7 +41,7 @@ problems and never reaches devices or members.
 The founder bootstrap: the first device self-approves (approved_by is
 its own id, its record is self-signed, and it signs the digest that
 includes itself). Later devices are approved by any already-trusted
-device; in Rene's family the phone is the approver (approval-only: it
+device; in the owner's family the phone is the approver (approval-only: it
 holds no provider keys).
 
 Reading stays forgiving on purpose: a missing file is an honest empty

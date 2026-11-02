@@ -49,7 +49,7 @@ Shape:
 Nothing here prints, logs, or returns a key value: reports carry
 provider field names and presence booleans only.
 
-The phone is approval-only in V1 (plan recommendation, Rene has not
+The phone is approval-only in V1 (plan recommendation; the owner has not
 ruled otherwise): it may sign approvals/revocations but is never a
 vault recipient unless its record is a full Xod member record a
 future build enrolls as one.

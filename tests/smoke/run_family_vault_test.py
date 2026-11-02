@@ -53,7 +53,7 @@ def check(name, ok, detail=""):
     print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"  -- {detail}" if detail and not ok else ""), flush=True)
 
 
-FAMILY = "turcios-family"
+FAMILY = "test-family"
 ACCOUNT = "cloudtheboy@gmail.com"
 REG = TMP / "registry.json"
 
