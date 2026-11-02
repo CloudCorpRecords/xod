@@ -125,18 +125,19 @@ def make_runner(behaviors, replies):
 def case_contract_schema():
     plan, problems = M.validate_plan({"subtasks": [
         sub("Write it", "Write the file",
-            [{"kind": "create", "path": "/tmp/w/f.txt", "content": None}],
+            [{"kind": "create", "path": "/tmp/w/f.txt", "content": None}]),
+        sub("Use it", "Use the file from step 1",
             inputs=[{"source": "goal"}, {"source": "prior_step", "ref": "1"}],
             tools=["computer_write_file", "computer_read_file"])]})
     check("A schema: a plan declaring inputs and tools validates",
           plan is not None and not problems, str(problems))
     if plan:
-        s0 = plan["subtasks"][0]
+        s1 = plan["subtasks"][1]
         check("A schema: declared inputs survive validation",
-              [i.get("source") for i in s0.get("inputs") or []] == ["goal", "prior_step"],
-              str(s0))
+              [i.get("source") for i in s1.get("inputs") or []] == ["goal", "prior_step"],
+              str(s1))
         check("A schema: declared tools survive validation",
-              s0.get("tools") == ["computer_write_file", "computer_read_file"], str(s0))
+              s1.get("tools") == ["computer_write_file", "computer_read_file"], str(s1))
     _, problems = M.validate_plan({"subtasks": [
         sub("Bad input", "Do it", inputs=[{"source": "telepathy"}])]})
     check("A schema: an unknown input source is a plan problem",

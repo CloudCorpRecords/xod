@@ -29,6 +29,66 @@ from app.paths import DATA_DIR
 
 logger = logging.getLogger("xod.tasks")
 
+
+# ------------------------------------------------------- artifact typing
+# Fix round 6 (BOARD-001 Design 2): existence is not the artifact. A
+# claimed file is also the wrong artifact when its type does not hold:
+# a .py that does not compile, a test file that collects no tests
+# (the collects-at-least-one-test bar: a module docstring wrapping
+# prose compiles fine and runs zero tests, which is exactly the shape
+# the BOARD-001 fixture shipped), or a .json that does not parse.
+def _is_test_file_name(name: str) -> bool:
+    return name.startswith("test_") or name.endswith("_test.py")
+
+
+def _count_tests(text: str) -> int:
+    """Test functions a pytest-style collection would find, counted from
+    the AST: module-level test_* functions plus test_* methods in any
+    class. Import-time behaviour is not executed; collection shape is
+    what the bar measures."""
+    import ast
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return 0
+    count = 0
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name.startswith("test"):
+            count += 1
+        elif isinstance(node, ast.ClassDef):
+            count += sum(1 for item in node.body
+                         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                         and item.name.startswith("test"))
+    return count
+
+
+def _file_type_problem(p: Path) -> Optional[str]:
+    """A type problem with the file at p, or None. Only the suffixes
+    with a decidable bar are judged (.py, test files, .json); anything
+    else passes on existence and content, as before."""
+    try:
+        if p.suffix == ".py":
+            if p.stat().st_size > 2_000_000:
+                return None
+            text = p.read_text(encoding="utf-8", errors="replace")
+            try:
+                compile(text, str(p), "exec")
+            except SyntaxError as e:
+                return f"{p.name} is not valid Python ({e.msg}, line {e.lineno})"
+            if _is_test_file_name(p.name) and _count_tests(text) == 0:
+                return (f"{p.name} collects no tests: a test file must define "
+                        f"at least one test")
+        elif p.suffix == ".json":
+            if p.stat().st_size > 2_000_000:
+                return None
+            try:
+                json.loads(p.read_text(encoding="utf-8", errors="replace"))
+            except Exception as e:
+                return f"{p.name} is not valid JSON ({e})"
+    except OSError:
+        return None
+    return None
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DB_PATH = DATA_DIR / "xod.db"
 SHOTS_DIR = DATA_DIR / "tasks"
@@ -156,7 +216,7 @@ _NEGATION = re.compile(r"\b(do not|don't|never)\b", re.I)
 # work whose only fault was being quoted (re-run 3 T1A and T1D, where
 # the round 3 carry-forward pasted the earlier step's backticked report
 # into the next step's request and this parser believed it).
-_PATH_RE = re.compile(r"(?:~|/)[^\s\"'<>|`]+")
+_PATH_RE = re.compile(r"(?:~|/|[A-Za-z]:[\\/])[^\s\"'<>|`]+")
 _NAMED_INSIDE_RE = re.compile(r"file named ([^\s/]+?) inside the ([^\s/]+?) folder", re.I)
 _FOLDER_NAMED_RE = re.compile(r"folder named ([^\s/(]+)", re.I)
 _FILE_NAMED_RE = re.compile(r"file named ([^\s/]+)", re.I)
@@ -181,6 +241,9 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
     for m in _PATH_RE.finditer(text):
         if m.start() and text[m.start() - 1] in "/:":
             continue   # the tail of a longer path or a URL, not a path of its own
+        if (m.start() and len(m.group(0)) > 1 and m.group(0)[1] == ":"
+                and text[m.start() - 1].isalnum()):
+            continue   # a drive-letter shape inside a word (the "p:/" of a URL)
         raw = m.group(0).rstrip(".,;:)`")
         if raw not in ("", "~", "/"):
             paths.append(Path(os.path.expanduser(raw)))
@@ -271,6 +334,21 @@ def _paths_related(a: Path, b: Path) -> bool:
     return a == b or _is_prefix(a, b) or _is_prefix(b, a)
 
 
+def _split_command(command: str) -> List[str]:
+    """Split a declared run command into argv. On Windows, POSIX shlex
+    treats backslashes as escapes and mangles native paths
+    (C:\\Users\\... becomes C:Users...), so a declared run naming an
+    absolute Windows path could never start at all (fix round 6;
+    found by the run-effect suites on the Windows build, where every
+    run claim died with WinError 2). Split with posix=False there and
+    strip the matched quotes it leaves on the tokens."""
+    if sys.platform == "win32":
+        parts = shlex.split(command, posix=False)
+        return [p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "\"'"
+                else p for p in parts]
+    return shlex.split(command)
+
+
 def _run_refusal(command: str) -> Optional[str]:
     """Why a declared run command must not be executed, or None if it may run.
     The gate executes an argv list with shell=False, but the declared
@@ -283,7 +361,7 @@ def _run_refusal(command: str) -> Optional[str]:
     if "\n" in command or "\r" in command:
         return "the command is not a single line"
     try:
-        argv = shlex.split(command)
+        argv = _split_command(command)
     except ValueError as e:
         return f"the command could not be parsed ({e})"
     if not argv:
@@ -360,7 +438,7 @@ def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
     if claim.get("refused"):
         return (f"the run of '{command}' from {cwd} was refused and was not run: "
                 f"{claim['refused']}")
-    argv = shlex.split(command)
+    argv = _split_command(command)
     try:
         proc = subprocess.run(argv, cwd=str(cwd), shell=False, capture_output=True,
                               text=True, timeout=RUN_TIMEOUT_SEC)
@@ -906,13 +984,17 @@ class TaskQueue:
 
     def _verify_file_effects(self, task: Dict[str, Any], started: float) -> List[str]:
         """Ways this task's declared effects are NOT true (empty list = verified).
-        Three layers, all factual: (1) the file ops the activity log recorded for this
+        Layers, all factual: (1) the file ops the activity log recorded for this
         task must match the disk now; (2) file effects the request itself spells out
         (a path plus create/write/delete wording, exact contents when dictated) must
         hold on disk, whether or not any tool ran; (3) run effects the request
-        declares must exit with the required code when executed. The agent has
-        reported tasks done without calling a single file tool; this check trusts
-        the disk and the exit code, not the report."""
+        declares must exit with the required code when executed; (4) a claimed
+        file must be the artifact its type promises (fix round 6: a .py compiles,
+        a test file collects at least one test, a .json parses); (5) provenance:
+        when this task used the write tools at all, a claimed file no tool call
+        from this task touched is not its artifact, whoever put it there. The
+        agent has reported tasks done without calling a single file tool; this
+        check trusts the disk, the type and the write boundary, not the report."""
         from app.services import activity
         problems: List[str] = []
         try:
@@ -921,12 +1003,20 @@ class TaskQueue:
             logger.exception("file-effect check: activity read failed")
             entries = []
         expect: Dict[str, str] = {}
+        written_by_tool: set = set()
+        touched: set = set()
         for e in entries:
             if not e.get("ok"):
                 continue
             for op in e.get("ops") or []:
                 kind = op.get("kind")
-                if kind in ("restore_file", "remove_created"):
+                for key in ("path", "now_at", "from", "src"):
+                    if op.get(key):
+                        touched.add(os.path.normcase(str(op[key])))
+                if kind == "write_file":
+                    written_by_tool.add(os.path.normcase(str(op.get("path"))))
+                    expect[str(op.get("path"))] = "file"
+                elif kind in ("restore_file", "remove_created"):
                     expect[str(op.get("path"))] = "file"
                 elif kind == "untrash":
                     expect[str(op.get("path"))] = "absent"
@@ -961,6 +1051,23 @@ class TaskQueue:
                         actual = None
                     if actual is not None and actual != claim["content"].encode("utf-8"):
                         problems.append(f"{p.name} does not contain exactly what the task asked for")
+                if claim["kind"] != "delete" and claim.get("target") != "directory" and p.is_file():
+                    type_problem = _file_type_problem(p)
+                    if type_problem:
+                        problems.append(type_problem)
+                    # Provenance (fix round 6): files become artifacts
+                    # through the write tools. When this task's activity
+                    # shows it used those tools, a claimed file outside
+                    # every tool call's reach did not come through the
+                    # boundary and is not credited to the task. A task
+                    # that never used the write tools (a shell-only
+                    # flow) proves nothing either way and is not judged
+                    # on this layer.
+                    if written_by_tool and os.path.normcase(str(p)) not in touched:
+                        problems.append(
+                            f"Provenance: {p.name} is on disk, but no tool call from "
+                            f"this task wrote it; this task's files came through the "
+                            f"write tools, and {p.name} did not")
         # (3) run effects the request declares: the command is executed with
         # an argv list (never a shell) and its exit code must be the required
         # one. A contradicted run is a problem exactly like a missing file,
