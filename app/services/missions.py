@@ -1115,21 +1115,29 @@ def assemble_step(mission_id: str, subtask: Dict[str, Any]) -> Tuple[str, List[D
     when a declared input cannot be delivered, and no task may be
     created from it.
 
-    Every subtask implicitly declares the mission goal as an input:
-    the goal is where a brief or evidence pack the user supplied
-    lives, and before this round it reached NO subtask at all (the
-    BOARD-001 mission's workers assessed an evidence pack they had
-    never been given, and said so). Declared prior_step and file
-    inputs are delivered the same way, to every step that declares
-    them, not only to write steps. Write steps additionally keep the
-    fix round 4 behaviour: the reported results of earlier finished
-    steps ride along as the content the write exists to land."""
+    The mission goal is an implicit input for steps with no file
+    effects: the goal is where a brief or evidence pack the user
+    supplied lives, and before this round it reached NO subtask at
+    all (the BOARD-001 mission's workers assessed an evidence pack
+    they had never been given, and said so). A step WITH file effects
+    gets the goal only when its plan declares it: a goal normally
+    names every artifact in the mission, and a write step flooded
+    with all of them is a step whose request mentions other steps'
+    files (the two-instance gate's proofdir step, whose request
+    suddenly "mentioned note.txt", is the standing example).
+    Declared prior_step and file inputs are delivered to every step
+    that declares them, not only to write steps. Write steps
+    additionally keep the fix round 4 behaviour: the reported
+    results of earlier finished steps ride along as the content the
+    write exists to land."""
     mission = get_mission(mission_id)
     goal = (mission or {}).get("goal") or ""
     subs = list_subtasks(mission_id)
     contract = subtask.get("contract") or {}
     declared: List[Dict[str, Any]] = list(contract.get("inputs") or [])
-    if not any(d.get("source") == "goal" for d in declared):
+    has_file_effects = any(e.get("kind") in ("create", "modify", "delete")
+                           for e in subtask.get("expected_effects") or [])
+    if not has_file_effects and not any(d.get("source") == "goal" for d in declared):
         declared = [{"source": "goal"}] + declared
     sections: List[Tuple[str, str]] = []
     delivery: List[Dict[str, Any]] = []
