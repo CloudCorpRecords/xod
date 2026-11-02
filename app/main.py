@@ -2736,8 +2736,47 @@ async def family_list():
     Lists the signed-in machines and their capabilities from the registry in the
     synced bus space. Read-only: joining, sync and task handoff are later phases.
     F0 records are unsigned, so the payload flags them interim; display only."""
-    from app.services import family_registry
-    return {"success": True, **(await asyncio.to_thread(family_registry.load_registry))}
+    from app.services import family_registry, family_vault
+    view = await asyncio.to_thread(family_registry.load_registry)
+    view["vault"] = await asyncio.to_thread(
+        family_vault.status, view, family_registry.my_device_id() or None)
+    return {"success": True, **view}
+
+
+@app.post("/api/family/vault/publish")
+async def family_vault_publish():
+    """Family vault (services/family_vault.py): encrypt this device's provider keys
+    for the trusted family members and write the ciphertext bundle to the synced
+    space. Refused unless this device is itself a trusted member. The response
+    carries provider names and the recipient list only, never a key value."""
+    from app.services import family_registry, family_vault
+    my_id = family_registry.my_device_id()
+    if not my_id:
+        return {"success": False, "state": "no_device_id",
+                "message": "This device has no family device id yet (setting family_device_id)."}
+    try:
+        out = await asyncio.to_thread(family_vault.publish_from_keystore, my_id)
+    except family_vault.VaultError as e:
+        return {"success": False, "state": "refused", "message": str(e)}
+    return {"success": True, **out}
+
+
+@app.post("/api/family/vault/apply")
+async def family_vault_apply():
+    """Family vault: unwrap the synced bundle into THIS device's own keystore, if
+    this device is a trusted recipient and the bundle is newer than the one
+    already applied. Per-device pins and the local-only pin are honored inside
+    the service; the response reports state and provider names only."""
+    from app.services import family_registry, family_vault
+    my_id = family_registry.my_device_id()
+    if not my_id:
+        return {"success": False, "state": "no_device_id",
+                "message": "This device has no family device id yet (setting family_device_id)."}
+    try:
+        out = await asyncio.to_thread(family_vault.apply, my_id)
+    except family_vault.VaultError as e:
+        return {"success": False, "state": "refused", "message": str(e)}
+    return {"success": True, **out}
 
 
 @app.post("/api/xods/sign-in")

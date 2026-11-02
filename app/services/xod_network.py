@@ -17,6 +17,9 @@ it. It runs while you're signed in and the setting xod_findable isn't "off":
   /v1/harness/*             the harness port (services/harness.py): the routes above plus a token
                             only the operator holds; members, submit (self or relayed), status
   /v1/memory/*              shared memory between your Xods (services/memory_sync.py)
+  POST /v1/family/inference a borrowed model call from a family member (services/family_inference.py):
+                            same account (whois) AND signed with the caller's registry device key;
+                            only trusted (signed, approved, unrevoked) members are served
   GET/POST /v1/models       this Xod's model choices, and switching between them (services/remote_models.py)
 A handed task never runs by itself: it becomes an approval card on this computer (in the chat and on the phone), and
 only the person's Approve puts it in the task inbox. Cards are made only for devices signed in to the same account as
@@ -429,6 +432,28 @@ async def _start_beacon(ip: str) -> None:
             return await asyncio.to_thread(memory_sync.poked, request.client.host, dict(request.headers))
         except PermissionError as e:
             raise HTTPException(403, str(e))
+
+    # Family inference borrowing (services/family_inference.py): two locks, like the
+    # harness port \u2014 Tailscale vouches the caller is this account's device, and the
+    # request body is signed with that device's registry key.
+    @app.post("/v1/family/inference")
+    async def family_inference(request: Request) -> Dict[str, Any]:
+        who = await asyncio.to_thread(_caller, request.client.host)
+        if not who["same_account"]:
+            raise HTTPException(403, "Only your own devices can borrow this Xod's inference.")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Send JSON.")
+        from app.services import family_inference, family_registry
+        try:
+            return await asyncio.to_thread(
+                family_inference.handle_request, body if isinstance(body, dict) else {},
+                my_id=family_registry.my_device_id() or None)
+        except PermissionError as e:
+            raise HTTPException(403, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     @app.get("/v1/tasks/{ref}")
     async def handed_status(ref: str, request: Request) -> Dict[str, Any]:
