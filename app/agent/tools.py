@@ -4987,7 +4987,8 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
         affinities.append("xod_doctor")
 
     # The person's paired phone (the Xod phone app)
-    if any(k in q for k in ["my phone", "on my android", "my android", "on the phone", "my galaxy", "my samsung", "on my cell", "tiktok", "instagram"]):
+    if any(k in q for k in ["my phone", "on my android", "my android", "on the phone", "my galaxy", "my samsung", "on my cell", "tiktok", "instagram",
+                            "facebook", "cellphone", "cell phone", "my mobile", "android phone", "s25"]):
         affinities.append("phone")
 
     # The Muse approvals switch
