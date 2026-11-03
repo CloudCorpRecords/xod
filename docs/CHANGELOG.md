@@ -26,6 +26,7 @@
 
 **Checked before it shipped**
 - Every pull request's own suite ran against a byte-identical copy of what shipped: the provider suite in its production-failure shape (PR #36), the phone-routing suite (PR #38), the finder suite (PR #39), the You.com suite 17 of 17 (PR #37), the phone-enrollment suite 51 of 51 (PR #40), the SSO-control suite 35 of 35 (PR #41) and the tree-inbox suite 20 of 20 (PR #42).
+- The full pre-release battery on the merged tree (95 suites across smoke, brain, self-heal and partner) matches the 0.9.24 baseline: every failure sits in the environmental set already recorded there, the suites behind every change in this release pass, and the continuous-integration run on this exact tree is fully green.
 
 **Known issues carried into 0.9.25, named plainly**
 - Windows copies still update manually: the NSIS self-update wedge named since 0.9.20 is unchanged, so download the setup and run it with Xod fully closed rather than using self-update. Mac self-update is unaffected.
