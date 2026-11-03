@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 sys.path.insert(0, str(ROOT))
 TMP = tempfile.mkdtemp(prefix="xod-phone-")
 os.environ.update(XOD_DATA_DIR=TMP, PYTHON_KEYRING_BACKEND="tests.support.filekeyring.FileKeyring",
@@ -77,7 +78,7 @@ def sent(method="sendMessage", since=0):
 
 
 def msg(chat, text, reply_to=None):
-    m = {"message_id": 5, "chat": {"id": chat, "type": "private"}, "from": {"first_name": "Rene" if chat == 111 else "Mallory"}, "text": text}
+    m = {"message_id": 5, "chat": {"id": chat, "type": "private"}, "from": {"first_name": "Sam" if chat == 111 else "Mallory"}, "text": text}
     if reply_to:
         m["reply_to_message"] = {"message_id": reply_to}
     return m
@@ -103,7 +104,7 @@ async def main():
     check("a stranger without the code isn't linked", not phone.status()["paired"] and "send it the code" in sent(since=n)[0]["text"])
     await phone._on_message(msg(111, f"/start {code}"))
     st = phone.status()
-    check("the code links the phone (from the /start link too)", st["paired"] and st["who"] == "Rene" and st["pair_code"] is None, str(st))
+    check("the code links the phone (from the /start link too)", st["paired"] and st["who"] == "Sam" and st["pair_code"] is None, str(st))
     await phone._on_message(msg(222, code))
     check("…once: the same code from someone else does nothing", phone._load()["chat_id"] == 111)
 

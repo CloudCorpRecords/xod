@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 sys.path.insert(0, str(ROOT))
 from tests.support.local_model import local_model, local_endpoint  # noqa: E402  (LLM_* if set, else LM Studio)
 TMP = tempfile.mkdtemp(prefix="xod-inner-")

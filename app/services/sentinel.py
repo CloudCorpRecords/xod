@@ -17,7 +17,8 @@ changes something, it checks:
                     action sends or runs something
   run from the web  a command that downloads and runs code (curl … | sh, iwr … | iex) from an address the person
                     didn't give
-  not asked         deleting, killing or uninstalling when the request didn't ask for anything like it
+  not asked         deleting, killing or uninstalling when the request didn't ask for anything like it, or turning
+                    on Muse approvals when the request didn't mention them
 
 A hit doesn't fail the action: it's held as an approval card (in the chat and on the phone) that says why, and runs if
 the person presses Approve. With untrusted content around, a message about to be sent also gets a quick check from
@@ -49,6 +50,7 @@ _RUN_TOOLS = {"computer_run_command", "computer_start_job", "computer_run_apples
 _CHANGE_TOOLS = {"computer_write_file", "computer_edit_file", "computer_manage_file", "computer_batch_organize", "computer_kill_process",
                  "fs_write_workspace_file", "fs_move_file", "fs_organize_files", "computer_clipboard"}
 _SEND_TOOLS = {"agent_mail_send", "xod_make_report"}
+_ASKED_APPROVALS_RE = re.compile(r"\b(?:muse|approv\w*|auto.?approv\w*|allow)\b", re.I)
 
 _SECRET_RES = [
     re.compile(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}"), re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
@@ -66,6 +68,7 @@ _INJECTION_RE = re.compile(
     r"keys|tokens|contacts|emails|data|conversation)\b[^.]{0,40}\bto\b|BEGIN (?:SYSTEM|ADMIN) (?:MESSAGE|PROMPT)", re.I)
 _REMOTE_RUN_RE = re.compile(r"(?:curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|;]*\|\s*(?:sh|bash|zsh|iex|Invoke-Expression|python)\b|"
                             r"\biex\s*\(\s*(?:iwr|irm|New-Object\s+Net\.WebClient)", re.I)
+_TAILDROP_SEND_RE = re.compile(r"\btailscale(?:\.exe)?\\?[\"']?\s+file\s+cp\b(?![^|;&\n]*--targets)", re.I)
 
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 _URL = re.compile(r"https?://[^\s\"'<>)\]]+", re.I)
@@ -117,13 +120,15 @@ def note_user(text: str) -> None:
 # ------------------------------------------------------------------ the review
 # The four agent tools: only what hands an agent work (or types into a session) runs anything.
 _AGENT_RUN_ACTIONS = {"agent_job": {"", "start", "new", "message", "steer", "send"}, "agent_ask": None,
-                      "agent_terminal": {"start", "send"}, "agent_setup": {"install"}}
+                      "agent_terminal": {"start", "send"}, "agent_setup": {"install"}, "xod_machines": {"send_task"}}
 
 
 def _kind(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) -> Optional[str]:
     if tool in _AGENT_RUN_ACTIONS:
         acts = _AGENT_RUN_ACTIONS[tool]
         return "run" if acts is None or str((args or {}).get("action") or "").lower() in acts else None
+    if tool == "muse_approvals":   # turning approvals on is the one change here; off, pause and status never wait
+        return "approve_on" if str((args or {}).get("action") or "").lower() in ("always", "away", "resume") else None
     if tool in _RUN_TOOLS:
         return "run"
     if tool in _SEND_TOOLS:
@@ -178,6 +183,11 @@ def _mentioned(target: str, asked: str) -> bool:
     return bool(h) and h in a
 
 
+def _taildrop_ask_first() -> bool:
+    from app.services import taildrop
+    return taildrop.ask_first()
+
+
 def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) -> Optional[Dict[str, Any]]:
     """None when it can go ahead; else {"why": …, "rule": …}: hold it for the person's OK."""
     st = _state()
@@ -216,6 +226,14 @@ def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) ->
             if t in u or (h and h in u) or (d and d[-10:] in re.sub(r"\D", "", u)):
                 what = "address" if "@" in t else ("link" if t.startswith("http") else "contact")
                 return {"rule": "not_from_you", "why": f"The {what} {t[:80]} came from something it read, not from you."}
+
+    # approvals switched on by something it read: only the person's own words can make Xod press Allow for them
+    if kind == "approve_on" and not _ASKED_APPROVALS_RE.search(asked):
+        return {"rule": "not_asked", "why": "It would turn on approving Muse's cards for you, and you didn't ask for that."}
+
+    # with taildrop_ask_first on, a file sent to a device from the terminal waits for a card, like tailscale_files' sends
+    if kind == "run" and _TAILDROP_SEND_RE.search(text) and _taildrop_ask_first():
+        return {"rule": "taildrop_send", "why": "It would send a file off this computer to a device over Tailscale."}
 
     # not asked
     name = tool.split("__")[-1]

@@ -30,6 +30,7 @@ ENV = {**os.environ, "XOD_PYTHON": sys.executable, "HOME": str(HOMEDIR), "USERPR
        "XOD_DATA_DIR": str(DATA), "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring",
        "XOD_TEST_KEYRING_FILE": str(TMP / "keys.json"), "XOD_NO_UPDATE_CHECK": "1", "SHELL": "/bin/zsh", "PYTHONUTF8": "1"}
 ENV.pop("XOD_PORT", None)
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 os.environ.update({k: v for k, v in ENV.items() if k in ("HOME", "USERPROFILE", "LOCALAPPDATA", "XOD_DATA_DIR", "PYTHON_KEYRING_BACKEND",
                                                          "XOD_TEST_KEYRING_FILE", "XOD_NO_UPDATE_CHECK", "SHELL")})
 sys.path.insert(0, str(ROOT))

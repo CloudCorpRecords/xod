@@ -130,7 +130,8 @@
     V.segRms.push(rms);
     V.quietMs = rms < off ? V.quietMs + V.frameMs : 0;
     const dur = now() - V.segStart;
-    const endAfter = C.state === "wake" ? 550 : (xodTalking || C.state === "thinking") ? 500 : 950;
+    // How much quiet ends what you're saying: long enough for a breath mid-thought (0.95 s cut people off).
+    const endAfter = C.state === "wake" ? 550 : (xodTalking || C.state === "thinking") ? 500 : 1300;
     const maxMs = C.state === "wake" ? 7000 : 25000;
     if (V.quietMs >= endAfter || dur > maxMs) {
       const seg = V.seg, level = loudness(V.segRms);
@@ -191,7 +192,9 @@
     return true;
   }
   // Ends mid-thought ("…and", "…so the", "…because"): wait a moment for the rest instead of answering half.
-  const DANGLING_RE = /\b(and|or|but|so|the|a|an|to|of|with|um|uh|like|because|that|if|my|for|then|is|are|about)\s*[.,…-]*$/i;
+  const DANGLING_RE = /\b(and|or|but|so|the|a|an|to|of|with|um|uh|like|because|that|if|my|for|then|is|are|about)\s*[.,…-]*$|(\.\.\.|…)\s*$/i;
+  // Said again within this long of your last words, while Xod is still on them: the rest of the same thought.
+  const CONTINUE_MS = 8000;
 
   // ---------------------------------------------------------------- hearing something
   function speechStarted() {
@@ -253,7 +256,7 @@
         C.pendingText = text.replace(/[.…]+\s*$/, "");
         caption("you", C.pendingText + "…", true);
         setState("listening", "Go on…");
-        C.pendingTimer = setTimeout(() => { C.pendingTimer = null; finishPending(); }, 1600);
+        C.pendingTimer = setTimeout(() => { C.pendingTimer = null; finishPending(); }, 2200);
         return;
       }
       return handle(text);
@@ -261,6 +264,11 @@
     // Something was said while Xod was busy or talking.
     if (!words(text) || isEcho(text)) { if (window.XodSpeech) XodSpeech.duck(false); return; }
     if (STOP_RE.test(text) || END_RE.test(text)) return handle(text);
+    // You kept going after a pause: one thought in pieces, answered as one, not a reply to every piece.
+    if (C.lastAsked && now() - C.lastAsked.at < CONTINUE_MS && words(text) >= 2) {
+      log("continues", C.lastAsked.text, "+", text);
+      return handle(C.lastAsked.text + " " + text, { interrupt: true });
+    }
     if (xodWasTalking || (window.XodSpeech && XodSpeech.audioPlaying())) {
       if (words(text) >= 2) return handle(text, { interrupt: true });    // "actually, what about tomorrow?"
       if (window.XodSpeech) XodSpeech.duck(false);
@@ -305,6 +313,7 @@
   // ---------------------------------------------------------------- what you said
   async function handle(text, { interrupt = false } = {}) {
     if (!C.active) return;
+    if (!STOP_RE.test(text) && !END_RE.test(text)) C.lastAsked = { text, at: now() };
     caption("you", text);
     C.lastHeardAt = now();
     C.followUntil = 0;                       // it's not waiting any more: no timing out mid-thought

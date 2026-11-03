@@ -7,7 +7,7 @@
   const DOT = { starting: "bg-sky-400 animate-pulse", working: "bg-emerald-400 animate-pulse", waiting: "bg-amber-400 animate-pulse",
                 done: "bg-emerald-600", failed: "bg-red-400", stopped: "bg-zinc-600", interrupted: "bg-zinc-400" };
   const WORD = { starting: "starting", working: "working", waiting: "needs you", done: "done", failed: "failed", stopped: "stopped", interrupted: "paused" };
-  const ICON = { tool: "⚙", says: "💬", asks: "✋", you: "🙋", status: "•", error: "⚠" };
+  const ICON = { tool: "⚙", says: "💬", asks: "✋", you: "🙋", xod: "✅", status: "•", error: "⚠" };
   let root = null, current = null, timer = null, chip = null;
   let listOnly = false;          // a narrow window showing the list instead of the open job
   const WHO = { claude: "Claude Code", muse: "Muse" };
@@ -113,8 +113,52 @@
     refresh();
   }
 
+  const when = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  function usageLine(u) {
+    if (!u || !u.available) return "Muse isn't installed.";
+    if (u.error) return `Muse usage: couldn't read it (${esc(u.error)})`;
+    const part = (name, x) => x ? `${name} ${Math.round(x.used)}%` + (x.resets_at ? ` (resets ${x.used >= 100 ? when(x.resets_at) : "later"})` : "") : "";
+    const txt = [part("window", u.window), part("weekly", u.weekly)].filter(Boolean).join(" · ");
+    return (u.out ? `<span class="text-amber-300">Muse is out of usage until ${u.until ? when(u.until) : "its reset"}.</span> ` : "") + `Muse usage: ${txt || "unknown"}`;
+  }
+
+  let modelsLoaded = false;
+  async function refreshLoop() {
+    const body = root.querySelector("[data-c-loop-body]");
+    const box = root.querySelector("[data-c-loop]");
+    if (!body || !box || !box.open) return;
+    const L = await api("/api/crew/loop");
+    if (!L || L.success === false) { body.textContent = "Couldn't read the loop."; return; }
+    const rows = (L.repos || []).map((r) => {
+      const j = r.last_job;
+      const job = j ? `${esc(j.status)}${j.steps ? `, ${j.steps} steps` : ""}${j.model ? ` on ${esc(j.model)}` : ""}` : "nothing handed over yet";
+      const next = r.next_start ? ` · next start ${when(r.next_start)}` : "";
+      return `<div><b class="text-zinc-200">${esc(r.name)}</b>: ${job}${next}</div>`;
+    }).join("");
+    body.innerHTML = `<div>${L.handoff_on ? "On" : "Off (no repos watched)"}${L.auto_approve && L.auto_approve.on ? (L.auto_approve.mode === "away" ? " · auto-approve when you're away" : " · auto-approve on") : (L.auto_approve && L.auto_approve.paused_until ? " · auto-approve paused" : "")}${L.auto_approve && L.auto_approve.awake_held ? " · keeping the display awake" : ""}</div>`
+      + `<div>${usageLine(L.usage)}</div>` + rows;
+    if (!modelsLoaded && L.models) {
+      modelsLoaded = true;
+      root.querySelector("[data-c-model-default]").value = L.models.default || "";
+      root.querySelector("[data-c-model-cheap]").value = L.models.cheap || "";
+      root.querySelector("[data-c-model-handoff]").checked = (L.models.cheap_for || []).includes("handoff");
+      root.querySelector("[data-c-model-weekly]").value = L.models.cheap_above_weekly ?? "";
+      root.querySelector("[data-c-model-save]").onclick = async () => {
+        const w = root.querySelector("[data-c-model-weekly]").value.trim();
+        const r = await api("/api/crew/settings/models", {
+          default: root.querySelector("[data-c-model-default]").value, cheap: root.querySelector("[data-c-model-cheap]").value,
+          cheap_for: root.querySelector("[data-c-model-handoff]").checked ? ["handoff"] : [],
+          ...(w === "" ? { clear_cheap_above_weekly: true } : { cheap_above_weekly: Number(w) }),
+        });
+        if (typeof showToast === "function") showToast(r.success ? "Saved: new Muse jobs use these models." : r.error);
+      };
+    }
+  }
+
   async function refresh() {
     if (!root || root.classList.contains("hidden")) return;
+    refreshAutoApprove();
+    refreshLoop();
     const d = await api("/api/crew");
     const jobs = d.jobs || [];
     if (current && !jobs.some((j) => j.id === current)) current = null;
@@ -162,9 +206,42 @@
                 <label class="flex items-center gap-1.5 text-[11px] text-zinc-400" title="In a git repository the job gets a branch and folder of its own; you merge it when you're happy."><input type="checkbox" data-c-isolate checked> Its own copy (git projects)</label>
                 <button data-c="start" class="w-full px-2 py-1.5 rounded-md bg-brand-500 text-surface-900 font-semibold hover:bg-brand-400">Start the job</button>
                 <p data-c-note class="text-[11px] text-zinc-400"></p>
+                <div class="space-y-1 text-[11px] text-zinc-400" title="Xod presses Allow for you on Muse and Claude Code approvals in Crew jobs and on the Muse app's Needs review cards (needs Accessibility access). Only when I'm away: Muse's cards are pressed only while the screen is locked or you haven't typed or clicked for a few minutes, so Muse never takes the screen while you work. Requests Xod's safety check flags, and protected writes, still wait for you. Each one is logged in the approvals history. You can also just tell Xod: &quot;pause Muse approvals for an hour&quot;.">
+                  <div>Approve what Muse and Claude Code ask</div>
+                  <div class="flex items-center gap-1">
+                    <select data-c-autoapprove class="flex-1 min-w-0 bg-surface-700 text-zinc-200 rounded-md px-1.5 py-1 text-[11px]">
+                      <option value="off">Off (every card waits for me)</option>
+                      <option value="away">Only when I'm away</option>
+                      <option value="always">Always</option>
+                    </select>
+                    <button data-c-autoapprove-pause class="shrink-0 px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600 hidden">Pause 1h</button>
+                  </div>
+                  <div data-c-autoapprove-state class="text-zinc-500"></div>
+                </div>
+                <p data-c-autoapprove-note class="text-[11px] text-amber-300 hidden"></p>
+                <div data-c-autoapprove-fix class="hidden flex gap-1">
+                  <button data-c-accessibility-open class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600">Open Accessibility settings</button>
+                  <button data-c-accessibility-reset class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600">Reset my stale grant</button>
+                </div>
+                <div data-c-partner-repair class="hidden space-y-1 text-[11px] text-zinc-300">
+                  <ol data-c-partner-repair-steps class="list-decimal ml-4 space-y-0.5"></ol>
+                  <div class="flex gap-1">
+                    <button data-c-partner-reset class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600">Reset the Partner's stale grant</button>
+                    <button data-c-partner-open class="px-2 py-1 rounded-md bg-surface-700 text-zinc-200 hover:bg-surface-600">Open Accessibility settings</button>
+                  </div>
+                </div>
                 <details data-c-tools class="text-[11px] text-zinc-400"><summary class="cursor-pointer hover:text-zinc-200">Muse's tools for jobs</summary>
                   <p class="mt-1">Each one Muse starts before a job begins (all of yours took minutes), so jobs get only the ones you tick.</p>
                   <div data-c-toolbox class="mt-1 max-h-40 overflow-y-auto grid grid-cols-2 gap-x-2"></div></details>
+                <details data-c-loop class="text-[11px] text-zinc-400" open><summary class="cursor-pointer hover:text-zinc-200">Loop: work handed to Muse</summary>
+                  <div data-c-loop-body class="mt-1 space-y-1"></div>
+                  <div class="mt-2 space-y-1">
+                    <div class="flex items-center gap-1"><span class="w-20 shrink-0">Model</span><input data-c-model-default class="flex-1 min-w-0 bg-surface-700 text-zinc-200 rounded px-1.5 py-0.5" placeholder="Muse's default"></div>
+                    <div class="flex items-center gap-1"><span class="w-20 shrink-0">Cheaper model</span><input data-c-model-cheap class="flex-1 min-w-0 bg-surface-700 text-zinc-200 rounded px-1.5 py-0.5" placeholder="e.g. muse-spark-1.3"></div>
+                    <label class="flex items-center gap-1.5"><input type="checkbox" data-c-model-handoff> Use the cheaper model for handed-over work</label>
+                    <div class="flex items-center gap-1"><span>…and for every job once the weekly allowance is at</span><input data-c-model-weekly type="number" min="0" max="100" class="w-12 bg-surface-700 text-zinc-200 rounded px-1 py-0.5" placeholder="off">%</div>
+                    <button data-c-model-save class="px-2 py-0.5 rounded bg-surface-700 text-zinc-200 hover:bg-surface-600">Save models</button>
+                  </div></details>
               </div>
             </div>
             <div data-c-detail class="flex-1 min-w-0 flex flex-col"></div>
@@ -176,6 +253,7 @@
     }
     root.classList.remove("hidden");
     loadTools();
+    loadAutoApprove();
     refresh();
     clearInterval(timer);
     timer = setInterval(refresh, 1500);
@@ -216,6 +294,106 @@
       if (r.success) { current = r.job.id; root.querySelector("[data-c-task]").value = ""; }
       refresh();
     }
+  }
+
+  function autoApproveState(st) {
+    if (st.paused_until) {
+      const mins = Math.max(1, Math.round((st.paused_until * 1000 - Date.now()) / 60000));
+      return `Paused for ${mins} more min.`;
+    }
+    if (st.mode === "away") return st.pressing_now ? `You're away (${(st.you && st.you.why) || "idle"}): pressing cards.` : `Waiting: ${(st.you && st.you.why) || "you're here"}. Cards are pressed after ${st.away_minutes} min idle or when the screen locks.`;
+    if (st.mode === "always") return "Pressing every card as it appears.";
+    return "";
+  }
+
+  function showAutoApprove(st) {
+    const box = root.querySelector("[data-c-autoapprove]");
+    if (box && document.activeElement !== box) box.value = st.mode || (st.on ? "always" : "off");
+    const pause = root.querySelector("[data-c-autoapprove-pause]");
+    if (pause) {
+      pause.classList.toggle("hidden", (st.mode || "off") === "off");
+      pause.textContent = st.paused_until ? "Resume" : "Pause 1h";
+    }
+    const state = root.querySelector("[data-c-autoapprove-state]");
+    if (state) state.textContent = autoApproveState(st);
+    const note = root.querySelector("[data-c-autoapprove-note]");
+    if (note) {
+      const bits = [];
+      if (st.accessibility_error) bits.push(st.accessibility_error);
+      else if (st.on && st.awake_held) bits.push("Staying awake while this is on, so the computer doesn't lock mid-job.");
+      if (st.on && st.locked) bits.push("Screen is locked: cards are still read; a press while locked is unproven.");
+      const perm = st.permissions || {};
+      if (perm.notice && !bits.includes(perm.notice)) bits.push(perm.notice);
+      const partner = st.partner || {};
+      if (partner.notice && !bits.includes(partner.notice)) bits.push(partner.notice);
+      note.textContent = bits.join(" ");
+      note.classList.toggle("hidden", !bits.length);
+      const fix = root.querySelector("[data-c-autoapprove-fix]");
+      if (fix) {
+        fix.classList.toggle("hidden", !(perm.notice || partner.notice));
+        const reset = fix.querySelector("[data-c-accessibility-reset]");
+        if (reset) reset.classList.toggle("hidden", !perm.can_reset);
+      }
+      const repair = root.querySelector("[data-c-partner-repair]");
+      if (repair) {
+        const steps = partner.stale_grant && partner.repair_steps ? partner.repair_steps : null;
+        repair.classList.toggle("hidden", !steps);
+        if (steps) {
+          const ol = repair.querySelector("[data-c-partner-repair-steps]");
+          if (ol) ol.innerHTML = steps.map((s) => `<li>${esc(s.text)}</li>`).join("");
+        }
+      }
+    }
+  }
+
+  async function setAutoApprove(body) {
+    const r = await api("/api/crew/settings/auto-approve", body);
+    if (!r || !r.mode) { showAutoApprove(await api("/api/crew/settings/auto-approve")); return; }
+    showAutoApprove(r);
+    const said = { off: "Muse and Claude Code approvals wait for you again.",
+                   always: "Xod now approves everything Muse and Claude Code ask, and logs each one. (In Crew jobs, ones its safety check flags still wait for you.)",
+                   away: `Xod approves Muse's cards only while you're away (screen locked or ${r.away_minutes} min idle). Crew jobs' requests are approved as they come.` };
+    if (typeof showToast === "function") showToast(r.accessibility_error || (r.paused_until ? autoApproveState(r) + " Then it comes back on." : said[r.mode]));
+  }
+
+  async function loadAutoApprove() {
+    const box = root.querySelector("[data-c-autoapprove]");
+    if (!box) return;
+    showAutoApprove(await api("/api/crew/settings/auto-approve"));
+    box.onchange = () => setAutoApprove({ mode: box.value });
+    const pause = root.querySelector("[data-c-autoapprove-pause]");
+    if (pause) pause.onclick = () => setAutoApprove(pause.textContent === "Resume" ? { mode: "resume" } : { mode: "pause", pause_minutes: 60 });
+    const openBtn = root.querySelector("[data-c-accessibility-open]");
+    if (openBtn) openBtn.onclick = async () => {
+      const r = await api("/api/crew/settings/auto-approve/accessibility/open-settings", {});
+      if (typeof showToast === "function" && r && r.message) showToast(r.message);
+    };
+    const resetBtn = root.querySelector("[data-c-accessibility-reset]");
+    if (resetBtn) resetBtn.onclick = async () => {
+      if (!window.confirm("Clear Xod's Accessibility entry so macOS asks fresh? Xod stays unapproved until you flip it back on in the prompt that follows.")) return;
+      const r = await api("/api/crew/settings/auto-approve/accessibility/reset-grant", {});
+      if (typeof showToast === "function" && r && r.message) showToast(r.message);
+      showAutoApprove(await api("/api/crew/settings/auto-approve"));
+    };
+    const partnerResetBtn = root.querySelector("[data-c-partner-reset]");
+    if (partnerResetBtn) partnerResetBtn.onclick = async () => {
+      if (!window.confirm("Clear the Xod Partner's stale Accessibility entry? The Partner restarts, Xod asks it to ask macOS again, and you finish by flipping the fresh Xod Partner row on in Accessibility settings.")) return;
+      const r = await api("/api/crew/settings/auto-approve/accessibility/reset-partner-grant", {});
+      if (typeof showToast === "function" && r && r.message) showToast(r.message);
+      showAutoApprove(await api("/api/crew/settings/auto-approve"));
+    };
+    const partnerOpenBtn = root.querySelector("[data-c-partner-open]");
+    if (partnerOpenBtn) partnerOpenBtn.onclick = async () => {
+      const r = await api("/api/crew/settings/auto-approve/accessibility/open-settings", {});
+      if (typeof showToast === "function" && r && r.message) showToast(r.message);
+    };
+  }
+
+  // The watcher can hit (or clear) a problem seconds after the switch is flipped, so the note under
+  // it is refreshed with the panel — not only when Crew is opened or the switch is toggled.
+  async function refreshAutoApprove() {
+    if (!root || !root.querySelector("[data-c-autoapprove]")) return;
+    showAutoApprove(await api("/api/crew/settings/auto-approve"));
   }
 
   async function loadTools() {

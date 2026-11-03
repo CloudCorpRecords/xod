@@ -28,6 +28,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts" / "media"))
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 sys.path.insert(0, str(ROOT))
 from studio import Studio  # noqa: E402
 
@@ -47,8 +48,25 @@ def free_port():
 
 
 def spoken(text, voice="Samantha", rate=48000):
-    f = TMP / f"say-{abs(hash((text, voice)))}.wav"
-    subprocess.run(["say", "-v", voice, "-o", str(f), "--file-format=WAVE", f"--data-format=LEI16@{rate}", text], check=True)
+    # Cached under tests/fixtures/speech/ (keyed by the words, the voice and the
+    # rate): `say` writes to a file here, never the speakers, and a cached run
+    # spawns no speech process at all. On a cold cache with the speech switch
+    # off (XOD_SPEECH=off), the part comes back as silence rather than spawning
+    # the engine: the composed file keeps its shape and the run stays silent.
+    import hashlib
+    key = hashlib.sha256(f"{text}|{voice}|{rate}".encode()).hexdigest()[:24]
+    cache = Path(__file__).resolve().parent.parent / "fixtures" / "speech" / f"conv-{key}.wav"
+    f = cache if cache.exists() else TMP / f"say-{abs(hash((text, voice)))}.wav"
+    if not cache.exists():
+        if (os.environ.get("XOD_SPEECH") or "").strip().lower() == "off":
+            return np.zeros(rate, np.int16)
+        subprocess.run(["say", "-v", voice, "-o", str(f), "--file-format=WAVE", f"--data-format=LEI16@{rate}", text], check=True)
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copyfile(f, cache)
+        except OSError:
+            pass
     with wave.open(str(f)) as w:
         return np.frombuffer(w.readframes(w.getnframes()), np.int16)
 

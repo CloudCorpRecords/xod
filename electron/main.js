@@ -45,6 +45,22 @@ function savePrefs() {
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(PREFS_FILE, JSON.stringify(prefs, null, 1)); } catch (e) { /* not fatal */ }
 }
 let prefs = loadPrefs();
+
+// Xod's Accessibility grant belongs to this process, the app's GUI main. The Python backend is a
+// child this process spawns, and macOS does not attribute the app's grant to it, so the backend's
+// own trust check read false against a provably good grant (2026-11-02). The GUI therefore
+// evaluates its own trust here and leaves the verdict in the data dir, rewritten on an interval;
+// the backend (app/services/permissions.py) surfaces this reading and never its own.
+const AX_TRUST_FILE = path.join(DATA_DIR, "ax_trust.json");
+function writeAxTrust() {
+  if (process.platform !== "darwin" || !PACKAGED) return;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    const tmp = AX_TRUST_FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify({ trusted: !!systemPreferences.isTrustedAccessibilityClient(false), checked_at: Date.now() / 1000, app_version: app.getVersion() }));
+    fs.renameSync(tmp, AX_TRUST_FILE);
+  } catch (e) { /* a missing verdict reads as unknown in the backend, never as false */ }
+}
 // Started by "Start Xod when I log in": stay in the tray, don't open the window.
 const startedHidden = process.argv.includes("--hidden") ||
   (process.platform === "darwin" && (() => { try { return app.getLoginItemSettings().wasOpenedAtLogin; } catch (e) { return false; } })());
@@ -74,11 +90,26 @@ function get(url, timeoutMs = 1500) {
   return new Promise((resolve) => {
     const req = http.get(url, { timeout: timeoutMs }, (res) => {
       let body = "";
-      res.on("data", (c) => { if (body.length < 4096) body += c; });
+      res.on("data", (c) => { if (body.length < 16384) body += c; });
       res.on("end", () => resolve({ status: res.statusCode, body }));
     });
     req.on("error", () => resolve(null));
     req.on("timeout", () => { req.destroy(); resolve(null); });
+  });
+}
+
+function post(url, data, timeoutMs = 3000) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify(data);
+    const req = http.request(url, { method: "POST", timeout: timeoutMs,
+      headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } }, (res) => {
+      let out = "";
+      res.on("data", (c) => { if (out.length < 8192) out += c; });
+      res.on("end", () => resolve({ status: res.statusCode, body: out }));
+    });
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+    req.end(body);
   });
 }
 
@@ -282,6 +313,30 @@ function showMain() {
 // ------------------------------------------------------------------ tray (menu bar on a Mac)
 
 const loginItemsWork = () => PACKAGED;      // from source it would register Electron itself, not Xod
+let museState = null;     // the Muse approvals switch, as /api/crew/settings/auto-approve last said
+async function setMuse(body) {
+  const r = await post(`${appUrl}/api/crew/settings/auto-approve`, body);
+  try { if (r && r.status === 200) museState = JSON.parse(r.body); } catch (e) { /* keep the last one */ }
+  if (tray && !tray.isDestroyed()) tray.setContextMenu(trayMenu(lastCounts));
+}
+function museMenu() {
+  const m = museState;
+  if (!m || !m.backend) return [];
+  const mode = m.mode || "off", paused = !!m.paused_until;
+  const pick = (value, label) => ({ label, type: "radio", checked: mode === value, click: () => setMuse({ mode: value }) });
+  const head = paused ? "Muse approvals: paused" : mode === "off" ? "Muse approvals: off"
+    : mode === "away" ? (m.pressing_now ? "Muse approvals: on (you're away)" : "Muse approvals: when you're away") : "Muse approvals: always";
+  return [{ label: head, submenu: [
+    pick("off", "Off (every card waits for me)"),
+    pick("away", "Only when I'm away"),
+    pick("always", "Always"),
+    { type: "separator" },
+    paused ? { label: "Resume", click: () => setMuse({ mode: "resume" }) }
+      : { label: "Pause for 1 hour", enabled: mode !== "off", click: () => setMuse({ mode: "pause", pause_minutes: 60 }) },
+  ] }];
+}
+
+let lastCounts = null;
 function trayMenu(counts) {
   const waiting = (counts && counts.waiting) || 0, working = ((counts && counts.working) || 0) + ((counts && counts.queued) || 0);
   let atLogin = false;
@@ -291,6 +346,7 @@ function trayMenu(counts) {
     ...(waiting ? [{ label: `${waiting} waiting for you`, click: showWindow }] : []),
     ...(working ? [{ label: `${working} task${working === 1 ? "" : "s"} running`, enabled: false }] : []),
     { type: "separator" },
+    ...museMenu(),
     { label: "Keep running when the window is closed", type: "checkbox", checked: !!prefs.background,
       click: (item) => { prefs.background = item.checked; savePrefs(); } },
     { label: "Start Xod when I log in", type: "checkbox", checked: atLogin, enabled: loginItemsWork(),
@@ -313,11 +369,15 @@ function createTray() {
       const r = await get(`${appUrl}/api/tasks/counts`, 3000);
       let counts = null;
       try { counts = r && r.status === 200 ? JSON.parse(r.body) : null; } catch (e) { /* not answering: skip */ }
+      const m = await get(`${appUrl}/api/crew/settings/auto-approve`, 3000);
+      try { if (m && m.status === 200) museState = JSON.parse(m.body); } catch (e) { /* keep the last one */ }
       if (!tray || tray.isDestroyed()) return;
+      lastCounts = counts;
       tray.setContextMenu(trayMenu(counts));
       const waiting = (counts && counts.waiting) || 0;
       tray.setToolTip(waiting ? `Xod: ${waiting} waiting for you` : "Xod");
     };
+    setTimeout(refresh, 5000).unref();     // the menu's Muse approvals item shows once Xod answers, not 20s later
     setInterval(refresh, 20000).unref();
   } catch (e) {
     tray = null;     // no tray on this desktop: closing the window quits, as before
@@ -415,6 +475,8 @@ function setMenu(checkForUpdates) {
 app.whenReady().then(async () => {
   if (offerMoveToApplications()) return;    // macOS relaunches it from Applications
   lockDown();
+  writeAxTrust();
+  setInterval(writeAxTrust, 15000).unref();
   showSplash();
   try {
     appUrl = await startServer();
