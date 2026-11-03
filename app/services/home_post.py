@@ -8,6 +8,8 @@ How other agents reach it (networks()):
   tailscale   a private network across the internet (tailscale.com, free): <this computer>.<tailnet>.ts.net, for your
               own devices and people you invite to your tailnet
 A shared post office (a relay anyone runs, relay/) is still optional, for agents that can't reach this one.
+The address names one of these, but any of them reaches the same mailboxes: a paired phone keeps them all (routes())
+and uses whichever answers, so it keeps working when it leaves home if Tailscale is on both.
 
 Mail is end-to-end encrypted and signed whatever carries it, so these private networks use plain HTTP.
 When your computer is off or asleep, mail to you can't arrive: the sender's Xod keeps it in its outbox and retries.
@@ -96,9 +98,48 @@ def networks() -> List[Dict[str, Any]]:
     if name:
         out.append({"kind": "network", "domain": f"{name}.local:{PORT}",
                     "label": "This network: agents on the same Wi-Fi or office network"})
+    if not ts and _tailscale_cli():
+        out.append({"kind": "tailscale_signin", "domain": "", "label": "Tailscale is installed: open it and sign in"})
     if not ts and not _tailscale_cli():
         out.append({"kind": "tailscale_missing", "domain": "", "label": "For agents elsewhere, install Tailscale (free): tailscale.com/download"})
     return out
+
+
+def routes() -> List[str]:
+    """Every way a phone might reach this post office, as base URLs, home network first. The address stays
+    name@<domain> whichever one carries the mail: a paired phone keeps all of these and uses whichever answers, so it
+    still works away from home over Tailscale. XOD_POST_ROUTES (comma-separated URLs, e.g. an https name your router
+    forwards here) replaces what's found."""
+    given = [r.strip().rstrip("/") for r in os.environ.get("XOD_POST_ROUTES", "").split(",") if r.strip()]
+    if given:
+        return given
+    out = []
+    name = local_name()
+    if name:
+        out.append(f"http://{name}.local:{PORT}")
+    ip = lan_ip()
+    if ip and not ip.startswith("127."):
+        out.append(f"http://{ip}:{PORT}")
+    ts = tailscale()
+    if ts:
+        out.append(f"http://{ts['name']}:{PORT}")
+        if ts["ip"]:
+            out.append(f"http://{ts['ip']}:{PORT}")
+    return list(dict.fromkeys(out))
+
+
+def reaches_away(urls: List[str]) -> bool:
+    """Whether any of these routes works off the home network (Tailscale, or a public https name)."""
+    for u in urls:
+        host = u.split("://", 1)[-1].split("/")[0].rsplit(":", 1)[0].strip("[]").lower()
+        if host.endswith(".ts.net") or u.startswith("https://"):
+            return True
+        try:
+            if ipaddress.ip_address(host) in ipaddress.ip_network("100.64.0.0/10"):
+                return True
+        except ValueError:
+            pass
+    return False
 
 
 def pick(choice: str = "") -> str:
@@ -146,7 +187,12 @@ async def start(dom: str) -> Dict[str, Any]:
     import uvicorn
     from app.services.post_office import make_app
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    app = make_app(str(DB_PATH), domain)
+    from app.services import agent_mail, phone_pair
+
+    def on_mail(name: str) -> None:      # mail for this Xod itself (e.g. the phone app asking): pick it up now
+        if name == (agent_mail._config().get("name") or ""):
+            agent_mail.wake()
+    app = make_app(str(DB_PATH), domain, pair_code_ok=phone_pair.consume_code, on_mail=on_mail, on_paired=phone_pair.paired)
     try:
         with socket.socket() as s:       # is the port free? (uvicorn would only log the failure)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

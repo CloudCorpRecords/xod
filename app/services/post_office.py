@@ -11,17 +11,20 @@ Differences from a public relay:
 """
 import base64
 import json
+import logging
 import re
 import sqlite3
 import threading
 import time
 import uuid
 from collections import defaultdict, deque
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
+
+logger = logging.getLogger("xod.post_office")
 
 MAX_ENVELOPE = 256 * 1024
 MAILBOX_LIMIT = 500
@@ -51,6 +54,7 @@ class Registration(BaseModel):
     box_pub: str
     ts: int
     sig: str
+    pair_code: str = ""   # a live "Pair a phone" code (services/phone_pair.py) is the one remote way in
 
 
 class Post(BaseModel):
@@ -62,8 +66,13 @@ class Ack(BaseModel):
     ids: List[str]
 
 
-def make_app(db_path: str, domain: Callable[[], str]) -> FastAPI:
-    """The post office. domain() is the domain addresses get at registration (this Xod's chosen network name)."""
+def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Callable[[str], bool]] = None,
+             on_mail: Optional[Callable[[str], None]] = None,
+             on_paired: Optional[Callable[[str, str, str], None]] = None) -> FastAPI:
+    """The post office. domain() is the domain addresses get at registration (this Xod's chosen network name).
+    on_mail(name) is told each time mail is left for a name here (this Xod checks at once instead of at its next poll).
+    on_paired(address, sign_pub, box_pub) is told when a phone registered with a live pairing code, with the exact
+    keys its signed registration carried, so this Xod can pin them as the person's phone."""
     app = FastAPI(title="Xod Post Office (this computer)", version="1", docs_url=None, redoc_url=None, openapi_url=None)
     lock = threading.Lock()
     hits: Dict[str, deque] = defaultdict(deque)
@@ -128,7 +137,13 @@ def make_app(db_path: str, domain: Callable[[], str]) -> FastAPI:
 
     @app.post("/v1/names")
     def register(reg: Registration, request: Request) -> Dict[str, Any]:
-        only_here(request)
+        # From this computer, or with a live one-time pairing code (phone_pair) that is
+        # consumed only once the signed registration below has checked out.
+        # A pairing code counts wherever the phone is: one on this computer's own network path (an emulator, a phone
+        # over USB) pairs the same way, or it would think it's paired while this computer ignores it.
+        by_code = bool(reg.pair_code and pair_code_ok)
+        if ip(request) not in LOCAL and not by_code:
+            only_here(request)
         name = reg.name.lower()
         if not NAME_RE.match(name) or name in RESERVED:
             raise HTTPException(400, "Names are 2-32 letters, numbers, dots, dashes or underscores, and some are reserved.")
@@ -138,6 +153,8 @@ def make_app(db_path: str, domain: Callable[[], str]) -> FastAPI:
             raise HTTPException(400, "The registration isn't signed by that key.")
         if len(_b64d(reg.sign_pub)) != 32 or len(_b64d(reg.box_pub)) != 32:
             raise HTTPException(400, "Bad keys.")
+        if by_code and not pair_code_ok(reg.pair_code):
+            raise HTTPException(403, "That pairing code has expired or was already used. Ask Xod for a new QR.")
         now, dom = time.time(), domain()
         with lock, db() as c:
             row = c.execute("SELECT sign_pub FROM names WHERE name=?", (name,)).fetchone()
@@ -147,6 +164,11 @@ def make_app(db_path: str, domain: Callable[[], str]) -> FastAPI:
                 c.execute("UPDATE names SET box_pub=?, domain=?, updated_at=? WHERE name=?", (reg.box_pub, dom, now, name))
             else:
                 c.execute("INSERT INTO names VALUES (?,?,?,?,?,?)", (name, reg.sign_pub, reg.box_pub, dom, now, now))
+        if by_code and on_paired:
+            try:
+                on_paired(f"{name}@{dom}", reg.sign_pub, reg.box_pub)
+            except Exception as e:
+                logger.warning(f"post office: pairing {name} didn't finish here: {e}")
         return {"address": f"{name}@{dom}", "name": name, "domain": dom}
 
     @app.get("/v1/names/{name}")
@@ -186,6 +208,11 @@ def make_app(db_path: str, domain: Callable[[], str]) -> FastAPI:
                 raise HTTPException(507, "That mailbox is full.")
             mid = uuid.uuid4().hex
             c.execute("INSERT INTO mail VALUES (?,?,?,?)", (mid, name, raw, time.time()))
+        if on_mail:
+            try:
+                on_mail(name)
+            except Exception:
+                pass
         return {"id": mid}
 
     @app.get("/v1/mail")

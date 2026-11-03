@@ -117,6 +117,11 @@ REPORTS_DIR = DATA_DIR / "reports"
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/reports", StaticFiles(directory=str(REPORTS_DIR)), name="reports")
 
+# Living Look packs (services/looks.py): pack assets are data in the data folder.
+LOOKS_DIR = DATA_DIR / "looks"
+LOOKS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/looks", StaticFiles(directory=str(LOOKS_DIR)), name="looks")
+
 from app.services.storage import (
     init_db,
     create_session,
@@ -166,6 +171,7 @@ class ChatRequest(BaseModel):
     active_workspace_path: Optional[str] = None
     attached_document: Optional[Dict[str, Any]] = None
     voice: Optional[bool] = None   # asked out loud in a conversation: answer in a spoken style
+    source: Optional[str] = None   # "phone": sent from the paired phone app (phone_api); tags the chat and what it learns
 
 class CreateSessionRequest(BaseModel):
     title: Optional[str] = "New Research Session"
@@ -175,6 +181,11 @@ class UpdateSessionRequest(BaseModel):
     title: Optional[str] = None
     persona: Optional[str] = None
 
+def auto_model_enabled() -> bool:
+    from app.services import auto_model
+    return auto_model.auto_enabled()
+
+
 class ConfigUpdateRequest(BaseModel):
     trustmrr_api_key: Optional[str] = None
     you_api_key: Optional[str] = None
@@ -182,6 +193,7 @@ class ConfigUpdateRequest(BaseModel):
     llm_provider: Optional[str] = None
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
+    llm_auto_model: Optional[bool] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
@@ -546,6 +558,49 @@ async def show_task_page(task_id: str):
     return await sb.manage_tabs("switch", target_id=t["tab_id"])
 
 
+# --------------------------------------------------------------
+# Missions: the parent orchestrator (see services/missions.py)
+# --------------------------------------------------------------
+class NewMissionRequest(BaseModel):
+    goal: str
+    continue_on_failure: bool = False
+
+
+@app.post("/api/missions")
+async def create_mission(req: NewMissionRequest):
+    from app.services import missions
+    try:
+        return {"success": True, "mission": missions.create_mission(req.goal, req.continue_on_failure)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/missions")
+async def list_missions():
+    from app.services import missions
+    return {"missions": missions.list_missions()}
+
+
+@app.get("/api/missions/{mission_id}")
+async def get_mission(mission_id: str):
+    from app.services import missions
+    m = missions.get_mission(mission_id)
+    if not m:
+        raise HTTPException(status_code=404, detail="No such mission")
+    return {"mission": m}
+
+
+@app.get("/api/missions/{mission_id}/report")
+async def get_mission_report(mission_id: str):
+    from app.services import missions
+    if not missions.get_mission(mission_id):
+        raise HTTPException(status_code=404, detail="No such mission")
+    report = missions.get_report(mission_id)
+    if report is None:
+        raise HTTPException(status_code=409, detail="This mission has not finished yet")
+    return {"report": report}
+
+
 @app.on_event("shutdown")
 async def _stop_crew_host():
     try:
@@ -562,6 +617,27 @@ async def _stop_terminal_sessions():
     try:
         from app.services import agent_clis
         agent_clis.stop_all()
+    except Exception:
+        pass
+
+
+@app.on_event("shutdown")
+async def _note_planned_shutdown():
+    """Tell the Partner this exit was planned (a quit, an update): the marker
+    keeps the revival it performs from spending its unplanned restart cap
+    (the Partner v1.1 accounting). Only the installed app writes it: a dev
+    instance's shutdown says nothing about the production app."""
+    try:
+        from app.services import permissions
+        if not permissions.own_bundle_id():
+            return
+        import json as _json
+        import time as _time
+        state = Path.home() / "Library" / "Application Support" / "XodPartner"
+        if state.is_dir():
+            tmp = state / "planned-shutdown.json.tmp"
+            tmp.write_text(_json.dumps({"at": _time.time(), "reason": "quit"}))
+            tmp.replace(state / "planned-shutdown.json")
     except Exception:
         pass
 
@@ -583,6 +659,14 @@ def _announce_server() -> None:
         (DATA_DIR / "server.json").write_text(_json.dumps({"url": f"http://127.0.0.1:{int(port)}", "pid": os.getpid()}))
     except (OSError, ValueError):
         pass
+    try:
+        from app.services import event_log
+        from app.version import VERSION
+        event_log.emit("backend.started", actor="xod",
+                       payload={"version": VERSION, "url": f"http://127.0.0.1:{int(port)}",
+                                "pid": os.getpid()})
+    except Exception:
+        pass
 
 
 @app.on_event("startup")
@@ -592,6 +676,8 @@ async def _start_task_worker():
     from app.services.doctor import doctor
     task_queue.start()
     doctor.start()
+    from app.services import missions
+    missions.start()
     from app.services import activity, routines
     activity.prune()
     routines.start()
@@ -609,6 +695,10 @@ async def _start_task_worker():
     asyncio.create_task(local_servers.idle_loop())   # stops the built-in engine after a while unused
     from app.services import phone
     phone.start()                           # the linked phone (Telegram), if there is one
+    from app.services import partner_client
+    partner_client.start_watchdog()         # reciprocal supervision: Xod watches the Partner back
+    from app.services import phone_mcp
+    phone_mcp.start_bridge()                # Approvals/Crew questions to a paired Android phone, if one is paired
 
 
 class ModelRef(BaseModel):
@@ -729,6 +819,83 @@ async def phone_test():
     return {"success": bool(ok), "error": None if ok else "Not linked yet, or Telegram couldn't be reached."}
 
 
+@app.get("/api/phone/pair-offer")
+async def phone_pair_offer():
+    """A fresh 'Pair a phone' QR (10-minute, one-time code) for the Android app to scan."""
+    from app.services import phone_pair
+    return phone_pair.create_offer()
+
+
+@app.get("/api/phone/ble/scan")
+async def phone_ble_scan():
+    """Phones nearby with 'Pair nearby' open in the Xod app."""
+    from app.services import phone_ble
+    return await phone_ble.find()
+
+
+@app.post("/api/phone/ble/pair")
+async def phone_ble_pair(body: Dict[str, Any]):
+    """Hands a fresh pairing offer to that phone over Bluetooth; the phone pairs on the person's tap."""
+    from app.services import phone_ble
+    return await phone_ble.offer_to(str(body.get("id") or ""))
+
+
+@app.post("/api/phone/pair-offer/cancel")
+async def phone_pair_offer_cancel():
+    from app.services import phone_pair
+    phone_pair.cancel()
+    return {"success": True}
+
+
+@app.get("/api/phones")
+async def phones_list():
+    """Paired Android phones (over Agent Mail), their capability switches, and this computer's lock/awake."""
+    from app.services import phone_mcp
+    return phone_mcp.phone_list()
+
+
+class PhonePairRequest(BaseModel):
+    address: str
+    nickname: Optional[str] = ""
+
+
+@app.post("/api/phones/pair")
+async def phones_pair(req: PhonePairRequest):
+    """Marks a phone that paired on its own screen as reachable (its keys must already be pinned)."""
+    from app.services import phone_mcp
+    return phone_mcp.pair_phone(req.address, req.nickname or "")
+
+
+@app.delete("/api/phones/{address}")
+async def phones_unpair(address: str):
+    from app.services import phone_mcp
+    return {"success": phone_mcp.unpair_phone(address)}
+
+
+@app.get("/api/phones/iphone-mirroring")
+async def phones_iphone_mirroring():
+    """iPhone Mirroring (Mac only): whether it's switched on, and plainly if it's paused."""
+    from app.services import iphone_mirror
+    return iphone_mirror.status()
+
+
+class MirrorToggle(BaseModel):
+    on: bool
+
+
+@app.post("/api/phones/iphone-mirroring")
+async def phones_set_iphone_mirroring(req: MirrorToggle):
+    from app.services import iphone_mirror
+    return iphone_mirror.set_enabled(req.on)
+
+
+@app.get("/api/phones/log")
+async def phones_log(limit: int = 100):
+    """Every phone MCP call Xod made (the phone app shows its own side too)."""
+    from app.services import phone_mcp
+    return {"calls": phone_mcp.audit_log(limit)}
+
+
 @app.get("/api/mcp")
 async def mcp_status_endpoint():
     from app.services.mcp_client import mcp_hub
@@ -741,9 +908,10 @@ async def mcp_self_config_endpoint(request: Request):
     import sys as _sys
     from app.paths import APP_ROOT
     port = request.url.port or 8000
-    return {"config": {"mcpServers": {"xod": {
-        "command": _sys.executable, "args": ["-m", "app.mcp_server"], "cwd": str(APP_ROOT),
-        "env": {"XOD_URL": f"http://127.0.0.1:{port}"}}}}}
+    return {"config": {"mcpServers": {
+        "xod": {"command": _sys.executable, "args": ["-m", "app.mcp_server"], "cwd": str(APP_ROOT),
+                "env": {"XOD_URL": f"http://127.0.0.1:{port}"}},
+        "xod-phone": {"command": _sys.executable, "args": ["-m", "app.phone_mcp"], "cwd": str(APP_ROOT)}}}}
 
 
 @app.post("/api/mcp/servers")
@@ -1077,11 +1245,30 @@ async def companion_get():
 
 @app.post("/api/companion")
 async def companion_set(req: CompanionSettings):
+    from app.services import looks
     from app.services.storage import set_setting
-    if not re.fullmatch(r"[a-z]{2,16}", req.character or ""):
+    char = req.character or ""
+    if char not in looks.BUILTIN_LOOKS and not looks.is_pack(char):
         raise HTTPException(status_code=400, detail="Unknown look.")
-    set_setting("companion", req.character)
-    return {"success": True, "character": req.character}
+    set_setting("companion", char)
+    return {"success": True, "character": char}
+
+
+# ---- Living Look packs (services/looks.py): installed packs, verified as data
+
+@app.get("/api/looks")
+async def looks_list():
+    from app.services import looks
+    return {"packs": looks.list_packs(), "states": list(looks.PACK_STATES),
+            "mood_to_state": looks.MOOD_TO_STATE}
+
+
+@app.post("/api/looks/{pack_id}/verify")
+async def looks_verify(pack_id: str):
+    from app.services import looks
+    if not looks.is_pack(pack_id):
+        raise HTTPException(status_code=404, detail="No such pack.")
+    return looks.verify_pack(pack_id)
 
 
 # ---- Agent Mail (services/agent_mail.py): encrypted messages between Xods
@@ -1510,7 +1697,8 @@ async def chat_endpoint(request: ChatRequest):
 
     if not session_id or not get_session(session_id):
         title = prompt_preview[:35] + ("..." if len(prompt_preview) > 35 else "")
-        session = create_session(title=title, persona=request.persona or "ultimate_researcher")
+        session = create_session(title=title, persona=request.persona or "ultimate_researcher",
+                                 source="phone" if request.source == "phone" else "desktop")
         session_id = session["id"]
         is_new_session = True
     else:
@@ -1554,7 +1742,7 @@ async def chat_endpoint(request: ChatRequest):
             learn_wanted = user_memory.worth_a_look(said) or bool(user_memory.FORGET_ALL_RE.match(said))
             local_model = llm_service.get_endpoint_info().get("provider") in ("lm_studio", "ollama", "xod", "local") and not route.endpoint
             if learn_wanted and not local_model:
-                learn_turn = user_memory.start_learning(said)
+                learn_turn = user_memory.start_learning(said, via="phone" if request.source == "phone" else "")
         except Exception as e:
             logger.debug(f"memory: {e}")
 
@@ -1618,7 +1806,7 @@ async def chat_endpoint(request: ChatRequest):
                 # a local one starts now. Either way the page asks for the result and shows it when it's in.
                 try:
                     if learn_turn is None:
-                        learn_turn = user_memory.start_learning(said)
+                        learn_turn = user_memory.start_learning(said, via="phone" if request.source == "phone" else "")
                     else:
                         task = user_memory._turns.get(learn_turn, {}).get("task")
                         if task is not None:
@@ -1733,6 +1921,7 @@ async def get_config():
         "llm_provider": settings.llm_provider,
         "llm_base_url": settings.llm_base_url,
         "llm_model": settings.llm_model,
+        "llm_auto_model": auto_model_enabled(),
         "has_openai_key": bool(settings.openai_api_key),
         "has_anthropic_key": bool(settings.anthropic_api_key),
         "has_gemini_key": bool(settings.gemini_api_key),
@@ -1744,8 +1933,37 @@ async def get_config():
         "huggingface_masked_token": (settings.huggingface_token[:4] + "..." + settings.huggingface_token[-4:]) if len(settings.huggingface_token) > 8 else ("Configured" if settings.huggingface_token else "")
     }
 
+def _vault_refusal() -> HTTPException:
+    """The Keychain refused a save: answer with the vault's own explanation
+    (the same words the model switcher banner uses) instead of a bare 500."""
+    from app.services import keychain
+    return HTTPException(status_code=400, detail=keychain.problem()
+                         or "macOS isn't letting Xod reach its saved keys right now.")
+
+
 @app.post("/api/config")
 async def update_config(req: ConfigUpdateRequest):
+    """Updates settings and persists to .env. A Keychain refusal on a key
+    save answers with the vault's problem text instead of a bare 500."""
+    from app.services import keychain
+    try:
+        out = await _update_config_apply(req)
+    except keychain.Unreadable:
+        raise _vault_refusal()
+    try:
+        # Observability (services/event_log.py): which configuration fields were
+        # set, by name only. Values never enter the log: a key field's name says
+        # a key was set, never what it is.
+        from app.services import event_log
+        changed = sorted(k for k, v in req.model_dump().items() if v is not None)
+        if changed:
+            event_log.emit("config.changed", actor="user", payload={"fields": changed})
+    except Exception:
+        pass
+    return out
+
+
+async def _update_config_apply(req: ConfigUpdateRequest):
     """Updates settings and persists to .env."""
     if req.trustmrr_api_key is not None:
         key_val = req.trustmrr_api_key.strip()
@@ -1782,6 +2000,10 @@ async def update_config(req: ConfigUpdateRequest):
 
     if req.llm_model is not None:
         update_env_variable("LLM_MODEL", req.llm_model)
+
+    if req.llm_auto_model is not None:
+        from app.services import auto_model
+        auto_model.set_auto_enabled(bool(req.llm_auto_model))
 
     if req.openai_api_key is not None:
         update_env_variable("OPENAI_API_KEY", req.openai_api_key.strip())
@@ -1986,19 +2208,174 @@ async def get_deals(category: Optional[str] = None, max_multiple: Optional[float
     return res
 
 @app.get("/api/llm/models")
-async def get_llm_models(provider: Optional[str] = None):
-    """Lists models available from the currently configured or requested provider."""
-    models = await llm_service.list_models(provider_override=provider)
+async def get_llm_models(provider: Optional[str] = None, key_profile: Optional[str] = None):
+    """Lists models available from the currently configured or requested provider.
+
+    With key_profile, detection runs against that key profile's key, and the model ids it
+    returns are stored on the profile as that key's allowed models."""
+    models = await llm_service.list_models(provider_override=provider, key_profile_id=key_profile)
     loaded_model = None
     for m in models:
         if m.get("is_loaded"):
             loaded_model = m.get("id")
             break
+    if key_profile:
+        from app.services import key_profiles
+        prov = provider or settings.llm_provider
+        if key_profiles.is_key_provider(prov):
+            try:
+                key_profiles.set_models(prov, key_profile, [m.get("id") for m in models if m.get("id")])
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
     return {
         "models": models,
         "current_model": settings.llm_model,
         "loaded_model": loaded_model
     }
+
+
+# ---- API key profiles (services/key_profiles.py) -------------------------------------
+# Named keys per cloud provider. Responses only ever carry masked keys.
+
+class KeyProfileCreate(BaseModel):
+    provider: str
+    name: str
+    key: Optional[str] = None
+
+
+class KeyProfileRename(BaseModel):
+    provider: str
+    name: str
+
+
+class KeyProfileKey(BaseModel):
+    provider: str
+    key: str
+
+
+class KeyProfileRef(BaseModel):
+    provider: str
+
+
+@app.get("/api/llm/key-profiles")
+async def get_key_profiles(provider: str):
+    from app.services import key_profiles
+    if not key_profiles.is_key_provider(provider):
+        raise HTTPException(status_code=400, detail=f"{provider} does not use API keys.")
+    return key_profiles.list_profiles(provider)
+
+
+@app.post("/api/llm/key-profiles")
+async def create_key_profile(req: KeyProfileCreate):
+    from app.services import key_profiles, keychain
+    try:
+        return key_profiles.create_profile(req.provider, req.name, req.key or "")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except keychain.Unreadable:
+        raise _vault_refusal()
+
+
+@app.post("/api/llm/key-profiles/{profile_id}/rename")
+async def rename_key_profile(profile_id: str, req: KeyProfileRename):
+    from app.services import key_profiles, keychain
+    try:
+        return key_profiles.rename_profile(req.provider, profile_id, req.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except keychain.Unreadable:
+        raise _vault_refusal()
+
+
+@app.post("/api/llm/key-profiles/{profile_id}/key")
+async def set_key_profile_key(profile_id: str, req: KeyProfileKey):
+    from app.services import key_profiles, keychain
+    try:
+        return key_profiles.set_profile_key(req.provider, profile_id, req.key)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except keychain.Unreadable:
+        raise _vault_refusal()
+
+
+@app.post("/api/llm/key-profiles/{profile_id}/activate")
+async def activate_key_profile(profile_id: str, req: KeyProfileRef):
+    from app.services import key_profiles, keychain
+    try:
+        return key_profiles.set_active(req.provider, profile_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except keychain.Unreadable:
+        raise _vault_refusal()
+
+
+@app.delete("/api/llm/key-profiles/{profile_id}")
+async def delete_key_profile(profile_id: str, provider: str):
+    from app.services import key_profiles, keychain
+    try:
+        return key_profiles.delete_profile(provider, profile_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except keychain.Unreadable:
+        raise _vault_refusal()
+
+
+# ---- Usage ledger (services/usage_ledger.py) ------------------------------------------
+
+@app.get("/api/usage/summary")
+async def get_usage_summary(range: str = "today"):
+    """Token and cost totals from the per-call ledger: by model, by key profile, by day.
+    Costs are estimates from the dated reference price table; records whose tokens were
+    estimated (the provider reported no usage) are counted separately from api-reported ones."""
+    from app.services import usage_ledger
+    if range not in usage_ledger.RANGES:
+        raise HTTPException(status_code=400, detail="range must be one of: today, 7d, all")
+    return await asyncio.to_thread(usage_ledger.summary, range)
+
+
+class UsageEstimateRequest(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    messages: Optional[List[Dict[str, Any]]] = None
+    text: Optional[str] = None
+    max_tokens: Optional[int] = None
+
+
+@app.post("/api/usage/estimate")
+async def post_usage_estimate(req: UsageEstimateRequest):
+    """A pre-flight estimate for a call that has not run: input tokens from the prompt's
+    size, output tokens from the call's budget, cost from the reference price table.
+    Everything returned is labeled an estimate."""
+    from app.services import usage_ledger
+    info = llm_service.get_endpoint_info()
+    provider = req.provider or info["provider"]
+    model = req.model or info["model"]
+    if req.messages is not None:
+        prompt_chars = len(json.dumps(req.messages))
+    else:
+        prompt_chars = len(req.text or "")
+    return usage_ledger.estimate(provider, model, prompt_chars, req.max_tokens)
+
+@app.get("/api/llm/auto-pick")
+async def get_llm_auto_pick(provider: Optional[str] = None):
+    """Auto mode's current pick for a provider, with the full ranked list and the
+    reason for every rank. Ranks the same models the Detect Models flow returns."""
+    from app.services import auto_model
+    models = await llm_service.list_models(provider_override=provider)
+    ids = [m.get("id") for m in models if m.get("id")]
+    result = auto_model.rank_models(provider or settings.llm_provider, ids)
+    result["enabled"] = auto_model.auto_enabled()
+    result["current_model"] = settings.llm_model
+    return result
+
+
+@app.get("/api/llm/vibench")
+async def get_llm_vibench():
+    """The bundled ViBench snapshot Auto ranks from, served so the Settings page
+    can show the basis of every pick (dated, attributed, never live data)."""
+    from app.services import auto_model
+    return auto_model.load_snapshot()
+
 
 @app.get("/api/lmstudio/status")
 async def get_lmstudio_status():
@@ -2069,6 +2446,497 @@ class CrewTools(BaseModel):
 async def crew_set_muse_tools(req: CrewTools):
     from app.services import crew
     return crew.set_muse_tools(req.names)
+
+
+class CrewAutoApprove(BaseModel):
+    on: Optional[bool] = None
+    mode: Optional[str] = None            # off | always | away | pause | resume
+    pause_minutes: Optional[float] = None
+    away_minutes: Optional[int] = None
+
+
+@app.get("/api/crew/settings/auto-approve")
+async def crew_auto_approve():
+    """Whether Xod approves everything Muse asks (its own Muse jobs and the Muse app's cards), and the last one."""
+    from app.services import muse_app
+    return muse_app.status()
+
+
+@app.post("/api/crew/settings/auto-approve")
+async def crew_set_auto_approve(req: CrewAutoApprove):
+    from app.services import muse_app
+    if req.away_minutes is not None:
+        muse_app.set_away_minutes(req.away_minutes)
+    if req.mode:
+        try:
+            return muse_app.set_mode(req.mode, req.pause_minutes)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+    if req.on is not None:
+        return muse_app.set_enabled(req.on)
+    return muse_app.status()
+
+
+@app.post("/api/crew/settings/auto-approve/accessibility/open-settings")
+async def crew_accessibility_open_settings():
+    """Guided repair, user-triggered: open the exact Settings pane for Xod's Accessibility grant."""
+    from app.services import permissions
+    return permissions.open_accessibility_settings()
+
+
+@app.post("/api/crew/settings/auto-approve/accessibility/reset-grant")
+async def crew_accessibility_reset_grant():
+    """Guided repair, user-triggered: clear Xod's OWN stale Accessibility entry and ask macOS again.
+    Refuses when the running process cannot prove which app it is (see services/permissions.py)."""
+    from app.services import permissions
+    return permissions.reset_own_grant()
+
+
+@app.post("/api/crew/settings/auto-approve/accessibility/reset-partner-grant")
+async def crew_accessibility_reset_partner_grant():
+    """Guided repair, user-triggered: clear the XOD PARTNER's stale Accessibility entry.
+    Xod performs it because Xod survives it; the Partner (the grant holder) is
+    expected to be killed by macOS at the reset, and launchd revives it. Step 2
+    of the ceremony runs as this reset's follow-up: once the Partner answers
+    again, Xod asks it to ask macOS again, which creates the fresh Xod Partner
+    row. The user finishes with one flip of that row (see services/permissions.py)."""
+    from app.services import permissions
+    out = permissions.reset_partner_grant()
+    if out.get("ok"):
+        import threading
+        from app.services import partner_client
+        threading.Thread(target=partner_client.ask_after_reset, daemon=True).start()
+    return out
+
+
+@app.post("/api/crew/settings/auto-approve/partner/note-planned-restart")
+async def crew_partner_note_planned_restart():
+    """Operator note: a Partner restart in the next ten minutes is planned (a
+    rebuild, an install, a manual restart). Xod's watchdog still revives the
+    Partner if it stays down, but that revival does not spend the mirrored
+    unplanned cap (reciprocal supervision, Partner v1.1 era)."""
+    from app.services import partner_client
+    return {"watchdog": partner_client.note_planned_restart("settings API")}
+
+
+class PartnerBrainKey(BaseModel):
+    provider: str
+    profile_id: str
+
+
+@app.post("/api/crew/settings/auto-approve/partner/brain-key")
+async def crew_partner_brain_key(req: PartnerBrainKey):
+    """Give the Partner brain its own key (Partner v1.2): the user picks one
+    of their existing key profiles; Xod reads that profile's key from its own
+    vault and sends it once over the token-authenticated loopback channel,
+    and the Partner stores it in its own Keychain item so it can think while
+    Xod is down. The key is never returned, never logged, and never written
+    to a file on either side."""
+    from app.services import key_profiles, keychain, partner_client
+    if not key_profiles.is_key_provider(req.provider):
+        raise HTTPException(status_code=400, detail=f"{req.provider} does not use API keys.")
+    try:
+        key = key_profiles.key_for_profile(req.provider, req.profile_id)
+    except keychain.Unreadable:
+        raise _vault_refusal()
+    if not key:
+        raise HTTPException(status_code=400, detail="That key profile has no key stored.")
+    out = partner_client.provision_brain_key(key, profile=f"{req.provider}:{req.profile_id}")
+    if out is None:
+        raise HTTPException(status_code=502, detail="The Partner did not answer.")
+    if out.get("_status"):
+        raise HTTPException(status_code=502,
+                            detail=f"The Partner refused the brain key ({out.get('error') or out['_status']}).")
+    return {"ok": True, "stored": bool(out.get("stored")), "has_key": bool(out.get("has_key"))}
+
+
+class PartnerBrainUsage(BaseModel):
+    provider: Optional[str] = "openai"
+    model: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    trigger: Optional[str] = ""
+    decision: Optional[str] = ""
+
+
+@app.post("/api/partner/brain/usage")
+async def partner_brain_usage(req: PartnerBrainUsage):
+    """Metering for the Partner brain (v1.2): the Partner reports each of its
+    LLM calls here and Xod ledgers it under the partner context, so the cost
+    of supervision is visible next to every other call. When Xod is down the
+    Partner writes the same fields to its own log as a brain_usage line
+    instead, so nothing is unmetered."""
+    from app.services import partner_client
+    return partner_client.record_brain_usage(req.provider or "openai", req.model,
+                                             req.prompt_tokens, req.completion_tokens,
+                                             req.trigger or "", req.decision or "")
+
+
+class HandoffRepos(BaseModel):
+    repos: List[str]
+
+
+@app.get("/api/crew/settings/handoff-dispatch")
+async def crew_handoff_dispatch():
+    """The repos whose docs/AI_HANDOFF.md Xod watches, and the Muse jobs it started from them."""
+    from app.services import handoff_dispatch
+    return handoff_dispatch.status()
+
+
+@app.post("/api/crew/settings/handoff-dispatch")
+async def crew_set_handoff_dispatch(req: HandoffRepos):
+    from app.services import handoff_dispatch
+    return handoff_dispatch.set_repos(req.repos)
+
+
+@app.get("/api/crew/usage")
+async def crew_usage(refresh: bool = False):
+    """How much of Muse's subscription is left (window and weekly, with reset times), from `muse usage`."""
+    from app.services import agent_usage
+    return await asyncio.to_thread(agent_usage.muse, refresh)
+
+
+class CrewModels(BaseModel):
+    default: Optional[str] = None
+    cheap: Optional[str] = None
+    cheap_for: Optional[List[str]] = None
+    cheap_above_weekly: Optional[int] = None
+    clear_cheap_above_weekly: Optional[bool] = False
+
+
+@app.get("/api/crew/settings/models")
+async def crew_models():
+    from app.services import crew
+    return crew.models()
+
+
+@app.post("/api/crew/settings/models")
+async def crew_set_models(req: CrewModels):
+    from app.services import crew
+    try:
+        above = None if req.clear_cheap_above_weekly else (req.cheap_above_weekly if req.cheap_above_weekly is not None else "unchanged")
+        return {"success": True, **crew.set_models(req.default, req.cheap, req.cheap_for, above)}
+    except crew.CrewError as e:
+        return {"success": False, "error": str(e)}
+
+
+class CrewBoardModel(BaseModel):
+    model: Optional[str] = None
+
+
+@app.get("/api/crew/settings/board-model")
+async def crew_board_model():
+    """The board seat pin: which model the Claude participant in a board meeting is seated on."""
+    from app.services import crew
+    return {"model": crew.board_model()}
+
+
+@app.post("/api/crew/settings/board-model")
+async def crew_set_board_model(req: CrewBoardModel):
+    from app.services import crew
+    try:
+        return {"success": True, "model": crew.set_board_model(req.model or "")}
+    except crew.CrewError as e:
+        return {"success": False, "error": str(e)}
+
+
+class SocialItemIn(BaseModel):
+    platform: str
+    kind: str = "mention"
+    target_id: str
+    target_url: Optional[str] = ""
+    author: Optional[str] = ""
+    text_in: Optional[str] = ""
+
+
+class SocialDraftIn(BaseModel):
+    text: str
+
+
+class SocialRunIn(BaseModel):
+    dry_run: Optional[bool] = None
+
+
+class SocialFetchIn(BaseModel):
+    platform: str
+
+
+class SocialSettingsIn(BaseModel):
+    auto_x: Optional[bool] = None
+    auto_linkedin: Optional[bool] = None
+    dry_run: Optional[bool] = None
+
+
+@app.get("/api/social/queue")
+async def social_queue(state: Optional[str] = None, platform: Optional[str] = None):
+    """The social reply queue: counts plus the items themselves. This is
+    the human surface over the same store the harness social_read tool
+    summarizes; the two can never drift."""
+    from app.services import social_reply
+    store = social_reply.default_store()
+    return {"summary": store.summary(), "items": store.list(state=state, platform=platform)}
+
+
+@app.post("/api/social/items")
+async def social_add_item(req: SocialItemIn):
+    """Queue an inbound item by hand (the fetch lane fills this
+    automatically when the browser route is live)."""
+    from app.services import social_reply
+    try:
+        item = social_reply.default_store().add_item(
+            platform=req.platform, kind=req.kind, target_id=req.target_id,
+            target_url=req.target_url or "", author=req.author or "",
+            text_in=req.text_in or "", actor="owner")
+        return {"success": True, "item": item}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/items/{item_id}/draft")
+async def social_set_draft(item_id: str, req: SocialDraftIn):
+    """Attach a reply draft. The encoded copy rules run here: an em dash,
+    the reserved signature, or private data shapes are refused outright."""
+    from app.services import social_reply
+    try:
+        item = social_reply.default_store().set_draft(item_id, req.text, actor="owner")
+        return {"success": True, "item": item}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/items/{item_id}/request-approval")
+async def social_request_approval(item_id: str):
+    from app.services import social_reply
+    try:
+        item = social_reply.default_store().request_approval(item_id, actor="owner")
+        return {"success": True, "item": item}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/items/{item_id}/approve")
+async def social_approve(item_id: str):
+    """The approval a draft needs before it may post (unless the
+    platform's auto mode is on). Posting itself is the run endpoint."""
+    from app.services import social_reply
+    try:
+        item = social_reply.default_store().approve(item_id, actor="owner")
+        return {"success": True, "item": item}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/items/{item_id}/run")
+async def social_run(item_id: str, req: SocialRunIn):
+    """Post one approved item through the local browser executor and
+    verify it at the destination. The dry-run setting (default on)
+    stops before the final click until the owner turns it off."""
+    from app.services import social_reply
+    try:
+        res = await social_reply.run_post(item_id, actor="owner", dry_run=req.dry_run)
+        return {"success": True, **res}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/items/{item_id}/verify")
+async def social_verify(item_id: str):
+    """Re-read the destination for a posted or unknown item."""
+    from app.services import social_reply
+    try:
+        res = await social_reply.run_verify(item_id, actor="owner")
+        return {"success": True, **res}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/fetch")
+async def social_fetch(req: SocialFetchIn):
+    """Pull a platform's inbox into the queue through the browser
+    executor. A busy machine or a closed browser is reported, never
+    fought."""
+    from app.services import social_reply
+    try:
+        res = await social_reply.fetch(req.platform, actor="owner")
+        return {"success": True, **res}
+    except social_reply.ExecutorUnavailable as e:
+        return {"success": False, "error": str(e)}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/social/settings")
+async def social_settings():
+    from app.services import social_reply
+    return {"auto_x": social_reply.auto_mode("x"),
+            "auto_linkedin": social_reply.auto_mode("linkedin"),
+            "dry_run": social_reply.dry_run_default()}
+
+
+@app.post("/api/social/settings")
+async def social_set_settings(req: SocialSettingsIn):
+    from app.services import storage
+    if req.auto_x is not None:
+        storage.set_setting("social_auto_x", "on" if req.auto_x else "off")
+    if req.auto_linkedin is not None:
+        storage.set_setting("social_auto_linkedin", "on" if req.auto_linkedin else "off")
+    if req.dry_run is not None:
+        storage.set_setting("social_dry_run", "on" if req.dry_run else "off")
+    return {"success": True, **(await social_settings())}
+
+
+@app.get("/api/crew/loop")
+async def crew_loop():
+    """Everything about the background loop in one place: is it handing work over, to which repos, what each repo's
+    last job did and when the next can start, Muse's usage, which model jobs get, approvals, and the display."""
+    import time as _t
+    from app.services import agent_usage, crew, handoff_dispatch, muse_app
+    hd = handoff_dispatch.status()
+    repos = []
+    for r in hd["repos"]:
+        st = hd["dispatched"].get(r) or {}
+        job = None
+        if st.get("job"):
+            try:
+                j = crew.job(st["job"])
+                job = {"id": j["id"], "status": j["status"], "steps": len(j.get("steps") or []), "model": j.get("model") or "",
+                       "error": j.get("error"), "started": j.get("started")}
+            except crew.CrewError:
+                job = {"id": st["job"], "status": "gone"}
+        wait = st.get("wait_until") or 0
+        repos.append({"repo": r, "name": r.rstrip("/").split("/")[-1], "last_job": job, "handed_over": st.get("heading"),
+                      "next_start": wait if wait > _t.time() else None, "tries": st.get("tries", 0)})
+    return {"handoff_on": bool(hd["repos"]), "repos": repos, "usage": await asyncio.to_thread(agent_usage.muse),
+            "models": crew.models(), "auto_approve": muse_app.status()}
+
+
+@app.on_event("startup")
+async def _watch_handoffs():
+    from app.services import handoff_dispatch
+    if handoff_dispatch.repos():
+        handoff_dispatch.start()
+
+
+@app.on_event("startup")
+async def _watch_muse_app():
+    from app.services import muse_app
+    muse_app.start()
+
+
+_xod_network_task = None
+
+
+@app.on_event("startup")
+async def _xod_network():
+    global _xod_network_task
+    from app.services import xod_network
+    _xod_network_task = asyncio.get_running_loop().create_task(xod_network.run_forever())
+
+
+@app.on_event("startup")
+async def _memory_sync():
+    from app.services import memory_sync
+    memory_sync._state["task"] = asyncio.get_running_loop().create_task(memory_sync.run_forever())
+
+
+@app.get("/api/memory-sync")
+async def memory_sync_status():
+    """Shared memory across your Xods: on or off, the computers it shares with, and what came in lately."""
+    from app.services import memory_sync
+    return memory_sync.status()
+
+
+@app.post("/api/memory-sync")
+async def memory_sync_set(body: Dict[str, Any]):
+    """{on}: switch it; {share: machine}: ask that Xod to share; {stop|remove: key}: stop sharing / drop what came from it."""
+    from app.services import memory_sync
+    try:
+        if "on" in body:
+            memory_sync.set_enabled(bool(body["on"]))
+        if body.get("share"):
+            r = await memory_sync.share_with(str(body["share"]))
+            return {"success": True, **r, **memory_sync.status()}
+        if body.get("stop"):
+            memory_sync.stop_sharing(str(body["stop"]))
+        if body.get("remove"):
+            n = memory_sync.remove_received(str(body["remove"]))
+            return {"success": True, "removed": n, **memory_sync.status()}
+    except memory_sync.SyncError as e:
+        return {"success": False, "error": str(e), **memory_sync.status()}
+    return {"success": True, **memory_sync.status()}
+
+
+@app.get("/api/xods")
+async def xods_list():
+    """Your Xods: Tailscale sign-in state, and the other Xods on your tailnet."""
+    from app.services import xod_network
+    st = await asyncio.to_thread(xod_network.status)
+    return {"success": True, "status": st, **(await xod_network.find() if st.get("signed_in") else {"xods": []})}
+
+
+@app.get("/api/family")
+async def family_list():
+    """Family Link F0: the read-only family registry view (services/family_registry.py).
+
+    Lists the signed-in machines and their capabilities from the registry in the
+    synced bus space. Read-only: joining, sync and task handoff are later phases.
+    F0 records are unsigned, so the payload flags them interim; display only."""
+    from app.services import family_registry, family_vault
+    view = await asyncio.to_thread(family_registry.load_registry)
+    view["vault"] = await asyncio.to_thread(
+        family_vault.status, view, family_registry.my_device_id() or None)
+    return {"success": True, **view}
+
+
+@app.post("/api/family/vault/publish")
+async def family_vault_publish():
+    """Family vault (services/family_vault.py): encrypt this device's provider keys
+    for the trusted family members and write the ciphertext bundle to the synced
+    space. Refused unless this device is itself a trusted member. The response
+    carries provider names and the recipient list only, never a key value."""
+    from app.services import family_registry, family_vault
+    my_id = family_registry.my_device_id()
+    if not my_id:
+        return {"success": False, "state": "no_device_id",
+                "message": "This device has no family device id yet (setting family_device_id)."}
+    try:
+        out = await asyncio.to_thread(family_vault.publish_from_keystore, my_id)
+    except family_vault.VaultError as e:
+        return {"success": False, "state": "refused", "message": str(e)}
+    return {"success": True, **out}
+
+
+@app.post("/api/family/vault/apply")
+async def family_vault_apply():
+    """Family vault: unwrap the synced bundle into THIS device's own keystore, if
+    this device is a trusted recipient and the bundle is newer than the one
+    already applied. Per-device pins and the local-only pin are honored inside
+    the service; the response reports state and provider names only."""
+    from app.services import family_registry, family_vault
+    my_id = family_registry.my_device_id()
+    if not my_id:
+        return {"success": False, "state": "no_device_id",
+                "message": "This device has no family device id yet (setting family_device_id)."}
+    try:
+        out = await asyncio.to_thread(family_vault.apply, my_id)
+    except family_vault.VaultError as e:
+        return {"success": False, "state": "refused", "message": str(e)}
+    return {"success": True, **out}
+
+
+@app.post("/api/xods/sign-in")
+async def xods_sign_in():
+    """One click: opens Tailscale's sign-in page (Google, Microsoft, GitHub or Apple)."""
+    from app.services import xod_network
+    return await asyncio.to_thread(xod_network.sign_in)
+
+
+@app.post("/api/xods/findable")
+async def xods_findable(body: Dict[str, Any]):
+    from app.services import xod_network
+    from app.services.storage import set_setting
+    set_setting(xod_network.FINDABLE_SETTING, "on" if body.get("on") else "off")
+    return {"success": True, "findable": await xod_network.sync_beacon()}
 
 
 @app.get("/api/crew/{jid}")
@@ -2279,7 +3147,7 @@ async def terminal_command_uninstall():
 
 @app.get("/api/desktop/status")
 async def desktop_status():
-    """The real screen, mouse and keyboard (services/desktop.py): macOS permissions, the apps Xod may use, the task running."""
+    """The real screen, mouse and keyboard (services/desktop.py): the platform's permissions (macOS switches, or the Windows desktop session), the apps Xod may use, the task running."""
     from app.services import desktop
     return desktop.status()
 

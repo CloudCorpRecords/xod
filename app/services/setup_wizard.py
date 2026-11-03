@@ -117,10 +117,16 @@ def key_choice(provider: str) -> Dict[str, str]:
     return {"provider": provider, "model": model, "label": f"{PROVIDER_NAMES.get(provider, provider)}: {model.split('/')[-1]}"}
 
 
-def prefer_key() -> Dict[str, Any]:
+def prefer_key(respect_saved: bool = False) -> Dict[str, Any]:
     """With an API key saved, use it instead of a local model, as long as the model is still Xod's own pick (a new
     install, or one autoconnect chose) and you haven't set local-first routing (cloud only for hard steps). A model
-    you picked yourself is never changed."""
+    you picked yourself is never changed.
+
+    respect_saved is the boot/autoconnect pass: there, a provider SAVED in settings always wins, whoever
+    saved it. Keys that merely ARRIVE on a device (through the family vault, say) must never re-default a
+    member's saved provider at boot — the 0.9.23 ship watched exactly that promote a member's saved
+    lm_studio/bonsai to the openai/gpt-4o cloud default, LM Studio base_url and all. Only a device with no
+    saved provider at all may still default to the key on this pass."""
     from app.config import settings
     from app.services.llm import CLOUD_PROVIDERS
     from app.services.storage import get_setting
@@ -129,7 +135,8 @@ def prefer_key() -> Dict[str, Any]:
     if not keys or settings.llm_provider in CLOUD_PROVIDERS:
         return {"switched": False}
     never_chosen = not get_setting("llm_provider", "")
-    if not (never_chosen or chosen_by() == "auto") or llm_routing.settings()["mode"] != "off":
+    own_pick = never_chosen if respect_saved else (never_chosen or chosen_by() == "auto")
+    if not own_pick or llm_routing.settings()["mode"] != "off":
         return {"switched": False}
     c = key_choice(keys[0])
     res = choose(c["provider"], c["model"], how="auto")
