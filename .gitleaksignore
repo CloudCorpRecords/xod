@@ -1,3 +1,7 @@
 # Made-up test values the secret scan flagged (not real keys): the Keychain test's stand-in Fireworks and Tavily keys.
 858457f0d04bcf1359419710218e27413f85eb4f:tests/smoke/run_keychain_test.py:generic-api-key:111
 858457f0d04bcf1359419710218e27413f85eb4f:tests/smoke/run_keychain_test.py:generic-api-key:112
+# The Family Link F0 placeholder for a device public key that has not enrolled yet (not a key):
+c0c04f5c86ed1c906f93e037cd5ff917e3f38197:app/services/family_registry.py:generic-api-key:40
+# Pinned cross-language test vectors (made-up keys shared byte-for-byte with the xod-android FamilyTest) in the phone enrollment test:
+e7d92900f7413c0996918dd84b8a59b5439c985e:tests/smoke/run_phone_enroll_test.py:generic-api-key:95
