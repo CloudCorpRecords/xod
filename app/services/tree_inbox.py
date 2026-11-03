@@ -1,8 +1,8 @@
-"""Xod -> Tree bridge: leave a message for Tree (Rene's Muse agent).
+"""Xod -> Tree bridge: leave a message for Tree, the family's Muse agent.
 
-Rene's directive (2026-11-03): Xod must be able to message Tree directly —
+Directive (2026-11-03): Xod must be able to message Tree directly —
 he tells Xod something, or Xod finishes/needs something, and it reaches
-Tree without Rene relaying it by hand.
+Tree without the owner relaying it by hand.
 
 Transport: one JSON file per message in a ``tree-inbox/`` folder inside the
 family shared space (the rdrive synced space; production host is the

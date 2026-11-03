@@ -3048,7 +3048,7 @@ class TreeMessageRequest(BaseModel):
 @app.post("/api/tree/message")
 async def tree_message(req: TreeMessageRequest):
     """Xod -> Tree bridge (services/tree_inbox.py): drop a message for Tree
-    (Rene's Muse agent) into the family tree-inbox in the shared space;
+    (the family's Muse agent) into the family tree-inbox in the shared space;
     Tree's watcher delivers it into the conversation. When no shared inbox
     is reachable from this machine the message queues in Xod's local
     outbox and the response says so (state "queued"), never claiming a

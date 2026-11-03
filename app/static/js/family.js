@@ -2,7 +2,7 @@
 // registry (services/family_registry.py, GET /api/family) with their capabilities,
 // and carries the "Message Tree" composer (POST /api/tree/message,
 // services/tree_inbox.py): a note from here lands in the family tree-inbox
-// for Tree, Rene's Muse agent, to pick up.
+// for Tree, the family's Muse agent, to pick up.
 (() => {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const api = async (url) => (await fetch(url)).json();
