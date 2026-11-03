@@ -2923,6 +2923,73 @@ async def xods_list():
     return {"success": True, "status": st, **(await xod_network.find() if st.get("signed_in") else {"xods": []})}
 
 
+@app.get("/api/family/control")
+async def family_control():
+    """SSO control (services/sso_control.py): the Family panel's one
+    aggregate — account header (who am I, which family, sign-in state
+    per the pairing gate), the two-leg gate verdict, devices, keys &
+    providers presence, approvals counts, the fresh-install checklist
+    and the vault recovery state. No token or key value is in it."""
+    from app.services import sso_control
+    return await asyncio.to_thread(sso_control.control_state)
+
+
+@app.post("/api/family/control/device/begin")
+async def family_control_device_begin():
+    """Start GitHub device-flow sign-in (services/github_device.py):
+    the panel shows the returned user code; the owner's only action
+    is the browser Authorize tap. No client_secret exists here."""
+    from app.services import github_device, sso_control
+    cid = await asyncio.to_thread(sso_control.client_id)
+    return await asyncio.to_thread(github_device.begin, cid)
+
+
+@app.post("/api/family/control/device/poll")
+async def family_control_device_poll():
+    """One poll of the running device flow. On success the GitHub
+    token is stored in the keychain by the service and never
+    returned here."""
+    from app.services import github_device
+    return await asyncio.to_thread(github_device.poll)
+
+
+@app.post("/api/family/control/session")
+async def family_control_session(body: Dict[str, Any]):
+    """The rdrive session handoff slot: software hands Xod a session
+    token (never the user — there is no paste-a-token box in the UI).
+    Stored in the keychain; the response echoes nothing."""
+    from app.services import sso_control
+    ok = await asyncio.to_thread(sso_control.store_rdrive_token, str(body.get("token") or ""))
+    return {"success": ok}
+
+
+@app.post("/api/family/control/service-secret")
+async def family_control_service_secret(body: Dict[str, Any]):
+    """Secure-entry staging of the one vault-carried service secret
+    (services/sso_control.py). The value goes straight to the
+    keystore and is never echoed or logged."""
+    from app.services import sso_control
+    return await asyncio.to_thread(
+        sso_control.stage_service_secret,
+        str(body.get("name") or ""), str(body.get("value") or ""))
+
+
+@app.post("/api/family/control/service-secret/publish")
+async def family_control_service_secret_publish():
+    """Publish the family vault bundle carrying provider keys plus
+    any staged service secrets. Field names only in the response."""
+    from app.services import family_registry, family_vault, sso_control
+    my_id = family_registry.my_device_id()
+    if not my_id:
+        return {"success": False, "state": "no_device_id",
+                "message": "This device has no family device id yet (setting family_device_id)."}
+    try:
+        out = await asyncio.to_thread(sso_control.publish_service_secrets, my_id)
+    except family_vault.VaultError as e:
+        return {"success": False, "state": "refused", "message": str(e)}
+    return {"success": True, **out}
+
+
 @app.get("/api/family")
 async def family_list():
     """Family Link F0: the read-only family registry view (services/family_registry.py).
