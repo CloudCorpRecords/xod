@@ -1,6 +1,8 @@
-// Family: the Family Link F0 read-only screen. Lists the machines in the family
-// registry (services/family_registry.py, GET /api/family) with their capabilities.
-// No actions in F0: joining, sync and task handoff arrive in later phases.
+// Family: the Family Link screen. Lists the machines in the family
+// registry (services/family_registry.py, GET /api/family) with their capabilities,
+// and carries the "Message Tree" composer (POST /api/tree/message,
+// services/tree_inbox.py): a note from here lands in the family tree-inbox
+// for Tree, Rene's Muse agent, to pick up.
 (() => {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const api = async (url) => (await fetch(url)).json();
@@ -103,10 +105,46 @@
               <p class="text-[12px] text-zinc-400 mt-0.5">Your machines and what each one offers.</p></div>
             <button data-close-family class="p-1 -mr-1 rounded-lg text-zinc-500 hover:text-white hover:bg-surface-700" title="Close"><i data-lucide="x" class="size-4"></i></button>
           </header>
+          <div class="px-5 py-4 border-b border-white/[0.06] space-y-2">
+            <p class="text-[12px] font-semibold text-zinc-300">Message Tree</p>
+            <p class="text-[12px] text-zinc-500">Send a note straight to Tree, your Muse agent — it lands in the family inbox and Tree picks it up from there. No relaying it yourself.</p>
+            <textarea id="treeText" rows="3" class="task-answer w-full" placeholder="What should Tree know?"></textarea>
+            <div class="flex items-center gap-2">
+              <select id="treeKind" class="rounded-lg bg-surface-700 text-zinc-200 text-[12px] px-2 py-1.5">
+                <option value="note">Note</option>
+                <option value="task">Task</option>
+                <option value="result">Result</option>
+              </select>
+              <button id="treeSend" class="px-3 py-1.5 rounded-lg bg-emerald-900 text-emerald-200 text-[12px] font-semibold hover:bg-emerald-800">Send to Tree</button>
+              <span id="treeState" class="text-[12px] text-zinc-500"></span>
+            </div>
+          </div>
           <div id="familyBody" class="flex-1 overflow-y-auto px-5 py-4 space-y-4"></div>
         </aside>`;
       document.body.appendChild(root);
       root.addEventListener("click", (e) => { if (e.target.closest("[data-close-family]")) window.closeFamilyPanel(); });
+      root.querySelector("#treeSend").addEventListener("click", async () => {
+        const textEl = root.querySelector("#treeText");
+        const stateEl = root.querySelector("#treeState");
+        const text = (textEl.value || "").trim();
+        if (!text) { stateEl.textContent = "Write something first."; return; }
+        stateEl.textContent = "Sending…";
+        try {
+          const r = await (await fetch("/api/tree/message", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ kind: root.querySelector("#treeKind").value, text }),
+          })).json();
+          if (r.success && r.state === "inbox") {
+            stateEl.textContent = "Sent — Tree will pick it up from the family inbox.";
+            textEl.value = "";
+          } else if (r.success && r.state === "queued") {
+            stateEl.textContent = "Queued on this machine — the family drive isn't reachable from here right now. It will drain when it is.";
+            textEl.value = "";
+          } else {
+            stateEl.textContent = r.message || "Could not send.";
+          }
+        } catch (e) { stateEl.textContent = "Could not send — Xod's backend did not answer."; }
+      });
       if (window.lucide) lucide.createIcons();
     }
     root.classList.remove("hidden");

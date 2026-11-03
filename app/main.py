@@ -2924,6 +2924,27 @@ async def family_vault_apply():
     return {"success": True, **out}
 
 
+class TreeMessageRequest(BaseModel):
+    kind: str = "note"
+    text: str
+
+
+@app.post("/api/tree/message")
+async def tree_message(req: TreeMessageRequest):
+    """Xod -> Tree bridge (services/tree_inbox.py): drop a message for Tree
+    (Rene's Muse agent) into the family tree-inbox in the shared space;
+    Tree's watcher delivers it into the conversation. When no shared inbox
+    is reachable from this machine the message queues in Xod's local
+    outbox and the response says so (state "queued"), never claiming a
+    delivery that did not happen."""
+    from app.services import tree_inbox
+    try:
+        out = await asyncio.to_thread(tree_inbox.send_message, req.kind, req.text)
+    except ValueError as e:
+        return {"success": False, "state": "invalid", "message": str(e)}
+    return {"success": True, **out}
+
+
 @app.post("/api/xods/sign-in")
 async def xods_sign_in():
     """One click: opens Tailscale's sign-in page (Google, Microsoft, GitHub or Apple)."""
