@@ -847,6 +847,44 @@ async def phone_pair_offer_cancel():
     return {"success": True}
 
 
+@app.get("/api/phone/enroll/state")
+async def phone_enroll_state():
+    """Phase 1, the Phones panel's family section: the signed-in account,
+    pending phone join asks, members, and joins awaiting an approver
+    (services/phone_enroll.py)."""
+    from app.services import phone_enroll
+    return phone_enroll.state()
+
+
+@app.post("/api/phone/enroll/advertise")
+async def phone_enroll_advertise(body: Dict[str, Any]):
+    """A phone's signed join ask submitted directly (it normally arrives
+    over Agent Mail as the family.advertise op). Submission is not trust:
+    it pends for the owner's tap."""
+    from app.services import phone_enroll
+    return phone_enroll.intake(body.get("advertisement") or body)
+
+
+@app.post("/api/phone/enroll/approve")
+async def phone_enroll_approve(body: Dict[str, Any]):
+    """The owner's one tap: enroll the pending phone into the signed registry."""
+    from app.services import phone_enroll
+    return phone_enroll.approve(str(body.get("device_id") or ""))
+
+
+@app.post("/api/phone/enroll/deny")
+async def phone_enroll_deny(body: Dict[str, Any]):
+    from app.services import phone_enroll
+    return phone_enroll.deny(str(body.get("device_id") or ""))
+
+
+@app.post("/api/phone/enroll/revoke")
+async def phone_enroll_revoke(body: Dict[str, Any]):
+    """Per-device revocation: a signed revocation entry in the registry."""
+    from app.services import phone_enroll
+    return phone_enroll.revoke(str(body.get("device_id") or ""))
+
+
 @app.get("/api/phones")
 async def phones_list():
     """Paired Android phones (over Agent Mail), their capability switches, and this computer's lock/awake."""
