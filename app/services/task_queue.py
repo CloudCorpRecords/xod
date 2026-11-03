@@ -379,6 +379,20 @@ def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
             + (f". Output tail: {tail}" if tail else ". It produced no output"))
 
 
+def _candidate_for_answer_path(p: str) -> Dict[str, Any]:
+    """A locate candidate dict for an absolute path a person named in an
+    answer, built from the disk (existence was checked by the caller)."""
+    from datetime import datetime
+    from app.services.locate import _kind_of
+    st = os.stat(p)
+    is_dir = os.path.isdir(p)
+    return {"path": p, "name": os.path.basename(p.rstrip("/")) or p,
+            "kind": _kind_of(p, is_dir), "is_folder": is_dir,
+            "modified": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d"),
+            "modified_ts": st.st_mtime, "size": st.st_size, "score": 200.0,
+            "why": ["you named this path in your answer"]}
+
+
 class TaskQueue:
     def __init__(self) -> None:
         _init()
@@ -554,6 +568,13 @@ class TaskQueue:
         text = (text or "").strip()
         if not text:
             return {"success": False, "error": "Write an answer first."}
+        resolved = self._locate_answer_resolution(t, text)
+        if resolved is not None:
+            self._finish(task_id, "done", resolved, note="Finished with your answer")
+            from app.services import event_log
+            event_log.emit("task.action", actor="user", ids={"task_id": task_id},
+                           payload={"action": "answer", "text": text[:200], "resolved": "locate"})
+            return {"success": True}
         self._update(task_id, note=f"You replied: {text}", status="queued",
                      next_action={"type": "continue", "text": text}, waiting_kind=None, now="Continuing with your answer")
         from app.services import event_log
@@ -561,6 +582,69 @@ class TaskQueue:
                        payload={"action": "answer", "text": text[:200]})
         self._kick()
         return {"success": True}
+
+    def _locate_answer_resolution(self, task: Dict[str, Any], text: str) -> Optional[str]:
+        """The delivered report when an answer RESOLVES a locate ask, else None.
+
+        A non-mission hunt that ends in "ask" waits with its decisive
+        payload stored as evidence. The old flow queued a continuation
+        whose entire context was the answer text plus "(continue)": the
+        original hunt never re-ran with the answer in it, the resumed run
+        re-derived the same hunt, and the task re-asked the identical
+        question - answered locate tasks sat waiting forever (live
+        acceptance, 2026-11-02). But an ask needs no re-run: the person
+        is the authority on their own files, so an answer that names the
+        answer - one candidate's exact path, or another absolute path
+        that exists on disk - finishes the task with that path. Only
+        existence-checked paths are ever named; an answer with no usable
+        path returns None and keeps the old continue flow. Mission tasks
+        carry no locate payload in evidence (their state is the mission),
+        so their answers are untouched by this path."""
+        if task.get("status") != "waiting" or task.get("waiting_kind") != "question":
+            return None
+        payload: Optional[Dict[str, Any]] = None
+        entries = task.get("evidence_json") or []
+        if isinstance(entries, list):
+            for e in entries:
+                if isinstance(e, dict) and e.get("tool") == "locate_files":
+                    p = e.get("payload") or {}
+                    if p.get("status") == "ask":
+                        payload = p
+        if not payload:
+            return None
+        candidates = [c for c in (payload.get("candidates") or []) if c.get("path")]
+        by_path = {c["path"]: c for c in candidates}
+        mentioned: List[str] = []
+        for raw in re.findall(r"/[^\s\"'<>|`]+", text or ""):
+            p = raw.rstrip(".,;:)")
+            if len(p) >= 3 and p not in mentioned and os.path.exists(p):
+                mentioned.append(p)
+        chosen: Optional[Dict[str, Any]] = None
+        fresh = [p for p in mentioned if p not in by_path]
+        if len(fresh) == 1:
+            # One existing path that is not a candidate: the correction
+            # ("neither of those - it lives at ..."), which wins over any
+            # candidate path the answer merely quotes back.
+            chosen = _candidate_for_answer_path(fresh[0])
+        elif len(mentioned) == 1 and mentioned[0] in by_path:
+            chosen = by_path[mentioned[0]]
+        if chosen is None:
+            named = [c for c in candidates if c.get("name") and c["name"] in (text or "")]
+            if len(named) == 1:
+                chosen = named[0]
+        if chosen is None:
+            return None
+        from app.services import decisive_evidence
+        found_payload = dict(payload)
+        found_payload["status"] = "found"
+        found_payload["candidates"] = [chosen]
+        found_payload.pop("question", None)
+        block = decisive_evidence.render_locate(found_payload)
+        if not block or "Not found" in block:
+            block = (f"**{chosen.get('name') or 'file'}**\n"
+                     f"   Path: {chosen.get('path') or ''}\n\n"
+                     "You named this path in your answer.")
+        return block
 
     def retry(self, task_id: str) -> Dict[str, Any]:
         t = self.get(task_id)
