@@ -3165,7 +3165,19 @@ def _missing_required(name: str, arguments: Dict[str, Any]) -> List[str]:
         except Exception:
             schema = None
     required = (schema or {}).get("required") or [] if isinstance(schema, dict) else []
-    return [k for k in required if (arguments or {}).get(k) in (None, "", [], {})]
+    missing = []
+    for k in required:
+        if (arguments or {}).get(k) not in (None, "", [], {}):
+            continue
+        # computer_write_file: an explicitly passed empty content is a real
+        # write, not a missing argument — its handler makes a folder of a bare
+        # path and an empty file of a .gitkeep or Makefile. Only an absent (or
+        # None) content is missing. Plan-level empty content is a different
+        # fault, stopped at assembly in services/missions.py before tools run.
+        if name == "computer_write_file" and k == "content" and (arguments or {}).get(k) == "":
+            continue
+        missing.append(k)
+    return missing
 
 
 # ------------------------------------------------------------------ placeholder arguments
@@ -4975,7 +4987,8 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
         affinities.append("xod_doctor")
 
     # The person's paired phone (the Xod phone app)
-    if any(k in q for k in ["my phone", "on my android", "my android", "on the phone", "my galaxy", "my samsung", "on my cell", "tiktok", "instagram"]):
+    if any(k in q for k in ["my phone", "on my android", "my android", "on the phone", "my galaxy", "my samsung", "on my cell", "tiktok", "instagram",
+                            "facebook", "cellphone", "cell phone", "my mobile", "android phone", "s25"]):
         affinities.append("phone")
 
     # The Muse approvals switch

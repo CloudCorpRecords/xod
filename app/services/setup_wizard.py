@@ -117,10 +117,16 @@ def key_choice(provider: str) -> Dict[str, str]:
     return {"provider": provider, "model": model, "label": f"{PROVIDER_NAMES.get(provider, provider)}: {model.split('/')[-1]}"}
 
 
-def prefer_key() -> Dict[str, Any]:
+def prefer_key(respect_saved: bool = False) -> Dict[str, Any]:
     """With an API key saved, use it instead of a local model, as long as the model is still Xod's own pick (a new
     install, or one autoconnect chose) and you haven't set local-first routing (cloud only for hard steps). A model
-    you picked yourself is never changed."""
+    you picked yourself is never changed.
+
+    respect_saved is the boot/autoconnect pass: there, a provider SAVED in settings always wins, whoever
+    saved it. Keys that merely ARRIVE on a device (through the family vault, say) must never re-default a
+    member's saved provider at boot — the 0.9.23 ship watched exactly that promote a member's saved
+    lm_studio/bonsai to the openai/gpt-4o cloud default, LM Studio base_url and all. Only a device with no
+    saved provider at all may still default to the key on this pass."""
     from app.config import settings
     from app.services.llm import CLOUD_PROVIDERS
     from app.services.storage import get_setting
@@ -129,7 +135,8 @@ def prefer_key() -> Dict[str, Any]:
     if not keys or settings.llm_provider in CLOUD_PROVIDERS:
         return {"switched": False}
     never_chosen = not get_setting("llm_provider", "")
-    if not (never_chosen or chosen_by() == "auto") or llm_routing.settings()["mode"] != "off":
+    own_pick = never_chosen if respect_saved else (never_chosen or chosen_by() == "auto")
+    if not own_pick or llm_routing.settings()["mode"] != "off":
         return {"switched": False}
     c = key_choice(keys[0])
     res = choose(c["provider"], c["model"], how="auto")
@@ -160,6 +167,18 @@ def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> D
             return {"success": False, "error": "Pick one of the built-in models."}
         if not is_downloaded(model):
             return {"success": False, "error": "That model isn't downloaded yet."}
+    if how == "auto":
+        # An automatic pick — autoconnect's boot pass, prefer_key, any boot-path
+        # caller — may fill a choice nobody has saved yet, and may revise Xod's
+        # OWN pick (chosen_by "auto": the designed self-healing). It must never
+        # persist over a provider the person saved (chosen_by "you"), whatever
+        # the caller believed about the saved state: the 0.9.24 ship's relaunch
+        # rewrote a member's saved lm_studio/bonsai to a cloud default through
+        # a boot-path caller whose own guard did not cover it. The guard lives
+        # here, at the only write path, so no caller's mis-read can reopen it.
+        from app.services.storage import get_setting
+        if get_setting("llm_provider", "") and chosen_by() != "auto":
+            return {"success": False, "error": "The model on this computer was picked by its owner; Xod won't replace it on its own."}
     # Ollama's address before switching: the one in use if Ollama is already the provider, else OLLAMA_HOST or the default.
     from app.services.ollama_hub import root as ollama_root
     ollama_url = f"{ollama_root()}/v1"

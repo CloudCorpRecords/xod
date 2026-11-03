@@ -184,8 +184,14 @@ async def case_happy():
     await runner.drive(m["id"])
     m = M.get_mission(m["id"])
     check("happy: mission done", m["state"] == "done", m["state"])
-    check("happy: all subtasks recorded done and verified",
-          all(s["status"] == "done" and s["verified_status"] == "verified" for s in m["subtasks"]))
+    # Fix round 6 (BOARD-001 Lane D): the no-effect "Sum up" step no
+    # longer verifies on absence of contradiction; it closes done and
+    # unverifiable. The effect steps still verify on disk evidence.
+    check("happy: all subtasks recorded done; effect steps verified, the no-effect step unverifiable",
+          all(s["status"] == "done" for s in m["subtasks"])
+          and all(s["verified_status"] == "verified" for s in m["subtasks"][:2])
+          and m["subtasks"][2]["verified_status"] == "unverifiable",
+          str([(s["status"], s["verified_status"]) for s in m["subtasks"]]))
     check("happy: claimed is the agent's own words", m["subtasks"][0]["claimed"] == "All done.")
     check("happy: subtasks carry their task ids", all(s["task_id"] for s in m["subtasks"]))
     check("happy: tasks created in plan order, titled as mission steps",
@@ -194,7 +200,8 @@ async def case_happy():
           "with exact text: hello brain" in q.created[0]["request"], q.created[0]["request"])
     check("happy: a delete is dictated in the gate's words", "Delete the file at" in q.created[1]["request"])
     rep = M.get_report(m["id"])
-    check("happy: report totals", rep and rep["totals"] == {"subtasks": 3, "done": 3, "verified": 3, "failed": 0},
+    check("happy: report totals", rep and rep["totals"] == {"subtasks": 3, "done": 3, "verified": 2, "failed": 0,
+                                                             "blocked": 0, "unverifiable": 1},
           str(rep and rep["totals"]))
     check("happy: report usage is honest", rep["usage"]["status"] == "not tracked in this build")
     check("happy: report keeps claimed and verified apart",
@@ -228,11 +235,14 @@ async def case_continue_on_failure():
     m = M.get_mission(m["id"])
     rep = M.get_report(m["id"])
     check("continue: both steps ran", len(q.created) == 2)
+    # Fix round 6 (BOARD-001 Lane D): the second step has no effects
+    # and no decisive evidence, so it is done and unverifiable, not
+    # verified; the failure is still reported honestly beside it.
     check("continue: mission still reports the failure honestly",
-          m["state"] == "failed" and rep["totals"]["failed"] == 1 and rep["totals"]["verified"] == 1,
+          m["state"] == "failed" and rep["totals"]["failed"] == 1 and rep["totals"]["unverifiable"] == 1,
           f"state={m['state']} totals={rep['totals']}")
-    check("continue: the second step is done and verified",
-          m["subtasks"][1]["status"] == "done" and m["subtasks"][1]["verified_status"] == "verified")
+    check("continue: the second step is done and unverifiable (no positive evidence)",
+          m["subtasks"][1]["status"] == "done" and m["subtasks"][1]["verified_status"] == "unverifiable")
 
 
 async def case_crash_is_not_contradiction():

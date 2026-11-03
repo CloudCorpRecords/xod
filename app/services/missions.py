@@ -26,6 +26,7 @@ and one browser), on this machine only, with no bus. Usage and cost are not
 tracked here; the report says so until a usage ledger exists to read from.
 """
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -185,6 +186,60 @@ def _incompletion_signal(claimed: Any) -> Optional[str]:
     return None
 
 
+# ------------------------------------------------------- blocked signal
+# Fix round 6 (BOARD-001, Lane D): a worker that reports it could not
+# run for a missing input or a missing tool is not "done", and it is
+# not an ordinary failure either: it is blocked, a typed state the
+# verdict layer honours, so the mission names the block instead of
+# dressing the step up as verified (the BOARD-001 mission's subtask 3
+# reported it had no tools to create files and still closed verified)
+# or routing around it through some other flow. The patterns are
+# conservative on purpose, in the _incompletion_signal style: a
+# self-report of missing capability or missing input, in the worker's
+# own words. Ordinary incompletion ("could not finish") stays with
+# _incompletion_signal; this fires only when the report names WHY in
+# capability/input terms.
+_BLOCKED_RES = (
+    r"\b(?:have|has|had) no (?:tools?|way) to\b",
+    r"\bno (?:file )?(?:write|create|writing) tool\b",
+    r"\bnot (?:included|provided|given|delivered|attached) (?:in|to) (?:me|this step|what i received)\b",
+    r"\b(?:evidence pack|evidence|brief|input|inputs|file|context) (?:was|were|is) not (?:included|provided|given|attached|delivered)\b",
+    r"\bmissing (?:input|inputs|evidence|context|file) (?:needed|required|to)\b",
+    r"\bcannot (?:assess|evaluate|complete|proceed) without\b",
+    r"\bwithout the (?:tools?|input|evidence|file|context) (?:needed|required|to)\b",
+)
+
+
+def _blocked_signal(claimed: Any) -> Optional[str]:
+    """The sentence of a subtask report that says the step was blocked
+    by a missing input or a missing tool, or None."""
+    if not claimed or not isinstance(claimed, str):
+        return None
+    for sentence in re.split(r"[.\n]", claimed):
+        low = sentence.lower()
+        if any(re.search(p, low) for p in _BLOCKED_RES):
+            return sentence.strip()[:200]
+    return None
+
+
+def _has_decisive_evidence(task: Dict[str, Any]) -> bool:
+    """Positive evidence a no-effect step can be verified on (fix round
+    6, Lane D): the task carries a decisive-evidence payload (the tool
+    result blocks the hunt layer renders and the queue stores on the
+    task), something the verdict can inspect, as opposed to the mere
+    absence of a contradiction on disk."""
+    raw = task.get("evidence_json")
+    if raw:
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            data = None
+        if isinstance(data, (list, dict)) and data:
+            return True
+    ev = task.get("evidence")
+    return isinstance(ev, list) and bool(ev)
+
+
 def _run_effect_problem(eff: Dict[str, Any]) -> Optional[str]:
     """Re-executes one declared run effect through the queue's own run
     check; returns its problem text, or None when the exit code is the
@@ -208,7 +263,7 @@ def _declares_directory(subtask: Dict[str, Any]) -> bool:
     return bool(re.search(r"\b(directory|folder)\b", words))
 
 
-def _fresh_effect_problems(subtask: Dict[str, Any]) -> List[str]:
+def _fresh_effect_problems(subtask: Dict[str, Any], types_only: bool = False) -> List[str]:
     """Ways this subtask's declared effects are NOT true on disk right
     now, checked fresh at verdict time with the same rules the task
     layer's gate uses (task_queue._verify_file_effects over declared
@@ -220,39 +275,49 @@ def _fresh_effect_problems(subtask: Dict[str, Any]) -> List[str]:
     recorded when a task finished can be stale by verdict time (a
     parallel step landed the file after that check ran), and a file
     that exists at verdict time must never be named as missing."""
+    from app.services.task_queue import _file_type_problem
     problems: List[str] = []
     for eff in subtask.get("expected_effects") or []:
         kind = eff.get("kind")
         if kind == "run":
-            problem = _run_effect_problem(eff)
-            if problem:
-                problems.append(problem)
+            if not types_only:
+                problem = _run_effect_problem(eff)
+                if problem:
+                    problems.append(problem)
             continue
         if kind not in ("create", "modify", "delete"):
             continue
         p = Path(os.path.expanduser(str(eff.get("path", ""))))
         if kind == "delete":
-            if p.exists():
+            if p.exists() and not types_only:
                 problems.append(f"the task asked for {p.name} to be deleted, "
                                 "but it is still on disk")
             continue
         if kind == "create" and _declares_directory(subtask):
-            if not p.is_dir():
+            if not p.is_dir() and not types_only:
                 problems.append(f"the task asked for {p.name} to be created, "
                                 "but it is not on disk")
             continue
         if not p.is_file():
-            problems.append(f"the task asked for {p.name} to be created, "
-                            "but it is not on disk")
+            if not types_only:
+                problems.append(f"the task asked for {p.name} to be created, "
+                                "but it is not on disk")
             continue
         content = eff.get("content")
-        if isinstance(content, str) and content == content.strip() and "\n" not in content:
+        if not types_only and isinstance(content, str) and content == content.strip() and "\n" not in content:
             try:
                 actual = p.read_bytes() if p.stat().st_size <= 1_000_000 else None
             except OSError:
                 actual = None
             if actual is not None and actual != content.encode("utf-8"):
                 problems.append(f"{p.name} does not contain exactly what the task asked for")
+        # Type validation (fix round 6, BOARD-001 Design 2): existence is
+        # not enough. A .py that does not compile, a test file that
+        # collects no tests, or a .json that does not parse is not the
+        # artifact the step declared, whatever its name.
+        type_problem = _file_type_problem(p)
+        if type_problem:
+            problems.append(type_problem)
     return problems
 
 
@@ -338,21 +403,29 @@ def _repair_finished_verdict(mission_id: str) -> None:
     rows_changed = before != after
     reason = current.get("failure_reason") or ""
     failed = [s for s in current["subtasks"] if s["status"] == "failed"]
+    # Blocked steps (fix round 6) stand exactly as failed ones do here:
+    # a mission with a blocked step is not done, and its citation is
+    # reconciled against the blocked row, never repaired away.
+    blocked = [s for s in current["subtasks"] if s["status"] == "blocked"]
     new_reason, new_state = reason, current["state"]
-    if current["state"] == "failed" and not failed:
+    if current["state"] == "failed" and not failed and not blocked:
         new_state, new_reason = "done", None
     elif current["state"] == "failed" and reason.startswith("Step "):
-        cited = reason.split(" failed: ", 1)[-1] if " failed: " in reason else ""
+        word = " blocked: " if " blocked: " in reason else " failed: "
+        cited = reason.split(word, 1)[-1] if word in reason else ""
         step_no = None
         matched = re.match(r"Step (\d+) ", reason)
         if matched:
             step_no = int(matched.group(1))
-        target = next((s for s in failed if s["idx"] + 1 == step_no), None)
-        if target is None and failed:
-            target = failed[0]
+        pool = blocked if word == " blocked: " else failed
+        if not pool:
+            pool = failed + blocked
+        target = next((s for s in pool if s["idx"] + 1 == step_no), None)
+        if target is None and pool:
+            target = pool[0]
         if target is not None and cited and cited not in (target.get("evidence") or []):
             ev = target.get("evidence") or ["see the step report"]
-            new_reason = f"Step {target['idx'] + 1} ({target['title']}) failed: {ev[0]}"
+            new_reason = f"Step {target['idx'] + 1} ({target['title']}){word}{ev[0]}"
     if not rows_changed and new_reason == reason and new_state == current["state"]:
         return
     logger.warning(f"Mission {mission_id}: repairing a finished verdict that cited "
@@ -463,6 +536,14 @@ def _conn() -> sqlite3.Connection:
         c.execute("ALTER TABLE mission_subtasks ADD COLUMN paused_at REAL")
     if "pause_resume_attempts" not in cols:
         c.execute("ALTER TABLE mission_subtasks ADD COLUMN pause_resume_attempts INTEGER DEFAULT 0")
+    # Capability contract (fix round 6, BOARD-001 Design 1): the step's
+    # declared inputs and tools as validated at planning, and the
+    # input-delivery read-back recorded at dispatch (one entry per
+    # delivered input: source, ref, sha256 of the delivered text).
+    if "contract" not in cols:
+        c.execute("ALTER TABLE mission_subtasks ADD COLUMN contract TEXT DEFAULT '{}'")
+    if "input_delivery" not in cols:
+        c.execute("ALTER TABLE mission_subtasks ADD COLUMN input_delivery TEXT DEFAULT '[]'")
     c.commit()
     return c
 
@@ -484,6 +565,15 @@ def _mission_row(r: sqlite3.Row) -> Dict[str, Any]:
 
 def _subtask_row(r: sqlite3.Row) -> Dict[str, Any]:
     d = dict(r)
+    for k in ("contract",):
+        try:
+            d[k] = json.loads(d.get(k) or "{}")
+        except Exception:
+            d[k] = {}
+    try:
+        d["input_delivery"] = json.loads(d.get("input_delivery") or "[]")
+    except Exception:
+        d["input_delivery"] = []
     for k in ("expected_effects", "evidence"):
         try:
             d[k] = json.loads(d.get(k) or "[]")
@@ -536,7 +626,7 @@ def _save_subtask(subtask_id: str, **fields: Any) -> None:
                         "FROM mission_subtasks WHERE id = ?", (subtask_id,)).fetchone()
         c0.close()
         old = dict(r0) if r0 else None
-    for k in ("expected_effects", "evidence"):
+    for k in ("expected_effects", "evidence", "contract", "input_delivery"):
         if k in fields and not isinstance(fields[k], str):
             fields[k] = json.dumps(fields[k])
     cols = ", ".join(f"{k} = ?" for k in fields)
@@ -607,10 +697,12 @@ Break it into a short list of subtasks the agent can do one at a time, in order.
 - "title": a few words.
 - "instruction": exactly what to do, in one or two sentences.
 - "expected_effects": the files this subtask will create, modify or delete, so the result can be checked on disk afterwards. Each effect is {{"kind": "create", "path": "/absolute/path", "content": null}} where kind is "create", "modify" or "delete", path is absolute or starts with ~/, and content is the exact file contents ONLY when the job dictates them word for word, otherwise null. An effect can instead prove that produced code works: {{"kind": "run", "command": "a single command line", "cwd": "/absolute/path", "expect_exit": 0}} where command is one plain command with no shell chaining, pipes or redirection, cwd is the directory the command runs from, and expect_exit (which defaults to 0) is the exit code that counts as success. If a subtask changes no files (looking something up, answering, deciding), expected_effects is [].
+- "inputs": what this subtask must be given to work. Each input is {{"source": "goal"}} (the mission goal itself, which carries any evidence pack or brief the user supplied), {{"source": "prior_step", "ref": "1"}} (the reported result of an earlier step, by its number), or {{"source": "file", "ref": "/absolute/path"}} (a file whose contents the step needs). The goal is always delivered; declare prior_step or file inputs whenever the step's work depends on them. A step whose declared input cannot be delivered never starts.
+- "tools": the tools this subtask needs, by name (for example "computer_write_file" for a step that writes a file, "computer_read_file" for one that only reads). A step whose declared file effects need a tool its "tools" list leaves out never starts.
 - When a subtask creates a test file or an executable artifact, give it a "run" effect that runs what it made: run the test file with the project's test runner, or invoke the artifact harmlessly, with cwd set to the directory the subtask creates the file in. Creating a file is not proof it works; the run is the proof.
 
 Between 2 and 8 subtasks. Later subtasks may rely on earlier ones; nothing runs at the same time.
-Reply with JSON only: {{"subtasks": [{{"title": "...", "instruction": "...", "expected_effects": []}}]}}"""
+Reply with JSON only: {{"subtasks": [{{"title": "...", "instruction": "...", "expected_effects": [], "inputs": [{{"source": "goal"}}], "tools": []}}]}}"""
 
 
 class PlanRejected(Exception):
@@ -678,7 +770,7 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
                     problems.append(f"{ewhere}: cwd must be a non-empty string")
                     continue
                 cwd = cwd.strip()
-                if not (cwd.startswith("/") or cwd.startswith("~/")):
+                if not _looks_absolute(cwd):
                     problems.append(f"{ewhere}: cwd must be absolute or start with ~/")
                     continue
                 if ".." in _path_parts(cwd):
@@ -699,7 +791,7 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
                 problems.append(f"{ewhere}: path must be a non-empty string")
                 continue
             path = path.strip()
-            if not (path.startswith("/") or path.startswith("~/")):
+            if not _looks_absolute(path):
                 problems.append(f"{ewhere}: path must be absolute or start with ~/")
                 continue
             if ".." in _path_parts(path):
@@ -722,8 +814,55 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
                                     f"requested artifact: \"{leak}\"")
                     continue
             clean_effects.append({"kind": kind, "path": path, "content": content})
+        # Capability contract (fix round 6, BOARD-001 Design 1): the
+        # step declares the inputs it must be given and the tools it
+        # needs. Both are validated here so a plan that cannot be
+        # honoured is re-asked at planning, and what survives is what
+        # assembly enforces at dispatch.
+        clean_inputs: List[Dict[str, Any]] = []
+        raw_inputs = s.get("inputs")
+        if raw_inputs is not None:
+            if not isinstance(raw_inputs, list) or len(raw_inputs) > 6:
+                problems.append(f"{where}: inputs must be a list of at most 6 declared inputs")
+                raw_inputs = []
+            for j, inp in enumerate(raw_inputs):
+                iwhere = f"{where} input {j + 1}"
+                if not isinstance(inp, dict):
+                    problems.append(f"{iwhere}: must be an object")
+                    continue
+                source = inp.get("source")
+                if source not in ("goal", "prior_step", "file"):
+                    problems.append(f"{iwhere}: source must be one of goal, prior_step, file")
+                    continue
+                if source == "goal":
+                    clean_inputs.append({"source": "goal"})
+                    continue
+                ref = inp.get("ref")
+                if not isinstance(ref, str) or not ref.strip():
+                    problems.append(f"{iwhere}: a {source} input needs a ref")
+                    continue
+                ref = ref.strip()
+                if source == "prior_step":
+                    if not ref.isdigit() or not (1 <= int(ref) <= i):
+                        problems.append(f"{iwhere}: ref must be the number of an earlier step")
+                        continue
+                    clean_inputs.append({"source": "prior_step", "ref": ref})
+                else:
+                    if not _looks_absolute(ref) or ".." in _path_parts(ref):
+                        problems.append(f"{iwhere}: ref must be an absolute path or start with ~/")
+                        continue
+                    clean_inputs.append({"source": "file", "ref": ref})
+        clean_tools: Optional[List[str]] = None
+        raw_tools = s.get("tools")
+        if raw_tools is not None:
+            if (not isinstance(raw_tools, list) or len(raw_tools) > 24
+                    or any(not isinstance(t, str) or not t.strip() for t in raw_tools)):
+                problems.append(f"{where}: tools must be a list of tool names")
+            else:
+                clean_tools = [t.strip() for t in raw_tools]
         out.append({"title": str(title).strip(), "instruction": str(instruction).strip(),
-                    "expected_effects": clean_effects})
+                    "expected_effects": clean_effects,
+                    "inputs": clean_inputs, "tools": clean_tools})
     if problems:
         return None, problems
     # A merged double plan (the baseline's interleaved 1,1,2,2,3,3) repeats
@@ -739,6 +878,15 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
         seen.add(key)
         deduped.append(s)
     return {"subtasks": deduped}, []
+
+
+def _looks_absolute(path: str) -> bool:
+    """Absolute for plan purposes: POSIX root, ~/ home form, or a Windows
+    drive-letter path (C:\\ or C:/). Before fix round 6 the checks below
+    accepted only the first two, so a plan naming a native Windows path
+    was rejected at planning on the Windows build."""
+    return (path.startswith("/") or path.startswith("~/")
+            or bool(re.match(r"^[A-Za-z]:[\\/]", path)))
 
 
 def _path_parts(path: str) -> List[str]:
@@ -926,30 +1074,164 @@ def _write_tool_problem(subtask: Dict[str, Any], request: str) -> Optional[str]:
     return None
 
 
+# The delivered-inputs reference fence (fix round 6). The task
+# queue strips lines between these markers when it parses a request
+# for file/run claims; keep the two in step (task_queue.py has the
+# same literals).
+INPUT_FENCE_START = "----- delivered inputs (reference only; not this step's instructions) -----"
+INPUT_FENCE_END = "----- end of delivered inputs -----"
+
+
+def _contract_tool_problem(subtask: Dict[str, Any]) -> Optional[str]:
+    """Capability contract (fix round 6, BOARD-001 Design 1): when the
+    plan declared a tools list for this step, every declared file
+    effect must be performable by a tool ON that list. A step whose
+    contract excludes the tool its effect needs fails at assembly,
+    naming the gap, exactly like a step no available flow can equip
+    (_write_tool_problem, the fix round 4 check this generalises)."""
+    contract = subtask.get("contract") or {}
+    tools = contract.get("tools")
+    if tools is None:
+        return None
+    names = set(tools)
+    for eff in subtask.get("expected_effects") or []:
+        if eff.get("kind") == "delete":
+            needed, what = _DELETE_TOOLS, "delete"
+        elif eff.get("kind") == "create" and _declares_directory(subtask):
+            needed, what = _DIR_WRITE_TOOLS, "create the directory"
+        elif eff.get("kind") in ("create", "modify"):
+            needed, what = _FILE_WRITE_TOOLS, "write the file"
+        else:
+            continue
+        if not any(n in names for n in needed):
+            return (f"Assembly stopped this step before any task was created: subtask "
+                    f"\"{subtask.get('title', '')}\" must {what} {eff.get('path', '')}, "
+                    f"but its declared capability contract (tools: "
+                    f"{', '.join(sorted(names)) or 'none'}) includes none of the tools "
+                    f"that could do it ({', '.join(needed)}). A step is dispatched only "
+                    f"to a flow its contract equips; the contract and the effects must "
+                    f"be fixed in the plan, not worked around at run time.")
+    return None
+
+
+def assemble_step(mission_id: str, subtask: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
+    """Assembles one subtask's task text under its capability contract
+    (fix round 6, BOARD-001 Design 1). Returns (request, delivery,
+    problem): delivery is the input-delivery read-back, one record per
+    declared input actually placed into the request (source, ref,
+    sha256 of the delivered text); problem is a typed assembly failure
+    when a declared input cannot be delivered, and no task may be
+    created from it.
+
+    The mission goal is an implicit input for steps with no file
+    effects: the goal is where a brief or evidence pack the user
+    supplied lives, and before this round it reached NO subtask at
+    all (the BOARD-001 mission's workers assessed an evidence pack
+    they had never been given, and said so). A step WITH file effects
+    gets the goal only when its plan declares it: a goal normally
+    names every artifact in the mission, and a write step flooded
+    with all of them is a step whose request mentions other steps'
+    files (the two-instance gate's proofdir step, whose request
+    suddenly "mentioned note.txt", is the standing example).
+    Declared prior_step and file inputs are delivered to every step
+    that declares them, not only to write steps. Write steps
+    additionally keep the fix round 4 behaviour: the reported
+    results of earlier finished steps ride along as the content the
+    write exists to land."""
+    mission = get_mission(mission_id)
+    goal = (mission or {}).get("goal") or ""
+    subs = list_subtasks(mission_id)
+    contract = subtask.get("contract") or {}
+    declared: List[Dict[str, Any]] = list(contract.get("inputs") or [])
+    has_file_effects = any(e.get("kind") in ("create", "modify", "delete")
+                           for e in subtask.get("expected_effects") or [])
+    if not has_file_effects and not any(d.get("source") == "goal" for d in declared):
+        declared = [{"source": "goal"}] + declared
+    sections: List[Tuple[str, str]] = []
+    delivery: List[Dict[str, Any]] = []
+    declared_prior_refs = set()
+    for d in declared:
+        source = d.get("source")
+        if source == "goal":
+            label, text = "Mission goal (declared input)", goal
+        elif source == "prior_step":
+            ref = str(d.get("ref") or "")
+            declared_prior_refs.add(ref)
+            prior = next((s for s in subs if s["idx"] == int(ref) - 1), None) if ref.isdigit() else None
+            if prior is None or prior["status"] != "done" or not (prior.get("claimed") or "").strip():
+                return (render_request(subtask), [],
+                        f"Assembly stopped this step before any task was created: subtask "
+                        f"\"{subtask.get('title', '')}\" declares step {ref}'s result as an "
+                        f"input, but that step has no finished result to deliver. A step "
+                        f"whose declared inputs cannot be delivered does not start.")
+            label = f"Result of step {ref} ({prior['title']}) (declared input)"
+            text = prior["claimed"].strip()
+        elif source == "file":
+            ref = str(d.get("ref") or "")
+            try:
+                text = Path(os.path.expanduser(ref)).read_text(
+                    encoding="utf-8", errors="replace")[:8000]
+            except OSError:
+                return (render_request(subtask), [],
+                        f"Assembly stopped this step before any task was created: subtask "
+                        f"\"{subtask.get('title', '')}\" declares the file {ref} as an "
+                        f"input, but it could not be read. A step whose declared inputs "
+                        f"cannot be delivered does not start.")
+            label = f"Contents of {ref} (declared input)"
+        else:
+            continue
+        delivery.append({"source": source, "ref": d.get("ref"),
+                         "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                         "chars": len(text)})
+        sections.append((label, text))
+    parts = [render_request(subtask)]
+    tools = contract.get("tools")
+    if tools is not None:
+        parts += ["", "Declared tools for this step (its capability contract): "
+                  + (", ".join(tools) if tools else "none")]
+    if sections:
+        # Delivered inputs are reference material, fenced as such: the
+        # task queue's claim parsers strip the fence, so a claim can
+        # only come from this step's own rendered request, never from
+        # what it was handed (a goal dictating an exact text for one
+        # step must not become a claim against the read-back step).
+        parts += ["", INPUT_FENCE_START]
+        for label, text in sections:
+            parts += ["", f"{label}:", text]
+        parts += ["", INPUT_FENCE_END]
+    # Input-delivery read-back: every delivered input's text must be
+    # present in the assembled request, verified here at dispatch,
+    # not assumed from the assembly code above.
+    request = "\n".join(parts)
+    for (label, text), rec in zip(sections, delivery):
+        if text and text not in request:
+            return (request, [],
+                    f"Assembly stopped this step before any task was created: the "
+                    f"declared input \"{label}\" was assembled but is missing from "
+                    f"the request at read-back. The step does not start on an "
+                    f"undelivered input.")
+    if any(e.get("kind") in ("create", "modify")
+           for e in subtask.get("expected_effects") or []):
+        prior = [s for s in subs
+                 if s["idx"] < subtask["idx"] and s["status"] == "done"
+                 and (s.get("claimed") or "").strip()
+                 and str(s["idx"] + 1) not in declared_prior_refs]
+        if prior:
+            lines = [request, "",
+                     "Results from the earlier steps of this mission, for use in this step:"]
+            for s in prior:
+                lines.append(f"- Step {s['idx'] + 1} ({s['title']}): "
+                             f"{s['claimed'].strip()[:2000]}")
+            request = "\n".join(lines)
+    return request, delivery, None
+
+
 def assemble_request(mission_id: str, subtask: Dict[str, Any]) -> str:
-    """The task text for one subtask, assembled at dispatch time. A
-    write subtask (one with a create or modify effect) also carries the
-    reported results of the mission's earlier finished steps, in order:
-    those results are the content the write exists to land (research
-    findings, a draft, a decision), and before this they never left
-    their own task, so the write step started from its instruction
-    alone and could assemble a write with nothing in it. Steps that
-    change no files get their plain rendered request, unchanged."""
-    request = render_request(subtask)
-    if not any(e.get("kind") in ("create", "modify")
-               for e in subtask.get("expected_effects") or []):
-        return request
-    prior = [s for s in list_subtasks(mission_id)
-             if s["idx"] < subtask["idx"] and s["status"] == "done"
-             and (s.get("claimed") or "").strip()]
-    if not prior:
-        return request
-    lines = [request, "",
-             "Results from the earlier steps of this mission, for use in this step:"]
-    for s in prior:
-        lines.append(f"- Step {s['idx'] + 1} ({s['title']}): "
-                     f"{s['claimed'].strip()[:2000]}")
-    return "\n".join(lines)
+    """The task text for one subtask, assembled at dispatch time. Kept
+    as the text-only view of assemble_step (fix round 6) for callers
+    that render a request without dispatching it."""
+    request, _delivery, _problem = assemble_step(mission_id, subtask)
+    return request
 
 
 def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) -> Dict[str, Any]:
@@ -967,6 +1249,13 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
         # Verdict integrity: a finished task is not automatically a verified
         # subtask. The subtask's own report, its deliverable content and its
         # declared run proof are all checked before "verified" is said.
+        blocked = _blocked_signal(result)
+        if blocked:
+            return {"status": "blocked", "claimed": result, "verified_status": "blocked",
+                    "evidence": [f"The step reported itself blocked: \"{blocked}\" "
+                                 "A step that could not run for a missing input or a "
+                                 "missing tool is recorded blocked, not done, and no "
+                                 "other flow is substituted for it."]}
         signal = _incompletion_signal(result)
         if signal:
             return {"status": "failed", "claimed": result, "verified_status": "contradicted",
@@ -978,6 +1267,16 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
             return {"status": "failed", "claimed": result, "verified_status": "contradicted",
                     "evidence": [f"Checked on disk: {leak_path} contains planner instruction "
                                  f"text, not the requested artifact: \"{leak}\""]}
+        # Lane B at the verdict layer: the queue's finish-time check
+        # established existence, dictated content and runs; what it
+        # never produced is type evidence, so the fresh check here is
+        # scoped to types only (types_only) rather than re-trying the
+        # queue's verdict against a disk that parallel steps may
+        # still be landing on.
+        fresh = _fresh_effect_problems(subtask, types_only=True)
+        if fresh:
+            return {"status": "failed", "claimed": result, "verified_status": "contradicted",
+                    "evidence": [f"Checked on disk: {p}" for p in fresh]}
         evidence: List[str] = []
         if files:
             dictated = [e for e in files
@@ -1004,8 +1303,22 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
                             f"from {cwd} exited with code {e.get('expect_exit', 0)}, "
                             "the code the plan required.")
         if not evidence:
-            evidence = ["This step claimed no file effects, and the queue's check found "
-                        "nothing on disk to contradict the report."]
+            # Positive-evidence standard (fix round 6, Lane D): a step
+            # with no file effects verifies only when its task carries
+            # decisive evidence the verdict can inspect. Nothing on
+            # disk contradicting the report is not verification; the
+            # step closes done on the agent's word, marked
+            # unverifiable, and the report says so.
+            if _has_decisive_evidence(task):
+                return {"status": "done", "claimed": result, "verified_status": "verified",
+                        "evidence": ["The step's task carried decisive evidence for its "
+                                     "result (a tool-result payload the verdict layer "
+                                     "can inspect), and nothing on disk contradicts it."]}
+            return {"status": "done", "claimed": result, "verified_status": "unverifiable",
+                    "evidence": ["This step claimed no file effects and its task carried "
+                                 "no decisive evidence, so nothing positively verified "
+                                 "the report; it is recorded done on the agent's word "
+                                 "alone. Absence of contradiction is not verification."]}
         return {"status": "done", "claimed": result, "verified_status": "verified", "evidence": evidence}
     if task["status"] == "cancelled":
         return {"status": "failed", "claimed": result, "verified_status": "failed",
@@ -1023,6 +1336,13 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
             # from the recorded text. The step's own admissions and any
             # planner instruction text on disk are not timing artifacts
             # and still block verification, checked fresh here as well.
+            blocked = _blocked_signal(claimed)
+            if blocked:
+                return {"status": "blocked", "claimed": claimed.strip(),
+                        "verified_status": "blocked",
+                        "evidence": [f"The step reported itself blocked: \"{blocked}\" "
+                                     "A step that could not run for a missing input or a "
+                                     "missing tool is recorded blocked, not done."]}
             signal = _incompletion_signal(claimed.strip())
             if signal:
                 return {"status": "failed", "claimed": claimed.strip(),
@@ -1047,6 +1367,13 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
                                  "true on disk. The problem the task recorded when it "
                                  "finished no longer held (the work landed after that "
                                  "check ran), so it is not carried into the verdict."]}
+        blocked = _blocked_signal(claimed)
+        if blocked:
+            return {"status": "blocked", "claimed": claimed.strip(),
+                    "verified_status": "blocked",
+                    "evidence": [f"The step reported itself blocked: \"{blocked}\" "
+                                 "A step that could not run for a missing input or a "
+                                 "missing tool is recorded blocked, not done."]}
         return {"status": "failed", "claimed": claimed.strip(),
                 "verified_status": "contradicted",
                 "evidence": [f"Checked on disk: {p}" for p in problems]
@@ -1156,9 +1483,11 @@ class MissionRunner:
             return True   # another driver won the claim; its plan and rows stand
         for i, s in enumerate(plan["subtasks"]):
             c.execute("INSERT INTO mission_subtasks (id, mission_id, idx, title, instruction, "
-                      "expected_effects, status) VALUES (?,?,?,?,?,?,?)",
+                      "expected_effects, contract, status) VALUES (?,?,?,?,?,?,?,?)",
                       (f"msub-{uuid.uuid4().hex[:10]}", mission["id"], i, s["title"], s["instruction"],
-                       json.dumps(s["expected_effects"]), "pending"))
+                       json.dumps(s["expected_effects"]),
+                       json.dumps({"inputs": s.get("inputs") or [], "tools": s.get("tools")}),
+                       "pending"))
         c.commit()
         c.close()
         return True
@@ -1179,7 +1508,7 @@ class MissionRunner:
             _save_mission(mission_id, state="running")
         while True:
             subs = list_subtasks(mission_id)
-            current = next((s for s in subs if s["status"] not in ("done", "failed", "skipped")), None)
+            current = next((s for s in subs if s["status"] not in ("done", "failed", "skipped", "blocked")), None)
             if current is None:
                 self._finish(mission_id)
                 return
@@ -1196,13 +1525,15 @@ class MissionRunner:
         # stale snapshot is how a doubled plan dispatched steps twice.
         stored = next((s for s in list_subtasks(mission_id) if s["id"] == sub["id"]), None)
         if stored is not None:
-            if stored["status"] in ("done", "failed", "skipped"):
+            if stored["status"] in ("done", "failed", "skipped", "blocked"):
                 return True   # another driver already recorded this step's outcome
             sub = stored
         if not sub.get("task_id"):
-            request = assemble_request(mission_id, sub)
+            request, delivery, input_problem = assemble_step(mission_id, sub)
             problem = (_empty_declared_content_problem(sub)
-                       or _write_tool_problem(sub, request))
+                       or _contract_tool_problem(sub)
+                       or _write_tool_problem(sub, request)
+                       or input_problem)
             if problem:
                 # Assembly-time failure: the subtask is recorded failed
                 # with the problem as its evidence and no task is ever
@@ -1229,7 +1560,7 @@ class MissionRunner:
             task = self.queue.create(request,
                                      title=f"{sub['title']} (mission step {sub['idx'] + 1})")
             _save_subtask(sub["id"], task_id=task["id"], status="queued",
-                          started_at=time.time())
+                          started_at=time.time(), input_delivery=delivery)
             sub = {**sub, "task_id": task["id"]}
         while True:
             task = self.queue.get(sub["task_id"])
@@ -1257,14 +1588,14 @@ class MissionRunner:
         # the verdict of record is reconciled with the fresh outcome
         # just saved (a no-op when the mission is still running).
         _repair_finished_verdict(mission_id)
-        if outcome["status"] == "failed":
+        if outcome["status"] in ("failed", "blocked"):
             mission = get_mission(mission_id)
             if not mission["continue_on_failure"]:
                 for rest in list_subtasks(mission_id):
                     if rest["status"] in ("pending", "queued"):
                         _save_subtask(rest["id"], status="skipped")
                 self._finish(mission_id,
-                             reason=f"Step {sub['idx'] + 1} ({sub['title']}) failed: "
+                             reason=f"Step {sub['idx'] + 1} ({sub['title']}) {outcome['status']}: "
                                     + (outcome["evidence"][0] if outcome["evidence"] else "see the step report"))
                 return True
         return True
@@ -1368,11 +1699,14 @@ class MissionRunner:
         mission = get_mission(mission_id)
         subs = mission["subtasks"]
         failed = [s for s in subs if s["status"] == "failed"]
-        if reason is None and failed:
-            names = "; ".join(f"Step {s['idx'] + 1} ({s['title']})" for s in failed)
-            reason = (f"{len(failed)} of {len(subs)} steps failed: {names}; the rest were run "
+        blocked = [s for s in subs if s["status"] == "blocked"]
+        if reason is None and (failed or blocked):
+            bad = failed + blocked
+            names = "; ".join(f"Step {s['idx'] + 1} ({s['title']})" for s in bad)
+            reason = (f"{len(bad)} of {len(subs)} steps did not complete "
+                      f"({len(failed)} failed, {len(blocked)} blocked): {names}; the rest were run "
                       "because this mission was set to keep going past failures.")
-        state = "failed" if (reason or failed) else "done"
+        state = "failed" if (reason or failed or blocked) else "done"
         finished = time.time()
         _save_mission(mission_id, state=state, finished_at=finished,
                       failure_reason=reason if state == "failed" else None)
@@ -1398,6 +1732,8 @@ def build_report(mission: Dict[str, Any]) -> Dict[str, Any]:
             "instruction": s["instruction"],
             "expected_effects": s["expected_effects"],
             "task_id": s.get("task_id"),
+            "contract": s.get("contract") or {},
+            "input_delivery": s.get("input_delivery") or [],
             "status": s["status"],
             "claimed_result": s.get("claimed") or "",
             "verified_status": s.get("verified_status"),
@@ -1417,6 +1753,8 @@ def build_report(mission: Dict[str, Any]) -> Dict[str, Any]:
             "done": sum(1 for s in rows if s["status"] == "done"),
             "verified": sum(1 for s in rows if s["verified_status"] == "verified"),
             "failed": sum(1 for s in rows if s["status"] == "failed"),
+            "blocked": sum(1 for s in rows if s["status"] == "blocked"),
+            "unverifiable": sum(1 for s in rows if s["verified_status"] == "unverifiable"),
         },
         "started_at": started,
         "finished_at": finished,
@@ -1424,7 +1762,10 @@ def build_report(mission: Dict[str, Any]) -> Dict[str, Any]:
         "usage": _usage_section(mission["id"]),
         "how_to_read": ("claimed_result is what the agent reported. verified_status and evidence "
                         "are what the task queue's file-effect check found on disk. A step with no "
-                        "file effects can only be verified as 'nothing contradicted it'."),
+                        "file effects is verified only when its task carried decisive evidence; "
+                        "otherwise it is marked unverifiable, because absence of contradiction is "
+                        "not verification. A step that reported a missing input or tool is "
+                        "blocked, a state of its own, never done."),
     }
 
 

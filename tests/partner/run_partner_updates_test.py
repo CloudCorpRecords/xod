@@ -317,6 +317,52 @@ def main():
         server.shutdown()
         print("PASS: snapshot rotation keeps exactly one snapshot, of the newest good version", flush=True)
 
+    # a restore that fails mid-copy: the app path is never left holding a
+    # partial tree, and the NEXT payload never overwrites the last-good
+    # snapshot with the suspect post-failure state (the 0.9.24 incident:
+    # the rollback restore hit Errno 1 across the tree, left a 122M husk
+    # in /Applications, and the guardian's next snapshot overwrote the
+    # good 0.9.23 snapshot with that husk)
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FakeBackend()
+        g, state, app_path, lines, calls, token, server = rig(tmp, backend)
+        good_bytes = tree_bytes(app_path)
+        stage_payload(Path(tmp) / "updates", "0.9.13", "staged-0.9.13")
+        g.tick(1000.0)
+        backend.mode = "unhealthy"
+        swap_in(app_path, "0.9.13", "bad-0.9.13", token, "pid2:start2")
+        bad_bytes = tree_bytes(app_path)
+        g.quit_app = lambda: (calls.__setitem__("quit", calls["quit"] + 1),
+                              setattr(backend, "mode", "healthy"))
+        real_copytree = PU.shutil.copytree
+
+        def dying_copytree(src, dst, **kw):
+            dst = Path(dst)
+            (dst / "Contents").mkdir(parents=True, exist_ok=True)
+            (dst / "Contents" / "partial.txt").write_text("half-copied")
+            raise OSError(1, "Operation not permitted")
+
+        PU.shutil.copytree = dying_copytree
+        try:
+            g.tick(1015.0)
+        finally:
+            PU.shutil.copytree = real_copytree
+        after = tree_bytes(app_path)
+        assert after == good_bytes or after == bad_bytes, \
+            "a failed restore left a partial tree at the app path"
+        marker = json.loads((state / "blocked-update-0.9.13.json").read_text())
+        assert marker["restored_version"] is None, marker
+        # a NEW payload stages while the installed state is suspect: the
+        # retained last-good snapshot must survive untouched
+        stage_payload(Path(tmp) / "updates", "0.9.14", "staged-0.9.14")
+        g.tick(2000.0)
+        snap = state / "snapshots" / "Xod.app"
+        assert tree_bytes(snap) == good_bytes, \
+            "a payload after a failed restore overwrote the last-good snapshot"
+        assert any("HELD" in ln for ln in lines), lines
+        server.shutdown()
+        print("PASS: a mid-restore failure never leaves a husk and never costs the last-good snapshot", flush=True)
+
     # the hook: the guardian state rides in the Partner /status output
     with tempfile.TemporaryDirectory() as tmp:
         backend = FakeBackend()

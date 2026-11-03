@@ -2640,6 +2640,151 @@ async def crew_set_board_model(req: CrewBoardModel):
         return {"success": False, "error": str(e)}
 
 
+class SocialItemIn(BaseModel):
+    platform: str
+    kind: str = "mention"
+    target_id: str
+    target_url: Optional[str] = ""
+    author: Optional[str] = ""
+    text_in: Optional[str] = ""
+
+
+class SocialDraftIn(BaseModel):
+    text: str
+
+
+class SocialRunIn(BaseModel):
+    dry_run: Optional[bool] = None
+
+
+class SocialFetchIn(BaseModel):
+    platform: str
+
+
+class SocialSettingsIn(BaseModel):
+    auto_x: Optional[bool] = None
+    auto_linkedin: Optional[bool] = None
+    dry_run: Optional[bool] = None
+
+
+@app.get("/api/social/queue")
+async def social_queue(state: Optional[str] = None, platform: Optional[str] = None):
+    """The social reply queue: counts plus the items themselves. This is
+    the human surface over the same store the harness social_read tool
+    summarizes; the two can never drift."""
+    from app.services import social_reply
+    store = social_reply.default_store()
+    return {"summary": store.summary(), "items": store.list(state=state, platform=platform)}
+
+
+@app.post("/api/social/items")
+async def social_add_item(req: SocialItemIn):
+    """Queue an inbound item by hand (the fetch lane fills this
+    automatically when the browser route is live)."""
+    from app.services import social_reply
+    try:
+        item = social_reply.default_store().add_item(
+            platform=req.platform, kind=req.kind, target_id=req.target_id,
+            target_url=req.target_url or "", author=req.author or "",
+            text_in=req.text_in or "", actor="owner")
+        return {"success": True, "item": item}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/items/{item_id}/draft")
+async def social_set_draft(item_id: str, req: SocialDraftIn):
+    """Attach a reply draft. The encoded copy rules run here: an em dash,
+    the reserved signature, or private data shapes are refused outright."""
+    from app.services import social_reply
+    try:
+        item = social_reply.default_store().set_draft(item_id, req.text, actor="owner")
+        return {"success": True, "item": item}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/items/{item_id}/request-approval")
+async def social_request_approval(item_id: str):
+    from app.services import social_reply
+    try:
+        item = social_reply.default_store().request_approval(item_id, actor="owner")
+        return {"success": True, "item": item}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/items/{item_id}/approve")
+async def social_approve(item_id: str):
+    """The approval a draft needs before it may post (unless the
+    platform's auto mode is on). Posting itself is the run endpoint."""
+    from app.services import social_reply
+    try:
+        item = social_reply.default_store().approve(item_id, actor="owner")
+        return {"success": True, "item": item}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/items/{item_id}/run")
+async def social_run(item_id: str, req: SocialRunIn):
+    """Post one approved item through the local browser executor and
+    verify it at the destination. The dry-run setting (default on)
+    stops before the final click until the owner turns it off."""
+    from app.services import social_reply
+    try:
+        res = await social_reply.run_post(item_id, actor="owner", dry_run=req.dry_run)
+        return {"success": True, **res}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/items/{item_id}/verify")
+async def social_verify(item_id: str):
+    """Re-read the destination for a posted or unknown item."""
+    from app.services import social_reply
+    try:
+        res = await social_reply.run_verify(item_id, actor="owner")
+        return {"success": True, **res}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/social/fetch")
+async def social_fetch(req: SocialFetchIn):
+    """Pull a platform's inbox into the queue through the browser
+    executor. A busy machine or a closed browser is reported, never
+    fought."""
+    from app.services import social_reply
+    try:
+        res = await social_reply.fetch(req.platform, actor="owner")
+        return {"success": True, **res}
+    except social_reply.ExecutorUnavailable as e:
+        return {"success": False, "error": str(e)}
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/social/settings")
+async def social_settings():
+    from app.services import social_reply
+    return {"auto_x": social_reply.auto_mode("x"),
+            "auto_linkedin": social_reply.auto_mode("linkedin"),
+            "dry_run": social_reply.dry_run_default()}
+
+
+@app.post("/api/social/settings")
+async def social_set_settings(req: SocialSettingsIn):
+    from app.services import storage
+    if req.auto_x is not None:
+        storage.set_setting("social_auto_x", "on" if req.auto_x else "off")
+    if req.auto_linkedin is not None:
+        storage.set_setting("social_auto_linkedin", "on" if req.auto_linkedin else "off")
+    if req.dry_run is not None:
+        storage.set_setting("social_dry_run", "on" if req.dry_run else "off")
+    return {"success": True, **(await social_settings())}
+
+
 @app.get("/api/crew/loop")
 async def crew_loop():
     """Everything about the background loop in one place: is it handing work over, to which repos, what each repo's
@@ -2736,8 +2881,47 @@ async def family_list():
     Lists the signed-in machines and their capabilities from the registry in the
     synced bus space. Read-only: joining, sync and task handoff are later phases.
     F0 records are unsigned, so the payload flags them interim; display only."""
-    from app.services import family_registry
-    return {"success": True, **(await asyncio.to_thread(family_registry.load_registry))}
+    from app.services import family_registry, family_vault
+    view = await asyncio.to_thread(family_registry.load_registry)
+    view["vault"] = await asyncio.to_thread(
+        family_vault.status, view, family_registry.my_device_id() or None)
+    return {"success": True, **view}
+
+
+@app.post("/api/family/vault/publish")
+async def family_vault_publish():
+    """Family vault (services/family_vault.py): encrypt this device's provider keys
+    for the trusted family members and write the ciphertext bundle to the synced
+    space. Refused unless this device is itself a trusted member. The response
+    carries provider names and the recipient list only, never a key value."""
+    from app.services import family_registry, family_vault
+    my_id = family_registry.my_device_id()
+    if not my_id:
+        return {"success": False, "state": "no_device_id",
+                "message": "This device has no family device id yet (setting family_device_id)."}
+    try:
+        out = await asyncio.to_thread(family_vault.publish_from_keystore, my_id)
+    except family_vault.VaultError as e:
+        return {"success": False, "state": "refused", "message": str(e)}
+    return {"success": True, **out}
+
+
+@app.post("/api/family/vault/apply")
+async def family_vault_apply():
+    """Family vault: unwrap the synced bundle into THIS device's own keystore, if
+    this device is a trusted recipient and the bundle is newer than the one
+    already applied. Per-device pins and the local-only pin are honored inside
+    the service; the response reports state and provider names only."""
+    from app.services import family_registry, family_vault
+    my_id = family_registry.my_device_id()
+    if not my_id:
+        return {"success": False, "state": "no_device_id",
+                "message": "This device has no family device id yet (setting family_device_id)."}
+    try:
+        out = await asyncio.to_thread(family_vault.apply, my_id)
+    except family_vault.VaultError as e:
+        return {"success": False, "state": "refused", "message": str(e)}
+    return {"success": True, **out}
 
 
 @app.post("/api/xods/sign-in")
