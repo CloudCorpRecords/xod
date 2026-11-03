@@ -37,6 +37,18 @@ def _clip(text: Any, n: int) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
+def family_allowed(sender: str) -> bool:
+    """Family ops (Phase 1) are answered for any pinned contact. By the time a
+    request reaches handle(), Agent Mail has verified the envelope's signature
+    against the sender's pinned keys; the family payloads then carry their own
+    signatures (the advertisement, the approval), and enrollment still needs
+    the owner's tap. Pairing status is exactly what the exchange establishes,
+    so it cannot gate the exchange itself."""
+    from app.services import agent_mail
+    c = agent_mail.contact((sender or "").lower())
+    return bool(c and c.get("trust") in ("known", "mine"))
+
+
 def allowed(sender: str) -> bool:
     """A phone paired on its own screen, still pinned as a contact you trust."""
     from app.services import agent_mail, phone_mcp
@@ -44,7 +56,13 @@ def allowed(sender: str) -> bool:
     if not any(p.get("address") == sender for p in phone_mcp.paired_phones()):
         return False
     c = agent_mail.contact(sender)
-    return bool(c and c.get("trust") in ("known", "mine"))
+    if not (c and c.get("trust") in ("known", "mine")):
+        return False
+    try:  # a phone revoked from the family loses control even though it stays paired
+        from app.services import phone_enroll
+        return not phone_enroll.control_refused(sender)
+    except Exception:
+        return True
 
 
 # ---------------------------------------------------------------- chat
@@ -379,6 +397,35 @@ SCREEN_OPS = set(BROWSER_OPS) - {"browser.done"}
 MAX_SCREEN_REPLY = 150_000
 
 
+# ---------------------------------------------------------------- family enrollment (Phase 1)
+
+def _family_advertise(args: Dict[str, Any]) -> Dict[str, Any]:
+    """The phone's signed join ask (services/phone_enroll.py). Submission is
+    not trust: it pends for the owner's tap, or for a family.approve."""
+    from app.services import phone_enroll
+    r = phone_enroll.intake(args.get("advertisement") or {}, mail_sender=args.get("_sender"))
+    if not r.get("ok"):
+        raise ApiError("; ".join(r.get("problems") or []) or r.get("error") or "The advertisement was refused.")
+    return r
+
+
+def _family_state(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import phone_enroll
+    return phone_enroll.state()
+
+
+def _family_approve(args: Dict[str, Any]) -> Dict[str, Any]:
+    """An enrolled phone approves another device's join: the signature must
+    cover the current member digest, recomputed on this computer."""
+    from app.services import phone_enroll
+    r = phone_enroll.apply_phone_approval(str(args.get("device_id") or ""),
+                                          str(args.get("signature") or ""),
+                                          str(args.get("approver_id") or ""))
+    if not r.get("ok"):
+        raise ApiError(r.get("error") or "The approval was refused.")
+    return r
+
+
 OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "summary": _summary, "link.routes": _routes,
     "chat.sessions": _sessions, "chat.history": _history, "chat.send": _chat,
@@ -388,6 +435,7 @@ OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "files.projects": _projects, "files.read": _file_read,
     "muse.status": _muse, "muse.set": _muse_set,
     "models.list": _models, "models.use": _models_use, "machines.list": _machines,
+    "family.advertise": _family_advertise, "family.state": _family_state, "family.approve": _family_approve,
     **BROWSER_OPS,
 }
 
@@ -433,20 +481,27 @@ async def handle(sender: str, msg: Dict[str, Any], row_id: str) -> None:
     from app.services import agent_mail
     with agent_mail._db() as c:
         c.execute("UPDATE mail_messages SET status='api', read=1 WHERE id=?", (row_id,))
-    if not allowed(sender):
-        logger.info(f"phone_api: ignored a request from {sender} (not a paired phone)")
-        return
     try:
         req = json.loads(msg.get("text") or "{}")
     except ValueError:
         req = {}
+    if str(req.get("op") or "").startswith("family."):
+        if not family_allowed(sender):
+            logger.info(f"phone_api: ignored a family request from {sender} (not a pinned contact)")
+            return
+    elif not allowed(sender):
+        logger.info(f"phone_api: ignored a request from {sender} (not a paired phone)")
+        return
     rid = str(req.get("request_id") or "")[:64]
     op = str(req.get("op") or "")
     if op in SECRET_OPS:
         with agent_mail._db() as c:      # what was typed (often a password) isn't kept, only that something was
             c.execute("UPDATE mail_messages SET text=? WHERE id=?", (json.dumps({"op": op, "request_id": rid, "args": "(hidden)"}), row_id))
     started = time.time()
-    out = await run(op, req.get("args") or {})
+    args = req.get("args") or {}
+    if op.startswith("family.") and isinstance(args, dict):
+        args = {**args, "_sender": sender}  # family ops bind the ask to the channel it arrived on
+    out = await run(op, args)
     logger.info(f"phone_api: {req.get('op')} from {sender} -> {'ok' if out.get('ok') else out.get('error')} in {time.time() - started:.1f}s")
     try:
         screen = op in SCREEN_OPS

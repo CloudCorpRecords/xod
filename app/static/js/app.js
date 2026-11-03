@@ -398,6 +398,7 @@ async function loadConfig() {
     const res = await fetch("/api/config");
     const data = await res.json();
     currentConfig = data;
+    renderKeyCardStates(data);
 
     // Update TrustMRR Status Badge
     const badge = document.getElementById("btnTrustMRRStatus");
@@ -424,15 +425,9 @@ async function loadConfig() {
       if (data.you_configured) {
         youText.textContent = "Web search: connected";
         youBadge.className = "conn-row";
-        if (youInput && !youInput.value) {
-          youInput.placeholder = `Configured: ${data.you_masked_key}`;
-        }
       } else {
         youText.textContent = "Web search: basic";
         youBadge.className = "conn-row";
-        if (youInput && !youInput.value) {
-          youInput.placeholder = "ydc_... or your You.com API key";
-        }
       }
     }
 
@@ -445,15 +440,9 @@ async function loadConfig() {
       if (data.youtube_configured) {
         ytText.textContent = "YouTube: connected";
         ytBadge.className = "conn-row";
-        if (ytInput && !ytInput.value) {
-          ytInput.placeholder = `Configured: ${data.youtube_masked_key}`;
-        }
       } else {
         ytText.textContent = "YouTube: not set";
         ytBadge.className = "conn-row";
-        if (ytInput && !ytInput.value) {
-          ytInput.placeholder = "AIzaSy... or your Google Cloud API key";
-        }
       }
     }
 
@@ -466,15 +455,9 @@ async function loadConfig() {
       if (data.tavily_configured) {
         tavText.textContent = "Tavily: connected";
         tavBadge.className = "conn-row";
-        if (tavInput && !tavInput.value) {
-          tavInput.placeholder = `Configured: ${data.tavily_masked_key}`;
-        }
       } else {
         tavText.textContent = "Tavily: not set";
         tavBadge.className = "conn-row";
-        if (tavInput && !tavInput.value) {
-          tavInput.placeholder = "tvly-... or your Tavily API key";
-        }
       }
     }
 
@@ -2219,163 +2202,165 @@ async function fetchRoadmap() {
   }
 }
 
-async function testTrustMRRKey() {
-  const inputKey = document.getElementById("inputTrustmrrKey").value.trim();
-  const feedback = document.getElementById("testKeyFeedback");
-  const btn = document.getElementById("btnTestTrustmrr");
+// ---- Search & research key cards (Settings modal) --------------------------------
+// One behavior for every provider card: Test checks the key in the box (or the saved
+// key when the box is empty) BEFORE anything is stored; a pasted key is saved only
+// when the test passes, so a typo can't overwrite a working saved key. Save stores
+// what's in the box as-is; Remove deletes the saved key. (The old handlers saved the
+// pasted key first and tested second — a bad paste silently replaced a good key.)
+// The per-provider test endpoints do the verifying: You.com and Tavily also save on
+// success server-side, YouTube is saved here on success, and TrustMRR's endpoint can
+// only check the saved key, so its card asks you to Save first.
 
-  feedback.classList.remove("hidden");
-  feedback.className = "text-xs text-zinc-400";
-  feedback.textContent = "Connecting to TrustMRR API...";
-  btn.disabled = true;
-
-  try {
-    // If input key provided, save it temporarily
-    if (inputKey) {
-      await fetch("/api/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ trustmrr_api_key: inputKey })
-      });
-    }
-
-    const res = await fetch("/api/trustmrr/test", { method: "POST" });
-    const data = await res.json();
-
-    if (data.valid) {
-      feedback.className = "text-xs text-emerald-400 font-semibold";
-      feedback.textContent = `✓ ${data.message}`;
-      await loadConfig();
-    } else {
-      feedback.className = "text-xs text-red-400 font-semibold";
-      feedback.textContent = `✗ ${data.message}`;
-    }
-  } catch (e) {
-    feedback.className = "text-xs text-red-400 font-semibold";
-    feedback.textContent = `✗ Error testing key: ${e.message}`;
-  } finally {
-    btn.disabled = false;
+const KEY_CARD_DEFS = {
+  you: {
+    input: "inputYouKey", feedback: "testYouFeedback", testBtn: "btnTestYou",
+    testUrl: "/api/you/test", testField: "you_api_key", configField: "you_api_key",
+    testingText: "Connecting to You.com (ydc-index.io)…", saveOnTest: "server"
+  },
+  tavily: {
+    input: "inputTavilyKey", feedback: "testTavilyFeedback", testBtn: "btnTestTavily",
+    testUrl: "/api/tavily/test", testField: "tavily_api_key", configField: "tavily_api_key",
+    testingText: "Connecting to Tavily (api.tavily.com)…", saveOnTest: "server"
+  },
+  trustmrr: {
+    input: "inputTrustmrrKey", feedback: "testKeyFeedback", testBtn: "btnTestTrustmrr",
+    testUrl: "/api/trustmrr/test", testField: null, configField: "trustmrr_api_key",
+    testingText: "Connecting to TrustMRR…", saveOnTest: "saved-only"
+  },
+  youtube: {
+    input: "inputYoutubeKey", feedback: "testYoutubeFeedback", testBtn: "btnTestYoutube",
+    testUrl: "/api/youtube/test", testField: "youtube_api_key", configField: "youtube_api_key",
+    testingText: "Connecting to YouTube Data API (googleapis.com)…", saveOnTest: "client"
   }
-}
+};
 
-async function testYouKey() {
-  const inputKey = document.getElementById("inputYouKey").value.trim();
-  const feedback = document.getElementById("testYouFeedback");
-  const btn = document.getElementById("btnTestYou");
-
-  feedback.classList.remove("hidden");
-  feedback.className = "text-xs text-zinc-400";
-  feedback.textContent = "Connecting to You.com Search API (api.ydc-index.io)...";
-  btn.disabled = true;
-
-  try {
-    if (inputKey) {
-      await fetch("/api/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ you_api_key: inputKey })
-      });
-    }
-
-    const res = await fetch("/api/you/test", { method: "POST" });
-    const data = await res.json();
-
-    if (data.valid) {
-      feedback.className = "text-xs text-emerald-400 font-semibold";
-      feedback.textContent = `✓ ${data.message}`;
-      await loadConfig();
-    } else {
-      feedback.className = "text-xs text-red-400 font-semibold";
-      feedback.textContent = `✗ ${data.message}`;
-    }
-  } catch (e) {
-    feedback.className = "text-xs text-red-400 font-semibold";
-    feedback.textContent = `✗ Error testing key: ${e.message}`;
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function testTavilyKey() {
-  const inputKey = document.getElementById("inputTavilyKey")?.value.trim() || "";
-  const feedback = document.getElementById("testTavilyFeedback");
-  const btn = document.getElementById("btnTestTavily");
+function keyCardFeedback(def, kind, text) {
+  const feedback = document.getElementById(def.feedback);
   if (!feedback) return;
-
   feedback.classList.remove("hidden");
-  feedback.className = "text-xs text-zinc-400";
-  feedback.textContent = "Connecting to Tavily AI Search API (api.tavily.com)...";
-  if (btn) btn.disabled = true;
+  feedback.className = kind === "ok" ? "text-xs text-emerald-400 font-semibold"
+    : kind === "err" ? "text-xs text-red-400 font-semibold"
+    : "text-xs text-zinc-400";
+  feedback.textContent = text;
+}
 
+async function postConfigField(field, value) {
+  const res = await fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ [field]: value })
+  });
+  if (!res.ok) throw new Error(`Settings save failed (HTTP ${res.status})`);
+}
+
+async function testKeyCard(name) {
+  const def = KEY_CARD_DEFS[name];
+  const input = document.getElementById(def.input);
+  const btn = document.getElementById(def.testBtn);
+  const pasted = (input?.value || "").trim();
+
+  if (def.saveOnTest === "saved-only" && pasted) {
+    keyCardFeedback(def, "err", "Test checks the saved key — Save this new key first, then Test.");
+    return;
+  }
+
+  keyCardFeedback(def, "", def.testingText);
+  if (btn) btn.disabled = true;
   try {
-    const res = await fetch("/api/tavily/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tavily_api_key: inputKey || undefined })
-    });
+    const init = { method: "POST" };
+    if (def.testField) {
+      init.headers = { "Content-Type": "application/json" };
+      init.body = JSON.stringify({ [def.testField]: pasted || undefined });
+    }
+    const res = await fetch(def.testUrl, init);
     const data = await res.json();
 
     if (data.valid) {
-      feedback.className = "text-xs text-emerald-400 font-semibold";
-      feedback.textContent = `✓ ${data.message}`;
-      const input = document.getElementById("inputTavilyKey");
-      if (input && inputKey) input.placeholder = "Configured (••••••••)";
-      const text = document.getElementById("tavilyStatusText");
-      if (text) text.textContent = "Tavily: connected";
+      if (pasted && def.saveOnTest === "client") {
+        await postConfigField(def.configField, pasted);
+      }
+      if (input && pasted) input.value = "";
+      keyCardFeedback(def, "ok", `✓ ${data.message}${pasted ? " (saved)" : ""}`);
+      await loadConfig();
     } else {
-      feedback.className = "text-xs text-red-400 font-semibold";
-      feedback.textContent = `✗ ${data.message}`;
+      keyCardFeedback(def, "err", `✗ ${data.message}`);
     }
   } catch (e) {
-    feedback.className = "text-xs text-red-400 font-semibold";
-    feedback.textContent = `✗ Error testing key: ${e.message}`;
+    keyCardFeedback(def, "err", `✗ Error testing key: ${e.message}`);
   } finally {
     if (btn) btn.disabled = false;
   }
 }
 
-async function testYoutubeKey() {
-  const inputKey = document.getElementById("inputYoutubeKey").value.trim();
-  const feedback = document.getElementById("testYoutubeFeedback");
-  const btn = document.getElementById("btnTestYoutube");
-
-  feedback.classList.remove("hidden");
-  feedback.className = "text-xs text-zinc-400";
-  feedback.textContent = "Connecting to YouTube Data API v3 (googleapis.com)...";
-  btn.disabled = true;
-
+async function saveKeyCard(name) {
+  const def = KEY_CARD_DEFS[name];
+  const input = document.getElementById(def.input);
+  const pasted = (input?.value || "").trim();
+  if (!pasted) {
+    keyCardFeedback(def, "err", "Paste a key first — or use Remove to delete the saved one.");
+    return;
+  }
   try {
-    if (inputKey) {
-      await fetch("/api/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ youtube_api_key: inputKey })
-      });
-    }
-
-    const res = await fetch("/api/youtube/test", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ youtube_api_key: inputKey || undefined })
-    });
-    const data = await res.json();
-
-    if (data.valid) {
-      feedback.className = "text-xs text-emerald-400 font-semibold";
-      feedback.textContent = `✓ ${data.message}`;
-      await loadConfig();
-    } else {
-      feedback.className = "text-xs text-red-400 font-semibold";
-      feedback.textContent = `✗ ${data.message}`;
-    }
+    await postConfigField(def.configField, pasted);
+    if (input) input.value = "";
+    keyCardFeedback(def, "ok", "✓ Key saved. Test will confirm it works.");
+    await loadConfig();
   } catch (e) {
-    feedback.className = "text-xs text-red-400 font-semibold";
-    feedback.textContent = `✗ Error testing key: ${e.message}`;
-  } finally {
-    btn.disabled = false;
+    keyCardFeedback(def, "err", `✗ Couldn't save: ${e.message}`);
   }
 }
 
+async function removeKeyCard(name) {
+  const def = KEY_CARD_DEFS[name];
+  try {
+    await postConfigField(def.configField, "");
+    const input = document.getElementById(def.input);
+    if (input) input.value = "";
+    keyCardFeedback(def, "ok", "✓ Key removed.");
+    await loadConfig();
+  } catch (e) {
+    keyCardFeedback(def, "err", `✗ Couldn't remove: ${e.message}`);
+  }
+}
+
+// Renders each card's status pill + Remove visibility from a /api/config payload.
+// Saved state used to hide in the input's placeholder text; the pill is the one place now.
+function renderKeyCardStates(data) {
+  const cards = [
+    ["pillYouKey", "btnRemoveYou", data.you_configured, data.you_masked_key],
+    ["pillTavilyKey", "btnRemoveTavily", data.tavily_configured, data.tavily_masked_key],
+    ["pillTrustmrrKey", "btnRemoveTrustmrr", data.trustmrr_configured, data.trustmrr_masked_key],
+    ["pillYoutubeKey", "btnRemoveYoutube", data.youtube_configured, data.youtube_masked_key]
+  ];
+  for (const [pillId, removeId, configured, masked] of cards) {
+    const pill = document.getElementById(pillId);
+    const remove = document.getElementById(removeId);
+    if (pill) {
+      if (configured) {
+        pill.textContent = `Saved ····${(masked || "").slice(-4)}`;
+        pill.className = "text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-300";
+      } else {
+        pill.textContent = "Not set";
+        pill.className = "text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-700 text-zinc-400";
+      }
+    }
+    if (remove) remove.classList.toggle("hidden", !configured);
+  }
+}
+
+async function testTrustMRRKey() { return testKeyCard("trustmrr"); }
+async function saveTrustMRRKey() { return saveKeyCard("trustmrr"); }
+async function removeTrustMRRKey() { return removeKeyCard("trustmrr"); }
+async function testYouKey() { return testKeyCard("you"); }
+async function saveYouKey() { return saveKeyCard("you"); }
+async function removeYouKey() { return removeKeyCard("you"); }
+async function testTavilyKey() { return testKeyCard("tavily"); }
+async function saveTavilyKey() { return saveKeyCard("tavily"); }
+async function removeTavilyKey() { return removeKeyCard("tavily"); }
+async function testYoutubeKey() { return testKeyCard("youtube"); }
+async function saveYoutubeKey() { return saveKeyCard("youtube"); }
+async function removeYoutubeKey() { return removeKeyCard("youtube"); }
 async function saveSettings() {
   const key = document.getElementById("inputTrustmrrKey").value.trim();
   const youKey = document.getElementById("inputYouKey").value.trim();

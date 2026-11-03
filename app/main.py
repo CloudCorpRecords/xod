@@ -847,6 +847,44 @@ async def phone_pair_offer_cancel():
     return {"success": True}
 
 
+@app.get("/api/phone/enroll/state")
+async def phone_enroll_state():
+    """Phase 1, the Phones panel's family section: the signed-in account,
+    pending phone join asks, members, and joins awaiting an approver
+    (services/phone_enroll.py)."""
+    from app.services import phone_enroll
+    return phone_enroll.state()
+
+
+@app.post("/api/phone/enroll/advertise")
+async def phone_enroll_advertise(body: Dict[str, Any]):
+    """A phone's signed join ask submitted directly (it normally arrives
+    over Agent Mail as the family.advertise op). Submission is not trust:
+    it pends for the owner's tap."""
+    from app.services import phone_enroll
+    return phone_enroll.intake(body.get("advertisement") or body)
+
+
+@app.post("/api/phone/enroll/approve")
+async def phone_enroll_approve(body: Dict[str, Any]):
+    """The owner's one tap: enroll the pending phone into the signed registry."""
+    from app.services import phone_enroll
+    return phone_enroll.approve(str(body.get("device_id") or ""))
+
+
+@app.post("/api/phone/enroll/deny")
+async def phone_enroll_deny(body: Dict[str, Any]):
+    from app.services import phone_enroll
+    return phone_enroll.deny(str(body.get("device_id") or ""))
+
+
+@app.post("/api/phone/enroll/revoke")
+async def phone_enroll_revoke(body: Dict[str, Any]):
+    """Per-device revocation: a signed revocation entry in the registry."""
+    from app.services import phone_enroll
+    return phone_enroll.revoke(str(body.get("device_id") or ""))
+
+
 @app.get("/api/phones")
 async def phones_list():
     """Paired Android phones (over Agent Mail), their capability switches, and this computer's lock/awake."""
@@ -2191,10 +2229,21 @@ async def test_trustmrr_connection():
     res = await trustmrr_client.verify_key()
     return res
 
+class YouTestRequest(BaseModel):
+    you_api_key: Optional[str] = None
+
 @app.post("/api/you/test")
-async def test_you_connection():
-    """Tests the You.com API key."""
-    res = await you_client.verify_key()
+async def test_you_connection(payload: Optional[YouTestRequest] = None):
+    """Tests the You.com API key. A pasted key is verified before it is stored and saved
+    only if it works, so a typo can't overwrite a working saved key (the Tavily test has
+    always worked this way; the Settings page used to save first and test second)."""
+    k = payload.you_api_key if payload else None
+    res = await you_client.verify_key(k)
+    if res.get("valid") and (k or you_client.api_key):
+        clean_key = (k or you_client.api_key).strip()
+        settings.you_api_key = clean_key
+        update_env_variable("YOU_API_KEY", clean_key)
+        you_client.set_api_key(clean_key)
     return res
 
 @app.get("/api/trustmrr/categories")
@@ -2872,6 +2921,73 @@ async def xods_list():
     from app.services import xod_network
     st = await asyncio.to_thread(xod_network.status)
     return {"success": True, "status": st, **(await xod_network.find() if st.get("signed_in") else {"xods": []})}
+
+
+@app.get("/api/family/control")
+async def family_control():
+    """SSO control (services/sso_control.py): the Family panel's one
+    aggregate — account header (who am I, which family, sign-in state
+    per the pairing gate), the two-leg gate verdict, devices, keys &
+    providers presence, approvals counts, the fresh-install checklist
+    and the vault recovery state. No token or key value is in it."""
+    from app.services import sso_control
+    return await asyncio.to_thread(sso_control.control_state)
+
+
+@app.post("/api/family/control/device/begin")
+async def family_control_device_begin():
+    """Start GitHub device-flow sign-in (services/github_device.py):
+    the panel shows the returned user code; the owner's only action
+    is the browser Authorize tap. No client_secret exists here."""
+    from app.services import github_device, sso_control
+    cid = await asyncio.to_thread(sso_control.client_id)
+    return await asyncio.to_thread(github_device.begin, cid)
+
+
+@app.post("/api/family/control/device/poll")
+async def family_control_device_poll():
+    """One poll of the running device flow. On success the GitHub
+    token is stored in the keychain by the service and never
+    returned here."""
+    from app.services import github_device
+    return await asyncio.to_thread(github_device.poll)
+
+
+@app.post("/api/family/control/session")
+async def family_control_session(body: Dict[str, Any]):
+    """The rdrive session handoff slot: software hands Xod a session
+    token (never the user — there is no paste-a-token box in the UI).
+    Stored in the keychain; the response echoes nothing."""
+    from app.services import sso_control
+    ok = await asyncio.to_thread(sso_control.store_rdrive_token, str(body.get("token") or ""))
+    return {"success": ok}
+
+
+@app.post("/api/family/control/service-secret")
+async def family_control_service_secret(body: Dict[str, Any]):
+    """Secure-entry staging of the one vault-carried service secret
+    (services/sso_control.py). The value goes straight to the
+    keystore and is never echoed or logged."""
+    from app.services import sso_control
+    return await asyncio.to_thread(
+        sso_control.stage_service_secret,
+        str(body.get("name") or ""), str(body.get("value") or ""))
+
+
+@app.post("/api/family/control/service-secret/publish")
+async def family_control_service_secret_publish():
+    """Publish the family vault bundle carrying provider keys plus
+    any staged service secrets. Field names only in the response."""
+    from app.services import family_registry, family_vault, sso_control
+    my_id = family_registry.my_device_id()
+    if not my_id:
+        return {"success": False, "state": "no_device_id",
+                "message": "This device has no family device id yet (setting family_device_id)."}
+    try:
+        out = await asyncio.to_thread(sso_control.publish_service_secrets, my_id)
+    except family_vault.VaultError as e:
+        return {"success": False, "state": "refused", "message": str(e)}
+    return {"success": True, **out}
 
 
 @app.get("/api/family")

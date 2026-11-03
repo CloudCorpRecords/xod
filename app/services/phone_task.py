@@ -119,7 +119,14 @@ async def run(goal: str, phone: str = "", max_steps: int = MAX_STEPS, app: str =
     phones = phone_mcp.paired_phones()
     if not phones:
         return {"success": False, "error": "No phone is paired. Pair one in the Xod app on the phone."}
-    caps = (next((p for p in phones if p["address"] == phone.lower()), phones[0]).get("capabilities") or {})
+    target = next((p for p in phones if p["address"] == phone.lower()), phones[0])
+    try:  # a phone revoked from the family is not controlled, even while it stays paired
+        from app.services import phone_enroll
+        if phone_enroll.control_refused(target.get("address") or ""):
+            return {"success": False, "error": "That phone was revoked from the family on this computer, so Xod won't control it. Re-enroll it from the Phones panel to use it again."}
+    except Exception:
+        pass
+    caps = (target.get("capabilities") or {})
     off = [phone_mcp.SWITCH_LABELS[c] for c in ("apps", "screen", "tap") if caps.get(c) is not True]
     if off:
         return {"success": False, "switched_off": off,

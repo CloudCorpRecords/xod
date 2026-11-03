@@ -264,8 +264,13 @@ class CtypesAx:
 # ------------------------------------------------------------------ the card rules (frozen port of muse_app)
 def pick_button(labels):
     """The approving button to press, or None. Same order as Xod's _pick_button:
-    an always-allow naming a recipient or site, then Allow all once, then Send /
-    Allow once / Allow. Deny and friends are never picked."""
+    an always-allow naming a recipient or site, then Allow all once, then the
+    one-time approvals (Send / Allow once / Allow for this task / Allow), then
+    any other task-scoped approval (an Allow... button ending in 'for this
+    task', e.g. 'Allow all web access for this task': it approves this task
+    only and expires with it, so it belongs with the one-time approvals, and
+    it beats an unscoped 'Allow always', which is never picked). Deny and
+    friends are never picked."""
     clean = [str(l).strip() for l in labels if str(l).strip()]
     for l in clean:
         low = l.lower()
@@ -274,10 +279,14 @@ def pick_button(labels):
     for l in clean:
         if l.lower() == "allow all once":
             return l
-    for want in ("send", "allow once", "allow"):
+    for want in ("send", "allow once", "allow for this task", "allow"):
         for l in clean:
             if l.lower() == want:
                 return l
+    for l in clean:
+        low = l.lower()
+        if low.startswith("allow") and low.endswith("for this task"):
+            return l
     return None
 
 
@@ -516,8 +525,10 @@ class Walk:
     def press(self, want_id, front=False, away=False):
         """Press the approving button on one card (identified by its card_id),
         re-walking the live tree. Approve-only, exactly the frozen rules; a
-        failed or buttonless first attempt may be retried once with Muse in
-        front when the caller allows fronting."""
+        failed, buttonless, or not-showing first attempt may be retried once
+        with Muse in front when the caller allows fronting (a card can be
+        absent from the unfronted tree yet answer at once once Muse is in
+        front, the same reason a failed press can)."""
         pid = self.pid_of()
         if pid is None:
             return {"pressed": False, "button": None, "card_id": want_id,
@@ -558,4 +569,4 @@ class Walk:
             return {**base, "pressed": False, "button": chosen,
                     "reason": "press failed: AXPress returned %d" % err}, True
         return {"pressed": False, "button": None, "card_id": want_id,
-                "reason": "card not showing"}, False
+                "reason": "card not showing"}, True

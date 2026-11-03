@@ -44,15 +44,15 @@ class OmniSearchEngine:
         else:
             tasks.append(asyncio.sleep(0, result=None))
 
-        # Vector 2: AI Web Intelligence (Tavily AI or You.com)
-        from app.services.tavily_search import tavily_client
-        if tavily_client.is_configured():
-            tasks.append(tavily_client.search(goal, count=5, search_depth="basic", include_answer=True))
-        else:
-            tasks.append(you_client.search(goal, count=5))
+        # Vector 2: AI Web Intelligence — the preferred API provider
+        # (services/search_providers.py: You.com when a key is saved, then Tavily,
+        # then the keyless cascade; each client keeps cascading on failure)
+        from app.services.search_providers import preferred_search
+        tasks.append(preferred_search(goal, count=5))
 
         # Vector 3: Sentiment / Competitors / Complaints
         sentiment_query = f"{entity_name or goal} competitors pricing alternatives Reddit reviews"
+        from app.services.tavily_search import tavily_client
         if you_client.is_configured():
             tasks.append(you_client.search(sentiment_query, count=4))
         elif tavily_client.is_configured():
