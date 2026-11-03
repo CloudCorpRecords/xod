@@ -9,7 +9,9 @@ Muse's own protocol). Each job is one Muse session in a folder:
   approvals             Muse asks before running things (its approval mode decides what): each request becomes a
                         Crew approval, shown on the Crew board, in the approvals history and on the phone; Xod's
                         safety check looks first and adds its warning. Your decision goes back to Muse; nothing
-                        is ever approved automatically.
+                        is approved automatically unless you switch on "Approve everything Muse asks"
+                        (services/muse_app.py) — and even then, a request Xod's safety check flags, or a
+                        protected write, still waits for you. Each auto-approval is logged.
   questions             Muse's questions for you, the same way, answered by picking an option or writing.
 
 Claude Code jobs (services/claude_native.py) work the same way on the board: one `claude -p` per job over its
@@ -26,7 +28,7 @@ import logging
 import re
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.paths import DATA_DIR
 from app.services import worktrees
@@ -106,6 +108,15 @@ def _emit(j: Dict[str, Any], event: Dict[str, Any]) -> None:
             f(j["id"], event)
         except Exception:
             pass
+    if event.get("type") == "done":
+        # Observability (services/event_log.py): every terminal Crew transition
+        # (done, failed, stopped, interrupted) funnels through this one emit.
+        from app.services import event_log
+        event_log.emit("crew.finished", actor=f"crew:{j.get('agent') or ''}",
+                       ids={"crew_job": j["id"]},
+                       payload={"status": event.get("status"), "agent": j.get("agent"),
+                                "title": (j.get("title") or "")[:200],
+                                "error": (j.get("error") or "")[:300] or None})
 
 
 def _step(j: Dict[str, Any], kind: str, text: str, **extra: Any) -> None:
@@ -236,8 +247,83 @@ def default_agent() -> str:
     return "claude" if agent_clis.which("claude") or not agent_clis.which("muse") else "muse"
 
 
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+MODELS_SETTING = "crew_muse_models"
+
+
+def models() -> Dict[str, Any]:
+    """Which Muse model jobs get: default (all jobs; empty = Muse's own default), cheap (for routine work), cheap_for
+    (kinds of job that use it, e.g. "handoff") and cheap_above_weekly (use it for every job once the weekly allowance
+    is at least this %; None = never)."""
+    from app.services.storage import get_setting
+    try:
+        cfg = json.loads(get_setting(MODELS_SETTING, "") or "{}")
+    except ValueError:
+        cfg = {}
+    return {"default": cfg.get("default") or "", "cheap": cfg.get("cheap") or "",
+            "cheap_for": [k for k in cfg.get("cheap_for") or [] if isinstance(k, str)],
+            "cheap_above_weekly": cfg.get("cheap_above_weekly")}
+
+
+def set_models(default: Optional[str] = None, cheap: Optional[str] = None, cheap_for: Optional[List[str]] = None,
+               cheap_above_weekly: Any = "unchanged") -> Dict[str, Any]:
+    from app.services.storage import set_setting
+    cfg = models()
+    for k, v in (("default", default), ("cheap", cheap)):
+        if v is not None:
+            v = v.strip()
+            if v and not MODEL_RE.match(v):
+                raise CrewError(f"'{v}' doesn't look like a model id (e.g. muse-spark-1.3).")
+            cfg[k] = v
+    if cheap_for is not None:
+        cfg["cheap_for"] = sorted({k.strip() for k in cheap_for if k.strip()})
+    if cheap_above_weekly != "unchanged":
+        cfg["cheap_above_weekly"] = None if cheap_above_weekly in (None, "") else max(0, min(100, int(cheap_above_weekly)))
+    set_setting(MODELS_SETTING, json.dumps(cfg))
+    return cfg
+
+
+BOARD_MODEL_SETTING = "board_claude_model"
+
+
+def board_model() -> str:
+    """The board seat pin: the model the Claude participant is seated on for a board meeting
+    (crew jobs of kind "board"). A configuration rule of the owner's, set like the crew model
+    settings; empty means no pin is configured, and board jobs then run the agent's own
+    default and say so on the record instead of claiming a pin that is not there."""
+    from app.services.storage import get_setting
+    return (get_setting(BOARD_MODEL_SETTING, "") or "").strip()
+
+
+def set_board_model(value: str) -> str:
+    from app.services.storage import set_setting
+    v = (value or "").strip()
+    if v and not MODEL_RE.match(v):
+        raise CrewError(f"'{v}' doesn't look like a model id (e.g. sonnet).")
+    set_setting(BOARD_MODEL_SETTING, v)
+    return v
+
+
+def pick_model(kind: str = "") -> Tuple[str, str]:
+    """(model, why) for a new Muse job of this kind. Empty model = Muse's own default."""
+    cfg = models()
+    if kind == "board":
+        pin = board_model()
+        if pin:
+            return pin, "the board seat pin"
+    if cfg["cheap"]:
+        if kind and kind in cfg["cheap_for"]:
+            return cfg["cheap"], f"the cheaper model for {kind} jobs"
+        if cfg["cheap_above_weekly"] is not None:
+            from app.services import agent_usage
+            weekly = (agent_usage.muse().get("weekly") or {}).get("used")
+            if weekly is not None and weekly >= cfg["cheap_above_weekly"]:
+                return cfg["cheap"], f"the cheaper model: weekly usage is at {weekly:.0f}%"
+    return cfg["default"], ("your default model" if cfg["default"] else "")
+
+
 async def start(task: str, folder: str = "", title: str = "", approval_mode: Optional[str] = None, agent: str = "",
-                isolate: Optional[bool] = None) -> Dict[str, Any]:
+                isolate: Optional[bool] = None, kind: str = "") -> Dict[str, Any]:
     """Hands a task to a coding agent (Claude Code or Muse) in a folder. Returns the job at once; it works in the background.
     In a git repository the job works in its own copy (a worktree on a branch of its own), so jobs never collide and
     nothing reaches your checkout until you merge it; isolate=False works in the folder itself."""
@@ -258,6 +344,12 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
     j = {"id": jid, "name": f"{agent}-job-{n}", "agent": agent, "title": (title or task.strip().splitlines()[0])[:100], "task": task,
          "folder": cwd, "project": cwd, "status": "starting", "started": time.time(), "updated": time.time(), "session_id": None,
          "turn_id": None, "steps": [], "approvals": {}, "questions": {}, "_text": "", "answer": "", "usage": {}, "error": None}
+    if kind == "board":
+        j["seat"] = {"role": "board", "agent": agent, "model_requested": board_model(),
+                     "model_actual": None, "model_proof": None, "limitation": None}
+        if not j["seat"]["model_requested"]:
+            j["seat"]["limitation"] = ("No board model pin is configured (the board_claude_model setting is "
+                                       "empty): this seat ran the agent's own default model.")
     if isolate is not False:
         try:
             wt = await asyncio.to_thread(worktrees.create, cwd, j["name"], jid)
@@ -267,6 +359,11 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
             j["worktree"] = wt
             j["folder"] = wt["cwd"]
     _jobs[jid] = j
+    from app.services import event_log
+    event_log.emit("crew.started", actor=f"crew:{agent}", ids={"crew_job": jid},
+                   payload={"agent": agent, "kind": kind or "", "title": j["title"],
+                            "folder": cwd,
+                            "seat_model_requested": (j.get("seat") or {}).get("model_requested")})
     if j.get("worktree"):
         w = j["worktree"]
         _step(j, "status", f"Working in its own copy of {w['repo_name']} (branch {w['branch']}, from {w['base']}): nothing reaches "
@@ -276,7 +373,9 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
         asyncio.create_task(_claude_start(j, j["task"]))
         _save()
         return _view(j)
-    _step(j, "status", "Starting Muse" + (" (the first job waits while it starts its tools)" if not (_host["host"] and _host["host"].running()) else ""))
+    j["model"], why = await asyncio.to_thread(pick_model, kind)
+    _step(j, "status", "Starting Muse" + (f" on {j['model']} ({why})" if j["model"] else "")
+          + (" (the first job waits while it starts its tools)" if not (_host["host"] and _host["host"].running()) else ""))
     asyncio.create_task(_run_start(j, approval_mode))
     _save()
     return _view(j)
@@ -285,9 +384,22 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
 async def _run_start(j: Dict[str, Any], approval_mode: Optional[str]) -> None:
     try:
         h = await _muse()
-        shared = {name: {"url": c["url"], "headers": {"Authorization": f"Bearer {c['token']}"}} for name, c in _shared().items()}
-        s = await h.start_session(j["folder"], approval_mode=approval_mode, mcp_servers=shared or None)
+        # Muse's session config is a closed union: each server names its transport, or session/start is refused.
+        # Optional: a connected app that's down mustn't stop the job from starting.
+        shared = {name: {"transport": "streamableHttp", "url": c["url"], "mode": "optional",
+                         "headers": {"Authorization": f"Bearer {c['token']}"}} for name, c in _shared().items()}
+        s = await h.start_session(j["folder"], approval_mode=approval_mode, mcp_servers=shared or None, model=j.get("model") or "")
         j["session_id"] = s["sessionId"]
+        if j.get("seat") is not None:
+            actual = s.get("modelId") or s.get("model") or ""
+            if actual:
+                j["seat"]["model_actual"] = actual
+                j["seat"]["model_proof"] = "reported by Muse when the session started"
+                if j["seat"].get("model_requested"):
+                    j["seat"]["limitation"] = None
+            elif not j["seat"].get("limitation"):
+                j["seat"]["limitation"] = ("Muse did not report its model when the session started, so this "
+                                           "seat's model cannot be proven from the job record.")
         _by_session[s["sessionId"]] = j["id"]
         _step(j, "status", "Muse is working on it")
         await _send(j, j["task"])
@@ -507,6 +619,11 @@ def _safety(command: str, what: str) -> str:
     return ""
 
 
+def _auto_ok(warning: str, protected: bool = False) -> bool:
+    """Auto-approve may proceed only with no safety warning and no protected write."""
+    return not warning and not protected
+
+
 async def _on_request(method: str, p: Dict[str, Any]) -> None:
     j = _job_for(p)
     if not j:
@@ -531,6 +648,15 @@ async def _on_request(method: str, p: Dict[str, Any]) -> None:
             agent_log.approval_opened(f"crew-{aid}", "crew", "Muse", f"{j['title'][:60]}: {what}"[:200], warning)
         except Exception:
             pass
+        from app.services import muse_app
+        if muse_app.enabled() and _auto_ok(warning, a["protected"]):
+            try:
+                await decide(j["id"], aid, "once", auto=True)
+                return
+            except CrewError as e:
+                logger.warning(f"Couldn't approve {what!r} for you: {e}")
+        elif muse_app.enabled():
+            logger.info(f"Auto-approve held for {what!r}: safety warning or protected write; waiting for you.")
         _notify_phone(j, f"Muse ({j['title'][:60]}) wants to {what}." + (f"\nSafety check: {warning}" if warning else "")
                       + "\nOpen Xod → Crew to approve or deny.")
         _save()
@@ -559,8 +685,9 @@ def _notify_phone(j: Dict[str, Any], text: str) -> None:
         pass
 
 
-async def decide(jid: str, approval_id: str, decision: str = "once") -> Dict[str, Any]:
-    """Your decision on one of Muse's approvals: once, session (for the rest of this job) or deny."""
+async def decide(jid: str, approval_id: str, decision: str = "once", auto: bool = False) -> Dict[str, Any]:
+    """Your decision on one of Muse's approvals: once, session (for the rest of this job) or deny. auto: Xod made it
+    for you because "Approve everything Muse asks" is on."""
     j = job(jid)
     a = j["approvals"].get(approval_id)
     if not a or a["state"] != "waiting":
@@ -569,7 +696,7 @@ async def decide(jid: str, approval_id: str, decision: str = "once") -> Dict[str
     if not want:
         raise CrewError("Decide once, session or deny.")
     if j["agent"] == "claude":
-        return await _claude_decide(j, a, decision)
+        return await _claude_decide(j, a, decision, auto=auto)
     choice = next((c for c in a["choices"] if c["decision"] == want[0] and (want[1] is None or c["scope"] == want[1])), None) \
         or next((c for c in a["choices"] if c["decision"] == want[0]), None) \
         or (next((c for c in a["choices"] if str(c["decision"]).startswith("denied")), None) if decision == "deny" else None)
@@ -583,10 +710,13 @@ async def decide(jid: str, approval_id: str, decision: str = "once") -> Dict[str
     a["state"] = "approved" if decision != "deny" else "denied"
     try:
         from app.services import agent_log
-        agent_log.approval_decided(f"crew-{approval_id}", "allowed" if decision != "deny" else "declined")
+        agent_log.approval_decided(f"crew-{approval_id}", ("allowed by Xod" if auto else "allowed") if decision != "deny" else "declined")
     except Exception:
         pass
-    _step(j, "you", ("Approved" if decision != "deny" else "Denied") + f": {a['what']}" + (" (for this job)" if decision == "session" else ""))
+    if auto:
+        _step(j, "xod", f"Approved for you (Approve everything Muse asks is on): {a['what']}")
+    else:
+        _step(j, "you", ("Approved" if decision != "deny" else "Denied") + f": {a['what']}" + (" (for this job)" if decision == "session" else ""))
     if not any(x["state"] == "waiting" for x in j["approvals"].values()) and not any(x["state"] == "waiting" for x in j["questions"].values()):
         j["status"] = "working"
     _save()
@@ -672,7 +802,8 @@ async def _claude_run(j: Dict[str, Any], resume: str = "") -> ClaudeRun:
     if not path:
         raise CrewError("Claude Code isn't installed. Xod can set it up: Tools → Agent setup.")
     env, mcp = _claude_env_and_config()
-    r = ClaudeRun(path, j["folder"], env=env, resume=resume, mcp_config=mcp)
+    seat_model = (j.get("seat") or {}).get("model_requested") or ""
+    r = ClaudeRun(path, j["folder"], env=env, resume=resume, mcp_config=mcp, model=seat_model)
     jid = j["id"]
 
     async def on_event(m: Dict[str, Any]) -> None:
@@ -800,6 +931,15 @@ async def _claude_event(j: Optional[Dict[str, Any]], m: Dict[str, Any]) -> None:
         if m.get("session_id") and j.get("session_id") != m["session_id"]:
             j["session_id"] = m["session_id"]
             _save()
+        if m.get("model"):
+            j["model_actual"] = m["model"]
+            seat = j.get("seat")
+            if seat is not None:
+                seat["model_actual"] = m["model"]
+                seat["model_proof"] = "reported by Claude Code in its session init event"
+                if seat.get("model_requested"):
+                    seat["limitation"] = None
+            _save()
         return
     if t == "assistant":
         for c in (m.get("message") or {}).get("content") or []:
@@ -855,6 +995,10 @@ async def _claude_event(j: Optional[Dict[str, Any]], m: Dict[str, Any]) -> None:
             why = m.get("result") or "; ".join(m.get("errors") or []) or str(m.get("subtype") or "it stopped")
             j.update(status="failed", error=str(why)[:400], ended=time.time())
             _step(j, "error", j["error"])
+        seat = j.get("seat")
+        if seat is not None and not seat.get("model_actual") and not seat.get("limitation"):
+            seat["limitation"] = ("Claude Code did not report its model in the session init event, so this "
+                                  "seat's model cannot be proven from the job record.")
         _save()
         _emit(j, {"type": "done", "status": j["status"]})
 
@@ -914,13 +1058,22 @@ async def _claude_request(j: Optional[Dict[str, Any]], m: Dict[str, Any]) -> Non
         agent_log.approval_opened(f"crew-{rid}", "crew", "Claude Code", f"{j['title'][:60]}: {what}"[:200], warning)
     except Exception:
         pass
+    from app.services import muse_app
+    if muse_app.enabled() and _auto_ok(warning):
+        try:
+            await decide(j["id"], rid, "once", auto=True)
+            return
+        except CrewError as e:
+            logger.warning(f"Couldn't approve {what!r} for you: {e}")
+    elif muse_app.enabled():
+        logger.info(f"Auto-approve held for {what!r}: safety warning; waiting for you.")
     _notify_phone(j, f"Claude Code ({j['title'][:60]}) wants to {what}." + (f"\nSafety check: {warning}" if warning else "")
                   + "\nOpen Xod → Crew to approve or deny.")
     _save()
     _emit(j, {"type": "approval", "approval": a})
 
 
-async def _claude_decide(j: Dict[str, Any], a: Dict[str, Any], decision: str) -> Dict[str, Any]:
+async def _claude_decide(j: Dict[str, Any], a: Dict[str, Any], decision: str, auto: bool = False) -> Dict[str, Any]:
     r = _runs.get(j["id"])
     if not (r and r.running()):
         a["state"] = "dropped"
@@ -938,10 +1091,13 @@ async def _claude_decide(j: Dict[str, Any], a: Dict[str, Any], decision: str) ->
     a["state"] = "approved" if decision != "deny" else "denied"
     try:
         from app.services import agent_log
-        agent_log.approval_decided(f"crew-{a['id']}", "allowed" if decision != "deny" else "declined")
+        agent_log.approval_decided(f"crew-{a['id']}", ("allowed by Xod" if auto else "allowed") if decision != "deny" else "declined")
     except Exception:
         pass
-    _step(j, "you", ("Approved" if decision != "deny" else "Denied") + f": {a['what']}" + (" (for this job)" if decision == "session" else ""))
+    if auto:
+        _step(j, "xod", f"Approved for you (Approve everything Muse asks is on): {a['what']}")
+    else:
+        _step(j, "you", ("Approved" if decision != "deny" else "Denied") + f": {a['what']}" + (" (for this job)" if decision == "session" else ""))
     if not any(x["state"] == "waiting" for x in j["approvals"].values()) and not any(x["state"] == "waiting" for x in j["questions"].values()):
         j["status"] = "working"
     _save()

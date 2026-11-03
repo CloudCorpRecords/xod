@@ -486,6 +486,11 @@ async function loadConfig() {
     document.getElementById("inputLlmBaseUrl").value = data.llm_base_url || "http://localhost:1234/v1";
     document.getElementById("inputLlmModel").value = data.llm_model || "google/gemma-4-12b-qat";
     handleProviderChange();
+    updateLlmModelPriceLine();
+    const autoBox = document.getElementById("checkboxLlmAutoModel");
+    if (autoBox) autoBox.checked = Boolean(data.llm_auto_model);
+    renderVibenchTable();
+    refreshAutoModelPick();
 
     // Update Cloud Swarm Keys Badges
     const updateKeyBadge = (id, hasKey, inputId) => {
@@ -884,6 +889,7 @@ function handleProviderChange() {
     if (lmContainer) lmContainer.classList.add("hidden");
     lblCloud.textContent = `${provider.toUpperCase()} API Key`;
   }
+  kpOnProviderChange();
 }
 
 function setFireworksModel(modelId) {
@@ -981,6 +987,378 @@ async function testCurrentCloudProviderKey() {
   }
 }
 
+
+// ---- Model pricing reference + detected-model dropdown ---------------------
+// Prices come from one dated reference table (app/static/model_pricing.json),
+// verified by hand against the provider's official pricing pages. The provider's
+// model-list API does not return prices, so a model missing from the table shows
+// "no reference price" rather than a guess.
+let _modelPricingTable = null;
+let _modelPricingPromise = null;
+let _priceLineWired = false;
+
+function loadModelPricing() {
+  if (_modelPricingTable) return Promise.resolve(_modelPricingTable);
+  if (_modelPricingPromise) return _modelPricingPromise;
+  _modelPricingPromise = fetch("/static/model_pricing.json")
+    .then(r => (r.ok ? r.json() : null))
+    .then(d => { _modelPricingTable = d; return d; })
+    .catch(() => null);
+  return _modelPricingPromise;
+}
+
+// Exact id first, then the undated alias (dated snapshots like gpt-4o-2024-08-06
+// share the alias price). Returns {input, output} in USD per 1M tokens, or null.
+function lookupModelPrice(table, provider, modelId) {
+  if (!table || !table.providers || !modelId) return null;
+  const rows = table.providers[provider];
+  if (!rows) return null;
+  const id = String(modelId).trim();
+  if (rows[id]) return rows[id];
+  const alias = id.replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  return rows[alias] || null;
+}
+
+function formatUsd(n) {
+  return "$" + Number(n).toFixed(2);
+}
+
+function modelPriceSuffix(table, provider, modelId) {
+  const row = lookupModelPrice(table, provider, modelId);
+  if (!row) return "";
+  return ` (${formatUsd(row.input)} in / ${formatUsd(row.output)} out per 1M)`;
+}
+
+async function updateLlmModelPriceLine() {
+  const line = document.getElementById("llmModelPriceLine");
+  if (!line) return;
+  if (!_priceLineWired) {
+    _priceLineWired = true;
+    const input = document.getElementById("inputLlmModel");
+    if (input) input.addEventListener("input", () => updateLlmModelPriceLine());
+    const prov = document.getElementById("selectLlmProvider");
+    if (prov) prov.addEventListener("change", () => updateLlmModelPriceLine());
+  }
+  const provider = document.getElementById("selectLlmProvider")?.value || "";
+  const modelId = (document.getElementById("inputLlmModel")?.value || "").trim();
+  const table = await loadModelPricing();
+  const hasProvider = Boolean(table && table.providers && table.providers[provider]);
+  if (!hasProvider || !modelId) {
+    line.classList.add("hidden");
+    line.textContent = "";
+    return;
+  }
+  const row = lookupModelPrice(table, provider, modelId);
+  line.classList.remove("hidden");
+  line.textContent = row
+    ? `Reference price: ${formatUsd(row.input)} in / ${formatUsd(row.output)} out per 1M tokens (table dated ${table.as_of})`
+    : `No reference price for this model (table dated ${table.as_of})`;
+}
+
+// Fill the detected-models dropdown from a Detect Models result. Choosing a row
+// writes the id into the Model Name input, which is what Save Settings persists,
+// so the save path is unchanged. The Custom row leaves manual typing untouched.
+async function populateDetectedModelSelect(models, selectedId) {
+  const wrap = document.getElementById("detectedModelsContainer");
+  const sel = document.getElementById("selectLlmModelDetected");
+  if (!wrap || !sel) return;
+  const provider = document.getElementById("selectLlmProvider")?.value || "";
+  const table = await loadModelPricing();
+  sel.innerHTML = "";
+  const ids = (models || []).map(m => m.id).filter(Boolean);
+  ids.forEach(id => {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = id + modelPriceSuffix(table, provider, id);
+    sel.appendChild(opt);
+  });
+  const custom = document.createElement("option");
+  custom.value = "__custom__";
+  custom.textContent = "Custom (keep the name typed above)";
+  sel.appendChild(custom);
+  if (ids.length === 0) {
+    wrap.classList.add("hidden");
+    return;
+  }
+  wrap.classList.remove("hidden");
+  sel.value = ids.includes(selectedId) ? selectedId : "__custom__";
+  sel.onchange = () => {
+    if (sel.value && sel.value !== "__custom__") {
+      const input = document.getElementById("inputLlmModel");
+      if (input) input.value = sel.value;
+    }
+    updateLlmModelPriceLine();
+  };
+}
+
+function hideDetectedModelSelect() {
+  const wrap = document.getElementById("detectedModelsContainer");
+  if (wrap) wrap.classList.add("hidden");
+}
+
+// ---- API key profiles + usage ledger ---------------------------------------
+// Named keys per cloud provider (services/key_profiles.py); the UI only ever
+// sees masked keys. Detect Models runs against the selected profile (the
+// active one by default) and the server stores the models it finds on it, so
+// the detected-models dropdown doubles as the active key's allowed models.
+const KEY_PROFILE_PROVIDERS = ["openai", "anthropic", "gemini", "groq", "openrouter", "fireworks"];
+let _kpData = null;
+let _kpSelected = null;
+
+function kpProvider() { return document.getElementById("selectLlmProvider")?.value || ""; }
+
+function kpStatus(msg, isError) {
+  const el = document.getElementById("keyProfileStatus");
+  if (!el) return;
+  el.classList.remove("hidden");
+  el.className = isError ? "text-[11px] text-red-400" : "text-[11px] text-emerald-400";
+  el.textContent = msg;
+}
+
+async function loadKeyProfiles() {
+  const group = document.getElementById("groupKeyProfiles");
+  const provider = kpProvider();
+  if (!group) return;
+  if (!KEY_PROFILE_PROVIDERS.includes(provider)) { group.classList.add("hidden"); return; }
+  group.classList.remove("hidden");
+  try {
+    const res = await fetch(`/api/llm/key-profiles?provider=${encodeURIComponent(provider)}`);
+    if (!res.ok) return;
+    _kpData = await res.json();
+    if (!_kpData.profiles.some(p => p.id === _kpSelected)) _kpSelected = _kpData.active;
+    renderKeyProfiles();
+    const active = _kpData.profiles.find(p => p.id === _kpData.active);
+    if (active && active.models && active.models.length) {
+      populateDetectedModelSelect(active.models.map(id => ({ id })), document.getElementById("inputLlmModel")?.value.trim());
+    }
+  } catch (e) { /* key profiles are an extra; never break Settings */ }
+}
+
+function renderKeyProfiles() {
+  const sel = document.getElementById("selectKeyProfile");
+  const meta = document.getElementById("keyProfileMeta");
+  const note = document.getElementById("keyProfileActiveNote");
+  if (!sel || !_kpData) return;
+  sel.innerHTML = "";
+  _kpData.profiles.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = `${p.name}${p.active ? " (active)" : ""} · ${p.has_key ? p.masked : "no key saved"}`;
+    sel.appendChild(opt);
+  });
+  sel.value = _kpSelected;
+  const active = _kpData.profiles.find(p => p.id === _kpData.active);
+  if (note) note.textContent = active ? `Calls use: ${active.name}` : "";
+  const cur = _kpData.profiles.find(p => p.id === _kpSelected);
+  if (meta && cur) {
+    meta.textContent = cur.models && cur.models.length
+      ? `${cur.models.length} allowed model(s) for this key${cur.models_at ? `, detected ${new Date(cur.models_at * 1000).toLocaleString()}` : ""}.`
+      : "No models detected for this key yet. Use Detect Models.";
+  }
+}
+
+function kpSelectChange() {
+  _kpSelected = document.getElementById("selectKeyProfile")?.value || null;
+  renderKeyProfiles();
+}
+
+async function kpMutate(url, options, okMsg) {
+  try {
+    const res = await fetch(url, options);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { kpStatus(data.detail || "That did not work.", true); return false; }
+    _kpData = data;
+    if (!_kpData.profiles.some(p => p.id === _kpSelected)) _kpSelected = _kpData.active;
+    renderKeyProfiles();
+    if (okMsg) kpStatus(okMsg, false);
+    return true;
+  } catch (e) {
+    kpStatus("Could not reach Xod: " + e.message, true);
+    return false;
+  }
+}
+
+function kpActivate() {
+  if (!_kpSelected) return;
+  kpMutate(`/api/llm/key-profiles/${encodeURIComponent(_kpSelected)}/activate`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: kpProvider() }) },
+    "Active key switched. New calls use this profile's key.");
+}
+
+async function kpAdd() {
+  const name = document.getElementById("inputKeyProfileName")?.value.trim();
+  const key = document.getElementById("inputKeyProfileKey")?.value.trim() || "";
+  if (!name) { kpStatus("Give the new profile a name first.", true); return; }
+  const ok = await kpMutate("/api/llm/key-profiles",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: kpProvider(), name, key }) },
+    `Profile "${name}" added.`);
+  if (ok) {
+    const created = _kpData.profiles.find(p => p.name === name);
+    if (created) { _kpSelected = created.id; renderKeyProfiles(); }
+    document.getElementById("inputKeyProfileName").value = "";
+    document.getElementById("inputKeyProfileKey").value = "";
+  }
+}
+
+async function kpRename() {
+  const name = document.getElementById("inputKeyProfileName")?.value.trim();
+  if (!_kpSelected || !name) { kpStatus("Pick a profile and type its new name first.", true); return; }
+  const ok = await kpMutate(`/api/llm/key-profiles/${encodeURIComponent(_kpSelected)}/rename`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: kpProvider(), name }) },
+    "Profile renamed.");
+  if (ok) document.getElementById("inputKeyProfileName").value = "";
+}
+
+async function kpDelete() {
+  if (!_kpSelected) return;
+  if (_kpSelected === "default") { kpStatus("The Default profile cannot be deleted.", true); return; }
+  const cur = _kpData?.profiles.find(p => p.id === _kpSelected);
+  if (!confirm(`Delete the key profile "${cur ? cur.name : _kpSelected}" and its saved key?`)) return;
+  const ok = await kpMutate(`/api/llm/key-profiles/${encodeURIComponent(_kpSelected)}?provider=${encodeURIComponent(kpProvider())}`,
+    { method: "DELETE" }, "Profile deleted.");
+  if (ok) _kpSelected = _kpData.active;
+}
+
+async function kpSaveKey() {
+  const key = document.getElementById("inputKeyProfileKey")?.value.trim() || "";
+  if (!_kpSelected) return;
+  const ok = await kpMutate(`/api/llm/key-profiles/${encodeURIComponent(_kpSelected)}/key`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider: kpProvider(), key }) },
+    key ? "Key saved for this profile." : "Key removed from this profile.");
+  if (ok) document.getElementById("inputKeyProfileKey").value = "";
+}
+
+function kpOnProviderChange() {
+  if (KEY_PROFILE_PROVIDERS.includes(kpProvider())) loadKeyProfiles();
+  else document.getElementById("groupKeyProfiles")?.classList.add("hidden");
+}
+
+// Usage panel: totals and breakdowns from the per-call ledger
+// (services/usage_ledger.py). Costs are estimates from the dated reference
+// price table; provider-reported and estimated token counts stay separate.
+let _usageRange = "today";
+let _usageTimer = null;
+
+function setUsageRange(r) { _usageRange = r; refreshUsagePanel(); }
+function fmtTokens(n) { return Number(n || 0).toLocaleString(); }
+function fmtCost(n) { return (n === null || n === undefined) ? "unpriced" : "$" + Number(n).toFixed(4); }
+
+async function refreshUsagePanel() {
+  const totals = document.getElementById("usageTotals");
+  if (!totals) return;
+  try {
+    const res = await fetch(`/api/usage/summary?range=${encodeURIComponent(_usageRange)}`);
+    if (!res.ok) return;
+    const d = await res.json();
+    document.querySelectorAll(".usage-range-btn").forEach(b =>
+      b.classList.toggle("ring-1", b.dataset.usageRange === _usageRange));
+    const t = d.totals || {};
+    totals.textContent = `${t.calls || 0} call(s) · ${fmtTokens(t.total_tokens)} tokens (${fmtTokens(t.prompt_tokens)} in / ${fmtTokens(t.completion_tokens)} out) · estimated cost ${fmtCost(t.cost_usd)}`
+      + (t.unpriced_calls ? ` · ${t.unpriced_calls} unpriced call(s)` : "")
+      + ` · token counts: ${t.records_api || 0} from the provider, ${t.records_estimated || 0} estimated`;
+    const row = (left, b) => `<div class="flex justify-between gap-2"><span class="truncate">${escapeHtml(left)}</span><span class="whitespace-nowrap">${b.calls} calls · ${fmtTokens(b.total_tokens)} tok · ${fmtCost(b.cost_usd)}</span></div>`;
+    const bm = document.getElementById("usageByModel");
+    if (bm) bm.innerHTML = (d.by_model || []).map(m => row(`${m.model} (${m.provider})`, m)).join("") || `<div class="text-zinc-500">No calls in this range yet.</div>`;
+    const bk = document.getElementById("usageByKey");
+    if (bk) bk.innerHTML = (d.by_key_profile || []).map(k => row(`${k.key_profile || "(local or no key)"} (${k.provider})`, k)).join("") || `<div class="text-zinc-500">No calls in this range yet.</div>`;
+    const line = document.getElementById("usageEstimateLine");
+    if (line) {
+      let est = null;
+      try { est = JSON.parse(localStorage.getItem("xod_last_estimate") || "null"); } catch (e) { est = null; }
+      const estTxt = est ? `Last pre-flight estimate: ~${fmtTokens(est.estimated_total_tokens)} tokens, ~${fmtCost(est.estimated_cost_usd)} (estimate, ${escapeHtml(est.model || "")}).` : "No pre-flight estimate yet.";
+      const lc = d.last_call;
+      const actTxt = lc ? `Last actual call: ${fmtTokens(lc.total_tokens)} tokens, ${fmtCost(lc.cost_usd)} (${escapeHtml(lc.model || "")}, ${lc.tokens_source === "api" ? "provider counts" : "estimated counts"}).` : "No calls recorded yet.";
+      line.textContent = estTxt + " " + actTxt;
+    }
+    const asOf = document.getElementById("usagePricingAsOf");
+    if (asOf && d.pricing_as_of) asOf.textContent = d.pricing_as_of;
+  } catch (e) { /* the panel refreshes on a timer; a failed read just waits for the next one */ }
+}
+
+function startUsageAutoRefresh() {
+  refreshUsagePanel();
+  if (_usageTimer) clearInterval(_usageTimer);
+  _usageTimer = setInterval(refreshUsagePanel, 20000);
+}
+
+function stopUsageAutoRefresh() {
+  if (_usageTimer) { clearInterval(_usageTimer); _usageTimer = null; }
+}
+
+// ---- Auto model mode (ViBench benchmark + cost) -----------------------------
+// The pick comes from the backend selector (GET /api/llm/auto-pick), which ranks
+// the provider's detected models against the bundled ViBench snapshot and the
+// pricing table. The snapshot table below renders that same data, so the basis
+// of every pick can be inspected. Snapshot numbers are dated, never live.
+let _vibenchSnapshot = null;
+let _vibenchPromise = null;
+let _autoWired = false;
+
+function loadVibenchSnapshot() {
+  if (_vibenchSnapshot) return Promise.resolve(_vibenchSnapshot);
+  if (_vibenchPromise) return _vibenchPromise;
+  _vibenchPromise = fetch("/static/vibench_snapshot.json")
+    .then(r => (r.ok ? r.json() : null))
+    .then(d => { _vibenchSnapshot = d; return d; })
+    .catch(() => null);
+  return _vibenchPromise;
+}
+
+function vibenchRowsTable(rows) {
+  const head = "<tr><th class='text-left pr-2'>Model</th><th class='text-right pr-2'>Pass@1</th><th class='text-right pr-2'>Plan pass</th><th class='text-right pr-2'>Cost / build</th><th class='text-right'>Build time</th></tr>";
+  const body = (rows || []).map(r =>
+    `<tr><td class='pr-2 py-0.5'>${escapeHtml(r.display_name)}</td>` +
+    `<td class='text-right pr-2 py-0.5'>${r.pass_at_1}%</td>` +
+    `<td class='text-right pr-2 py-0.5'>${r.plan_pass_rate}%</td>` +
+    `<td class='text-right pr-2 py-0.5'>$${Number(r.cost_per_build_usd).toFixed(2)}</td>` +
+    `<td class='text-right py-0.5'>${escapeHtml(r.build_time)}</td></tr>`).join("");
+  return `<table class='w-full text-[10px] text-zinc-300 font-mono'><thead class='text-zinc-500'>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
+async function renderVibenchTable() {
+  const details = document.getElementById("vibenchDetails");
+  const wrap = document.getElementById("vibenchTableWrap");
+  const meta = document.getElementById("vibenchMeta");
+  if (!details || !wrap) return;
+  const snap = await loadVibenchSnapshot();
+  if (!snap || !snap.rows) { details.classList.add("hidden"); return; }
+  let html = vibenchRowsTable(snap.rows);
+  (snap.secondary_tables || []).forEach(t => {
+    html += `<p class='text-[9px] text-zinc-500 pt-1.5 pb-0.5'>${escapeHtml(t.name)}: a separate run, shown for context; it does not feed Auto.</p>` + vibenchRowsTable(t.rows);
+  });
+  wrap.innerHTML = html;
+  if (meta) meta.textContent = `${snap.benchmark} snapshot dated ${snap.snapshot_date}. Source: ${snap.source}. ${snap.attribution || ""}`;
+  details.classList.remove("hidden");
+}
+
+async function refreshAutoModelPick() {
+  const line = document.getElementById("autoModelPickLine");
+  const box = document.getElementById("checkboxLlmAutoModel");
+  if (!line || !box) return;
+  if (!_autoWired) {
+    _autoWired = true;
+    const prov = document.getElementById("selectLlmProvider");
+    if (prov) prov.addEventListener("change", () => refreshAutoModelPick());
+  }
+  if (!box.checked) { line.classList.add("hidden"); line.textContent = ""; return; }
+  const provider = document.getElementById("selectLlmProvider")?.value || "";
+  try {
+    const res = await fetch(`/api/llm/auto-pick${provider ? `?provider=${encodeURIComponent(provider)}` : ""}`);
+    const data = await res.json();
+    line.classList.remove("hidden");
+    line.textContent = data.pick
+      ? `Auto pick: ${data.pick}. Why: ${data.pick_reason}. ${data.formula}`
+      : `Auto pick: none yet. ${data.pick_reason || ""}`;
+  } catch (e) {
+    line.classList.remove("hidden");
+    line.textContent = "Auto pick unavailable right now; the saved model name still applies.";
+  }
+}
+
+function handleAutoModelToggle() {
+  refreshAutoModelPick();
+}
+
 async function refreshLlmModels(options = {}) {
   const isSilent = Boolean(options && options.silent);
   const btn = document.getElementById("btnDetectModels");
@@ -995,11 +1373,13 @@ async function refreshLlmModels(options = {}) {
 
   try {
     const provider = document.getElementById("selectLlmProvider")?.value || "lm_studio";
-    const res = await fetch(`/api/llm/models${provider ? `?provider=${encodeURIComponent(provider)}` : ''}`);
+    const kpParam = KEY_PROFILE_PROVIDERS.includes(provider) ? (_kpSelected || (_kpData && _kpData.active) || "") : "";
+    const res = await fetch(`/api/llm/models?provider=${encodeURIComponent(provider)}${kpParam ? `&key_profile=${encodeURIComponent(kpParam)}` : ''}`);
     const data = await res.json();
     const models = data.models || [];
 
     if (provider === "lm_studio" && container && pillsContainer) {
+      hideDetectedModelSelect();
       if (models.length > 0) {
         container.classList.remove("hidden");
         pillsContainer.innerHTML = "";
@@ -1070,9 +1450,13 @@ async function refreshLlmModels(options = {}) {
       if (inputModel && (!isSilent || !inputModel.value)) {
         inputModel.value = targetModel;
       }
+      populateDetectedModelSelect(models, inputModel ? inputModel.value.trim() : targetModel);
+      updateLlmModelPriceLine();
+      if (KEY_PROFILE_PROVIDERS.includes(provider)) loadKeyProfiles();
       if (!isSilent) showToast(`Detected ${models.length} model(s). Selected: ${targetModel}`);
     } else {
       if (container) container.classList.add("hidden");
+      hideDetectedModelSelect();
       if (!isSilent) alert("No active models detected. Ensure your model server is reachable!");
     }
   } catch (e) {
@@ -1082,6 +1466,7 @@ async function refreshLlmModels(options = {}) {
       btn.innerHTML = `<i data-lucide="refresh-cw" class="size-3"></i> Detect Models`;
       if (window.lucide) lucide.createIcons();
     }
+    refreshAutoModelPick();
   }
 }
 
@@ -1152,6 +1537,8 @@ async function deleteSavedLogin(site) {
 function openSettingsModal() {
   document.getElementById("settingsModal").classList.remove("hidden");
   if (window.lucide) lucide.createIcons();
+  loadKeyProfiles();
+  startUsageAutoRefresh();
   loadMediaModelsSettings();
   loadSavedLogins();
   if (typeof loadOnePassword === "function") loadOnePassword();
@@ -1162,6 +1549,7 @@ function openSettingsModal() {
 }
 
 function closeSettingsModal() {
+  stopUsageAutoRefresh();
   document.getElementById("settingsModal").classList.add("hidden");
 }
 
@@ -2012,6 +2400,7 @@ async function saveSettings() {
     llm_base_url: (provider === "fireworks" && (!baseUrl || baseUrl.includes("localhost"))) ? "https://api.fireworks.ai/inference/v1" : baseUrl,
     llm_model: (provider === "fireworks" && (!model || model.includes("gemma-4"))) ? "accounts/fireworks/models/glm-5p3-flash" : model
   };
+  payload.llm_auto_model = document.getElementById("checkboxLlmAutoModel")?.checked || false;
   if (key) payload.trustmrr_api_key = key;
   if (youKey) payload.you_api_key = youKey;
   if (tavilyKey) payload.tavily_api_key = tavilyKey;
@@ -3050,6 +3439,13 @@ async function handleChatSubmit(e) {
   currentAbortController = new AbortController();
 
   try {
+    fetch("/api/usage/estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: finalExpandedQuery || "", max_tokens: 4096 })
+    }).then(r => (r.ok ? r.json() : null)).then(d => {
+      if (d) { try { localStorage.setItem("xod_last_estimate", JSON.stringify(d)); } catch (e) {} }
+    }).catch(() => {});
     const res = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

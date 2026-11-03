@@ -81,6 +81,18 @@ def ability(tool: str, args: Dict[str, Any]) -> str:
     return "other"
 
 
+def tool_ability(tool: str, args: Dict[str, Any]) -> str:
+    """For a suite scored by tool (by_tool): the tool itself, with its action (tailscale_files.send), so a case can
+    name exactly what should come first. Driving an agent through the shell still shows as shell_agent."""
+    args = args if isinstance(args, dict) else {}
+    if tool.startswith("mcp__"):
+        return tool.split("__", 2)[-1]
+    if tool in SHELL_TOOLS and AGENT_RE.search(json.dumps(args)):
+        return "shell_agent"
+    act = str(args.get("action") or "").lower()
+    return f"{tool}.{act}" if act else tool
+
+
 def _agents_named(tool: str, args: Dict[str, Any], query: str) -> List[str]:
     args = args if isinstance(args, dict) else {}
     named = [args.get("agent")] + [j.get("agent") for j in args.get("jobs") or [] if isinstance(j, dict)]
@@ -98,7 +110,7 @@ def score(case: Dict[str, Any], decision: Dict[str, Any]) -> Dict[str, Any]:
     """Whether a decision is what the case wants. decision: {"route": answer|web|plan, "calls": [(tool, args)…]}."""
     want, never = set(case.get("want") or []), set(case.get("never") or [])
     calls = decision.get("calls") or []
-    got = [ability(t, a) for t, a in calls]
+    got = [(tool_ability if case.get("by_tool") else ability)(t, a) for t, a in calls]
     if decision.get("route") in ("answer", "web") or not calls:
         got = [decision.get("route") if decision.get("route") in ("answer", "web") else "answer"]
     why = []
@@ -184,11 +196,13 @@ async def _route(agent, query: str) -> str:
     from app.services.llm import llm_service
     if not agent._fast_lane_ok(query, False, False, None):
         return "plan"
-    if agent._FRESH_RE.search(query):
+    if agent._FRESH_RE.search(query) and not agent._PERSONAL_RE.search(query):
         return "web"
     msgs = agent.router_messages(query, [])
     head = ""
-    stream = llm_service.stream_chat_completion(messages=msgs, temperature=0.2, max_tokens=200, think=False, task="router")
+    thinks = agent._router_thinks()
+    stream = llm_service.stream_chat_completion(messages=msgs, temperature=0.2, max_tokens=2400 if thinks else 200,
+                                                think=None if thinks else False, task="router")
     try:
         async for ch in stream:
             if ch.get("type") == "error":
@@ -258,7 +272,8 @@ async def run(name: str = "agent_routing", only: Optional[List[str]] = None, rep
               progress=None) -> Dict[str, Any]:
     """Runs a suite with the model Xod is set to use. repeat > 1 runs each case again (models aren't deterministic)."""
     from app.config import settings
-    cases = [c for c in suite(name)["cases"] if not only or c["id"] in only]
+    by_tool = bool(suite(name).get("by_tool"))
+    cases = [{**c, "by_tool": by_tool} for c in suite(name)["cases"] if not only or c["id"] in only]
     out: List[Dict[str, Any]] = []
     started = time.time()
     _running["run"] = {"suite": name, "done": 0, "total": len(cases) * repeat, "started": started}

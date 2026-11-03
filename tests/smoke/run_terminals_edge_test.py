@@ -24,6 +24,7 @@ TMP = Path(tempfile.mkdtemp(prefix="xod-termedge-"))
 HOMEDIR = TMP / "home"
 BIN = HOMEDIR / ".local" / "bin"
 BIN.mkdir(parents=True)
+os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
 os.environ.update({"HOME": str(HOMEDIR), "XOD_DATA_DIR": str(TMP / "data"), "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring",
                    "XOD_TEST_KEYRING_FILE": str(TMP / "keys.json"), "XOD_NO_UPDATE_CHECK": "1", "FAKE_STATE": str(TMP / "state"),
                    # only the stand-ins: none of this computer's real agents (in ~/.local/bin, npm's folder …)

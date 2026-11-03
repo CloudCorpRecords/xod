@@ -46,6 +46,8 @@ SECRET_PATTERNS = [
 # Example values in forms and docs: tmrr_xxxxxxxx, sk-...your-key..., AAAAAAAA…
 PLACEHOLDER = re.compile(r"(x{6,}|X{6,}|(.)\2{9,}|your|example|placeholder|dummy|test)", re.I)
 
+SERVICE_ACCOUNTS = {"runner", "root", "admin", "administrator", "user", "ubuntu", "ec2-user", "vagrant", "docker", "jenkins", "buildkite", "circleci"}
+NAME_OK = re.compile(r"(?!)")   # files allowed to carry your name: none
 SKIP_CONTENT = re.compile(r"\.(png|jpe?g|gif|ico|icns|woff2?|ttf|otf|webp|mp4|mp3|wav|pdf|lock)$|package-lock\.json$")
 
 
@@ -61,6 +63,21 @@ def main() -> int:
     home = os.path.expanduser("~")
     user = getpass.getuser()
     personal = [p for p in {home, f"/Users/{user}/", f"/home/{user}/"} if len(p) > 8]
+    # Your own name (from git) and account name, read from this computer when the check runs, never written here:
+    # the repo is meant to be set up by anyone without carrying the author's identity along.
+    names = set()
+    try:
+        git_name = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True, timeout=5).stdout.strip()
+        names |= {w for w in re.split(r"\s+", git_name) if len(w) >= 4}
+    except Exception:
+        pass
+    if len(user) >= 4:
+        names.add(user)
+    # A build machine's account ("runner" on GitHub) isn't a person, and is often an ordinary word in the code.
+    if os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"):
+        names = set()
+    names = {n for n in names if n.lower() not in SERVICE_ACCOUNTS}
+    name_res = [re.compile(rf"(?<![A-Za-z]){re.escape(n)}(?![A-Za-z])", re.I) for n in names]
     problems = []
     this_file = os.path.relpath(__file__)
     for f in files(staged):
@@ -90,6 +107,12 @@ def main() -> int:
         if hit:
             line = text.count("\n", 0, text.index(hit)) + 1
             problems.append(f"{f}:{line}: contains your home folder path")
+        if not NAME_OK.search(f):
+            for rx in name_res:
+                m = rx.search(text)
+                if m:
+                    problems.append(f"{f}:{text.count(chr(10), 0, m.start()) + 1}: contains your name or username ({m.group(0)})")
+                    break
     # One version everywhere: the app's own (app/version.py) and the installer's (electron/package.json).
     try:
         import json, re as _re

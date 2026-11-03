@@ -2,6 +2,7 @@ import asyncio
 import os
 import platform
 import shutil
+import signal
 import subprocess
 import time
 import json
@@ -18,6 +19,21 @@ if WIN:
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 STATE_FILE = DATA_DIR / "computer_state.json"
+
+# Process hygiene for the computer tools. Every child these tools spawn is registered,
+# started in its own process group, given a deadline and a capped output buffer, and
+# reaped (group terminated, then waited on) on completion, timeout, cancellation, and
+# at task end (reap_tool_children). A shell that is merely killed leaves its children
+# behind as orphans: that is how whole-home find processes outlived their tasks for
+# hours in the eval runs. The caps: 64 KB captured per stream is far above what a tool
+# result can usefully carry (run_command trims again to 15,000 chars for the model),
+# and find keeps the 6 second deadline it already had, now enforced by reaping.
+TOOL_OUTPUT_CAP_BYTES = 65536
+FIND_FILES_TIMEOUT_S = 6.0
+QUICK_TOOL_TIMEOUT_S = 20.0
+APPLESCRIPT_TIMEOUT_S = 60.0
+_REAP_TERM_GRACE_S = 1.5
+_REAP_KILL_GRACE_S = 2.0
 
 
 def _graphics() -> Dict[str, Any]:
@@ -50,6 +66,11 @@ class SystemControlService:
     def __init__(self):
         self.command_history: List[Dict[str, Any]] = []
         self.background_jobs: Dict[str, Dict[str, Any]] = {}
+        # Live children spawned for tool calls (never background jobs, which have their
+        # own registry and lifetime): pid -> {"proc", "origin", "started"}. The origin
+        # is who asked (the activity contextvar: "chat", "task:<id>", ...), so a task-end
+        # sweep reaps exactly that task's children and nobody else's.
+        self._tool_children: Dict[int, Dict[str, Any]] = {}
         self.computer_id: str = f"mac-{uuid.uuid4().hex[:8]}"
         # The person's home folder, not Xod's own (where the server runs: its code, or inside the installed app).
         self.current_working_directory: str = os.path.expanduser("~")
@@ -304,16 +325,200 @@ class SystemControlService:
         by_mem = [r for r in sorted(rows, key=lambda r: -r["_rss"]) if r not in by_cpu][:n - len(by_cpu)]
         return [{k: v for k, v in r.items() if not k.startswith("_")} for r in by_cpu + by_mem]
 
-    @staticmethod
-    async def _shell(command: str, cwd: str):
-        """The user's shell: zsh/bash on a Mac, Windows PowerShell on Windows."""
+    # ------------------------------------------------------------ process hygiene
+
+    def _register_tool_child(self, proc, track: bool = True) -> None:
+        if not track or proc is None or getattr(proc, "pid", None) is None:
+            return
+        origin = "chat"
+        try:
+            from app.services import activity
+            origin = activity.origin.get()
+        except Exception:
+            pass
+        self._tool_children[proc.pid] = {"proc": proc, "origin": origin, "started": time.time()}
+
+    def _unregister_tool_child(self, proc) -> None:
+        if proc is not None:
+            self._tool_children.pop(getattr(proc, "pid", -1), None)
+
+    async def _reap_proc_group(self, proc) -> None:
+        """Terminate a child's whole process group and wait until it is gone.
+
+        Killing only the direct child (the old timeout path) orphans everything it
+        spawned. The group gets SIGTERM, a short grace, then SIGKILL; the wait is
+        itself bounded so reaping can never wedge the caller the way awaiting a
+        process whose grandchildren hold its pipes open once did."""
+        if proc is None:
+            return
+        try:
+            if proc.returncode is None:
+                signalled = False
+                if not WIN:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                        signalled = True
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+                if WIN and not signalled:
+                    # No process groups to signal on Windows: taskkill /T is the
+                    # tree kill. Without it only the shell dies, and whatever the
+                    # job started (a dev server, say) keeps its port and runs on.
+                    try:
+                        killer = await asyncio.create_subprocess_exec(
+                            "taskkill", "/PID", str(proc.pid), "/T", "/F",
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL)
+                        if await asyncio.wait_for(killer.wait(), timeout=5) == 0:
+                            signalled = True
+                    except Exception:
+                        pass
+                if not signalled:
+                    try:
+                        proc.terminate()
+                    except Exception:
+                        pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=_REAP_TERM_GRACE_S)
+                except asyncio.TimeoutError:
+                    if not WIN:
+                        try:
+                            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                        except (ProcessLookupError, PermissionError, OSError):
+                            pass
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=_REAP_KILL_GRACE_S)
+                    except asyncio.TimeoutError:
+                        pass
+        except Exception:
+            pass
+        finally:
+            self._unregister_tool_child(proc)
+
+    async def reap_tool_children(self, origin: Optional[str] = None) -> int:
+        """The task-end sweep: reap every still-running tool child, optionally only
+        those spawned under one origin (a task passes its own "task:<id>"). Background
+        jobs are deliberate long-lived processes with their own stop path and are
+        never swept. Returns how many children were reaped."""
+        job_pids = {info.get("pid") for info in self.background_jobs.values()
+                    if info.get("status") == "running"}
+        targets = []
+        for pid, info in list(self._tool_children.items()):
+            if pid in job_pids:
+                continue
+            if origin is not None and info.get("origin") != origin:
+                continue
+            proc = info["proc"]
+            if proc.returncode is None:
+                targets.append(proc)
+            else:
+                self._tool_children.pop(pid, None)
+        for proc in targets:
+            await self._reap_proc_group(proc)
+        return len(targets)
+
+    async def _spawn_tool_exec(self, *argv, track: bool = True, **kwargs):
+        """create_subprocess_exec for a tool child: own process group, registered."""
+        kwargs.setdefault("stdout", asyncio.subprocess.PIPE)
+        kwargs.setdefault("stderr", asyncio.subprocess.PIPE)
         if WIN:
-            return await winsys.exec_shell(command, cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            kwargs.setdefault("creationflags", getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        else:
+            kwargs["start_new_session"] = True
+        proc = await asyncio.create_subprocess_exec(*argv, **kwargs)
+        self._register_tool_child(proc, track=track)
+        return proc
+
+    async def _communicate_bounded(self, proc, timeout: float, input_data: Optional[bytes] = None,
+                                   cap: int = TOOL_OUTPUT_CAP_BYTES):
+        """Drain a tool child with a deadline and a per-stream byte cap.
+
+        Returns (stdout, stderr, timed_out, truncated): output past the cap is drained
+        and counted as truncated, never buffered whole. On timeout the process group
+        is reaped and the partial output comes back with timed_out set, so the caller
+        returns a named timeout instead of wedging. On cancellation the group is
+        reaped first, then CancelledError propagates: a cancelled task leaves no
+        children behind either."""
+        out_buf, err_buf = bytearray(), bytearray()
+        state = {"truncated": False}
+
+        async def _drain(stream, buf):
+            if stream is None:
+                return
+            while True:
+                chunk = await stream.read(8192)
+                if not chunk:
+                    break
+                room = cap - len(buf)
+                if room > 0:
+                    buf.extend(chunk[:room])
+                if len(chunk) > max(room, 0):
+                    state["truncated"] = True
+
+        async def _feed():
+            if input_data is None or proc.stdin is None:
+                return
+            try:
+                proc.stdin.write(input_data)
+                await proc.stdin.drain()
+                proc.stdin.close()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+
+        drains = [asyncio.ensure_future(_drain(proc.stdout, out_buf)),
+                  asyncio.ensure_future(_drain(proc.stderr, err_buf)),
+                  asyncio.ensure_future(_feed())]
+        timed_out = False
+        try:
+            await asyncio.wait_for(asyncio.gather(*drains), timeout=timeout)
+            await proc.wait()
+        except asyncio.TimeoutError:
+            timed_out = True
+            await self._reap_proc_group(proc)
+        except asyncio.CancelledError:
+            try:
+                await asyncio.shield(self._reap_proc_group(proc))
+            except BaseException:
+                pass
+            raise
+        finally:
+            for d in drains:
+                if not d.done():
+                    d.cancel()
+            self._unregister_tool_child(proc)
+        return bytes(out_buf), bytes(err_buf), timed_out, state["truncated"]
+
+    async def _exec_tool(self, argv: List[str], timeout: float = QUICK_TOOL_TIMEOUT_S,
+                         input_data: Optional[bytes] = None):
+        """One bounded tool child, end to end. Returns (stdout, stderr, returncode,
+        timed_out, truncated) as bytes plus flags; returncode is -1 on timeout."""
+        kwargs: Dict[str, Any] = {}
+        if input_data is not None:
+            kwargs["stdin"] = asyncio.subprocess.PIPE
+        proc = await self._spawn_tool_exec(*argv, **kwargs)
+        out, err, timed_out, truncated = await self._communicate_bounded(
+            proc, timeout=timeout, input_data=input_data)
+        return out, err, (-1 if timed_out else proc.returncode), timed_out, truncated
+
+    async def _shell(self, command: str, cwd: str, track: bool = True):
+        """The user's shell: zsh/bash on a Mac, Windows PowerShell on Windows.
+        The shell starts in its own process group (session) so everything it spawns
+        can be reaped as a group; see _reap_proc_group."""
+        if WIN:
+            proc = await winsys.exec_shell(command, cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            self._register_tool_child(proc, track=track)
+            return proc
         # Your terminal's PATH, not the app's: macOS starts apps with /usr/bin:/bin:/usr/sbin:/sbin, which misses
         # ~/.local/bin, Homebrew, npm and the rest, so `muse`, `claude`, `brew`, `node` … weren't found.
         from app.services.agent_clis import search_path
         env = dict(os.environ, PATH=search_path())
-        return await asyncio.create_subprocess_shell(command, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env)
+        proc = await asyncio.create_subprocess_shell(command, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env, start_new_session=True)
+        self._register_tool_child(proc, track=track)
+        return proc
 
     async def run_command(self, command: str, cwd: Optional[str] = None, timeout_sec: int = 45) -> Dict[str, Any]:
         """
@@ -343,13 +548,29 @@ class SystemControlService:
         try:
             proc = await self._shell(effective_command, target_cwd)
 
-            try:
-                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)
-                duration = round(time.time() - start_t, 2)
+            # Bounded in bytes, bytes-capped, and reaped as a group on timeout or
+            # cancel (the CancelledError case is handled inside _communicate_bounded,
+            # which reaps before re-raising; BaseException below lets it propagate).
+            stdout, stderr, timed_out, capped = await self._communicate_bounded(proc, timeout=timeout_sec)
+            duration = round(time.time() - start_t, 2)
 
-                out_str = stdout.decode("utf-8", errors="replace") if stdout else ""
-                err_str = stderr.decode("utf-8", errors="replace") if stderr else ""
+            out_str = stdout.decode("utf-8", errors="replace") if stdout else ""
+            err_str = stderr.decode("utf-8", errors="replace") if stderr else ""
+            if capped:
+                out_str += "\n... [Truncated: output exceeded the capture cap]"
+                err_str += "\n... [Truncated: output exceeded the capture cap]"
 
+            if timed_out:
+                record.update({
+                    "status": "timed_out",
+                    "exit_code": -1,
+                    "stdout": _tidy_output(out_str) if out_str.strip() else "",
+                    "stderr": (f"Command timed out after {timeout_sec} seconds."
+                               + (f"\n{_tidy_output(err_str)}" if err_str.strip() else "")),
+                    "duration_sec": duration,
+                    "current_working_directory": self.current_working_directory
+                })
+            else:
                 if proc.returncode == 0 and is_cd:
                     lines = [l.strip() for l in out_str.strip().splitlines() if l.strip()]
                     if lines and os.path.isdir(lines[-1]):
@@ -372,21 +593,10 @@ class SystemControlService:
                     "duration_sec": duration,
                     "current_working_directory": self.current_working_directory
                 })
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                    await proc.wait()
-                except Exception:
-                    pass
-                duration = round(time.time() - start_t, 2)
-                record.update({
-                    "status": "timed_out",
-                    "exit_code": -1,
-                    "stdout": "",
-                    "stderr": f"Command timed out after {timeout_sec} seconds.",
-                    "duration_sec": duration,
-                    "current_working_directory": self.current_working_directory
-                })
+        except asyncio.CancelledError:
+            # The child group is already reaped (inside _communicate_bounded); a
+            # cancel must keep propagating or a forced task cancel cannot stop.
+            raise
         except Exception as e:
             record.update({
                 "status": "error",
@@ -436,11 +646,20 @@ class SystemControlService:
             "start_time_str": time.strftime("%H:%M:%S", time.localtime(start_t))
         }
 
+        proc = None
         try:
             proc = await self._shell(effective_command, target_cwd)
 
             stdout_chunks: List[str] = []
             stderr_chunks: List[str] = []
+            kept = {"bytes": 0}
+
+            def _keep(chunks, decoded):
+                # The stream stays live for the consumer, but what this service
+                # buffers is capped like every other tool child's output.
+                if kept["bytes"] <= TOOL_OUTPUT_CAP_BYTES:
+                    chunks.append(decoded)
+                    kept["bytes"] += len(decoded.encode("utf-8", errors="replace"))
 
             async def _read_stdout():
                 while True:
@@ -448,7 +667,7 @@ class SystemControlService:
                     if not line:
                         break
                     decoded = line.decode("utf-8", errors="replace")
-                    stdout_chunks.append(decoded)
+                    _keep(stdout_chunks, decoded)
                     return_queue.put_nowait({"type": "stdout", "text": decoded})
 
             async def _read_stderr():
@@ -457,7 +676,7 @@ class SystemControlService:
                     if not line:
                         break
                     decoded = line.decode("utf-8", errors="replace")
-                    stderr_chunks.append(decoded)
+                    _keep(stderr_chunks, decoded)
                     return_queue.put_nowait({"type": "stderr", "text": decoded})
 
             return_queue: asyncio.Queue = asyncio.Queue()
@@ -478,11 +697,7 @@ class SystemControlService:
                 except asyncio.TimeoutError:
                     if time.time() - start_t > timeout_sec:
                         timed_out = True
-                        try:
-                            proc.kill()
-                            await proc.wait()
-                        except Exception:
-                            pass
+                        await self._reap_proc_group(proc)
                         break
 
             if timed_out:
@@ -496,6 +711,7 @@ class SystemControlService:
                 return
 
             await waiter_task
+            self._unregister_tool_child(proc)
             duration = round(time.time() - start_t, 2)
             exit_code = proc.returncode
 
@@ -535,7 +751,16 @@ class SystemControlService:
                 "cwd": self.current_working_directory
             }
 
+        except asyncio.CancelledError:
+            if proc is not None:
+                try:
+                    await asyncio.shield(self._reap_proc_group(proc))
+                except BaseException:
+                    pass
+            raise
         except Exception as e:
+            if proc is not None:
+                self._unregister_tool_child(proc)
             yield {
                 "type": "error",
                 "error": str(e),
@@ -553,12 +778,10 @@ class SystemControlService:
             return await winsys.notify(title, message)
         line = 'display notification (item 2 of argv) with title (item 1 of argv)' + (' sound name "Tink"' if sound else "")
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "osascript", "-e", "on run argv", "-e", line, "-e", "end run", str(title)[:200], str(message)[:500],
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await proc.communicate()
+            _, _, _, timed_out, _ = await self._exec_tool(
+                ["osascript", "-e", "on run argv", "-e", line, "-e", "end run", str(title)[:200], str(message)[:500]])
+            if timed_out:
+                return {"success": False, "error": f"Notification timed out after {int(QUICK_TOOL_TIMEOUT_S)} seconds."}
             return {"success": True, "title": title, "message": message}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -605,13 +828,10 @@ class SystemControlService:
             else:
                 cmd = ["open", "-R", target_str]
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode == 0:
+            _, stderr, code, timed_out, _ = await self._exec_tool(cmd)
+            if timed_out:
+                return {"success": False, "error": f"Opening Finder timed out after {int(QUICK_TOOL_TIMEOUT_S)} seconds."}
+            if code == 0:
                 return {
                     "success": True,
                     "target": target_str,
@@ -650,8 +870,7 @@ class SystemControlService:
             r = winsys.open_target(target_str)
             return {**r, "opened_folder": target_str, "message": f"Opened folder {target_path.name} in File Explorer."} if r["success"] else r
         try:
-            proc = await asyncio.create_subprocess_exec("open", target_str)
-            await proc.communicate()
+            await self._exec_tool(["open", target_str])
             return {"success": True, "opened_folder": target_str, "message": f"Opened folder {target_path.name} in macOS Finder."}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -663,12 +882,7 @@ class SystemControlService:
         if WIN:
             return winsys.open_target(target)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "open", "-g", target,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await proc.communicate()
+            await self._exec_tool(["open", "-g", target])
             return {"success": True, "target": target}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -688,12 +902,11 @@ class SystemControlService:
             if root_dir and os.path.isdir(target_root):
                 cmd.extend(["-onlyin", target_root])
             cmd.append(query)
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=6)
+            # The old code waited 6 seconds for mdfind but never killed it on timeout
+            # or cancellation, so the child outlived its task. The bounded helper
+            # reaps the process group on both paths and caps the captured output;
+            # partial lines from a timed-out search are still parsed and labeled.
+            stdout, _, code, timed_out, capped = await self._exec_tool(cmd, timeout=FIND_FILES_TIMEOUT_S)
             lines = [l.strip() for l in stdout.decode("utf-8", errors="replace").splitlines() if l.strip()]
             for p in lines[:max_results]:
                 if os.path.exists(p):
@@ -708,7 +921,14 @@ class SystemControlService:
                         })
                     except Exception:
                         results.append({"path": p, "name": os.path.basename(p), "is_dir": os.path.isdir(p)})
-            return {"success": True, "count": len(results), "query": query, "root": target_root, "results": results}
+            if timed_out:
+                return {"success": False, "timed_out": True, "partial": True, "count": len(results),
+                        "query": query, "root": target_root, "results": results,
+                        "error": f"computer_find_files timed out after {int(FIND_FILES_TIMEOUT_S)} seconds"}
+            return {"success": True, "count": len(results), "query": query, "root": target_root,
+                    "results": results, "truncated": capped}
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             return {"success": False, "error": str(e), "results": []}
 
@@ -747,13 +967,10 @@ class SystemControlService:
                 argv = ["osascript", "-e", "on run argv", "-e", 'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)',
                         "-e", "end run", src_path]
             try:
-                proc = await asyncio.create_subprocess_exec(
-                    *argv,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
-                )
-                stdout, stderr = await proc.communicate()
-                if proc.returncode == 0:
+                _, stderr, code, timed_out, _ = await self._exec_tool(argv)
+                if timed_out:
+                    return {"success": False, "error": f"Moving to Trash timed out after {int(QUICK_TOOL_TIMEOUT_S)} seconds."}
+                if code == 0:
                     return {"success": True, "action": "trash", "path": src_path, "note": "Safely moved to macOS Trash (recoverable)"}
                 else:
                     return {"success": False, "error": stderr.decode("utf-8", errors="replace").strip()}
@@ -841,12 +1058,9 @@ class SystemControlService:
         if WIN:
             return await winsys.read_clipboard()
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "pbpaste",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, _ = await proc.communicate()
+            stdout, _, _, timed_out, _ = await self._exec_tool(["pbpaste"])
+            if timed_out:
+                return {"success": False, "error": f"Reading the clipboard timed out after {int(QUICK_TOOL_TIMEOUT_S)} seconds."}
             text = stdout.decode("utf-8", errors="replace")
             return {"success": True, "text": text, "chars": len(text)}
         except Exception as e:
@@ -857,13 +1071,9 @@ class SystemControlService:
         if WIN:
             return await winsys.write_clipboard(text)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "pbcopy",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            await proc.communicate(input=text.encode("utf-8"))
+            _, _, _, timed_out, _ = await self._exec_tool(["pbcopy"], input_data=text.encode("utf-8"))
+            if timed_out:
+                return {"success": False, "error": f"Copying to the clipboard timed out after {int(QUICK_TOOL_TIMEOUT_S)} seconds."}
             return {"success": True, "chars": len(text)}
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -873,12 +1083,9 @@ class SystemControlService:
         if WIN:
             return winsys.inspect_port(port)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "lsof", "-i", f":{port}",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, _ = await proc.communicate()
+            stdout, _, _, timed_out, _ = await self._exec_tool(["lsof", "-i", f":{port}"])
+            if timed_out:
+                return {"success": False, "error": f"Inspecting the port timed out after {int(QUICK_TOOL_TIMEOUT_S)} seconds."}
             lines = stdout.decode("utf-8", errors="replace").strip().splitlines()
             processes = []
             if len(lines) > 1:
@@ -919,7 +1126,10 @@ class SystemControlService:
         if not os.path.isdir(target_cwd):
             target_cwd = os.path.expanduser("~")
 
-        proc = await self._shell(command, target_cwd)
+        # Jobs are deliberate long-lived processes: not tool children, so the
+        # task-end sweep never touches them. They still start in their own process
+        # group (via _shell) so stop_job can reap the whole group at once.
+        proc = await self._shell(command, target_cwd, track=False)
 
         job_info: Dict[str, Any] = {
             "id": job_id,
@@ -995,26 +1205,10 @@ class SystemControlService:
             return {"success": False, "error": f"Job not found: {job_id}"}
         proc = info.get("proc")
         if proc and proc.returncode is None:
-            # What the job started goes too: on Windows the job is PowerShell, and stopping only it left the server it
-            # ran ("python -m http.server 8765") holding the port, so the next one couldn't start.
-            try:
-                import psutil
-                for child in psutil.Process(proc.pid).children(recursive=True):
-                    try:
-                        child.kill()
-                    except psutil.Error:
-                        pass
-            except Exception:
-                pass
-            if force:
-                proc.kill()
-            else:
-                proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+            # What the job started goes too: the job runs in its own process group,
+            # and reaping the group (not just the shell) is what stops the server it
+            # ran from holding its port after the job itself is gone.
+            await self._reap_proc_group(proc)
             info["status"] = "stopped"
             info["exit_code"] = proc.returncode
             return {"success": True, "job_id": job_id, "status": "stopped"}
@@ -1548,17 +1742,17 @@ class SystemControlService:
         try:
             expanded = os.path.expanduser(target)
             cmd = ["open"]
-            if app_name:
-                cmd.extend(["-a", app_name])
-            cmd.append(expanded)
+            if not re.match(r"^[a-z][a-z0-9+.-]*://", target, re.I) and "/" not in target and not os.path.exists(expanded):
+                cmd.extend(["-a", app_name or target])      # a bare name ("Muse"): the app itself
+            else:
+                if app_name:
+                    cmd.extend(["-a", app_name])
+                cmd.append(expanded)
 
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await proc.communicate()
-            if proc.returncode == 0:
+            _, stderr, code, timed_out, _ = await self._exec_tool(cmd)
+            if timed_out:
+                return {"success": False, "error": f"Opening it timed out after {int(QUICK_TOOL_TIMEOUT_S)} seconds."}
+            if code == 0:
                 return {
                     "success": True,
                     "target": target,
@@ -1578,20 +1772,23 @@ class SystemControlService:
         if WIN:
             return dict(winsys.APPLESCRIPT_ON_WINDOWS)
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "osascript", "-e", script,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await proc.communicate()
+            # AppleScript had no deadline at all: a script waiting on an app could
+            # wedge its task the way a find did. 60 seconds matches the generous end
+            # of the desktop layer's own osascript timeouts.
+            stdout, stderr, code, timed_out, _ = await self._exec_tool(
+                ["osascript", "-e", script], timeout=APPLESCRIPT_TIMEOUT_S)
+            if timed_out:
+                return {"success": False, "timed_out": True,
+                        "error": f"AppleScript timed out after {int(APPLESCRIPT_TIMEOUT_S)} seconds.",
+                        "script": script}
             out_str = stdout.decode("utf-8", errors="replace").strip()
             err_str = stderr.decode("utf-8", errors="replace").strip()
 
             return {
-                "success": proc.returncode == 0,
-                "exit_code": proc.returncode,
+                "success": code == 0,
+                "exit_code": code,
                 "output": out_str,
-                "error": err_str if proc.returncode != 0 else None,
+                "error": err_str if code != 0 else None,
                 "script": script
             }
         except Exception as e:

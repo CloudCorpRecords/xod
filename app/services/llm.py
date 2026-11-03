@@ -226,7 +226,8 @@ def _quiet_thinking(payload: Dict[str, Any], info: Dict[str, Any], think: Option
     elif p in CLOUD_PROVIDERS:
         if p == "fireworks" and (p, info["model"]) not in _no_effort:
             payload["reasoning_effort"] = "low"
-        payload["max_tokens"] = int(payload.get("max_tokens") or 1024) + CLOUD_THINK_HEADROOM
+        _bk = "max_completion_tokens" if "max_completion_tokens" in payload else "max_tokens"
+        payload[_bk] = int(payload.get(_bk) or 1024) + CLOUD_THINK_HEADROOM
 
 
 def _effort_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int, body: str) -> bool:
@@ -238,13 +239,225 @@ def _effort_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int,
     return False
 
 
+# Reasoning effort with function tools (fix round 1, 2026-10-31). OpenAI
+# refused a chat/completions request for gpt-6.1-sol that carried function
+# tools together with a reasoning effort, HTTP 400: "Function tools with
+# reasoning_effort are not supported for gpt-6.1-sol in /v1/chat/completions.
+# To use function tools, use /v1/responses or set reasoning_effort to
+# 'none'." An Auto-mode subtask died on exactly this and its work was lost.
+# Two shapes meet here:
+# - _quiet_thinking (think=False) can attach a thinking effort ("low" on
+#   Fireworks) to a payload that also carries tools: that effort must not
+#   reach a model that refuses the combination.
+# - deliberate_stream, the agent/tool stream, attaches no reasoning_effort
+#   at all, and the evidenced call still died, so dropping a parameter
+#   cannot be the only remedy: the API's own instruction for that shape is
+#   an explicit reasoning_effort of "none".
+# The refusal names the model, so the one up-front rule follows the model
+# id on any route. No other model is named up front: there is no error-text
+# evidence for the other rows of the pricing table (gpt-6-astra,
+# gpt-6.1-terra, gpt-6-luna, gpt-6-sol, the 5.6, 5.5 and 5.4 rows); the
+# reactive handler below covers a model if an endpoint ever teaches it.
+#
+# Round 3 (2026-10-31): the match is on the BASE model id, not the raw
+# string. Model ids reach this layer in routed forms: _build_endpoint
+# prefixes a Fireworks model with "accounts/fireworks/models/", other
+# routes carry "provider/model" ids, and the pricing table attests dated
+# snapshot ids (lookup_price: "gpt-4o-2024-08-06" shares the "gpt-4o"
+# row). The exact-string match silently missed every one of those forms,
+# so a tools call for the evidenced model went out without the
+# prescribed "none" and depended on the reactive handler to survive;
+# on a path with no retry loop (model_scores._ask before round 3) it
+# simply died, the re-run 2 mission subtask shape.
+_TOOLS_EFFORT_NONE_MODELS = ("gpt-6.1-sol",)
+_tools_effort_learned: Dict[Tuple[str, str], str] = {}   # (provider, model) -> "none" or "omit", tools calls only
+
+
+def _base_model_id(model: Any) -> str:
+    """The model id with any route prefix and dated snapshot suffix
+    removed: "accounts/fireworks/models/gpt-6.1-sol", "openai/gpt-6.1-sol"
+    and "gpt-6.1-sol-2026-10-31" are the same model as "gpt-6.1-sol"."""
+    m = str(model or "").lower().rsplit("/", 1)[-1]
+    return re.sub(r"-\d{4}-\d{2}-\d{2}$", "", m)
+
+
+def _tools_effort_mode(info: Dict[str, Any], has_tools: bool) -> Optional[str]:
+    """How a tools call for this pair must treat reasoning_effort: "none",
+    "omit", or None (leave the payload as it is). Tools calls only: a call
+    without tools keeps its current behaviour, and the learned remedies
+    below are scoped the same way, unlike _no_effort above."""
+    if not has_tools:
+        return None
+    pair = (info.get("provider"), info.get("model"))
+    if pair in _tools_effort_learned:
+        return _tools_effort_learned[pair]
+    if _base_model_id(info.get("model")) in _TOOLS_EFFORT_NONE_MODELS:
+        return "none"
+    return None
+
+
+def _apply_tools_effort(payload: Dict[str, Any], info: Dict[str, Any]) -> None:
+    """Applies _tools_effort_mode to a built payload. Call after tools are
+    attached and after _quiet_thinking, so a carried thinking effort is
+    the thing being replaced or dropped."""
+    mode = _tools_effort_mode(info, bool(payload.get("tools")))
+    if mode == "none":
+        payload["reasoning_effort"] = "none"
+    elif mode == "omit":
+        payload.pop("reasoning_effort", None)
+
+
+def _tools_effort_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int, body: str) -> bool:
+    """True when the endpoint refused this tools call over reasoning_effort:
+    the remedy that fits the payload is applied (a carried thinking effort
+    is dropped, the H2/H5 shape; a payload carrying no effort gets an
+    explicit "none", the API's own instruction), the pair and the remedy
+    are remembered for later tools calls, and the caller retries. A payload
+    already sending "none" is not retried again on the same refusal."""
+    if status != 400 or not payload.get("tools"):
+        return False
+    text = (body or "").lower()
+    if "reasoning_effort" not in text or "function tools" not in text:
+        return False
+    current = payload.get("reasoning_effort")
+    if current == "none":
+        return False
+    if current is None:
+        payload["reasoning_effort"] = "none"
+        remedy = "none"
+    else:
+        payload.pop("reasoning_effort", None)
+        remedy = "omit"
+    _tools_effort_learned[(info.get("provider"), info.get("model"))] = remedy
+    logger.info("Endpoint refuses reasoning_effort with function tools for %s/%s; remedy %s, retrying.",
+                info.get("provider"), info.get("model"), remedy)
+    return True
+
+
+# Models whose chat API refuses "max_tokens" and requires "max_completion_tokens"
+# instead (the GPT-5 family and the o-series reasoning models at OpenAI). Found in
+# the Brain v1 hardening round (2026-10-30): Auto mode picked gpt-5-nano and every
+# call failed with HTTP 400 (Unsupported parameter: max_tokens... Use
+# max_completion_tokens instead), which failed a mission in planning.
+_BUDGET_KEY_MODELS = ("gpt-5", "o1", "o3", "o4")
+_budget_key_learned: set = set()   # (provider, model) pairs a 400 taught us about
+
+
+def _budget_key(info: Dict[str, Any]) -> str:
+    """The payload key this endpoint accepts for the completion budget."""
+    if (info.get("provider"), info.get("model")) in _budget_key_learned:
+        return "max_completion_tokens"
+    model = str(info.get("model") or "").lower()
+    if info.get("provider") == "openai" and model.startswith(_BUDGET_KEY_MODELS):
+        return "max_completion_tokens"
+    return "max_tokens"
+
+
+def _budget_param_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int, body: str) -> bool:
+    """True when the endpoint refused "max_tokens" and named its replacement: the
+    value moves to "max_completion_tokens", the pair is remembered for the rest of
+    the process, and the caller retries. Same shape as _effort_rejected."""
+    if status != 400 or "max_tokens" not in payload or "max_completion_tokens" not in (body or ""):
+        return False
+    payload["max_completion_tokens"] = payload.pop("max_tokens")
+    _budget_key_learned.add((info.get("provider"), info.get("model")))
+    logger.info("Endpoint wants max_completion_tokens for %s/%s; renamed the budget and retrying.",
+                info.get("provider"), info.get("model"))
+    return True
+
+
+# The same families also refuse a set "temperature": OpenAI answers
+# "Unsupported value: 'temperature' does not support 0.1 with this model. Only
+# the default (1) value is supported." Found in the 0.9.13 promotion attempt
+# (2026-10-31): the budget-key fix got a GPT-5 chat past max_tokens and into
+# this second 400 (defect H5). Same handling as the budget key: omit the
+# parameter up front for the families known to refuse it, and learn
+# reactively from a 400 that names temperature.
+_temperature_learned: set = set()   # (provider, model) pairs a 400 taught us about
+
+
+def _temperature_ok(info: Dict[str, Any]) -> bool:
+    """True when this endpoint accepts a caller-chosen temperature."""
+    if (info.get("provider"), info.get("model")) in _temperature_learned:
+        return False
+    model = str(info.get("model") or "").lower()
+    if info.get("provider") == "openai" and model.startswith(_BUDGET_KEY_MODELS):
+        return False
+    return True
+
+
+def _temperature_rejected(payload: Dict[str, Any], info: Dict[str, Any], status: int, body: str) -> bool:
+    """True when the endpoint refused the temperature we sent: the parameter is
+    dropped, the pair is remembered for the rest of the process, and the caller
+    retries. Same shape as _budget_param_rejected."""
+    if status != 400 or "temperature" not in payload or "temperature" not in (body or "").lower():
+        return False
+    payload.pop("temperature", None)
+    _temperature_learned.add((info.get("provider"), info.get("model")))
+    logger.info("Endpoint refuses a set temperature for %s/%s; dropping it and retrying.",
+                info.get("provider"), info.get("model"))
+    return True
+
+
+def plain_error(info: Dict[str, Any], status: Optional[int] = None, body: str = "") -> str:
+    """What went wrong with the model, in words a person can act on (not "LLM error 401: {json}")."""
+    who = PROVIDER_NAMES.get(info.get("provider", ""), info.get("provider") or "The model")
+    if status is None:
+        if info.get("provider") in CLOUD_PROVIDERS:
+            return f"Xod couldn't reach {who}. Check the internet connection, or pick another model from the top bar."
+        return f"{who} isn't running on this computer. Open it, or pick another model from the top bar."
+    if status in (401, 403):
+        return (f"{who} refused the API key (it may be wrong or expired). Paste a new one in Settings, or pick another "
+                "model from the top bar.")
+    if status in (402, 429):
+        return f"{who} says the account is over its limit or out of credit right now. Try again later, or pick another model."
+    try:
+        said = json.loads(body).get("error")
+        said = said.get("message") if isinstance(said, dict) else said
+    except Exception:
+        said = None
+    return f"{who} answered with an error ({status}): {str(said or body).strip()[:200]}"
+
+
 class LLMService:
     def __init__(self):
         pass
 
-    def _build_endpoint(self, provider: str, model: Optional[str] = None) -> Dict[str, Any]:
+    def _cloud_key(self, provider: str, key_profile_id: Optional[str] = None) -> Tuple[str, Optional[str]]:
+        """The API key a cloud call should use, and the name of the key profile it belongs to.
+
+        Key profiles (services/key_profiles.py): the chosen profile when one is named (Detect
+        Models against a specific key), otherwise the active profile. A provider with no
+        profile metadata resolves to its single saved key, which is the Default profile, so
+        behavior is unchanged for anyone who never made a second profile."""
+        try:
+            from app.services import key_profiles
+            if key_profile_id:
+                name = next((p["name"] for p in key_profiles.list_profiles(provider)["profiles"]
+                             if p["id"] == key_profile_id), None)
+                return key_profiles.key_for_profile(provider, key_profile_id), name
+            value, name = key_profiles.active_key(provider)
+            if value or key_profiles.has_metadata(provider):
+                return value, name
+        except Exception:
+            pass
+        return (getattr(settings, f"{provider}_api_key", "") or ""), "Default"
+
+    def _tier_key_ready(self, provider: str) -> bool:
+        """A usable key for this provider: the single saved key, or any key profile holding one."""
+        if (getattr(settings, f"{provider}_api_key", "") or "").strip():
+            return True
+        try:
+            from app.services import key_profiles
+            return key_profiles.provider_has_key(provider)
+        except Exception:
+            return False
+
+    def _build_endpoint(self, provider: str, model: Optional[str] = None,
+                        key_profile_id: Optional[str] = None) -> Dict[str, Any]:
         base_url = settings.llm_base_url or "http://localhost:1234/v1"
         api_key = "local"
+        key_profile_name: Optional[str] = None
         m = model or settings.llm_model
 
         if provider == "lm_studio":
@@ -273,59 +486,90 @@ class LLMService:
             m = model or settings.llm_model or "default"
         elif provider == "openai":
             base_url = "https://api.openai.com/v1"
-            api_key = settings.openai_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("openai", key_profile_id)
+            api_key = api_key or "missing"
             m = model or "gpt-4o"
         elif provider == "gemini":
             base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
-            api_key = settings.gemini_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("gemini", key_profile_id)
+            api_key = api_key or "missing"
             m = model or "gemini-2.5-flash"
         elif provider == "groq":
             base_url = "https://api.groq.com/openai/v1"
-            api_key = settings.groq_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("groq", key_profile_id)
+            api_key = api_key or "missing"
             m = model or "llama-3.3-70b-versatile"
         elif provider == "openrouter":
             base_url = "https://openrouter.ai/api/v1"
-            api_key = settings.openrouter_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("openrouter", key_profile_id)
+            api_key = api_key or "missing"
             m = model or "meta-llama/llama-3.3-70b-instruct"
         elif provider == "anthropic":
             # Anthropic's OpenAI-compatible endpoint (chat/completions with a Bearer key).
             base_url = "https://api.anthropic.com/v1"
-            api_key = settings.anthropic_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("anthropic", key_profile_id)
+            api_key = api_key or "missing"
             m = model or "claude-opus-5-5"
         elif provider == "fireworks":
             base_url = settings.llm_base_url if (settings.llm_base_url and "fireworks" in settings.llm_base_url) else "https://api.fireworks.ai/inference/v1"
-            api_key = settings.fireworks_api_key or "missing"
+            api_key, key_profile_name = self._cloud_key("fireworks", key_profile_id)
+            api_key = api_key or "missing"
             m = model or settings.llm_model
             if not m or m == "google/gemma-4-12b-qat":
                 m = "accounts/fireworks/models/glm-5p3-flash"
             elif not m.startswith("accounts/"):
                 m = f"accounts/fireworks/models/{m}"
 
-        return {
+        info = {
             "provider": provider,
             "base_url": base_url.rstrip("/"),
             "model": m,
             "api_key": api_key
         }
+        if key_profile_name:
+            info["key_profile"] = key_profile_name
+        return info
 
     def get_endpoint_info(self) -> Dict[str, Any]:
         return self._build_endpoint(settings.llm_provider, settings.llm_model)
 
+    async def _apply_auto_model(self, info: Dict[str, Any], endpoint_override, tier) -> Dict[str, Any]:
+        """Auto model mode: on the plain send path (no explicit endpoint, tier, or
+        routed turn), resolve the model through the benchmark + cost selector
+        (services/auto_model.py) instead of the saved model name. Any failure
+        leaves the resolved endpoint untouched."""
+        if endpoint_override or tier or not info:
+            return info
+        try:
+            from app.services import auto_model
+            if not auto_model.auto_enabled():
+                return info
+            result = await auto_model.pick_for(self, info.get("provider") or settings.llm_provider)
+            pick = result.get("pick")
+            if pick and pick != info.get("model"):
+                logger.info(f"Auto model pick: {pick} for {info.get('provider')} ({result.get('pick_reason')})")
+                return {**info, "model": pick}
+            if pick:
+                logger.info(f"Auto model pick: {pick} for {info.get('provider')} (already the resolved model)")
+        except Exception as e:
+            logger.warning(f"Auto model pick failed, keeping {info.get('model')}: {e}")
+        return info
+
     def get_available_tiers(self) -> Dict[str, Any]:
         """Returns readiness status for both local and cloud model tiers."""
         cloud_options = []
-        if settings.fireworks_api_key and settings.fireworks_api_key.strip():
+        if self._tier_key_ready("fireworks"):
             fw_model = settings.llm_model if (settings.llm_provider == "fireworks" and settings.llm_model) else "accounts/fireworks/models/glm-5p3-flash"
             cloud_options.append({"provider": "fireworks", "model": fw_model, "label": "Fireworks AI (GLM 5.3 Flash)"})
-        if settings.gemini_api_key and settings.gemini_api_key.strip():
+        if self._tier_key_ready("gemini"):
             cloud_options.append({"provider": "gemini", "model": "gemini-2.5-flash", "label": "Google Gemini"})
-        if settings.openai_api_key and settings.openai_api_key.strip():
+        if self._tier_key_ready("openai"):
             cloud_options.append({"provider": "openai", "model": "gpt-4o", "label": "OpenAI GPT-4o"})
-        if settings.groq_api_key and settings.groq_api_key.strip():
+        if self._tier_key_ready("groq"):
             cloud_options.append({"provider": "groq", "model": "llama-3.3-70b-versatile", "label": "Groq Ultra-Fast"})
-        if settings.openrouter_api_key and settings.openrouter_api_key.strip():
+        if self._tier_key_ready("openrouter"):
             cloud_options.append({"provider": "openrouter", "model": "meta-llama/llama-3.3-70b-instruct", "label": "OpenRouter"})
-        if settings.anthropic_api_key and settings.anthropic_api_key.strip():
+        if self._tier_key_ready("anthropic"):
             cloud_options.append({"provider": "anthropic", "model": "claude-opus-5-5", "label": "Anthropic Claude Opus"})
 
         local_configured = settings.llm_provider in LOCAL_PROVIDERS
@@ -550,7 +794,8 @@ class LLMService:
     # ------------------------------------------------------------------
     # Universal Inference with Custom Tools Support
     # ------------------------------------------------------------------
-    async def list_models(self, provider_override: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def list_models(self, provider_override: Optional[str] = None,
+                          key_profile_id: Optional[str] = None) -> List[Dict[str, Any]]:
         active_provider = provider_override or settings.llm_provider
         if active_provider == "xod":
             from app.services.local_engine import CATALOG, is_downloaded
@@ -578,7 +823,7 @@ class LLMService:
                 ]
 
         if active_provider == "fireworks":
-            info = self._build_endpoint("fireworks")
+            info = self._build_endpoint("fireworks", key_profile_id=key_profile_id)
             if info["api_key"] != "missing":
                 headers = {
                     "Authorization": f"Bearer {info['api_key']}",
@@ -606,7 +851,7 @@ class LLMService:
                 {"id": "accounts/fireworks/models/llama-v3p2-11b-vision-instruct", "name": "Llama 3.2 11B Vision", "is_loaded": True}
             ]
 
-        info = self._build_endpoint(active_provider)
+        info = self._build_endpoint(active_provider, key_profile_id=key_profile_id)
         headers = {
             "Authorization": f"Bearer {info['api_key']}",
             "Content-Type": "application/json"
@@ -658,6 +903,7 @@ class LLMService:
         except Exception:
             pass
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
+        info = await self._apply_auto_model(info, endpoint_override, tier)
         if task and think is False and not endpoint_override:
             from app.services.specialists import active_endpoint_for
             specialist_ep = active_endpoint_for(task)
@@ -692,8 +938,8 @@ class LLMService:
         payload: Dict[str, Any] = {
             "model": info["model"],
             "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens
+            **({"temperature": temperature} if _temperature_ok(info) else {}),
+            _budget_key(info): max_tokens
         }
         if info["provider"] == "ollama":
             payload["model"] = await ollama_context.long_context_model(info["base_url"], info["model"])
@@ -701,6 +947,7 @@ class LLMService:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
         _quiet_thinking(payload, info, think)
+        _apply_tools_effort(payload, info)
 
         last_err: Optional[Exception] = None
         grown = False
@@ -717,7 +964,13 @@ class LLMService:
                         logger.warning(f"LLM HTTP {res.status_code}, retrying ({attempt}/{MAX_ATTEMPTS})")
                         await asyncio.sleep(1.5 * attempt)
                         continue
+                    if res.status_code != 200 and _tools_effort_rejected(payload, info, res.status_code, res.text):
+                        continue
                     if res.status_code != 200 and _effort_rejected(payload, info, res.status_code, res.text):
+                        continue
+                    if res.status_code != 200 and _budget_param_rejected(payload, info, res.status_code, res.text):
+                        continue
+                    if res.status_code != 200 and _temperature_rejected(payload, info, res.status_code, res.text):
                         continue
                     if res.status_code != 200 and await ollama_context.retry_after_error(payload, info, res.status_code, res.text):
                         continue
@@ -728,7 +981,7 @@ class LLMService:
                     from app.services import llm_routing
                     llm_routing.record(info["provider"], info["model"], data.get("usage"),
                                        prompt_chars=len(json.dumps(messages)), completion_chars=len(str(data)),
-                                       kind="answer", task=task, started=started)
+                                       kind="answer", task=task, started=started, key_profile=info.get("key_profile"))
                     choice = data["choices"][0]
                     msg = choice.get("message", {})
                     answered = bool(msg.get("content"))
@@ -737,7 +990,8 @@ class LLMService:
                     if (not msg.get("content") and msg.get("reasoning_content") and choice.get("finish_reason") == "length"
                             and not grown and info["provider"] in CLOUD_PROVIDERS):
                         grown = True              # all thinking, no answer: it ran out of room; once more with plenty
-                        payload["max_tokens"] = int(payload["max_tokens"]) * 3
+                        _bk = "max_completion_tokens" if "max_completion_tokens" in payload else "max_tokens"
+                        payload[_bk] = int(payload[_bk]) * 3
                         continue
                     if not msg.get("content") and msg.get("reasoning_content"):
                         if choice.get("finish_reason") == "length":
@@ -822,6 +1076,8 @@ class LLMService:
         task: Optional[str] = None,
         group_id: Optional[str] = None,
         think: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str = "auto",
         _rescue: bool = False,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Streams text chunks and reasoning tokens directly. task: see chat_completion.
@@ -840,6 +1096,7 @@ class LLMService:
         except Exception:
             pass
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
+        info = await self._apply_auto_model(info, endpoint_override, tier)
         if info["provider"] in ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic") and info["api_key"] == "missing":
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}
             return
@@ -860,8 +1117,8 @@ class LLMService:
         payload = {
             "model": info["model"],
             "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            **({"temperature": temperature} if _temperature_ok(info) else {}),
+            _budget_key(info): max_tokens,
             "stream": True
         }
         if info["provider"] == "ollama":
@@ -869,7 +1126,11 @@ class LLMService:
         if info["provider"] in ("openai", "openrouter", "groq", "fireworks", "gemini", "ollama", "lm_studio", "local", "custom"):
             payload["stream_options"] = {"include_usage": True}   # token counts (cost, and the Usage tab for local models too)
         _usage: Optional[Dict[str, Any]] = None
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
         _quiet_thinking(payload, info, think)
+        _apply_tools_effort(payload, info)
 
         restarted = False
         async with httpx.AsyncClient(timeout=XOD_TIMEOUT if info["provider"] == "xod" else LLM_TIMEOUT) as client:
@@ -878,7 +1139,13 @@ class LLMService:
                     async with _open_stream(client, url, payload, headers, info) as response:
                         if response.status_code != 200:
                             err_body = await response.aread()
+                            if _tools_effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
                             if _effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
+                            if _budget_param_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
+                            if _temperature_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
                             if await ollama_context.retry_after_error(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
@@ -887,7 +1154,7 @@ class LLMService:
                                 await asyncio.sleep(1.5 * attempt)
                                 continue
                             yield {"type": "error", "content": ollama_context.friendly_error(info, response.status_code, err_body.decode("utf-8", "ignore"))
-                                   or f"LLM error {response.status_code}: {err_body.decode('utf-8')}"}
+                                   or plain_error(info, response.status_code, err_body.decode('utf-8', 'ignore'))}
                             return
 
                         async for line in _lines(response, info):
@@ -933,7 +1200,7 @@ class LLMService:
                     from app.services import llm_routing
                     llm_routing.record(info["provider"], info["model"], _usage,
                                        prompt_chars=len(json.dumps(messages)), completion_chars=sum(len(x) for x in streamed) + reasoned,
-                                       kind="stream", task=task, started=started)
+                                       kind="stream", task=task, started=started, key_profile=info.get("key_profile"))
                     if task and streamed:
                         from app.services import dataset_recorder
                         ex_id = dataset_recorder.capture(
@@ -960,7 +1227,7 @@ class LLMService:
                         await asyncio.sleep(1.5 * attempt)
                         continue
                     yield {"type": "error", "content": ollama_context.friendly_error(info)
-                           or f"Could not connect to {info['provider']} at {info['base_url']}. Is your local LLM running?"}
+                           or plain_error(info)}
                     return
                 except EngineStuck as e:
                     err = await _after_stall(info, e, engine_start, restarted, said=bool(streamed or reasoned))
@@ -999,6 +1266,7 @@ class LLMService:
             if route and route.endpoint:   # this turn runs on the stronger (cloud) model
                 endpoint_override = route.endpoint
         info = endpoint_override or (self.resolve_endpoint_for_tier(tier) if tier else self.get_endpoint_info())
+        info = await self._apply_auto_model(info, endpoint_override, tier)
         if info["provider"] in ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic") and info["api_key"] == "missing":
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}
             return
@@ -1019,8 +1287,8 @@ class LLMService:
         payload: Dict[str, Any] = {
             "model": info["model"],
             "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            **({"temperature": temperature} if _temperature_ok(info) else {}),
+            _budget_key(info): max_tokens,
             "stream": True
         }
         if info["provider"] == "ollama":
@@ -1031,6 +1299,7 @@ class LLMService:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
+        _apply_tools_effort(payload, info)
 
         tool_calls_map: Dict[int, Dict[str, Any]] = {}
         full_reasoning = ""
@@ -1043,6 +1312,14 @@ class LLMService:
                     async with _open_stream(client, url, payload, headers, info) as response:
                         if response.status_code != 200:
                             err_body = await response.aread()
+                            if _tools_effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
+                            if _effort_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
+                            if _budget_param_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
+                            if _temperature_rejected(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
+                                continue
                             if await ollama_context.retry_after_error(payload, info, response.status_code, err_body.decode("utf-8", "ignore")):
                                 continue
                             if response.status_code in RETRYABLE_STATUS and attempt < MAX_ATTEMPTS:
@@ -1050,7 +1327,7 @@ class LLMService:
                                 await asyncio.sleep(1.5 * attempt)
                                 continue
                             yield {"type": "error", "content": ollama_context.friendly_error(info, response.status_code, err_body.decode("utf-8", "ignore"))
-                                   or f"LLM error {response.status_code}: {err_body.decode('utf-8')}"}
+                                   or plain_error(info, response.status_code, err_body.decode('utf-8', 'ignore'))}
                             return
 
                         async for line in _lines(response, info):
@@ -1124,7 +1401,7 @@ class LLMService:
                         await asyncio.sleep(1.5 * attempt)
                         continue
                     yield {"type": "error", "content": ollama_context.friendly_error(info)
-                           or f"Could not connect to {info['provider']} at {info['base_url']}. Is your local LLM running?"}
+                           or plain_error(info)}
                     return
                 except EngineStuck as e:
                     err = await _after_stall(info, e, engine_start, restarted, said=bool(full_content or full_reasoning))
@@ -1172,7 +1449,7 @@ class LLMService:
         from app.services import llm_routing
         llm_routing.record(info["provider"], info["model"], _usage,
                            prompt_chars=len(json.dumps(messages)), completion_chars=len(full_content) + len(full_reasoning),
-                           kind="deliberate", started=_started)
+                           kind="deliberate", started=_started, key_profile=info.get("key_profile"))
         yield {
             "type": "deliberation_complete",
             "tool_calls": formatted_tool_calls,
