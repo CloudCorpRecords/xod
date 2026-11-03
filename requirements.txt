@@ -25,13 +25,13 @@ fsspec>=2026.9.0
 # HTML scraping & web parsing
 beautifulsoup4==4.15.0
 ddgs==9.16.0                 # keyless web search (no API key needed)
-soupsieve>=3.0.1
+soupsieve>=3.0.4
 
 # Agent browser (Chrome DevTools Protocol)
-websockets==17.2
+websockets==17.3
 
 # Documents
-pypdf==6.21.1
+pypdf==6.21.4
 python-docx==1.2.0
 markdown==3.11.1             # shareable reports from the agent
 
@@ -75,3 +75,6 @@ pyobjc-framework-CoreText==12.2.2; sys_platform == "darwin"            # Applica
 pyobjc-framework-ApplicationServices==12.2.2; sys_platform == "darwin"
 pyobjc-framework-CoreLocation==12.2.2; sys_platform == "darwin"            # where this Mac is (This Mac: places nearby)
 pyobjc-framework-MapKit==12.2.2; sys_platform == "darwin"                 # Apple Maps search, no key
+comtypes==1.4.14; sys_platform == "win32"               # Windows UI Automation card watcher (services/muse_backends.py)
+qrcode==8.2                                             # "Pair a phone" QR (services/phone_pair.py), SVG output, no Pillow needed
+bleak==3.0.2                                            # "Pair over Bluetooth" (services/phone_ble.py): finds the phone and hands it the offer

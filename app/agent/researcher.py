@@ -86,6 +86,33 @@ class _Prefetch:
             r.cancel()
 
 
+def _as_text(value) -> str:
+    """Coerce a model-provided field that should be text into a string.
+
+    The deliberation model sometimes returns structured values (a dict or a
+    list) for fields the prompt describes as strings, most often
+    direct_response when the user asked for a JSON object back. Calling
+    .strip() on those crashed the whole task ("'dict' object has no
+    attribute 'strip'"). Structured values serialize to JSON text instead,
+    which keeps the caller's requested format intact.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+    return str(value)
+
+
+# The user dictated the reply's exact form: appended source links or a search
+# warning would break it, so _source_link_events stays silent for these.
+_EXACT_OUTPUT_RE = re.compile(
+    r"reply with exactly|respond with exactly|answer with exactly|exactly this text|"
+    r"exactly the following|nothing else|no other text|just the number|only the number|"
+    r"reply with only|respond with only|answer with only", re.I)
+
+
 class AgenticResearcher:
     """
     Next-Generation Autonomous Research Director.
@@ -152,6 +179,13 @@ class AgenticResearcher:
             user_query = " ".join(text_parts).strip() if text_parts else "Analyze this image"
         else:
             user_query = str(user_msg)
+
+        # The person's own words, before any enrichment: an attached image is about to be
+        # turned into words by the vision model and user_query replaced with that description.
+        # Deterministic routing decisions (hunt routing below) are made from what the person
+        # asked, never from machine-generated description text: a described invoice carries a
+        # year and a document kind, which reads exactly like a name-plus-year file hunt.
+        person_query = user_query
 
         # A chat model that can't see: the picture becomes words before anything else (routing, planning, the answer),
         # from a small vision model (services/vision.py). Planned blind, "who is this invoice from?" went to the browser.
@@ -390,6 +424,17 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                     yield ev
                 return
 
+        # Deterministic hunt routing (services/hunt_routing.py): a find/locate request for the
+        # person's own files dispatches locate_files directly, under the round 2 decisive-evidence
+        # contract. Production hunts left to the model's tool choice rode computer_find_files or
+        # the web research path instead, and the contract never fired (re-runs 1 and 2).
+        if not has_image and not has_document:
+            from app.services import hunt_routing
+            if hunt_routing.is_find_intent(person_query):
+                async for ev in hunt_routing.stream_hunt(person_query, execute_tool):
+                    yield ev
+                return
+
         # "Make me a game", "build a timer", then "make it harder": the builder writes real files, runs
         # them in headless Chrome, fixes what breaks, and opens the result in the preview pane.
         if not has_image:
@@ -501,7 +546,7 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
 
         # If LLM decides direct conversational answer is sufficient (greetings, explanations, chitchat)
         if deliberation.get("decision") == "direct_answer":
-            direct_reply = deliberation.get("direct_response", "").strip()
+            direct_reply = _as_text(deliberation.get("direct_response")).strip()
             if direct_reply:
                 yield {"type": "content", "content": direct_reply}
             else:
@@ -721,7 +766,11 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                         hits = r.get("results") or []
                         return not hits or all((h or {}).get("title") == "Search Error" for h in hits if isinstance(h, dict))
                     return False
-                if react_hop == 1 and not has_observable_errors and audit_trail and \
+                # Something was made or changed (a file written, a command run): "it ran" isn't "it's done", so look again.
+                did_work = any(re.match(r"(?:fs_(?:write|create|move|organize)|computer_(?:run_command|write_file|edit_file|start_job|"
+                                        r"manage_file|batch_organize))", str(t.get("tool") or t.get("name") or ""))
+                               for t in audit_trail)
+                if react_hop == 1 and not has_observable_errors and audit_trail and not did_work and \
                         not any(_empty(t.get("result")) for t in audit_trail):
                     break
 
@@ -732,7 +781,9 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                         "content": (
                             "You are Xod's ReAct Deliberator & Gap Analyzer.\n"
                             "Review the user query, recent tool observations, and determine if an additional corrective tool call is needed.\n"
-                            "If the user query is already fully answered, return JSON: {\"action\": \"conclude\", \"reasoning\": \"Goal achieved.\"}\n"
+                            "If the user query is already fully answered (or, for a job, every part of it is done and shown to work), "
+                            "return JSON: {\"action\": \"conclude\", \"reasoning\": \"Goal achieved.\"}\n"
+                            "A file that was written but never run, an empty file, or a folder with nothing in it is not done.\n"
                             "If a follow-up action or error recovery is needed, return JSON:\n"
                             "{\n"
                             "  \"action\": \"tool_call\",\n"
@@ -1069,7 +1120,10 @@ Format your response in articulate Markdown with bold highlights and bullet poin
             task_instruction = f"""
 Directly answer the user's computer request: "{user_query}"
 Lead with the answer itself (the result, the output, what changed), in a sentence or two.
-""" + ("Then, briefly:\n" + "\n".join(f"- {w}" for w in wanted) if wanted else "") + """
+""" + ("Then, only the parts of this the person needs (no headings for them; the full log is under \"How I got this\"):\n"
+       + "\n".join(f"- {w}" for w in wanted) if wanted else "") + """
+Show a command and its output only when the person asked to run something or the output is the answer. Never paste
+tool output as JSON ({"success": true, …}) or list every command that ran.
 Only report what the tool results above show. Never add hardware specs, memory, battery, ports, or
 file contents that no tool returned, and don't add sections for things that weren't done.
 """
@@ -1116,8 +1170,8 @@ Answer: "{user_query}"
 - Lead with the direct answer in one to three sentences, then the supporting detail. Match the length to the question: a simple question gets a short answer, and stay under 250 words unless the user asked for detail.
 - Use a table only when comparing several things; use headings only if the answer is long.
 - Only include sections that fit the question (no "architecture", "security" or "dossier" framing unless it's about that).
-- Cite sources inline as markdown links [name](url) using the URLs in the Evidence Board, and end with a short "Sources" list of the links you used.
-- If the evidence doesn't cover part of the question, say so in one line rather than padding.
+- Cite facts you took from pages inline as markdown links [name](url), and end with a short "Sources" list of those links. General know-how needs no source.
+- When the person needs steps (how to set something up, fix something), give them, from what you know if the pages didn't have them. Ask one short question only when the steps really differ (which operating system), and still give the most likely steps first.
 """
 
         synthesis_content = f"""The empirical research investigation has completed. Here is the verified Evidence Board containing all live observations:
@@ -1127,7 +1181,11 @@ Answer: "{user_query}"
 CRITICAL INSTRUCTIONS:
 - Tool execution phase is CLOSED. DO NOT emit any tool calls, function calls, `<|tool_call|>`, or `call:...` code blocks.
 - Speak directly to the user in articulate, professional Markdown.
-- Every fact, number, and file content must come from the Evidence Board above. If something wasn't checked, don't state it.
+- Facts about the person, their computer, accounts, files and anything live (prices, news, jobs, a page's contents) must come
+  from the Evidence Board above; if something wasn't checked, don't state it. General know-how (how to set up SSH, what a
+  command does) can come from what you know.
+- Talk like a person, not a log: never mention the "evidence board", "evidence", "tool results" or "the results", and never
+  quote raw tool output or JSON. Say what you did ("I searched…", "I looked at your repo…").
 {task_instruction}"""
 
         system_instruction_text = (
@@ -1296,7 +1354,22 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             except Exception as e:
                 logger.error(f"Recovery synthesis failed: {e}")
 
-        for ev in self._source_link_events(evidence_board, accumulated_text):
+        # Decisive evidence delivery (services/decisive_evidence.py): a
+        # locate result IS the answer, and the synthesis model only ever
+        # saw a 500-char truncated summary of it, so the block is rendered
+        # from the stored payload and appended here, deterministically.
+        try:
+            from app.services import decisive_evidence as _decisive
+            _entries = _decisive.collect(
+                (t.get("tool"), t.get("result")) for t in getattr(evidence_board, "tool_audit_trail", []))
+            _block = _decisive.block_for(_entries, user_query)
+        except Exception:
+            _block = ""
+        if _block and _block not in accumulated_text:
+            yield {"type": "content", "content": "\n\n" + _block}
+            accumulated_text += "\n\n" + _block
+
+        for ev in self._source_link_events(evidence_board, accumulated_text, user_query):
             yield ev
 
         final_step["status"] = "completed"
@@ -1304,9 +1377,13 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         yield {"type": "done"}
 
     @staticmethod
-    def _source_link_events(evidence_board: EvidenceBoard, answer: str) -> List[Dict[str, Any]]:
+    def _source_link_events(evidence_board: EvidenceBoard, answer: str, user_query: str = "") -> List[Dict[str, Any]]:
         """Small local models often name sources without linking them. Add the real links from what
         the searches returned, so every answer can be checked (and Share report lists them)."""
+        if _EXACT_OUTPUT_RE.search(user_query or ""):
+            # The user dictated the reply's exact form; appended source links or a
+            # search warning would break it. Exactness wins over the garnish.
+            return []
         if "](http" in answer:
             return []
         links = []
@@ -1334,7 +1411,9 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"\b(files?|folders?|director(y|ies)|desktop|downloads folder|my downloads|documents folder|finder|terminal|shell|command line|"
         r"script|run (this|the|a|my)|install|uninstall|ports?\b|process(es)?\b|kill|clipboard|screenshot|screen ?shot|"
         r"open (the |my )?(app|file|folder|website|site|page|link)|launch|my mac|this mac|my computer|my laptop|"
-        r"(this|my) (pc|computer|machine|laptop|desktop computer)('?s)?|ip address|disk space|free space|(using|uses|use) (the most |a lot of |so much )?(memory|ram|cpu)|"
+        r"(this|my) (pc|computer|machine|laptop|desktop computer)('?s)?|ip address|disk space|free space|(using|uses|use|eating|hogging) (up )?(the most |a lot of |so much |all (of )?(my |the )?|my )?(memory|ram|cpu)|"
+        r"(are you|you're|you are) (working on|doing|running|busy)|in the background|"
+        r"my (phone|iphone|ipad|other (computers?|macs?|pcs?|laptops?)|xods?)|muse|approv(e|als?|ing)|auto.?approv|"
         r"organi[sz]e|clean ?up|tidy|rename|delete|trash|move (the|my|these|this)|edit (the|my|this)|"
         r"repo(sitory)?|workspace|codebase|my project|this project|"
         r"browser|log ?in|sign ?(up|in)|apply (for|to)|fill (out|in)|submit|book (a|me|the)|order|buy|add to cart|check ?out|"
@@ -1376,7 +1455,10 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         "Reply with the one word:\nTOOLS\n\n"
         "3. Otherwise answer it yourself right away: directly and briefly (a few sentences), in Markdown. This "
         "includes questions about your past chats and your own work when the message comes with notes from your "
-        "memory or your task list: answer from those notes (say when things happened), don't search the web.\n\n"
+        "memory or your task list: answer from those notes (say when things happened), don't search the web. "
+        "A question about the user's own day, work, files, projects or devices, or about this computer (its apps, "
+        "what's installed or signed in, what's running), that came with no such notes is TOOLS: you can look, so "
+        "never search the web for it and never guess.\n\n"
         "Examples:\n"
         "User: Compare the pricing of Figma and Sketch\nSEARCH: Figma pricing plans | Sketch pricing plans\n"
         "User: who won the Lakers game last night\nSEARCH: Lakers game result last night\n"
@@ -1392,6 +1474,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"best\b.{0,60}\b(to buy|for|under|right now|in 20\d\d)|top \d+|compare|comparison|vs\.?|versus|reviews?|"
         r"who won|score[sd]?|results?|standings|weather|forecast|rain|snow|temperature|tomorrow|yesterday|last night|stock|share price|release date|"
         r"when (is|does|will)|open(ing)? hours|20(2[5-9]|3\d))\b", re.I)
+    _PERSONAL_RE = re.compile(r"\b(i|i'?m|i'?ve|me|my|mine|we|our|us|you|your)\b(?!\s+(?:can|could)\s+(?:buy|get))", re.I)
     _REFERS_BACK_RE = re.compile(r"\b(it|that|this|those|these|them|they|he|she|the (first|second|last|other) one)\b", re.I)
     # An answer that says it changed something on the computer (only tools can): "I have added the line to todo.txt".
     _CLAIMS_DONE_RE = re.compile(
@@ -1418,7 +1501,12 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"worked|planned|picked|chose|compared)|you (found|said|told|made|built|recommended|suggested|wrote|sent|gave)|"
         r"that (article|link|report|list|game|app|site|video|recipe|idea|thing|place|plan|email|doc|company|product|job) "
         r"(you|we|i)|what was (that|the)|did (we|you|i) ever|have (we|you|i) (ever|already)|in (january|february|march|april|"
-        r"may|june|july|august|september|october|november|december)|our (last|previous) (chat|conversation))\b", re.I)
+        r"may|june|july|august|september|october|november|december)|our (last|previous) (chat|conversation)|"
+        # "what did I work on today?", "what have we done this week?": your own day, not the news
+        r"what (did|have|had) (i|we|you) (do|done|work|worked|been|build|built|get|got|finish|finished|ask|asked|talk|talked)\b"
+        r"(?!.{0,40}\b(tomorrow|next)\b)|"
+        r"(what|anything) (i|we) (did|worked on|built|finished|asked|talked about)|my (day|week) so far|"
+        r"(recap|summari[sz]e|sum up) (my|our|the) (day|week|today|morning|chats?|work))\b", re.I)
 
     async def _recall_for(self, query: str, messages: List[Dict[str, Any]]) -> AsyncGenerator[Dict[str, Any], None]:
         """Sets self._memory_context for this turn (past episodes, Xod's own work, its notebook) and shows the lookup."""
@@ -1521,6 +1609,14 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         return [{"role": "system", "content": f"{prompt}\n\nToday is {cls._today()}." + (f"\n{note}" if note else "")}, *turns,
                 {"role": "user", "content": query + extra}]
 
+    @staticmethod
+    def _router_thinks() -> bool:
+        try:
+            from app.services.storage import get_setting
+            return get_setting("router_think", "on") != "off"
+        except Exception:
+            return True
+
     async def _stream_fast_lane(self, query: str, messages: List[Dict[str, Any]],
                                 evidence_board: EvidenceBoard) -> AsyncGenerator[Dict[str, Any], None]:
         """Yields chat events, or a single {"type": "_fast_declined"} (before anything visible)
@@ -1530,7 +1626,10 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         # A follow-up rewritten as a standalone request stands on its own: it can be searched directly.
         full = getattr(self, "_understood", "") or query
         stands_alone = bool(getattr(self, "_understood", "")) or not (has_history and self._REFERS_BACK_RE.search(query))
-        if self._FRESH_RE.search(full) and stands_alone \
+        # The fresh-news shortcut skips the router, so it's only for questions about the world. Anything about the person
+        # or Xod ("what did I work on today", "is my build done yet") goes to the router, which decides how much to think.
+        personal = bool(self._PERSONAL_RE.search(full))
+        if self._FRESH_RE.search(full) and stands_alone and not personal \
                 and not getattr(self, "_memory_context", ""):    # "what did we talk about yesterday" is memory, not news
             async for ev in self._fast_search_and_answer(full, [full], messages, evidence_board):
                 yield ev
@@ -1545,10 +1644,14 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             router_msgs[-1]["content"] += "\n\n" + self._memory_context
         if getattr(self, "_lessons", ""):
             router_msgs[-1]["content"] += "\n\n" + self._lessons
+        # Getting the route right matters more than a fast first word: the router may think (models that can), unless
+        # it's a spoken conversation or the person switched it off (setting router_think = off).
+        spoken = getattr(self, "spoken", False)
+        think_first = not spoken and self._router_thinks()
         stream = llm_service.stream_chat_completion(
             messages=router_msgs,
-            temperature=0.2, max_tokens=300 if getattr(self, "spoken", False) else 900,
-            think=False, task="router")
+            temperature=0.2, max_tokens=300 if spoken else (2400 if think_first else 900),
+            think=None if think_first else False, task="router")
         try:
             async for ch in stream:
                 kind = ch.get("type")
@@ -1686,9 +1789,12 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                 "- Start with the direct answer in one or two sentences.\n"
                 + ("- Then cover the details thoroughly, with short headings if it helps.\n" if deep else
                    "- Then add a few short bullet points only if they help. Keep the whole answer under 120 words.\n")
-                + "- Use only facts from the results. If they don't answer part of the question, say so in one line.\n"
-                "- Cite the results you used by their numbers, like [1] or [2][3].\n"
-                "- Don't mention 'search results', today's date or these instructions, and don't add a sources list.\n"
+                + "- Anything current or specific (prices, news, a product, a person, a page) comes only from the results; if "
+                "they don't have it, say so in one line. How-to and general know-how can come from what you know: when the "
+                "person needs steps, give them, and never answer \"the results don't cover that\" to something you can explain.\n"
+                "- Cite facts you took from the results by their numbers, like [1] or [2][3]; general know-how needs none.\n"
+                "- Never mention 'search results', 'the results' or what they cover, today's date or these instructions (say what "
+                "you found, or just answer), and don't add a sources list.\n"
                 f"Today is {self._today()}.")
         try:
             from app.services import user_memory
@@ -1826,7 +1932,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             yield {"type": "content", "content": "\n\n**Sources**\n" + "\n".join(
                 f"[{n}] [{meta[n - 1][0].replace('[', '(').replace(']', ')')}]({meta[n - 1][1]})  " for n in sorted(cited))}
         else:
-            for ev in self._source_link_events(evidence_board, written):
+            for ev in self._source_link_events(evidence_board, written, query):
                 yield ev
         yield {"type": "done"}
 
@@ -2282,7 +2388,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             "incomplete": "### ⏳ Not finished yet",
             "failed": "### ⚠️ That didn't work",
         }.get(status, "### Browser task")
-        parts = [heading, (result.get("final_answer") or "").strip()]
+        parts = [heading, _as_text(result.get("final_answer")).strip()]
 
         if status == "needs_input" and not load_user_profile():
             parts.append(
@@ -2485,7 +2591,11 @@ TOOL ECOSYSTEM:
    - xod_self_edit: Change Xod's OWN code (you CAN do this; it's gated by model strength, tested in a copy, and revertible). Use when a Xod tool itself is buggy or the user asks you to change yourself. Args: {{"goal": "what to change and why, with the exact error"}}
    - xod_doctor: Check and fix Xod's own health (chat model, browser, memory, hung jobs). Args: {{"fix": true}}
    - memory_search: Search your memory of past chats, finished tasks and what you know about the user. Understands time ("last week", "in September"). Args: {{"query": "...", "when": "optional, e.g. yesterday"}}
+   - phone: The person's own phone through the paired Xod phone app. Its apps are already signed in, so a job in Facebook, TikTok, X, Instagram or any phone app is {{"action": "task", "goal": "<the job in their words>", "app": "Facebook"}}: Xod works through the app itself. Also "open X on my phone", what's on its screen, where it is, its notifications, calendar, contacts or files, message or ask them there. "My phone" is this phone, never a Mac Shortcut. Args: {{"action": "status|task|open_app|screen_read|act|location|notifications|calendar|contacts|files|read_file|message|ask|sms|stop", "app": "Calculator", "goal": "..."}}
+   - muse_approvals: Whether Xod presses Allow on the Muse app's cards (and Muse/Claude Code requests in Crew jobs) for the user, and change it when they ask: off, always, away (only while they're away from this computer: screen locked or idle a few minutes), pause for N minutes, or resume. "Stop approving Muse", "pause approvals for an hour", "only approve when I'm not here", "is auto-approve on?" all go here. Args: {{"action": "status|off|always|away|pause|resume", "minutes": 60, "away_minutes": 5}}
    - xod_tasks: Your own background tasks and routines: list them, or the full details and result of one. Args: {{"action": "list|get", "task": "title words or id"}}
+   - tailscale_files: Files to and from the user's own devices (phone, other computers) over Tailscale. Use this, not the terminal, to send a file to their phone. Args: {{"action": "devices|send|receive", "path": "file to send", "device": "device name from devices", "folder": "optional, for receive"}}
+   - xod_machines: The user's other computers running Xod (over their Tailscale sign-in): list them, open the one-click sign-in so this Xod joins them, hand one of them a task (it runs there after the user approves it on that computer), or check that task. When they ask for something done on another of their computers ("on my other computer", "have the desktop do it", a machine by name), send_task it there; don't do it on this one. Whether a task given to another computer is done is task_status (xod_tasks and computer_list_jobs are only this computer's). To see or switch which AI model another computer uses, models / set_model (provider and model exactly as models lists them). Args: {{"action": "list|sign_in|send_task|task_status|models|set_model", "machine": "name from list", "task": "what to do there", "ref": "from send_task", "provider": "...", "model": "..."}}
 
 2. Controlled Workspace ({workspace_info}):
    - fs_list_workspace_files: Explore workspace directory tree.
@@ -2528,7 +2638,7 @@ CONTEXT:
 
 DECISION RULES:
 - 'direct_answer': Greetings ('hi', 'hello'), conceptual questions, chitchat, or follow-ups answerable from context without tools.
-- 'execute_plan': External actions, web research, browser automation, terminal commands, file reading/editing, system telemetry, media synthesis.
+  Also a question about your abilities with no task in it ("what can you do?", "can you use my apps?"): say what you can do with this computer and their phone, in a few lines, and ask which they want; never try tools at random to find out. A named task, even phrased "can you try…" ("see if you can post to my Facebook", "open Muse"), is not that: do it.- 'execute_plan': External actions, web research, browser automation, terminal commands, file reading/editing, system telemetry, media synthesis.
 
 Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
 ```json
@@ -2575,6 +2685,11 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
                     "Xod follows; what it asks waits for the person. Args: {\"action\": \"start\", \"agent\": \"claude|muse\", \"task\": \"...\", "
                     "\"folder\": \"...\"}; {\"action\": \"status\", \"job\": \"optional name\"}; {\"action\": \"message\", \"job\": \"claude-job-1\", "
                     "\"text\": \"...\"}; {\"action\": \"interrupt|stop\", \"job\": \"...\"}. Two agents at once: one start per job.",
+                    "     When the person says to have Claude Code or Muse do something, start the job in this same step, in their "
+                    "words. Work that isn't in one project (their GitHub, their PRs across repos, this computer) starts without a "
+                    "folder: the agent works from the home folder with Xod's GitHub connection, and says itself what it can't do. "
+                    "Don't search for folders or ask which repo first. After start, say it's started and where to watch it (Tools → "
+                    "Crew); never call it done until status says done.",
                     "   - agent_ask: A quick question to an agent, answer only, nothing changed (explain, review). Args: {\"agent\": \"claude\", "
                     "\"message\": \"...\", \"folder\": \"optional\"}",
                     "   - agent_terminal: A live terminal session to watch or talk to, or any long-running program (npm run dev). Args: "
@@ -2686,7 +2801,7 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
                 yield {"type": "reasoning", "content": f"{thought}\n"}
 
             decision = parsed.get("decision", "execute_plan")
-            direct_resp = parsed.get("direct_response", "")
+            direct_resp = _as_text(parsed.get("direct_response"))
             title = parsed.get("plan_title") or parsed.get("title") or f"Execution Plan: {query[:40]}"
             raw_steps = parsed.get("plan_steps") or parsed.get("steps") or []
             task_focus = parsed.get("task_focus") or parsed.get("task_category") or "general"

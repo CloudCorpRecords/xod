@@ -86,6 +86,21 @@
           class="flex-1 min-w-0 bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[13px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
         <button type="submit" class="px-3 py-2 rounded-lg bg-brand-500 text-surface-900 text-[13px] font-semibold hover:bg-brand-400">Hand off</button>
       </form>
+      <div class="px-5 py-3 border-b border-white/[0.06]">
+        <div class="flex items-baseline justify-between gap-3">
+          <h4 class="text-[13px] font-semibold text-white">Missions</h4>
+          <span class="text-[11px] text-zinc-500">Xod plans the steps, runs them in order, and checks each one on disk</span>
+        </div>
+        <form class="mt-2 flex gap-2" onsubmit="event.preventDefault(); createMissionFromPanel();">
+          <input id="newMissionInput" type="text" autocomplete="off" placeholder="e.g. Sort the Downloads folder into named subfolders"
+            class="flex-1 min-w-0 bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[13px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
+          <button type="submit" class="px-3 py-2 rounded-lg bg-brand-500 text-surface-900 text-[13px] font-semibold hover:bg-brand-400">Plan &amp; run</button>
+        </form>
+        <label class="mt-2 flex items-center gap-2 text-[12px] text-zinc-400">
+          <input id="missionContinueChk" type="checkbox" class="accent-brand-500"> Keep going if a step fails
+        </label>
+        <div id="missionsList" class="mt-3 space-y-2"></div>
+      </div>
       <div id="tasksList" class="flex-1 overflow-y-auto px-5 py-4 space-y-5"></div>
     </aside>
   </div>
@@ -201,6 +216,14 @@
             <button onclick="closeToolsMenu();openPhonePanel()" class="tools-menu-item">
               <i data-lucide="smartphone" class="size-4 text-emerald-400 shrink-0"></i>
               <div class="min-w-0"><p class="flex items-center gap-2">Your phone</p><p>Message Xod, approve tasks, get results</p></div>
+            </button>
+            <button onclick="closeToolsMenu();openXodsPanel()" class="tools-menu-item">
+              <i data-lucide="monitor-smartphone" class="size-4 text-sky-400 shrink-0"></i>
+              <div class="min-w-0"><p class="flex items-center gap-2">Your Xods</p><p>Sign in once; your computers find each other</p></div>
+            </button>
+            <button onclick="closeToolsMenu();openFamilyPanel()" class="tools-menu-item">
+              <i data-lucide="users" class="size-4 text-amber-400 shrink-0"></i>
+              <div class="min-w-0"><p class="flex items-center gap-2">Family</p><p>Your machines and what each one offers</p></div>
             </button>
             <button onclick="closeToolsMenu();openHealthPanel()" class="tools-menu-item">
               <i data-lucide="heart-pulse" class="size-4 text-emerald-400 shrink-0"></i>
@@ -1100,6 +1123,28 @@
               placeholder="google/gemma-4-12b-qat"
               class="w-full bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"
             >
+            <!-- Detected Models Dropdown (cloud providers; populated by Detect Models) -->
+            <div id="detectedModelsContainer" class="hidden space-y-1 pt-1">
+              <label class="text-[10px] text-zinc-400">Detected models:</label>
+              <select
+                id="selectLlmModelDetected"
+                class="w-full bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"
+              ></select>
+            </div>
+            <div id="llmModelPriceLine" class="hidden text-[10px] text-zinc-400 pt-0.5"></div>
+            <!-- Auto Model Mode: benchmark + cost pick (ViBench snapshot) -->
+            <div class="space-y-1 pt-1">
+              <label class="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                <input type="checkbox" id="checkboxLlmAutoModel" onchange="handleAutoModelToggle()" class="accent-brand-500">
+                <span>Auto (benchmark + cost)</span>
+              </label>
+              <div id="autoModelPickLine" class="hidden text-[10px] text-zinc-400"></div>
+              <details id="vibenchDetails" class="hidden pt-0.5">
+                <summary class="text-[10px] text-brand-400 cursor-pointer hover:underline">The ViBench snapshot behind Auto</summary>
+                <div id="vibenchTableWrap" class="pt-1 overflow-x-auto"></div>
+                <p id="vibenchMeta" class="text-[9px] text-zinc-500 pt-1"></p>
+              </details>
+            </div>
             <!-- LM Studio Detected Models Quick-Picker -->
             <div id="lmStudioDetectedModelsContainer" class="hidden space-y-1.5 pt-1">
               <div class="flex items-center justify-between text-[10px]">
@@ -1141,6 +1186,55 @@
             </div>
             <div id="testCloudKeyFeedback" class="text-xs hidden mt-1"></div>
           </div>
+
+          <!-- API Key Profiles (per provider; keys stay in the Keychain, shown masked) -->
+          <div id="groupKeyProfiles" class="hidden space-y-2 pt-1">
+            <div class="flex items-center justify-between">
+              <label class="text-xs text-zinc-400">API Key Profiles</label>
+              <span id="keyProfileActiveNote" class="text-[10px] text-zinc-500"></span>
+            </div>
+            <div class="flex gap-2">
+              <select id="selectKeyProfile" onchange="kpSelectChange()" class="flex-1 bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"></select>
+              <button type="button" onclick="kpActivate()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap">Set active</button>
+            </div>
+            <div id="keyProfileMeta" class="text-[10px] text-zinc-500"></div>
+            <div class="flex gap-2">
+              <input type="password" id="inputKeyProfileKey" placeholder="Paste a key for the selected profile" autocomplete="off" class="flex-1 bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono">
+              <button type="button" onclick="kpSaveKey()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap">Save key</button>
+            </div>
+            <div class="flex gap-2">
+              <input type="text" id="inputKeyProfileName" placeholder="New profile name" autocomplete="off" class="flex-1 bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500">
+              <button type="button" onclick="kpAdd()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap">Add</button>
+              <button type="button" onclick="kpRename()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap">Rename</button>
+              <button type="button" onclick="kpDelete()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap">Delete</button>
+            </div>
+            <div id="keyProfileStatus" class="text-[11px] hidden"></div>
+            <p class="text-[10px] text-zinc-500">Detect Models runs against the selected profile (the active one by default) and saves the models it finds as that key's allowed models. Calls always use the active profile's key.</p>
+          </div>
+        </div>
+
+        <!-- Usage and Cost (per-call ledger: tokens and estimated cost, by model and by key) -->
+        <div class="space-y-3" id="usagePanel">
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <label class="text-xs font-semibold text-zinc-300">Usage and Cost</label>
+            <div class="flex items-center gap-1">
+              <button type="button" data-usage-range="today" onclick="setUsageRange('today')" class="usage-range-btn px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-[10px] font-semibold text-zinc-200 transition-colors">Today</button>
+              <button type="button" data-usage-range="7d" onclick="setUsageRange('7d')" class="usage-range-btn px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-[10px] font-semibold text-zinc-200 transition-colors">7 days</button>
+              <button type="button" data-usage-range="all" onclick="setUsageRange('all')" class="usage-range-btn px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-[10px] font-semibold text-zinc-200 transition-colors">All</button>
+              <button type="button" onclick="refreshUsagePanel()" class="px-2 py-1 rounded bg-surface-700 hover:bg-surface-600 text-[10px] font-semibold text-zinc-200 transition-colors">Refresh</button>
+            </div>
+          </div>
+          <div id="usageTotals" class="text-xs text-zinc-300">No usage loaded yet.</div>
+          <div id="usageEstimateLine" class="text-[11px] text-zinc-400"></div>
+          <div>
+            <div class="text-[11px] text-zinc-400 font-semibold pb-1">By model</div>
+            <div id="usageByModel" class="space-y-1 text-[11px] text-zinc-300 font-mono"></div>
+          </div>
+          <div>
+            <div class="text-[11px] text-zinc-400 font-semibold pb-1">By API key profile</div>
+            <div id="usageByKey" class="space-y-1 text-[11px] text-zinc-300 font-mono"></div>
+          </div>
+          <p class="text-[10px] text-zinc-500">Costs are estimates from Xod's reference price table (dated <span id="usagePricingAsOf">unknown</span>), not provider bills. Calls whose tokens the provider did not report are estimated at about 4 characters per token and are counted separately above. Models with no reference price count as unpriced, never guessed.</p>
         </div>
 
         <!-- On-Device Image & Video Models Manager Section -->
@@ -4242,6 +4336,7 @@
   <script src="/static/js/app.js?v=moonlit75"></script>
   <script src="/static/js/sidebar.js?v=moonlit75"></script>
   <script src="/static/js/tasks.js?v=moonlit75"></script>
+  <script src="/static/js/missions.js?v=moonlit75"></script>
   <script src="/static/js/health.js?v=moonlit75"></script>
   <script src="/static/js/whimsy.js?v=moonlit75"></script>
   <script src="/static/js/mascot.js?v=moonlit75"></script>
@@ -4259,6 +4354,8 @@
   <script src="/static/js/mcp.js?v=moonlit75"></script>
   <script src="/static/js/mail.js?v=moonlit75"></script>
   <script src="/static/js/phone.js?v=moonlit75"></script>
+  <script src="/static/js/xods.js?v=moonlit75"></script>
+  <script src="/static/js/family.js?v=moonlit75"></script>
   <script src="/static/js/models.js?v=moonlit75"></script>
   <script src="/static/js/agent.js?v=moonlit75"></script>
   <script src="/static/js/updates.js?v=moonlit75"></script>

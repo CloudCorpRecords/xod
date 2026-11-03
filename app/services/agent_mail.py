@@ -335,15 +335,17 @@ def draft(to: Any, text: str, subject: str = "", kind: str = "message", thread: 
 
 
 async def send(to: Any, text: str, subject: str = "", kind: str = "message", thread: Optional[str] = None,
-               in_reply_to: Optional[str] = None, msg_id: Optional[str] = None, origin: str = "you") -> Dict[str, Any]:
-    """Seals and sends a message now (you pressed Send, or approved a draft)."""
+               in_reply_to: Optional[str] = None, msg_id: Optional[str] = None, origin: str = "you",
+               max_text: int = 20000) -> Dict[str, Any]:
+    """Seals and sends a message now (you pressed Send, or approved a draft). max_text is raised only for the phone
+    app's pictures of the browser (services/phone_api.py); one envelope still has to fit the post office's 256 KB."""
     cfg, ident = _config(), _identity()
     if not (cfg.get("address") and ident):
         raise MailError("Set up your agent address first (Agent Mail).")
     recips = _recipients(to)
     thread = thread or uuid.uuid4().hex[:16]
     msg_id = msg_id or uuid.uuid4().hex
-    message = {"id": msg_id, "thread": thread, "kind": kind, "subject": (subject or "")[:200], "text": text[:20000],
+    message = {"id": msg_id, "thread": thread, "kind": kind, "subject": (subject or "")[:200], "text": text[:max_text],
                "in_reply_to": in_reply_to, "recipients": recips, "sent_at": int(time.time())}
     sent, errors, queued = [], [], []
     for addr in recips:
@@ -588,6 +590,19 @@ async def _receive(ident: mc.Identity, my_address: str, envelope: Dict[str, Any]
                        1 if status == "new" else 0, problem, msg.get("in_reply_to"), "mail", time.time()))
         except sqlite3.IntegrityError:
             return None     # the same message twice
+    if status == "new" and (msg.get("subject") or "") == "xod api":     # the phone app asking (services/phone_api.py)
+        from app.services import phone_api
+        logger.info(f"Agent Mail: a request from the phone app ({sender})")
+        task = asyncio.get_running_loop().create_task(phone_api.handle(sender, msg, row_id))
+        _api_tasks.add(task)
+        task.add_done_callback(_api_done)
+        return None
+    if status == "new" and (msg.get("subject") or "") == "hello":
+        try:
+            from app.services import phone_mcp
+            phone_mcp.record_hello(sender, json.loads(msg.get("text") or "{}"))
+        except Exception:
+            pass
     return {"id": row_id, "peer": sender, "subject": msg.get("subject") or "", "text": msg.get("text") or "",
             "status": status, "trust": trust, "kind": kind}
 
@@ -726,6 +741,21 @@ def _notify(title: str, text: str) -> None:
 # ---------------------------------------------------------------- background
 
 _task: Optional[asyncio.Task] = None
+_api_tasks: set = set()        # phone requests being answered (kept referenced until done)
+_wake: Optional[asyncio.Event] = None
+_loop_ref: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _api_done(task: asyncio.Task) -> None:
+    _api_tasks.discard(task)
+    if not task.cancelled() and task.exception():
+        logger.warning(f"Agent Mail: answering the phone app failed: {task.exception()!r}")
+
+
+def wake() -> None:
+    """Mail just arrived at this computer's own post office: check now instead of at the next poll. Any thread."""
+    if _wake is not None and _loop_ref is not None:
+        _loop_ref.call_soon_threadsafe(_wake.set)
 
 
 async def _loop() -> None:
@@ -743,10 +773,16 @@ async def _loop() -> None:
                 _reply_with_task_results()
         except Exception as e:
             logger.warning(f"Agent Mail check failed: {e}")
-        await asyncio.sleep(POLL_SECONDS)
+        try:
+            await asyncio.wait_for(_wake.wait(), POLL_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        _wake.clear()
 
 
 def start() -> None:
-    global _task
+    global _task, _wake, _loop_ref
     if _task is None or _task.done():
-        _task = asyncio.get_running_loop().create_task(_loop())
+        _loop_ref = asyncio.get_running_loop()
+        _wake = asyncio.Event()
+        _task = _loop_ref.create_task(_loop())

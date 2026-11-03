@@ -171,6 +171,24 @@ def after(ctx: Optional[Dict[str, Any]], result: Any) -> None:
                 hint = Path(op["to_hint"])
                 src_name = Path(op.get("from") or op.get("src")).name
                 op["now_at"] = str(hint / src_name) if hint.is_dir() and (hint / src_name).exists() else str(hint)
+        # Write-boundary provenance (fix round 6, BOARD-001 Design 2):
+        # a successful write-tool call leaves a record naming the tool,
+        # the path and the sha256 of the exact content argument it was
+        # handed, so the completion checks can tell a file the task
+        # actually wrote from a file that merely exists. Only
+        # write-tool content becomes file bytes with provenance; this
+        # record is how that is known afterwards.
+        if ok and name in ("computer_write_file", "fs_write_workspace_file"):
+            try:
+                raw = _arg(args, "filepath", "file_path", "path")
+                wp = (_resolve(raw, ctx.get("workspace")) if name == "fs_write_workspace_file"
+                      else Path(os.path.expanduser(raw or "")))
+                content = args.get("content")
+                ops.append({"kind": "write_file", "path": str(wp), "tool": name,
+                            "sha256": (hashlib.sha256(content.encode("utf-8")).hexdigest()
+                                       if isinstance(content, str) else None)})
+            except Exception:
+                pass
         if name == "computer_batch_organize" and ok:
             d = Path(ctx["dir"])
             gone = [n for n in ctx["before_names"] if not (d / n).exists()]
@@ -243,6 +261,25 @@ def recent(limit: int = 200, since: Optional[float] = None) -> List[Dict[str, An
     return [{"id": r["id"], "ts": r["ts"], "origin": r["origin"], "tool": r["tool"], "title": r["title"],
              "detail": r["detail"], "ok": bool(r["ok"]), "undoable": bool(r["undoable"]) and not r["undone_at"],
              "undone_at": r["undone_at"], "note": r["note"]} for r in rows]
+
+
+def entries_for_origin(origin: str, since: float = 0, limit: int = 500) -> List[Dict[str, Any]]:
+    """Full entries for one origin, oldest first, with the recorded file ops parsed.
+    recent() does not expose the ops; the task queue's completion check needs them
+    to compare what a task did against what is actually on disk."""
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM activity WHERE origin = ? AND ts >= ? ORDER BY id ASC LIMIT ?",
+                         (origin, since or 0, limit)).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["ok"] = bool(r["ok"])
+        try:
+            d["ops"] = json.loads(r["undo"] or "[]")
+        except Exception:
+            d["ops"] = []
+        out.append(d)
+    return out
 
 
 def _trash(p: Path) -> None:

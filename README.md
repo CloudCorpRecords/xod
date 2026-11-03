@@ -5,7 +5,7 @@
 <h1 align="center">Xod</h1>
 
 <p align="center">
-  <b>A private AI that works on your computer.</b><br>
+  <b>A private AI agent that does real work on your computer.</b><br>
   It researches, works with your files and your Mac's apps, hands code to coding agents, and asks before it acts.<br>
   Free and open source, for Mac and Windows. It finds the AI on your computer and sets itself up.
 </p>
@@ -30,20 +30,6 @@
 
 ![Xod answering a research question, with sources](docs/screenshots/answer.png)
 
-## What you can ask it
-
-| | |
-|---|---|
-| 🔎 **Research** | "What changed in the EU AI Act this year? Cite sources." It reads the pages in its own browser and answers with links. |
-| 📱 **Your Mac's apps** | "Did anyone text me today?" · "Coffee near me" · "Turn off the lights" · "Move my dentist appointment to Friday" · "Text Sam I'm running late" (it asks before sending) |
-| 🗂 **Files** | "Tidy my Downloads and tell me what's taking the space." Every move can be undone. |
-| 🧑‍💻 **Code** | "Have Claude Code fix the failing tests in ~/code/app." Coding agents work on their own copy of your repo; you review, then merge or open a pull request. |
-| 💼 **Jobs** | "Find remote ML engineer roles and fill in the applications." It stops for your OK before each Submit. |
-| 🛠 **Build** | "Make me a 3D game where you dodge falling cubes." Written, run, tested and fixed, with a live preview. |
-| 🔁 **Routines** | "Every weekday at 8, the five biggest tech stories with sources." Saved once, waiting for you each morning. |
-
-It stops for your OK before anything is sent, paid, posted, merged or deleted, and it logs everything it does.
-
 ## See it in action
 
 | | |
@@ -67,6 +53,20 @@ It stops for your OK before anything is sent, paid, posted, merged or deleted, a
 [Never fill out a job application again](docs/media/shorts/xod-forms.mp4)
 
 <sub>Every demo is recorded from the real app with a throwaway demo data folder. Waits are sped up and say so; speech is never sped up. The vertical videos ran on a Windows PC with a free local model; the job videos ran on a Mac with the built-in Qwen 3.5 4B, on a practice careers site with made-up companies (`demo/careers`). The three new ones ran on a Mac with a cloud model (Fireworks · GLM 5.3 Flash), and say so on screen; the coding one uses Claude Code on a small demo project.</sub>
+
+## What you can ask it
+
+| | |
+|---|---|
+| 🔎 **Research** | "What changed in the EU AI Act this year? Cite sources." It reads the pages in its own browser and answers with links. |
+| 📱 **Your Mac's apps** | "Did anyone text me today?" · "Coffee near me" · "Turn off the lights" · "Move my dentist appointment to Friday" · "Text Sam I'm running late" (it asks before sending) |
+| 🗂 **Files** | "Tidy my Downloads and tell me what's taking the space." Every move can be undone. |
+| 🧑‍💻 **Code** | "Have Claude Code fix the failing tests in ~/code/app." Coding agents work on their own copy of your repo; you review, then merge or open a pull request. |
+| 💼 **Jobs** | "Find remote ML engineer roles and fill in the applications." It stops for your OK before each Submit. |
+| 🛠 **Build** | "Make me a 3D game where you dodge falling cubes." Written, run, tested and fixed, with a live preview. |
+| 🔁 **Routines** | "Every weekday at 8, the five biggest tech stories with sources." Saved once, waiting for you each morning. |
+
+It stops for your OK before anything is sent, paid, posted, merged or deleted, and it logs everything it does.
 
 ## Why Xod
 

@@ -90,6 +90,36 @@ def _kill_own_browser(port_too: bool = False) -> int:
     psutil.wait_procs(list(victims.values()), timeout=3)
     return len(victims)
 
+
+# Ends a headless Chrome once the Xod that started it is gone, however it went (quit, crash, a test run ending).
+# Nobody can see a headless Chrome, but the Mac counts it as Chrome running: clicking Chrome's icon then opens
+# nothing. The start time guards against the pid being reused by something else.
+_WATCH = """import sys, time, psutil
+xod, pid = int(sys.argv[1]), int(sys.argv[2])
+try:
+    chrome = psutil.Process(pid)
+    born = chrome.create_time()
+    while psutil.pid_exists(xod) and chrome.is_running():
+        time.sleep(2)
+    if chrome.is_running() and chrome.create_time() == born:
+        chrome.terminate()
+        try:
+            chrome.wait(5)
+        except psutil.TimeoutExpired:
+            chrome.kill()
+except psutil.Error:
+    pass
+"""
+
+
+def _end_with_xod(proc: subprocess.Popen) -> None:
+    try:
+        flags = {"creationflags": 0x08000000} if os.name == "nt" else {"start_new_session": True}   # no console window
+        subprocess.Popen([sys.executable, "-c", _WATCH, str(os.getpid()), str(proc.pid)],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **flags)
+    except Exception as e:
+        logger.warning(f"Could not watch the background browser: {e}")
+
 BOOTSTRAP_SCRIPT = """
 (() => {
     // 1. Comprehensive Anti-Detection, Stealth Evasions & Bot Fingerprint Masking
@@ -372,6 +402,19 @@ def _page_name(title: str, url: str) -> str:
     if title and title.lower() not in ("untitled", "about:blank"):
         return title
     return urllib.parse.urlparse(url or "").netloc or url or "this page"
+
+
+# A site's own "you look like a bot" page (adidas: "403 Forbidden … Reference Error", a "submit" button that never
+# lets you in). detect_captcha only knows the usual widgets, so the mission pressed that button three times.
+_BOT_WALL_RE = re.compile(r"\b(?:403 forbidden|access denied|access to this page has been denied|request (?:was )?blocked|"
+                          r"verify (?:that )?you(?:'re| are) (?:a )?human|are you a robot|unusual traffic|bot (?:check|detection|protection)|"
+                          r"pardon our interruption|reference (?:error|#)|press (?:&|and) hold|checking your browser)\b", re.I)
+
+
+def _bot_wall(title: str, page_md: str) -> bool:
+    """The page is a site's block page, not the site."""
+    text = f"{title or ''}\n{page_md or ''}"
+    return len(page_md or "") < 3000 and bool(_BOT_WALL_RE.search(text))
 
 
 def load_site_tips(site: str) -> List[str]:
@@ -676,22 +719,49 @@ class BrowserSandboxService:
         self._msg_id += 1
         return self._msg_id
 
+    def _probe_devtools(self, timeout: float) -> str:
+        """Asks the debug port once. Returns "ready" (pages listed), "empty"
+        (answered, no pages), "refused" (nothing listening) or "slow" (no
+        answer in time; busy is not the same as gone)."""
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                return "ready" if data else "empty"
+        except urllib.error.URLError as e:
+            if isinstance(getattr(e, "reason", None), ConnectionRefusedError):
+                return "refused"
+            return "slow"
+        except Exception:
+            return "slow"
+
+    async def _wait_for_devtools(self, timeout_s: float = 20.0) -> bool:
+        """Polls the debug port until it lists pages or the budget runs out.
+        A cold Chrome on a busy machine can need well over 5 seconds."""
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            await asyncio.sleep(0.25)
+            if self._probe_devtools(0.5) == "ready":
+                return True
+        return False
+
     async def ensure_browser_running(self) -> bool:
         """Verifies Chrome is running on DEBUG_PORT or launches it in configured mode."""
         # A busy Chrome (a heavy page, a slow PC) can take more than a second to answer: ask again, longer, before
         # deciding it's gone, because what follows ends it, and with it a half-filled form waiting for the person's OK.
+        state = "slow"
         for wait in (1.0, 2.5, 4.0):
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=wait) as resp:
-                    data = json.loads(resp.read().decode())
-                    if data:
-                        return True
-                    break      # it answered, with no pages: start fresh
-            except urllib.error.URLError as e:
-                if isinstance(getattr(e, "reason", None), ConnectionRefusedError):
-                    break      # nothing on the port: no need to wait
-            except Exception:
-                pass
+            state = self._probe_devtools(wait)
+            if state == "ready":
+                return True
+            if state in ("empty", "refused"):
+                break
+        if state == "slow":
+            # No answer yet, but nothing proved it gone either. Both Xod
+            # instances share this profile and port, so killing on a guess can
+            # end the other instance's live browser mid-task. Give a busy
+            # Chrome one long final chance before treating it as dead.
+            if self._probe_devtools(10.0) == "ready":
+                return True
 
         # If not responding, clean up any stale chrome processes & singleton locks
         if self.proc:
@@ -757,17 +827,11 @@ class BrowserSandboxService:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
+        if self.headless:
+            _end_with_xod(self.proc)
 
-        # Wait up to 5 seconds for DevTools to become available
-        for _ in range(25):
-            await asyncio.sleep(0.2)
-            try:
-                with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=0.5) as resp:
-                    tabs = json.loads(resp.read().decode())
-                    if tabs:
-                        return True
-            except Exception:
-                pass
+        if await self._wait_for_devtools(20.0):
+            return True
 
         raise RuntimeError("Background Chrome failed to start or open remote debugging port.")
 
@@ -3828,6 +3892,7 @@ class BrowserSandboxService:
         self.latest_mission = mission_record
         profile = load_user_profile()
         sites_seen: List[str] = []
+        walled_sites: List[str] = []           # sites that answered with a bot-check / block page
         try:
             from app.services.llm import llm_service as _llm
             _ep = _llm.get_endpoint_info()
@@ -3937,6 +4002,14 @@ class BrowserSandboxService:
             page_key = (self.current_url, len(page_md))
             if page_key != last_page_key:
                 page_offset, last_page_key = 0, page_key
+            walled = _bot_wall(self.current_title, page_md)
+            if walled and site not in walled_sites:
+                walled_sites.append(site)
+                record("blocked_site", False, f"{site or 'This site'} answered with a bot-check page; not trying to get past it.", site,
+                       status="failed")
+                history.append(f"NOTE: {site or 'this site'} blocks automated visits (its bot-check / block page is showing). "
+                               "Never press its buttons or fill its fields. Get what's still needed from another site, or "
+                               "finish with what you have and say plainly that this site was blocked.")
             page_chunk = page_md[page_offset: page_offset + MISSION_PAGE_CHUNK]
             more_text = len(page_md) > page_offset + MISSION_PAGE_CHUNK
             tabs_block = await self._tabs_block()
@@ -4233,6 +4306,13 @@ class BrowserSandboxService:
                     sentinel.flagged(_page_name(self.current_title, self.current_url), next(iter(page_traps.values())), f"Blocked a step that used {used[0]}.")
                     history.append("NOTE: " + note + " Do only what the GOAL says.")
                     continue
+
+            # --- A block page: never press or fill anything on it --------------------------
+            if walled and action in ("click", "choose", "type", "select", "check", "uncheck", "press_key", "hover", "log_in"):
+                queued.clear()
+                record(action, False, "Not done: that's the site's bot-check page.", plan.get("index"), status="failed")
+                history.append("NOTE: not done, that is the bot-check page. Navigate to another site or finish.")
+                continue
 
             # --- Never type or pick an answer the user didn't give ------------------------
             if action in ("type", "select", "choose") and element and not _looks_like_search_box(element) \
@@ -4595,9 +4675,11 @@ class BrowserSandboxService:
                     f"Open the sign-up page (click element [{link['index']}] \"{(link.get('text') or '').strip()[:40]}\"), "
                     "type the profile email there, then use create_password."}
         if not creds:
+            from app.services import browser_remote
+            browser_remote.note_signin(self.current_url)
             return {"success": False, "needs_user": True,
-                    "error": f"I don't have a saved login for {site}. Log in once yourself with **Take Over** "
-                             "(I'll remember the session), or save a login for it, then ask me to continue."}
+                    "error": f"I don't have a saved login for {site}. Sign in once yourself, from the Xod app on your phone "
+                             "(Sign in) or here with **Take Over** (I'll remember the session), then ask me to continue."}
         user_idx, pw_idx = self._resolve_login_fields(plan)
         if pw_idx is None:
             return {"success": False, "error": "no password field on this page"}

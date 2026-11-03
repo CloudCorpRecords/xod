@@ -140,6 +140,53 @@
     },
   };
   const ORDER = Object.keys(CHARACTERS);
+
+  // ---------------------------------------------------------------- look packs
+  // Living Look packs are data, not code (services/looks.py): a folder in the app's data
+  // area with a manifest, one keyframe image and one animation clip per state. A verified
+  // pack becomes a look beside the built-in characters; the originals stay the permanent
+  // default and are always one click away. Pack states are fixed (idle, working, looking,
+  // playing, upgrading, celebrating); the live moods map onto them here. playing has no
+  // mood of its own (joy reaches it: a dance, a treat, a giggle), and upgrading shows
+  // while an update is downloading or installing (updates.js sets window.__xodUpdating).
+  const PACK_MOOD_TO_STATE = { idle: "idle", sleepy: "idle", thinking: "working", working: "working",
+                               searching: "looking", waiting: "looking", listening: "looking",
+                               error: "looking", happy: "celebrating" };
+  const PACK_STATES = ["idle", "working", "looking", "playing", "upgrading", "celebrating"];
+  let PACKS = {};   // pack id -> verified summary from /api/looks
+  const KNOWN_LOOK = (id) => Boolean(id && (CHARACTERS[id] || PACKS[id]));
+  async function loadPacks() {
+    try {
+      const j = await (await fetch("/api/looks")).json();
+      const next = {};
+      for (const p of j.packs || []) if (p.ok) next[p.id] = p;
+      PACKS = next;
+    } catch (_) {}
+    return PACKS;
+  }
+  const packAsset = (id, file) => `/looks/${id}/${file}`;
+  function packMarkup(cid) {
+    const info = (PACKS[cid].states || {}).idle || {};
+    return `<video class="xm-pack-media" data-pack="${cid}" autoplay muted loop playsinline src="${packAsset(cid, info.animation_file)}" poster="${packAsset(cid, info.file)}"></video>`;
+  }
+  function packStateFor(t) {
+    if (window.__xodUpdating) return "upgrading";
+    if (t < S.happyUntil) return "celebrating";   // the finish flourish (wand-tap-finish lives here)
+    if (t < S.danceUntil || t < S.munchUntil || t < S.giggleUntil || t < S.loveUntil) return "playing";
+    if (t < S.errorUntil) return "looking";
+    return PACK_MOOD_TO_STATE[S.mood] || "idle";
+  }
+  function paintPack(r, t) {
+    const st = packStateFor(t);
+    if (r.packState === st) return;
+    const info = (r.pack.states || {})[st];
+    const v = r.el.querySelector("video.xm-pack-media");
+    if (!info || !v) return;
+    r.packState = st;
+    v.poster = packAsset(r.cid, info.file);
+    const src = packAsset(r.cid, info.animation_file);
+    if (!v.src.endsWith(info.animation_file)) v.src = src;
+  }
   const GENERIC_HELLOS = ["Ask me something you've been wondering about.", "That tickles.", "No question is too small. Or too big, honestly.", "Right-click me to change how I look."];
   const FIDGETS = [["hop", 700], ["look", 1600], ["wink", 900], ["stretch", 1500], ["hum", 2600], ["wiggle", 900], ["sneeze", 1700],
                    ["juggle", 3200], ["read", 4200], ["bubble", 2200]];
@@ -300,17 +347,17 @@
   };
   const rigs = new Map();    // element -> rig
 
-  const characterOf = (el) => (CHARACTERS[el.dataset.character] ? el.dataset.character : character);
+  const characterOf = (el) => (KNOWN_LOOK(el.dataset.character) ? el.dataset.character : character);
 
   function rigFor(el) {
     let r = rigs.get(el);
     if (r) return r;
     const q = (s) => el.querySelector(s);
-    const cid = q("svg")?.dataset.character || "moon";
-    const c = CHARACTERS[cid];
-    const b = c.bounce || 1;
+    const cid = q("svg")?.dataset.character || q("video.xm-pack-media")?.dataset.pack || "moon";
+    const c = CHARACTERS[cid] || null;
+    const b = (c && c.bounce) || 1;
     r = {
-      el, svg: q("svg"), cid, c,
+      el, svg: q("svg"), cid, c, pack: PACKS[cid] || null,
       rig: q(".xm-rig"), body: q(".xm-body"), eyes: q(".xm-eyes"), open: q(".xm-open"), shut: q(".xm-shut"), joy: q(".xm-joy"), love: q(".xm-love"),
       dizzy: q(".xm-dizzy"), mouth: q(".xm-mouth"), juggle: q(".xm-juggle"), jballs: el.querySelectorAll(".xm-jb"), page: q(".xp-page"), cheeks: el.querySelectorAll(".xm-cheek"), sweat: q(".xm-sweat"),
       eyeL: q(".xm-eye-l"), eyeR: q(".xm-eye-r"), phase: q(".xm-phase"), hem: q(".xc-hem"), scan: q(".xc-scan"),
@@ -342,7 +389,7 @@
       const lit = (1 - Math.cos(2 * Math.PI * p)) / 2;
       if (lit > 0.08 && lit < 0.92) { r.restPhase = phasePath(p); r.phase.setAttribute("d", r.restPhase); r.phase.setAttribute("opacity", "0.14"); }
       el.title = `Tonight's moon: ${phaseName(p).toLowerCase()}`;
-    } else if (r.hero) {
+    } else if (r.hero && c) {
       el.title = `Hi, I'm Xod (${c.name.toLowerCase()} look). Right-click to change it.`;
     }
     return r;
@@ -353,17 +400,20 @@
     const live = [...document.querySelectorAll(".xod-mascot:not(.xod-mascot--chat)")];
     const chat = document.querySelectorAll(".xod-mascot--chat");
     if (chat.length) live.push(chat[chat.length - 1]);
-    return live.filter((m) => m.querySelector("svg") && (m.offsetParent !== null || m.dataset.live === "1"));
+    return live.filter((m) => m.querySelector("svg, video.xm-pack-media") && (m.offsetParent !== null || m.dataset.live === "1"));
   }
 
   function mount(m) {
-    m.innerHTML = characterSvg(characterOf(m));
+    const cid = characterOf(m);
+    m.innerHTML = PACKS[cid] ? packMarkup(cid) : characterSvg(cid);
     rigs.delete(m);
     rigFor(m);
   }
 
   function mountMascots(root = document) {
     root.querySelectorAll(".xod-mascot").forEach((m) => {
+      const vid = m.querySelector("video.xm-pack-media");
+      if (vid) { if (vid.dataset.pack !== characterOf(m)) mount(m); return; }
       const svg = m.querySelector("svg");
       if (!svg || svg.dataset.character !== characterOf(m)) mount(m);
     });
@@ -386,7 +436,7 @@
 
   // ---------------------------------------------------------------- choosing a look
   function setCharacter(cid, { save = true, greet = true } = {}) {
-    if (!CHARACTERS[cid]) return;
+    if (!KNOWN_LOOK(cid)) return;
     const changed = cid !== character;
     character = cid;
     try { localStorage.setItem("xod.character", cid); } catch (_) {}
@@ -413,15 +463,50 @@
         setTimeout(() => m.classList.remove("is-arriving"), 700);
       }, 180);
     });
-    if (greet) setTimeout(() => { beHappy(1200); say(CHARACTERS[cid].hellos[0], 2600); }, 420);
+    if (greet) setTimeout(() => { beHappy(1200); say(CHARACTERS[cid] ? CHARACTERS[cid].hellos[0] : `Ta da. I'm Xod, in my ${(PACKS[cid] || {}).name || cid} look.`, 2600); }, 420);
     document.querySelectorAll("[data-pick-character]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.pickCharacter === cid)));
   }
 
   async function loadCharacter() {
     try {
       const j = await (await fetch("/api/companion")).json();
-      if (j && CHARACTERS[j.character] && j.character !== character) setCharacter(j.character, { save: false, greet: false });
+      if (j && KNOWN_LOOK(j.character) && j.character !== character) setCharacter(j.character, { save: false, greet: false });
     } catch (_) {}
+  }
+
+  // The picker grid: the built-in looks, then any verified look packs. A pack card
+  // shows its idle keyframe; picking it is the one-action switch, and picking any
+  // built-in (Moon above all) is the one-action switch back.
+  const escHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  function pickerCardsHtml() {
+    const builtins = ORDER.map((id) => `
+                <button type="button" class="xc-card" data-pick-character="${id}" aria-pressed="${id === character}">
+                  <span class="xod-mascot xod-mascot--preview" data-character="${id}" data-mood="idle"></span>
+                  <span class="xc-name">${CHARACTERS[id].name}</span>
+                  <span class="xc-blurb">${CHARACTERS[id].blurb}</span>
+                </button>`).join("");
+    const packs = Object.values(PACKS).map((p) => `
+                <button type="button" class="xc-card" data-pick-character="${p.id}" aria-pressed="${p.id === character}">
+                  <span class="xc-pack-preview"><img src="${packAsset(p.id, (p.states.idle || {}).file)}" alt=""></span>
+                  <span class="xc-name">${escHtml(p.name)}</span>
+                  <span class="xc-blurb">${escHtml(p.blurb)} Look pack.</span>
+                </button>`).join("");
+    return builtins + packs;
+  }
+  // Every state of a pack, playing at once: the at-a-glance proof a pack renders whole.
+  function renderPackStates(id) {
+    const host = document.getElementById("xcPackStates");
+    if (!host) return;
+    const p = id && PACKS[id];
+    if (!p) { host.innerHTML = ""; return; }
+    host.innerHTML = `
+            <p class="text-[12px] text-zinc-500 mt-4 mb-2">${escHtml(p.name)} pack, every state:</p>
+            <div class="xc-states">${PACK_STATES.map((st) => `
+              <figure class="xc-state">
+                <video muted loop autoplay playsinline src="${packAsset(p.id, (p.states[st] || {}).animation_file)}" poster="${packAsset(p.id, (p.states[st] || {}).file)}"></video>
+                <figcaption>${st}</figcaption>
+              </figure>`).join("")}
+            </div>`;
   }
 
   function openPicker() {
@@ -439,15 +524,11 @@
             <button data-close-companion class="p-1 -mr-1 rounded-lg text-zinc-500 hover:text-white hover:bg-surface-700" title="Close"><i data-lucide="x" class="size-4"></i></button>
           </header>
           <div class="flex-1 overflow-y-auto px-5 py-4">
-            <div class="xc-grid">
-              ${ORDER.map((id) => `
-                <button type="button" class="xc-card" data-pick-character="${id}" aria-pressed="${id === character}">
-                  <span class="xod-mascot xod-mascot--preview" data-character="${id}" data-mood="idle"></span>
-                  <span class="xc-name">${CHARACTERS[id].name}</span>
-                  <span class="xc-blurb">${CHARACTERS[id].blurb}</span>
-                </button>`).join("")}
+            <div class="xc-grid" id="xcGrid">
+              ${pickerCardsHtml()}
             </div>
             <p class="text-[12px] text-zinc-500 mt-4">Tip: right-click Xod on the home screen to come back here. Double-click for a flip.</p>
+            <div id="xcPackStates"></div>
           </div>
         </aside>`;
       document.body.appendChild(root);
@@ -460,12 +541,21 @@
         const card = e.target.closest("[data-pick-character]");
         if (card) {
           setCharacter(card.dataset.pickCharacter);
+          if (PACKS[card.dataset.pickCharacter]) renderPackStates(card.dataset.pickCharacter);
           const r = rigs.get(card.querySelector(".xod-mascot"));
           if (r) { r.y.kick(-80); r.sy.kick(-4); r.sx.kick(4); }
         }
       });
       if (window.lucide) lucide.createIcons();
     }
+    const grid = root.querySelector("#xcGrid");
+    if (grid) grid.innerHTML = pickerCardsHtml();
+    renderPackStates(PACKS[character] ? character : Object.keys(PACKS)[0]);
+    loadPacks().then(() => {
+      const g = root.querySelector("#xcGrid");
+      if (g) { g.innerHTML = pickerCardsHtml(); mountMascots(root); }
+      renderPackStates(PACKS[character] ? character : Object.keys(PACKS)[0]);
+    });
     mountMascots(root);
     root.classList.remove("hidden");
     requestAnimationFrame(() => root.classList.add("is-open"));
@@ -512,7 +602,7 @@
     for (const el of liveMascots()) {
       const r = rigFor(el);
       if (r.settled) continue;
-      try { animate(r, t, dt, drowsy); } catch (e) { if (!S.warned) { S.warned = true; console.warn("Xod companion:", e); } }
+      try { if (r.pack) paintPack(r, t); else animate(r, t, dt, drowsy); } catch (e) { if (!S.warned) { S.warned = true; console.warn("Xod companion:", e); } }
     }
     requestAnimationFrame(frame);
   }
@@ -1340,7 +1430,7 @@
     }).observe(document.body, { childList: true, subtree: true });
     wireTouch();
     wireWorld();
-    loadCharacter();
+    loadPacks().then(loadCharacter);
     try {
       if (!localStorage.getItem("xod.saidHello")) {
         setTimeout(() => say("Hi! I'm Xod. Pick a card, or ask me anything.", 5000), 1100);
@@ -1369,7 +1459,8 @@
   window.openCompanionPicker = openPicker;
   window.XodMascot = {
     say, sparkleBurst, beHappy, flip, lunarPhase, phaseName, mood: () => S.mood,
-    characters: () => ORDER.map((id) => ({ id, name: CHARACTERS[id].name, blurb: CHARACTERS[id].blurb })),
+    characters: () => [...ORDER.map((id) => ({ id, name: CHARACTERS[id].name, blurb: CHARACTERS[id].blurb })),
+                       ...Object.values(PACKS).map((p) => ({ id: p.id, name: p.name, blurb: p.blurb, pack: true }))],
     character: () => character, setCharacter, puppet, glyph, poof,
     // soul.js: how it feels lately (delighted, curious, sleepy, flustered, a bit down, content)
     setTemperament: (f) => { S.temper = f || "content"; },
@@ -1380,7 +1471,8 @@
     giggle: (ms = 1700) => { S.giggleUntil = now() + ms; noteActivity(); },
     dance: (ms = 2600) => { S.danceAt = now(); S.danceUntil = now() + ms; noteActivity(); },
     love: (ms = 2200) => { S.loveUntil = now() + ms; noteActivity(); },
-    info: () => ({ id: character, ...CHARACTERS[character] }),
+    info: () => (CHARACTERS[character] ? { id: character, ...CHARACTERS[character] }
+                                        : { id: character, name: (PACKS[character] || {}).name || character, pack: true }),
     lookAt: (x, y, ms = 1200) => { S.lookAtPoint = { x, y }; S.lookAtUntil = now() + ms; },
     voice: (level) => { S.voiceLevel = level; S.voiceAt = now(); S.lastActivity = Date.now(); },
     // Conversation mode: "listening" while it's your turn, null otherwise; hear() is your mic level.

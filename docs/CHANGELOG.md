@@ -1,5 +1,425 @@
 # Changelog
 
+## 0.9.24
+
+**Xod replies to people on X and LinkedIn, with your approval on every post**
+- Xod now keeps a social reply queue: mentions and comments it could answer are collected as drafts, each draft waits for your approval, and only an approved reply is posted, from inside the app, with the result read back. Dry-run is the default until posting is turned on, and the house copy rules (plain words, no em dashes, nothing claimed that is not in the record) are enforced as constraints on the drafts, not as suggestions. (PR #33)
+
+**Accessibility trust now reads true when it is true**
+- Xod asked macOS about its Accessibility access from its background helper process, and macOS answered for the helper instead of the app: a good grant, switched on and bound to the running build, could read as blocked, and the auto-approver showed a stale-grant warning that no switch flip could clear. The app itself now answers the question (its own GUI process checks and leaves the verdict where the helper reads it), and the helper never presents its own answer as the app's. The fix was proven live against the existing grant before this release was cut: the corrected reading flipped to true with no grant change and no repair ceremony. (PR #35)
+
+**Three fixes from the 0.9.23 ship report**
+- A saved provider and model win at startup. With cloud keys present, the startup path could promote the app to openai/gpt-4o over a saved choice (the Windows machine's local-model setup hit this, and started in an incoherent state). What you saved is what starts. (PR #34)
+- The backend watchdog's health probe asked for an address the app does not serve and read a healthy backend as dead, which would have restart-looped it; the watchdog was stood down for that reason. The probe now checks an endpoint that exists and treats any real answer as alive. (PR #34)
+- Applying family-vault keys on Windows could fail with a bare 500 error when the key store could not be reached from a background session. It now reports the key-store problem and its remedy as a proper state, and never marks a bundle version applied when it was not. (PR #34)
+
+**Checked before it shipped**
+- Each fix was built failing-first: the provider suite went 6 of 9 on the old tree to 10 of 10, the watchdog suite 32 of 34 to 34 of 34, the family vault suite 38 of 41 to 41 of 41, and the new permissions checks reproduced the false reading exactly before the fix and pass after (16 of 16 in that suite, including the live-verdict cases). The social reply suite passes 51 of 51. The full battery on the merged tree is diffed against the 0.9.23 battery in the release record.
+
+**Known issues carried into 0.9.24, named plainly**
+- Windows copies still update manually: the NSIS self-update wedge named since 0.9.20 is unchanged, so download the setup and run it with Xod fully closed rather than using self-update. Mac self-update is unaffected.
+- Every build still re-asks for its Accessibility switch once after an update: Xod's builds are ad-hoc signed, so a new build is a new identity to macOS and the previous grant does not carry over. Flip Xod on once in the Accessibility settings after updating; with this release, the app's own reading then agrees with the switch.
+- The family's sign-in still rides the interim registry in the synced drive space (rdrive pull request #14 remains open), unchanged from 0.9.23.
+- The companion suite's live-UI checks still want a real desktop session; they are re-run in one at install time and their state is recorded in the release record rather than claimed here.
+
+## 0.9.23
+
+**Missions get a capability contract, and files carry their provenance (Fix Round 6)**
+- Every mission step now declares its inputs, the tools it needs, and the effects it is expected to have, and the plan is validated against that contract before anything runs. Declared inputs are delivered to every step that declares them (the mission goal itself is an input, so the evidence pack a step needs actually reaches it), each delivery is hashed and read back at assembly, and a step whose declared input cannot be delivered, or whose declared effect no available flow can perform, fails at assembly with a typed reason and creates no task at all. The tool-less write routing defect named in 0.9.20, 0.9.21 and 0.9.22 is fixed by this contract: a write step can no longer be dispatched to a flow that has no file tools. One limit is stated plainly: the contract is enforced at planning and assembly; Xod does not strip tools inside a running flow, and the declared set rides on the task record where anyone can read it.
+- Files now carry provenance. Every file-changing tool call records a write-boundary provenance entry (the path, the tool, and a hash of the content written), and verification consults it: a claimed file that no tool call from the task wrote is flagged, and claimed files are type-checked (a .py file must compile, a test file must collect at least one test, a .json file must parse). Planner or instruction text has no path to becoming file bytes except through a real write call, and now the record proves it.
+- Verification stops passing on absence of contradiction. A step with no declared effects and no decisive evidence closes as unverifiable instead of verified, a worker that reports itself blocked (missing tools, missing inputs) lands in a typed blocked state that the verdict layer honours end to end (including a repair path that was flipping blocked missions to done), every mission ends with a report, and a new backend watchdog supervises the backend from outside its own process, with bounded restarts, so a silent stall is seen and recorded instead of discovered by a person.
+- File hunts stop losing targets to fat folders. The hunt's fallback walk shared one 30,000-entry budget and spent it depth-first: on a real home folder, a few huge subtrees (a Go tree at 18,618 entries, build logs, backup bundles) consumed the whole budget before the walk ever descended into Documents, so targets there were never even pooled while the routes reported healthy hit counts. The walk is now breadth-interleaved, buying every subtree's shallow levels before any subtree's depths. On the same real home, Documents now receives 11,852 budget entries and 1,624 filename hits, and the target folder is pooled and delivered; the production-path recall rig reports route 12 of 12, pooled 12 of 12, delivered 12 of 12.
+- Triage fixes carried in the same round: empty-content writes work again (an explicitly passed empty string is a real write: a bare path makes the folder, an empty .gitkeep or Makefile is a file; a schema validator was rejecting the call before its handler), the evals device-cases check resolves the tools' exposed names, the builder suite's fixture lives under the home folder it tests, stopping a background job on Windows kills its whole process tree, and pypdf moves from 6.21.2 to 6.21.4, closing the seven known vulnerabilities in the old pin.
+
+**Xods in one family share keys and borrow each other's models (Family Link)**
+- The family registry is signed now. Each device generates its own identity on the device (the private key never leaves the device's own key store) and signs its registry record; readers verify the signature and the family binding before trusting anything, refuse records whose signature fails, honour signed revocations, and expose a trusted-members list that is the only list the vault and inference may authorize from. The hand-seeded unsigned records from the first family screen stay visible but flagged and never gain trust.
+- Same-owner devices share API keys through the family vault: an encrypted bundle that lives beside the registry in the synced space, ciphertext only. The bundle key is generated fresh on every publish and wrapped separately for each member device, a member unwraps it into its own key store (so sharing keeps working while the publishing machine sleeps), and revoking a device republishes the bundle under a fresh key for the remaining members. A device can pin fields to its own values or go local-only, and those choices survive a vault apply.
+- A member with no key for a provider can borrow inference from a member that has one: the beacon on the tailnet gains an inference endpoint that answers only signed requests from trusted family members (unsigned, stranger-signed and revoked callers are refused), the serving device makes the call with its own key, and the cost lands in the serving device's usage ledger named for the requester and task. If the serving device is asleep, unreachable, or refuses, the borrower gets an explicit blocked state, never a silent wait or a quiet fallback.
+- The first customer is the pair of machines this was built on: the Windows Xod held no API keys at all (local model only), and after enrollment it holds the shared keys in its own key store, can call the cloud model directly with them, and can borrow the Mac's inference through the beacon. Its own provider and model settings do not change: keeping a local model as a device's default is a per-device choice the family respects.
+
+**Checked before it shipped**
+- Fix Round 6 was built failing-first: the round's suite reproduced 20 board-shape failures on the 0.9.22 tree and passes 29 of 29 on this one. The family suite passes 35 of 35 (tamper refusal, forged-device refusal, revocation, vault apply and rotation, borrow with ledger attribution, refusal and blocked states) and the original family screen suite still passes 24 of 24. The full battery on the merged tree is diffed against the round's branch battery in the release record; the failures that remain are the dispositioned environmental set (suites that need a live desktop session or a keychain a remote shell cannot open), each proven identical on the previous release.
+
+**Known issues carried into 0.9.23, named plainly**
+- Windows copies still update manually: the NSIS self-update wedge named since 0.9.20 is unchanged, so download the setup and run it with Xod fully closed (including the background process it runs from its install folder) rather than using self-update. Mac self-update is unaffected.
+- The family's sign-in still rides the interim registry in the synced drive space: the rdrive device sign-in change (its pull request #14) remains open, so the account binding is carried in the signed registry itself until that lands; the record format already carries the field the swap needs.
+- The backend watchdog ships as a supervised module with a standalone entry point; registering it with the operating system's scheduler is a per-machine install-time step, done during the 0.9.23 install pass on the machines this release was proven on and listed in the settings for any other machine.
+- The companion suite's live-UI checks still want a real desktop session; they are re-run in one at install time and their state is recorded in the release record rather than claimed here.
+- Among many same-name copies of a folder (archived worktrees are the common case), a hunt can still rank the canonical copy below the delivery cap on tied scores; that is a scoring preference, separate from the never-pooled defect fixed above.
+- On Windows, reading a terminal's exact text and Xod-owned terminal windows remain unavailable and answer with a clear error, as in 0.9.22; the screen path covers terminals meanwhile.
+
+## 0.9.22
+
+**Desktop control comes to Windows: Xod can use the screen, mouse and keyboard on Windows like it does on a Mac**
+- The desktop service gains a Windows engine behind the same contract the Mac has always used: read the screen, list and focus windows, read and work the controls of the app in front (through UI Automation), move and click the mouse, scroll, type and press keys, and use the clipboard. It is built from the standard library (ctypes against user32 and gdi32) plus Pillow, which Xod already carries: no new dependencies.
+- Every safety rule travels with it. The capability is off until its pack is on, the first use against a new app asks on an approval card, a never list matched by program name refuses Settings, the credential broker, password managers and remote-desktop tools outright, password fields are refused (seen through UI Automation, with the edit-style check behind it), risky keys (Alt+F4, Win+L, Ctrl+Alt+Del, Ctrl+Shift+Esc) go only when they were asked for in words, and taking the mouse over stops the hand at once.
+- Sessions are reported honestly. Windows keeps the visible desktop in the console session, so from a background or remote-shell session the status answers supported, with screen and accessibility false, and names the console session that does hold them, instead of pretending a screen is there. From the console session itself, screen and accessibility answer true.
+- The setup card and the desktop task gate now read the same supported flag on both platforms, and the desktop panel on Windows names the session state in plain words. Reading a terminal's exact text and the terminal windows Xod owns stay Mac-only for now and say so clearly when asked on Windows; the screen path covers terminals meanwhile.
+
+**Checked before it shipped**
+- A new Windows suite, run_windows_desktop_test.py, passes 38 of 38, and the Windows workflow now runs it beside the existing suites. Verified live on a Windows machine in its interactive session: the status reported the console session with screen and accessibility true, a look returned a real screenshot with its windows and controls, the cursor moved to a point and back, and a typed marker was read back two independent ways. From a background session the same build answered supported with the session caveat named. The existing Windows tools suite is unchanged by this work, line for line in its results.
+
+**Known issues carried into 0.9.22, named plainly**
+- The tool-less write routing defect named in 0.9.20 and 0.9.21 is unchanged; Fix Round 6 owns it.
+- The Windows NSIS self-update wedge named in 0.9.20 and 0.9.21 is unchanged: update Windows manually (download the setup and run it with Xod fully closed, including the background process it runs from its install folder) rather than by self-update.
+- On Windows, reading a terminal's exact text and Xod-owned terminal windows are not in this release; both answer with a clear error instead of a guess, and the screen path covers terminals meanwhile.
+
+## 0.9.21
+
+**Xod can now show its work: an observability tier on the harness surface**
+- The harness tool surface (surface v2) gains five read tools for an attached agent: timeline, task_read, mission_read, crew_read and snapshot. Behind them is an append-only event log the app writes as it works: task and mission lifecycle (created, planned, each step, waiting with the question text, wedged, resumed, the final verdict), tool calls with their durations and outcomes, model calls with token counts and the same price the usage ledger records, approval cards created and answered, Crew jobs started and finished, network handoffs and beacon transitions, Partner reachability as the app itself sees it, configuration changes by field name only (a key field's name says a key was set; its value never enters the log), backend starts, and harness submissions. Every event carries a timestamp, a kind, the actor (which member, agent or step), and the ids that correlate it, so a mission running parallel subtasks, a Crew job and a family relay read as one picture instead of fragments.
+- The deep reads end the guesswork: one call returns a task's full record (the queue row, its steps and tool calls, its waiting and wedge state), a mission's full record (the plan, every subtask with its declared effects, evidence, claimed status kept apart from verified status, its linked task's live waiting and pause clocks, the final report and the mission's usage), or a Crew job's full record (every step, every approval and question in every state, and the board seat record). The snapshot returns the app's own view of itself: version, configuration with key presence only, queue depths by state, the oldest waiting item's age, Partner and family state. Nothing on this tier writes, approves or navigates; it only reads what the app itself recorded.
+
+**Test runs are silent now**
+- The Mac could be heard speaking during test runs: suites that drive the worker and the voice paths with scripted replies reached the speech service's speaker path and read the replies aloud. The speech service gains a hard off switch for test contexts (XOD_SPEECH=off): with it set, the process never starts the speech engine at all, synthesis answers with generated silent audio so the path is still exercised, and nothing can reach the speakers. Every smoke suite sets the switch, the development instance's environment sets it for graded runs, and the voice suites cache their synthesized fixtures so repeat runs start no speech process either. Interactive speech is unchanged: outside test contexts nothing sets the switch.
+
+**Known issues carried into 0.9.21, named plainly**
+- The tool-less write routing defect named in 0.9.20 is unchanged; Fix Round 6 owns it.
+- The Windows NSIS self-update wedge named in 0.9.20 is unchanged: update Windows manually rather than by self-update.
+
+## 0.9.20
+
+**The harness becomes a tool surface: an attached Muse can work Xod's own capabilities directly**
+- The harness port from 0.9.19 handed Xod tasks. It now also answers a capability manifest and a tool invocation endpoint under the same two locks (the tailnet identity check plus the harness token, compared in constant time; with no token configured the surface answers 503, never open). The curated tools: read this Xod's configuration and status (key presence only, never a key or a masked key), read the family registry, read the usage ledger, locate files with the hunt's own evidence, submit and read back tasks and missions, start and read back Crew jobs, and drive the local browser (open a page, read where it landed, read the browser's current state). Every result is a structured envelope that keeps what was claimed apart from what was verified, with the evidence attached, and errors are machine-readable states rather than prose.
+- Approval semantics do not move. A task submission through the surface becomes the same approval card as any other handoff. A Crew job started through the surface asks for its own approvals as it works. Consequential steps inside a web page (a submit, a send, a purchase) are not offered on the surface at all: they go through a task, where the card decides. The browser an attached agent drives is this Xod's own browser on this machine; sessions and logins never leave the device.
+
+**Board meetings seat the Claude participant on a pinned model, and the seat proves it**
+- A board meeting's Claude participant is seated by configuration, not by habit: the board_claude_model setting names the model for Crew jobs of kind "board", the same way this Xod's own seat is pinned to its model. The job is started with that model, and the job record keeps both what was requested and the exact model string the run itself reported when it began, so a board session record can cite the model the seat actually ran instead of a client version number. When no pin is configured, or a run does not report its model, the record says that plainly rather than claiming a pin it cannot prove.
+
+**Known issues carried into 0.9.20, named plainly**
+- The mission routing defect from 0.9.19 is still open: a write step can still be dispatched to a flow that reports it has no file tools, and the step then fails honestly without creating its file. It is the first item of the next fix round (a capability contract at the dispatch layer), and it is not fixed here.
+- On Windows, the self-update into this release line can wedge: the 0.9.19 setup, staged by the updater and run silently, removed the old install's shortcuts and registry entry on one machine and then spun before copying a single file, across three reproductions. The suspicion, not yet proven, is the installer's early phase meeting a still-running process tree from the install folder. Until the discriminating test runs, update Windows copies manually (download the setup and run it with Xod fully closed) rather than by self-update. Mac self-update is unaffected.
+
+**Checked before it shipped**
+- The tool surface and the seat pin were built failing-first: the harness suite grew from 31 to 48 checks (manifest shape, both locks on the new endpoints, a read round trip, and a task submission through the surface that still only makes a card until Approve), and the Crew suite proves the pin end to end against a stand-in Claude Code: the run is asked for the pinned model, and the job record shows the requested model beside the model string the run reported for itself.
+
+## 0.9.19
+
+**File hunts stop losing the real file in the crowd**
+- The fourth re-run of the Tier 1 baseline delivered every hunt in about six seconds with ranked candidates and evidence, and still named the right file on only 3 of 13 hunts. The targets were not being outscored; they never reached the scorer. The filename and content routes filled their caps in walk order, a folder named for a search term could flood the pool before a real target was reached, and Spotlight results were truncated in index order. The routes now rank every hit by identity signals (the file's own name, its kind, a year, a scope penalty for caches and build folders) before any cap applies, and a folder target whose files score arrives promoted instead of dying beneath its own contents. An acceptance rig that runs the real route code over the planted forest plus 6,800 decoy files with colliding common terms scores the old code at 1 of 12 targets present in the delivered pool and this code at 12 of 12, twice, with the honest negative still clean.
+
+**A file of the wrong kind can no longer talk its way into a found answer**
+- Two hunts in the fourth re-run closed as found on the same code file for two different PDF targets. The guards written for that shape in 0.9.18 never fired in production: the requests named no kind word, so the kind deduction had nothing to bind to, and purpose credit matched by substring, so the word "tax" earned full purpose points inside the name "taxonomy". Purpose matching is now whole-token, and the found decision itself carries the discipline: a candidate whose kind contradicts the request, or one with no name-based evidence behind it, is capped below the found threshold, in the decision and again in the delivered evidence. The traced file now scores 8 and minus 2 on those hunts, down from 68 and 58.
+
+**Missions are protected from a stale second writer**
+- The strangest defects of the fourth re-run (a verdict blaming a file whose name carried a trailing backtick, and mission plans doubled with paraphrase steps) were reproduced and traced to two app instances sharing one task database while one of them ran older code: the dev instance loads its code at login and is never restarted when the checkout changes. The fix sits at the one layer every writer shares. The store itself now refuses a second subtask row for the same mission step, for any process that writes to it, including one running older code that knows nothing of the rule. And when current code touches a finished mission whose recorded verdict cites evidence the current rows no longer carry, the verdict is repaired: re-checked against the disk, rebuilt from the current rows, and closed on what now proves. One limit is stated plainly: a mission a stale peer finishes with no contact from current code keeps its stale verdict until contact; a startup sweep is the named follow-up. The round's other production report, a write step claiming it had no tools, did not reproduce in any configuration (both code generations offer the write tools), so no speculative fix ships for it.
+
+**A paused mission can no longer wait in silence forever**
+- A mission whose subtask waits on an unanswered question had no clock: one research mission sat paused for the full 900-second measurement cap with no verdict. Waiting now carries a persisted pause clock on the subtask row. Past 600 seconds a question or blocked wait earns exactly one resume through the normal retry path; if it waits again past a second window, the subtask fails with the wedge as its evidence and the mission closes honestly, naming the wait, the seconds, and the resume. Approval waits are fully exempt: they are never auto-resumed and never timed out, so a person can always answer first.
+
+**Xod gains a harness port**
+- A token-gated API on the beacon surface hands Xod work programmatically: submit a task or a mission to this machine, relay one to another member of the family, list the family's members, and read a submission's status back with what was claimed kept separate from what was verified. Every call carries two locks: the caller's tailnet identity must match the account, and a token header must match in constant time. With no token configured the port answers 503 rather than serving open. A submission to this machine still arrives as the usual approval card; nothing bypasses it. A relay to a member that cannot be reached is recorded as unreachable, and one with no endpoint as queued, never as a success.
+
+**Looks and the first Family step ride along**
+- The Living Look system from the current main line ships in this release: a companion look is a data pack (a manifest, one keyframe and one animation loop per state, a theme, and a quirks list), verified before it can be chosen (every asset present, hashes matching the manifest, the theme parsing, every quirk bound to a state the pack renders). The original look stays the permanent default, and switching back is one action. The Magician is the first pack.
+- Family Link's first step ships with it: a device registry in the synced family space and a read-only Family screen listing the machines on the account with their platforms, endpoints, and capabilities. Registry records are unsigned in this step, and the screen says so: the registry is a directory, not yet proof of identity.
+
+**Checked before it shipped**
+- The release candidate was composed on its own branch (current main, plus the fifth fix round, plus the harness port) and verified there before any merge to main. The whole app tree byte-compiles with zero errors, and the release privacy scan passes clean.
+- Suites re-run on the composed tree: clue hygiene 47 of 47, the locate suite at full marks, the ask floor 15 of 15, the scoring rig 12 of 12, kind discipline 27 of 27 (10 of 27 against the old code), the pool recall rig 12 of 12 (1 of 12 against the old code), missions 55 of 55, mission verdicts 24 of 24, planner integrity 27 of 27, the round 4 mission suite 27 of 27, the paused wedge 18 of 18 (8 of 18 before), the Family registry 24 of 24, looks 26 of 26, keys and usage 45 of 45, the network suite 25 of 25, and the harness port 31 of 31.
+- The two-instance mission suite is race-sensitive in its mixed old-and-new configuration by design. Across three samples on the composed tree it scored 20 of 20 once, and its other failures sit only inside that mixed configuration's two residual shapes named above, the same spread the fix round recorded on its own branch. With both instances on current code it is clean.
+
+**Known issue carried into 0.9.19, named plainly**
+- A mission write step can still be dispatched to a flow that reports it has no file tools available, and the step then fails honestly without creating its file. The fifth fix round's two-instance harness did not reproduce it and no speculative fix shipped for it; the graded run against the sealed 0.9.18 build then reproduced it twice in a single-writer run (a word-frequency mission's test-writing step and a proof-folder mission's write step), so the stale second instance does not explain it. This release ships with that routing defect known and unfixed. The named follow-up is a routing-layer fix: dispatch file-effect steps only to tool-equipped flows, and fail at assembly when they cannot be equipped.
+
+## 0.9.18
+
+**File hunts now judge relevance, not just form**
+- The third re-run of the Tier 1 baseline delivered the form perfectly (ranked candidates, evidence, a question when two were close, every hunt answered in about six seconds) and named the right file zero times in thirteen hunts. The scorer was crediting files for containing the request's own instruction words ("reply", "full", "path"), and a test-data file from a package cache outranked every real target. Three fixes land together. The instruction frame is stripped from the clues before scoring, so only the target description generates clues. Scoring now pays for target identity (the file's own name and kind, on the target's own terms) far above generic word overlap, and package caches and build intermediates rank below user content unless the request names them. And the ask gate gained a floor and a coverage rule: below a minimum relevance, or when a candidate's only evidence is one name word out of several with nothing behind it, the hunt answers not found with what it tried, and a candidate whose own evidence refutes the requested kind ("it is a document, not a pdf") can no longer be presented as the result.
+
+**Missions land their test files, and verdicts re-check the disk**
+- The word-frequency mission's test file failed four runs in a row, three different ways. The traced cause this time was two stacked defects: step reports quoted a file path in backticks, and the claim extractor kept the closing backtick as part of the path, so the mission contradicted a later step over a file (with a trailing backtick in its name) that could never exist, and stop-on-failure then skipped the test step entirely. The extractor now strips backticks. A second cause went with it: with two app instances sharing one task database, both could plan the same mission from a stale snapshot and insert duplicate steps; planning now claims the mission atomically and dispatches from the stored plan. Mission verdicts also re-check every declared file effect against the disk at verdict time, so a verdict can never name a file as missing that a parallel step has since landed. And write steps are guaranteed their tools: the file-writing tools are in the always-offered set, and a write step that cannot be equipped fails at assembly time, naming the problem, instead of discovering it mid-task.
+
+**Checked before it shipped**
+- New suites: clue hygiene against the thirteen real hunt requests (47 of 47; 33 of 47 against the 0.9.17 code), a scoring rig that rebuilds the planted 25-file forest beside the observed cache noise (every target in the delivered candidates and noise out of the top two; on the old code the noise sat in the top two on 6 of 13 hunts), the ask floor and honest branches (15 of 15; 3 of 15 before), and mission deliverables (27 of 27, including running pytest collection on the test file a mission actually produced; 5 of 22 before).
+- The full pre-release battery ran 99 suites on the merged tree: 86 passed, 11 failed, and 2 hit the battery time cap. Every suite carrying any failure mark, 15 in all, was re-run standalone on both this tree and the 0.9.17 tree and failed identically on both, so no failure is attributed to this round; the standing families are the local-engine suites, the browser and approval harnesses, and the suites that need a configured API key.
+- The promoted build then passed the proving suite against the installed app, 7 of 7.
+- This release is the fourth fix round of the escalation program. The same Tier 1 and Locate baseline is re-run against this build to grade the difference.
+
+## 0.9.17
+
+**File hunts now take the find path**
+- In the second re-run of the Tier 1 baseline, the hunt answers still arrived without ranked candidates or evidence, and the cause sat one layer below the last fix: a hunt never called the find tool at all. Tool choice belonged to the model, and it chose the generic computer search, whose results drop the full path, or, for one name-plus-year hunt, web links with no local search at all. Find intent is now recognized deterministically from the request itself, before the model plans anything, and dispatched to the find tool, so the delivery contract from 0.9.16 (ranked candidates with full paths and evidence, the question when two are close, what was tried when nothing qualifies) finally fires in real use. Folder hunts and name-plus-year hunts, the two shapes that failed three runs straight, are named cases. A request about your own files can no longer be answered from the web. And an unresolved placeholder can no longer be passed as a tool argument: a call carrying one is rejected with a named error before anything runs.
+
+**The thinking-effort remedy now covers every model call**
+- The refusal that killed a mission step in the last re-run ("Function tools with reasoning_effort are not supported for gpt-6.1-sol") was fixed for the plain chat paths in 0.9.15, but the mission subtask path still sent the refused combination, because model ids reach the shared code in routed and dated forms the up-front rule did not match, the streaming entry could not carry tools at all, and the model scoring call had no remedy when refused. Every model call in the app was inventoried (the table is in the round record), and the rule now sits at the one choke point they all share: the prescribed effort is sent up front however the model id arrives, the streaming entry carries tools like the others, and a refusal on any path is remedied once and remembered.
+
+**Missions stop losing their own deliverables**
+- For the third run in a row, a mission's test file was a single instruction sentence in angle brackets instead of code. The check built to catch it required an imperative opening the real sentence does not have, and mission plans declare no content up front, so the sentence only ever existed at execution time. The same detector now knows the bracketed shape, at both of its call sites: declared in a plan, the mission fails at planning naming the leak; written during execution, the step fails with the evidence named. A second assembly defect went with it: a write step could be invoked with no content because earlier steps' results never reached it. Write steps now receive the reported results of the steps before them, and a write whose declared content is empty fails at assembly, before any task or tool runs.
+
+**Tools can no longer leave orphaned processes behind**
+- Searches spawned by the computer tools had no deadline and were never reaped: one hung find wedged its task for twenty minutes and outlived it, and an earlier round left eight such processes walking the home folder for hours. Every child a tool spawns now starts in its own process group with a deadline and an output cap, and is reaped as a group on completion, on timeout, on cancel, and when its task ends. A task-end sweep checks for survivors, so a task cannot leave orphans behind by construction.
+
+**AppleScript now asks permission the managed way, once**
+- Controlling an app like Music had no permission path: the generic AppleScript tool fired with no check, so a task could raise the system automation prompt mid-work, and nothing remembered a dismissal. A targeted AppleScript call now runs the same no-prompt permission check the abilities use. When the answer is not yet granted, the script does not run; the task gets a named result saying so, and the request surfaces once on the Abilities screen, which now covers Music and the other common targets. A dismissal is remembered, so later tasks degrade gracefully instead of prompting again, and a grant given later lets the next call through.
+
+**Release builds move to the current Mac runner**
+- GitHub retires the macos-14 runner image on November 2, 2026, and its scheduled brownouts cancelled both first attempts at the 0.9.16 Mac build. The release workflow now builds on macos-15, the current arm64 image, pinned so the build cannot drift when the floating latest label migrates again.
+
+**Checked before it shipped**
+- New suites: hunt routing end to end (40 of 40; 7 of 40 against the 0.9.16 code), model call paths on the wire (17 of 17; 7 of 17 before), planner integrity (27 of 27; 13 of 27 before), process hygiene (17 of 17; the same suite hangs and leaves orphans against the old code), and the AppleScript permission guard (22 of 22; 7 of 22 before).
+- All 93 local suite runners ran on the merged tree (the run straddled a Mac reboot, so it finished in two segments). Eleven failed; each was re-run standalone on this tree and on the unmodified tree. Nine fail the same way on the unmodified code (approval-flow checks, the browser harness family, live local model errors, and suites needing a key or port this environment does not give them), and one was a battery-context flake that passes standalone on both trees. The eleventh was real, and this round's own routing caused it: an attached image is turned into words before routing, and the hunt detector was reading that machine-generated description, so a described invoice (a year, a document kind) matched the name-plus-year hunt rule and the question was hijacked into a file hunt. Routing now decides on the person's own words alone; the vision suite passes again and the hunt routing suite still passes 40 of 40.
+- The promoted build then passed the proving suite against the installed app, 7 of 7.
+- One operational repair rides along: midway through this round the Mac rebooted while the installed app was mid self-update, which left the app bundle damaged and unable to launch (its seal no longer verified). It was restored from a sealed 0.9.15 copy kept on the machine, and this build's promotion re-applies everything since on top of it.
+- This release is the third fix round of the escalation program. The same Tier 1 and Locate baseline is re-run against this build to grade the difference.
+
+## 0.9.16
+
+**Find answers now arrive whole**
+- In the re-run of the Tier 1 baseline, the search found the right file again and again, and the delivered answer still stopped at a bare filename. The cause was measured, not guessed: the writing step only ever received a 500 character summary of the search result, and the first candidate path ended past that cut, so no hunt answer could carry a complete path. A search result is now treated as the answer decisive evidence: it is stored whole with the task, and the delivered answer carries a block rendered from it directly. Ranked candidates with full paths, kind, modified dates, sizes, and why each one matched. When two candidates are too close to call, both are shown with the question and the task waits for the answer instead of picking one. When nothing is found, the answer says what was tried. A request that dictates its own exact output format still gets exactly that format, with nothing stapled on.
+- The plain worker path gained the same delivery, and the find tool itself, which it could not call before.
+
+**A content hunt can no longer hang**
+- One baseline re-run hunt wedged inside content search, and only the watchdog twenty minute stop ended it. The mechanism was proven in testing: content search would open any file carrying a text extension, and a named pipe blocks that open forever. Content search now opens only regular files, reads a bounded number of bytes per file, and works inside stated budgets (thirty seconds for the content route, fifty five seconds for a whole hunt). When a budget runs out, the results gathered so far come back labeled partial, with the reason, instead of silence.
+
+**The same hunt now gives the same answer**
+- Identical hunts graded differently across runs. Instrumentation came first: every hunt result now reports which routes found each candidate and whether the system index can see it yet. The measured instability was equal scoring matches changing order with the index hit order. Ordering is now fully deterministic, down to the full path as the final tiebreak. A candidate score no longer depends on which route happened to produce it, and search hints supplied by the model can fill gaps in the request text but never override what the text says.
+
+**Checked before it shipped**
+- New and grown suites on the merged tree: the delivery evidence suite end to end (18 of 18; the same suite scores 4 of 18 against the 0.9.15 code), the locate suite at 47 of 47 including the bounded content and deterministic ordering checks, and a variance rig that replays identical hunts across index states and now shows zero differences.
+- All 88 local suite runners were run on the merged tree; 70 passed outright. Each of the 18 that did not was re-run standalone on this tree and on the unmodified 0.9.15 tree, and every failure reproduced identically on the unmodified tree in this environment (live model engine errors, browser harness faults, and suites needing a key or a free port the test setup does not provide). None of the 18 is a change this release made, and each is recorded in the round record.
+- The promoted build then passed the proving suite against the installed app, 7 of 7.
+- One operational repair rides along: during this round the installed app was found to have rolled itself back to the 0.9.14 build when a stale staged update was consumed at a restart, silently losing the 0.9.15 fixes. The stale stage has been parked where it cannot be consumed, and this build restores everything 0.9.15 carried.
+- This release is the second fix round of the escalation program. The same Tier 1 and Locate baseline is re-run against this build to grade the difference.
+
+## 0.9.15
+
+**A mission can no longer call itself done over its own evidence**
+- A subtask that ends failed, or whose own report says the work is not complete, now fails the mission and is named in the result. Before, a mission could close verified while its steps admitted they were not finished, and its run evidence could be asserted from the plan alone.
+- A step that declares a run check is verified by the run itself, re-executed when the verdict is written. A run that failed, was refused, or never happened because its file was never written blocks the step and the mission.
+- Words meant for the planner can no longer pose as a deliverable. A plan that dictates file contents which are themselves an instruction sentence is rejected, and a created file whose contents read as an instruction cannot verify its step.
+- Plans that arrive doubled, the same steps merged in twice, are collapsed to one sequence at validation.
+
+**Finding files from almost nothing: Locate**
+- Xod can now hunt the whole system from scant clues: a name fragment, a kind plus a rough date, words from inside the file, what the file was for, or a folder known only by what it holds.
+- It searches the Spotlight index first, then filenames, then file contents, and answers with ranked candidates. Each carries its full path, kind, modified date, size, and the clues it matched. Every path is checked to exist before it is named, and no path is ever truncated.
+- When two candidates are genuinely close, Xod asks which one you mean. When nothing qualifies, it says so and lists what it tried. It never invents a path.
+
+**Newer models stop refusing the tool calls**
+- OpenAI's newer models refuse function tools sent with a thinking effort they do not accept, and one refusal could kill a step mid-mission. For gpt-6.1-sol, the model the refusal names, tool calls now send the effort as 'none', the remedy the refusal itself prescribes. For every other model, the same refusal is caught, remedied once, and remembered per model, for tool calls only, so an unproven model is never hard-coded on a guess.
+
+**A stuck task can now actually be stopped**
+- Cancel used to set a flag the run only read between steps; a run hung inside a step ignored it forever, and one task sat "working" for forty minutes through two accepted cancels. A cancel now escalates: the run gets a short grace to stop on its own, and if it is still working, Xod cancels the run itself and records that it had to.
+- A watchdog measures real progress (steps and tool activity) instead of row updates, so poking cancel can no longer make a hung task look alive. A task with no progress for ten minutes is marked stalled, with the reason, where you can see it; at twenty minutes it is stopped with an honest explanation.
+
+**When the Partner's grant goes stale, Xod says how to repair it**
+- After a Partner rebuild, macOS keeps the Accessibility grant for the old build and approvals quietly go nowhere. Xod now notices when the Partner build it once trusted has changed or stopped reading as trusted, and puts the repair in front of you in order: reset the stale grant, Xod asks the Partner to ask macOS again, then flip the new Xod Partner row on in the Accessibility settings. The notice clears itself once the grant reads live for the current build.
+
+**Checked before it shipped**
+- The merged tree passed every local suite run for it: the smoke suite, missions (55 of 55) plus the new verdict-integrity suite (24 of 24), file effects, the new task watchdog suite (23 of 23), the new locate suite (24 of 24), the new tools-and-thinking suite (23 of 23), the parameter suite (25 of 25), keys and usage, Auto mode, brain integration, keychain, pricing, permissions, the Muse app suite, and all seven Partner suites including the new re-pair suite.
+- The promoted build then passed the proving suite against the installed app, 7 of 7.
+- This release is the first fix round of the escalation program: every fix answers a failure measured in the Tier 1 and Locate baseline, and the same baseline is re-run against this build to grade the difference.
+
+## 0.9.14
+
+**The Partner gets a brain, on a short leash**
+- The watchdog that restarts Xod gains a judgment layer for the moments its rules cannot read: Xod alive but silent (wedged, or just slow under load), the restart allowance spent (an operator's busy evening, or a crash loop), the same failure three times in a row, and a health read after every revival.
+- It answers from a short list (wait and look again, restart, clear the hold, escalate) with a one-line reason, and it ships in shadow mode: its calls are written to the shared log for review, and the watchdog floor still makes every decision. A hard ceiling of six restarts an hour stands above it; no brain answer can raise it. It has no path to permissions, to pressing buttons, or to changing either app.
+- Its model is gpt-6.1-terra. Its key is provisioned from Xod's Settings into the Partner's own vault slot, so it can think while Xod is down, and every call it makes lands in the usage ledger. If its key is missing or the API is down, it says nothing and the floor proceeds exactly as before.
+
+**Updates get a guardian**
+- When Xod's own updater stages a new build, the Partner first snapshots the build that works. After the swap and the restart it runs a health battery: the app answers, one chat replies with an exact string, one file is written by a task and read back byte for byte, and the permission state is recorded.
+- A build that fails the battery is rolled back to the snapshot, and that version is blocked: if it ever stages again it is watched, never trusted, and rolled back again if it swaps in and fails. A good update passes with no human step, which is the point: a failed update is never the state you wake up to.
+
+**Mission checks now run what a step built**
+- A plan can declare a run alongside a file it creates: one command, one folder anchored to the step's own paths, one required exit code. The checker runs it with no shell, keeps the output as evidence, and a step whose tests fail is now contradicted instead of verified. Creating a file was never proof it works; the run is the proof.
+- Commands with shell tricks in them, and commands whose folder is anchored to nothing the task declares, are refused by name and never run.
+
+**A crash in the permission ask, fixed at the root**
+- Xod's own re-ask for Accessibility could crash in exactly the state where it is needed, untrusted: the options it handed the framework were keyed by a lookalike of the framework's constant instead of the constant itself. The Partner's proven fix is now Xod's too, and a test proves the dictionary is keyed by the framework's own object.
+
+**Prices catch up with the models**
+- The reference price table gains the current rows from OpenAI's pricing page: the 6.x family (gpt-6.1-terra at $1.00 in, $5.00 out per million tokens) and the 5.6, 5.5, 5.4, 5.2 and 5.1 lines. The usage ledger now costs those calls for real instead of leaving them unpriced.
+- In Auto mode, ViBench's GPT-6.1 Sol row now maps to the API model of the same name, since OpenAI's own page attests that id. GPT-6.1 Terra stays unranked: ViBench has no row for it, and Auto does not borrow a sibling's score.
+
+**The vault explains save failures too**
+- Every keychain unavailability, a refused save as much as a refused read, now becomes the vault's plain-language explanation instead of a raw error. The test suites pin a throwaway vault inside each runner, so a test process can never reach for the real one.
+
+**Checked before it shipped**
+- The merged tree passed every local suite: the Muse approval smoke test (61 checks), the file-effects suite, missions (55 of 55), keys and usage (45 of 45), Auto mode (19 of 19), the parameter suite (25 of 25), permissions (11 of 11), the keychain suite, the pricing checks, the brain integration seams (10 of 10), and all six Partner suites including the new brain suite (21 checks) and the update guardian suite.
+- In a live proof on throwaway copies, the guardian snapshotted a good build, let a staged bad build swap in, failed it on the battery's exact-reply check, rolled it back byte for byte, and blocked the version. The Partner's brain, in shadow mode with a throwaway key that was deleted afterwards, was consulted on a staged wedge (process alive, port silent), logged its judgment, and the floor restarted anyway; both consultations were metered into the usage endpoint under gpt-6.1-terra.
+
+## 0.9.13
+
+**GPT-5 models work end to end**
+- Some newer models refuse the classic token limit parameter and accept only their own. Xod now sends the parameter each model family accepts, in chat, streaming, and agent runs alike, and if a model refuses a parameter by name, Xod retries with the right one and remembers the pairing for next time.
+- The same applies to temperature: models that only accept their default are called without a set value instead of failing.
+
+**Mission checks tell the truth about paths**
+- A step that creates a folder now verifies as a folder, and the mission evidence says exactly what was checked for each step: that a path exists, or that a file holds the exact dictated text.
+- The checker no longer manufactures a claim for a folder that is only the address of a file inside it, and a sentence describing the container no longer decides what the file inside it is.
+- Exact text is only dictated to a step when the text can be carried byte for byte; anything longer or multi-line is checked by existence, as the plan states.
+
+**Estimates calibrated against real calls**
+- Pre-flight prompt estimates ran about 13 percent high against the calls Xod actually made. They are now scaled by the measured factor, and the estimate next to each call still labels itself an estimate.
+
+**A refused key save explains itself**
+- When macOS will not let Xod write to its key vault (usually right after restarts, before the vault prompt is answered), saving a key in Settings now answers with the vault's own explanation instead of a bare failure.
+
+**Xod and the Partner watch each other**
+- The Partner's restart allowance now counts only unplanned revivals. A graceful quit, an update, or a restart announced ahead of time is signaled as planned and never spends the allowance, so a busy evening of updates cannot lock the Partner out of reviving a real crash later. The Partner's status shows the planned and unplanned counts separately.
+- Xod watches the Partner back: if the Partner stops answering, Xod restarts it with the same planned and unplanned accounting, mirrored in Xod's own status. macOS launchd still sits under both as the last resort.
+
+**Checked before it shipped**
+- The merged tree passed every local suite: the Muse approval smoke test (61 checks), the file-effects tests, the missions suite (44), the key and usage suite (45), the Auto mode suite (19), the new parameter suite (25), and the Partner watchdog, accessibility, and delegation suites. The release privacy scan is clean.
+- On a real Mac, a live mission finished with every step verified on disk, the proving suite passed 7 of 7 against the installed app, an Auto pick on a GPT-5 model completed and landed in the usage ledger, and the restart accounting was exercised both ways: a planned restart spent nothing, a cold kill spent exactly one slot. Xod Partner's permission read true throughout.
+
+## 0.9.12
+
+**Missions: give Xod a goal, get a verified report**
+- A mission takes a goal in plain words. Xod writes a plan of steps first, shows it, then runs the steps one at a time through the same task queue it already uses.
+- Every step is checked against the disk before it counts, the same file check tasks already get. The mission report keeps what the agent said in one field and what was verified in another, so a finished mission means the work is really there.
+- If Xod stops in the middle of a mission, the mission resumes from its first unfinished step when Xod comes back, instead of starting over or dying quietly.
+
+**Your keys, your models, your spend**
+- Settings now holds named API key profiles for each provider. Your existing key became the Default profile in place; add more keys, switch which one is active, and each key remembers the models Detect Models found for it.
+- Every model call is written to a usage ledger on your machine: the tokens the provider reported, or a labeled estimate when it did not report, and a cost from the same dated price table the model picker uses. A model with no verified price tracks its tokens and says its cost is unpriced.
+- The Usage panel in Settings shows today's totals and the breakdown by model and by key, and refreshes itself. Before a chat runs, Xod shows a pre-flight estimate, labeled as an estimate, and later shows it next to what the call actually used.
+
+**Auto mode: the model picks itself, and shows its work**
+- Turn on Auto and Xod chooses the model for each job from the models your active key can call, ranked by the ViBench 2.0 benchmark (agents building whole products, feature by feature) with cost as the value check.
+- Every pick prints its reason in Settings, next to the full benchmark table with its source and snapshot date (2026-10-30). A model the benchmark has not covered is never dropped; it ranks last with "no benchmark data" as its stated reason. Picking a model yourself always wins over Auto.
+
+**Checked before it shipped**
+- The merged tree passed every local suite: the Muse approval smoke test (61 checks), the key and usage suite (37), the Auto mode suite (19), the missions suite (39), a new integration suite for the seams between them (10), the Partner watchdog, accessibility and delegation suites, the permission self-checks, and the task inbox suites. The release privacy scan is clean.
+- After the build was installed on a real Mac, the Brain features answered live in the installed app (key profiles, usage summary, an Auto pick with its reason, and the missions list), and Xod Partner's permission read true throughout.
+
+## 0.9.11
+
+**Xod Partner: a companion that holds the permission**
+- This release adds a companion app, Xod Partner. It holds the macOS Accessibility permission that approval buttons need. Before, that permission belonged to Xod itself, and updating Xod could quietly knock it loose; now it lives in the Partner, which almost never changes, so Xod can update freely underneath it.
+- Pairing is one deliberate switch: turn Xod Partner on once in Privacy & Security, under Accessibility. After that, when an approval card appears, the Partner presses the button Xod chooses. Xod still makes every decision, and if the Partner cannot serve, Xod falls back to its own hands exactly as before.
+- The Partner also watches Xod and brings it back if it stops (in live tests on a real Mac, Xod was healthy again in about 40 seconds), and it keeps the shared log of what it did.
+- If the Partner's permission ever goes stale, Xod can clear the stale entry itself, the Partner asks again, and one switch flip finishes the repair. The whole cycle was run live, start to finish, before this release.
+
+**Pick a model from a list, and see what it costs**
+- In Settings, Detect Models now fills a dropdown with the models your provider offers. Pick one instead of typing its name exactly; typing a custom name still works.
+- Each model shows a reference price, input and output per 1M tokens, from a table inside Xod dated 2026-10-30. It is a dated reference table, not a live quote: prices can change, and a model with no verified price says so rather than guessing.
+
+**Checked before it shipped**
+- Every local suite passes on the release tree: the Muse approval smoke test (61 checks), the Partner watchdog, accessibility and delegation suites, the permission self-checks, the file-effects and source-links tests, and the new pricing table test. The release privacy scan is clean.
+
+## 0.9.10
+
+**Xod uses your phone**
+- Ask Xod to open an app on your phone, read its screen, find where it is, or check its notifications, calendar, contacts or files ("open the calculator on my phone"). Each works only if its switch is on in the phone app, and Xod tells you which one to turn on. Before, Xod's own chat couldn't reach the phone at all, and tried Mac Shortcuts instead.
+- The phone answers even when the app it opens covers Xod (update the phone app too). Before, the app opened but the computer reported that the phone didn't answer.
+
+**Sign in from your phone**
+- When Xod reaches a sign-in page it has no login for (Facebook, a bank…), its answer on the phone shows a Sign in button. It opens Xod's browser on your phone: tap a box, type (hidden for passwords), press Enter. Xod keeps the session afterwards. What you type goes straight into the page: the computer doesn't keep it and the AI never sees it.
+- While you sign in, the page lays out for a phone, so it's readable there. Open Xod's browser any time with the search button in the phone's Chat.
+
+**Voice mode waits for you**
+- A short pause no longer ends what you're saying, a sentence that trails off waits for the rest, and what you add right after joins it instead of getting its own answer. When Xod hears "Zod", it knows you mean Xod.
+
+**Fewer surprises**
+- Xod no longer tries tools at random when asked what it can do, and a tool call that's missing what it needs is stopped before it runs.
+- Questions about your own day ("what did I work on today?") are answered from Xod's memory and your tasks, never from a web search. Xod may think before it decides how to answer.
+- Opening an app by name works ("open Muse"). The hidden browser closes when Xod does, so it can no longer keep Chrome from opening.
+
+## 0.9.9
+
+**What Xod knows about you, on every computer you use**
+- Turn on "Share what Xod knows about you with my other computers" in Your Xods, then "Share with" another of your computers and approve the card there. Facts about you (your name, work, preferences…) then show up on both: never chats, files, notes, settings or keys. It's off until you turn it on.
+- Only your own computers can take part: each one is checked against your Tailscale sign-in and the keys approved on the card, and what they send is sealed for the computer that asked. A reinstalled computer has to be approved again.
+- Forgetting a fact on one forgets it on all of them, even one that was switched off at the time. "Remove what came from" a computer drops its facts on this one only.
+- Chats you start from the phone are marked as coming from the phone, and what Xod learns in them says so.
+
+**Switch models from anywhere**
+- From the phone app, or from another of your computers ("switch my laptop to LM Studio"), you can see which AI model a computer uses and switch it to another one it already offers. Nothing new can be added from outside (no keys, no server addresses), and the computer shows a notification saying who switched it.
+
+## 0.9.8
+
+**Muse approvals only while you're away**
+- The Muse approvals switch has three positions: Off, Always, and Only when I'm away. Away presses Muse's cards only while your screen is locked or you haven't typed or clicked for 5 minutes, so Muse never comes to the front while you're working. Cards that came in meanwhile are handled as soon as you leave.
+- Pause it for an hour (it comes back as it was) or resume it, from Crew, from the new Muse approvals menu in the menu bar or tray, from the phone app, or by asking Xod ("pause the Muse approvals for an hour", "only approve Muse when I'm away", "is auto-approve on?").
+- Turning approvals on from chat only goes ahead when your own message asked for it. If something Xod read tries to turn them on, the change waits as an approval card. Turning them off or pausing never waits. A change made from chat or the phone sends you a notification.
+- Requests inside Crew jobs follow the switch, not whether you're there: they're answered inside Xod and never take the screen.
+
+**Phone pairing that finishes on both sides**
+- A phone that pairs with a QR code or over Bluetooth is now recorded on this computer as your phone, with the exact keys it paired with. Before, the phone showed "Paired" while this computer ignored its requests until you marked it as yours by hand in Agent Mail.
+- The phone app (update it too) has a Muse approvals card on its Tasks tab.
+
+## 0.9.7
+
+**Your phone, from anywhere**
+- A paired phone app can chat with this Xod and see its tasks, routines and goals, memory, reports and project files, over Agent Mail. Xod only answers phones you paired on this computer's screen, and only shares the files a project lists.
+- Pair over Bluetooth, from the Pair a phone panel. The phone pairs only after you tap it there.
+- A paired phone reaches this Xod away from home over Tailscale. The pairing code lists every route to this computer, and phones paired earlier learn them automatically.
+
+**Muse approvals that need Muse in front**
+- Some Muse cards (taking a screenshot of your screen above all) only take a press, or only show their buttons, while Muse's window is in front. Before, Xod pressed Allow three times, the card stayed, and it expired. Now, when a pressed card is still showing, or a card shows no buttons, Xod brings Muse forward for that one look, presses, and puts the app you were in back in front. It also looks again 4.5 seconds after a press instead of waiting for the 30-second check.
+- An expired card is logged as "expired before Xod got to it", not as a failure.
+
+**Checking that Xod picks the right tool**
+- A new eval suite, `devices` (16 requests: send a file to your phone, hand a task to another computer, what's using your CPU, click Allow on screen …), is scored by exact tool. Run it with `.venv/bin/python -m app.services.evals --suite devices`. It runs only the router and planner, so nothing happens, and costs a few cents on a hosted model.
+- Questions about this computer that say "right now" ("what's using all my CPU right now?", "what are you working on in the background right now?") go to the planner instead of a web search. The planner is also told that work for another computer goes there through `xod_machines` (send_task), and that only `task_status` says whether that work is done.
+
+## 0.9.6
+
+**Security pass**
+- The desktop app runs on Electron 44.10 (fixes a certificate-trust problem in 44.7), and two build-only packages are updated: `npm audit` and `pip-audit` find nothing.
+- The handoff only acts on a local `docs/AI_HANDOFF.md`. When the file is committed to git, Xod doesn't act on it, because a pulled commit must never hand Muse work.
+- Website audits (tech stack, traffic) check HTTPS certificates again. A site with a broken certificate is still audited, and the result says `tls_certificate: not valid: <reason>` instead of hiding it.
+- Typing into other apps goes where it's meant to: Xod puts text straight into the focused field when the app allows it (no keystrokes, no clipboard), re-checks the app is still in front right before a paste and before Return, and stops (saying which app took focus) instead of typing into the wrong window. It waits while you're using the keyboard or mouse.
+
+**Your Xods: sign in once**
+- One click (Your Xods → Sign in) opens Tailscale's sign-in, where you pick Google, Microsoft, GitHub or Apple. Every computer signed in with the same account finds the other Xods, online or not, and ones shared with you are marked. Xod keeps no accounts of its own. Ask Xod about "my other Xods", or use the xod_machines tool.
+- Each Xod is findable through a small read-only listener on its Tailscale address only (port 8791). It answers with the computer's name and OS, nothing else. Turn it off with "Let my other Xods find this computer".
+- Hand a task to another of your Xods ("on my laptop, …", or xod_machines send_task). It never runs by itself: it shows as an approval card on that computer (and your phone), and only your Approve puts it in that computer's task inbox. The sender can see whether it was approved, how it's going, and its result. Only devices signed in to your own account can hand work over; Tailscale vouches for who is calling, so shared machines and other people's devices are refused.
+
+**Files to and from your devices**
+- Xod moves files between this computer and your own devices over Tailscale (tailscale_files): it lists which devices can take a file and which are online, sends one file to one of them, and takes what your phone or other computers sent into `~/Downloads/Xod` without overwriting anything. A send is checked first (the file exists, is under 4 GB, the device is yours and online), then goes straight through, like the Muse card approvals. Turn on the setting `taildrop_ask_first` to get an approval card before each send instead, including a `tailscale file cp` run from the terminal.
+
+**Phones, staying awake, and the card watcher on Windows**
+- Pair an Android phone by scanning one QR in Xod ("Pair a phone" in Your phone): the phone is set up and paired in one step, no USB cable. The code inside works once and expires in 10 minutes, and both screens show the same safety number.
+- Xod can reach paired phones through a phone MCP server (phone_list, phone_send, phone_ask, phone_open_app, phone_screen_read, phone_screen_tap, phone_location, plus background tools for SMS, notifications, calendar, contacts, network fetch, background apps and files). The action names Xod sends and the phone handles are one shared contract (`docs/phone_actions.json`), so the two can't drift apart. Permissions live on the phone: a capability switched off there answers "not allowed on this phone", anything that sends or changes things asks on the phone, and every call is logged on both sides. Approvals and Crew questions can be answered from the phone too.
+- If Tailscale is installed but not signed in, Xod now says so ("open it and sign in") instead of offering no way for agents elsewhere to reach this computer.
+- While "Approve everything" is on or a Crew job runs, Xod keeps the display awake so the computer doesn't lock mid-job; Crew shows it, and phone_list reports whether the screen is locked. Xod never types your login password anywhere.
+- The Muse approval-card watcher is split into a shared core and per-OS backends, with a Windows (UI Automation) backend next to the Mac one, so approving cards can work on Windows too.
+
+**Muse jobs start again, and Muse picks up its own work**
+- Muse jobs from Xod failed at once ("mcpServers does not match the supported shape") when a connected app like GitHub was shared with them: newer Muse wants each shared app to say how it connects, and Xod to ask for that when it starts Muse. Xod does both now, so jobs start and still get GitHub.
+- When another AI leaves work for Muse Code in a repo's `docs/AI_HANDOFF.md`, Xod starts a Muse job for it by itself, so nobody has to copy the note across. It's on for the repos you list (for now through Xod's API, `/api/crew/settings/handoff-dispatch`; a Crew switch comes next). Each note starts one job, a running job is never doubled, a failed one is tried again later (twice at most), and Muse leaves its work uncommitted for you to approve.
+- When Muse is out of usage, Xod waits until the reset time its error gives, then hands the work over again, without counting that as a failed try.
+- iPhone, through your Mac: Xod can read and tap your iPhone in macOS iPhone Mirroring while the phone stays locked (Mac only, off until you switch it on in Your phone). It pauses while you're using your iPhone.
+- Xod reads how much of Muse's subscription is left (`muse usage`) and waits for the reset instead of starting a job that would fail. The quota is shared across Muse's models, so switching models doesn't get around it.
+- Pick the Muse model per job: a default, and a cheaper one (for example muse-spark-1.3) for handed-over work, or for every job once your weekly allowance passes a level you choose.
+- Crew has a **Loop** panel: whether work is being handed to Muse, each repo's last job and its model, when the next one can start, Muse's usage with reset times, auto-approve, and whether the display is kept awake.
+
+## 0.9.5
+
+**Approve everything: quicker, and harder to miss a card**
+- Xod now hears about a Muse card the moment it appears — macOS notifies it — and looks three times in the first couple of seconds, because cards build in stages and their buttons often arrive a beat after the card. It also listens on each Muse window, not just the app.
+- Some Gmail cards (the side-panel kind) keep their buttons just outside the card. Xod now looks in the panel around the card too, so those are approved instead of sitting in Needs review.
+
+## 0.9.4
+
+**Approve everything: one more button**
+- The Muse app also asks with an **Allow once** button (for example when Tree shares information with a website). Xod now presses that too, so those cards no longer wait for you. When a card has a button Xod doesn't know, the approvals history now names the button it saw instead of saying only a Deny button was there.
+
+## 0.9.3
+
+**Better answers, from real chats**
+- "Have Muse check my PRs" starts the job right away. Work that isn't in one project (your GitHub, PRs across repos) starts from your home folder, instead of Xod hunting for folders or asking which repo. Xod says a job has started and where to watch it, and never calls it done before it is.
+- How-to questions get real steps ("set up SSH on this Dell"), from what Xod knows when the pages don't have them, instead of "the results don't cover your OS". Answers no longer mention the "evidence board" or "search results", paste raw JSON, or list every command that ran.
+- Model errors say what to do: "Fireworks refused the API key… paste a new one in Settings, or pick another model from the top bar", not "LLM error 401: {…}".
+
+**Xod finishes the job**
+- Jobs said in plain words ("make a script that saves the top stories to a csv, then run it", "write a cron job that backs up my Documents") go to the loop that keeps going until the job is checked, not a plan written up front.
+- "Go through the websites about it and bring me the info" reads the pages themselves, one at a time, until every part is covered, instead of answering from two front pages and asking "want me to dig deeper?".
+- "Yes" to Xod's own "Want me to try that?" does it. When a job stops to ask something, your answer ("three.js", "hacker news") or "start!" carries it on.
+- After writing a file or running a command, Xod looks again at whether the job is really done: a file that was never run, or an empty one, isn't.
+- A site that shows a bot-check page is skipped, not fought with: Xod gets the rest from other sites and says which one blocked it.
+
+**Approve everything Muse asks** (Crew → the switch under Start the job)
+- On: Xod approves requests in its Muse and Claude Code Crew jobs, and presses the approving button on the Muse app's cards: **Always allow for this recipient** (or site) when a card offers it, then **Allow all once**, **Send**, or **Allow**. A request Xod's safety check flags (for example download-and-run, `sudo`, or a destructive delete), or a protected write, is not auto-approved in Crew jobs — it still waits for you. It does this through macOS Accessibility, so it doesn't move your mouse, but Xod needs Accessibility access; Crew says so under the switch when that's missing. Off by default; switch it off and requests wait for you again.
+- The Muse app watcher no longer polls: macOS tells Xod the moment Muse's window changes, so a card is handled within a couple of seconds. If a pressed card is still showing a few seconds later it is pressed again (up to 3 tries), so one that looks the same as the last can't stall the agent overnight.
+- Every card is logged once in the approvals history with its type, the button pressed, and — for Gmail — the From, To, Subject and attachments, plus anything it couldn't press and why. At 8 AM, if anything happened overnight, one summary says what was approved, which recipients are now always-allowed, and what was not pressed.
+
+**Security**
+- pypdf (reading PDFs you attach) 6.21.1 → 6.21.2, which fixes 3 problems published this week (CVE-2026-115572, -115580, -115585). PDFs can come from anywhere, so update if you open PDFs in Xod.
+
 ## 0.9.2
 
 **The app always uses its own Xod**

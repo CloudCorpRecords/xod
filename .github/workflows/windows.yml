@@ -37,8 +37,14 @@ jobs:
         run: python tests/smoke/run_local_models_test.py
       - name: Computer tools and spoken replies on Windows
         run: python tests/smoke/run_windows_tools_test.py
+      - name: Desktop control on Windows (fake session, windows and input)
+        run: python tests/smoke/run_windows_desktop_test.py
       - name: Xod on your phone (stand-in Telegram)
         run: python tests/smoke/run_phone_test.py
+      - name: Phone MCP and pairing (fake phone, platform-neutral core)
+        run: python tests/smoke/run_phone_mcp_test.py
+      - name: Muse card watcher core on a fake Windows UIA tree
+        run: python tests/smoke/run_muse_app_test.py
       - name: Eyes for models that can't see (stand-in Ollama)
         run: python tests/smoke/run_vision_test.py
       - name: Models, scores, what works and connecting (stand-in Ollama)
@@ -71,7 +77,7 @@ jobs:
         run: python tests/smoke/run_terminal_command_test.py
       # Not run_terminals_edge_test: its stand-in agents are shell scripts, and Windows sessions use pipes, not a terminal.
       # Not run_crew_test: its stand-in Muse is started through a shell script (Muse itself is Mac and Linux).
-      # Not run_desktop_test: using the screen, mouse and keyboard is Mac only for now (services/desktop.py).
+      # Not run_desktop_test: that suite fakes the Mac backend; the Windows backend has run_windows_desktop_test above.
       # Not run_engine_watchdog_test: the built-in engine (MLX) is Mac only, so its watchdog never runs here. The Mac job runs it.
 
   installer:
@@ -86,7 +92,7 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: electron/package-lock.json
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       - name: Standalone Python 3.12 to bundle
         run: uv python install 3.12
       - name: Build the installer

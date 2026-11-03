@@ -32,6 +32,7 @@ from app.services.email_intel import email_intel_service
 from app.services.funding_intel import funding_intel_service
 from app.services.project_storage import project_storage_service
 from app.services.filesystem import filesystem_service
+from app.services.locate import locate as _locate_files
 from app.services.browser_sandbox import browser_sandbox_service
 from app.services.system_control import system_control_service
 from app.services.creator_intel import creator_intel_service
@@ -2033,6 +2034,40 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "locate_files",
+            "description": "Finds a file or folder anywhere on this computer from loose human clues: name fragments, a kind (pdf, photo, spreadsheet, folder), a year or rough date ('last spring'), words inside the file, or its purpose ('my W2', 'the folder that has my Japan trip stuff', 'tax return summary for 2025'). Returns ranked candidates, each with its full verified path, kind, modified date, size, and the evidence for the match; returns status 'ask' with a question when the top two are too close to call, or 'not_found' with what was tried. Use this for 'find the X' requests; never guess a path.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request": {
+                        "type": "string",
+                        "description": "The find request in the person's own words (e.g. 'find my tax return summary for 2025, not 2024')."
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": "Optional kind if already parsed: pdf, image, spreadsheet, document, folder, video, audio, presentation."
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Optional explicit year clue if already parsed (e.g. 2025)."
+                    },
+                    "content_words": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional words expected inside the file's contents."
+                    },
+                    "root_dir": {
+                        "type": "string",
+                        "description": "Optional folder to search within. Defaults to the home folders (Documents, Desktop, Downloads, Pictures, Movies, Music)."
+                    }
+                },
+                "required": ["request"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "computer_manage_file",
             "description": "Performs safe file management on the user's computer: 'trash' (safely moves to macOS Trash via Finder so it's fully recoverable), 'copy', 'move' (rename/move), 'mkdir' (creates directories), 'zip' (a file or folder into a .zip) and 'unzip' (a .zip into a folder). Always full paths.",
             "parameters": {
@@ -2780,6 +2815,107 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "phone",
+            "description": "The person's own phone, through the Xod app paired with this computer (Android). task: do a whole job "
+                           "in the phone's apps, which are already signed in (Facebook, TikTok, X, Instagram, ...): give the goal in "
+                           "the person's words; Xod opens the app, reads the screen, taps, types, scrolls and swipes until it's done. "
+                           "Use task for anything in an app beyond opening it. Also: open an app, read its screen (numbered), act "
+                           "(one step: do=tap|long_press|type|enter|scroll|swipe|back|home on target n), its location, notifications, "
+                           "calendar, contacts or files, send them a message or ask them a question with buttons, or stop what's "
+                           "running. 'My phone' means this phone. Each ability works only if its switch is on in the phone app (the "
+                           "answer says which to turn on); steps in apps ask on the phone unless 'Use my apps without asking' is on, "
+                           "and posting, sending, paying or deleting asks unless the person asked for exactly that. status lists the "
+                           "paired phone, what's switched on, battery and when it was last seen. iPhones can't be controlled by apps "
+                           "at all (Apple doesn't allow it).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["status", "task", "open_app", "screen_read", "act", "tap", "location", "notifications",
+                                                         "calendar", "contacts", "files", "read_file", "message", "ask", "sms",
+                                                         "run_hidden", "stop"]},
+                    "goal": {"type": "string", "description": "task: the whole job, in the person's words (\"post 'hello' on my Facebook\")"},
+                    "app": {"type": "string", "description": "open_app / run_hidden / task: the app's name as on the phone (\"Calculator\", \"TikTok\")"},
+                    "do": {"type": "string", "enum": ["tap", "long_press", "type", "enter", "scroll", "swipe", "back", "home"], "description": "act: the step"},
+                    "target": {"type": "integer", "description": "act: the element's number from screen_read"},
+                    "direction": {"type": "string", "description": "act scroll/swipe: up, down, left or right"},
+                    "x": {"type": "integer"}, "y": {"type": "integer"},
+                    "text": {"type": "string", "description": "message / sms: what to say; act type: what to type"},
+                    "to": {"type": "string", "description": "sms: the number"},
+                    "question": {"type": "string"}, "options": {"type": "string", "description": "ask: buttons, comma separated"},
+                    "query": {"type": "string", "description": "contacts: who"},
+                    "path": {"type": "string", "description": "files / read_file"},
+                    "phone": {"type": "string", "description": "Which phone, if more than one is paired"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "muse_approvals",
+            "description": "The switch for approving the Muse app's cards (and Muse/Claude Code requests in Crew jobs) for the person. "
+                           "status: how it's set and whether it's pressing now. off: every card waits for them. always: press every card. "
+                           "away: press only while they're away from this computer (screen locked, or no typing or clicks for away_minutes), "
+                           "so Muse never takes the screen while they work. pause: off for `minutes`, then back as it was. resume: end a pause. "
+                           "A change made here sends them a notification.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["status", "off", "always", "away", "pause", "resume"]},
+                    "minutes": {"type": "number", "description": "For pause: how long (default 60)."},
+                    "away_minutes": {"type": "integer", "description": "For away: how many idle minutes count as away (default 5)."}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "tailscale_files",
+            "description": "Move files between this computer and the person's own devices (phone, other computers) over Tailscale. "
+                           "devices: which devices can take a file and which are online. send: one file to one device. receive: take the files their devices sent to this computer "
+                           "into ~/Downloads/Xod (or a folder).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["devices", "send", "receive"]},
+                    "path": {"type": "string", "description": "For send: the file on this computer."},
+                    "device": {"type": "string", "description": "For send: the device's name, as devices lists it."},
+                    "folder": {"type": "string", "description": "For receive: where to put the files (default ~/Downloads/Xod)."}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "xod_machines",
+            "description": "The person's other computers running Xod, found over their Tailscale sign-in. list: whether this "
+                           "computer is signed in and which Xods it can see (online or not). sign_in: open Tailscale's one-click "
+                           "sign-in page (Google, Microsoft, GitHub or Apple) so this Xod joins the others. send_task: hand a "
+                           "task to another of their Xods; it runs there once they approve it on that computer's card. "
+                           "task_status: whether it was approved, how it's going, and its result. models: which AI models "
+                           "that computer can use and which it's on. set_model: switch it to one of those.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "sign_in", "send_task", "task_status", "models", "set_model"]},
+                    "machine": {"type": "string", "description": "For send_task / task_status / models / set_model: the other Xod's name, as list shows it."},
+                    "provider": {"type": "string", "description": "For set_model: the provider, exactly as models listed it."},
+                    "model": {"type": "string", "description": "For set_model: the model, exactly as models listed it."},
+                    "task": {"type": "string", "description": "For send_task: what that Xod should do, in full."},
+                    "ref": {"type": "string", "description": "For task_status: the ref send_task returned."}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "memory_store",
             "description": "Permanently stores a memory into the SQLite vector memory vault (e.g. user coding preferences, architectural patterns, lessons learned, or project facts).",
             "parameters": {
@@ -2981,13 +3117,170 @@ def _expand_path_args(arguments: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+async def _with_signin_note(result: Any) -> Any:
+    """A sign-in page with no saved login: say so, with how the person signs in (phone or Take Over)."""
+    if isinstance(result, dict):
+        from app.services import browser_remote
+        note = await browser_remote.check_signin()
+        if note:
+            result = {**result, "sign_in_needed": note}
+    return result
+
+
+# The phone tool's actions -> the phone's own tools (services/phone_mcp.py) and the arguments each takes.
+_PHONE_ACTIONS = {"open_app": "phone_open_app", "screen_read": "phone_screen_read", "tap": "phone_screen_tap", "act": "phone_screen_act",
+                  "location": "phone_location", "notifications": "phone_notifications", "calendar": "phone_calendar",
+                  "contacts": "phone_contacts", "files": "phone_files_list", "read_file": "phone_file_read",
+                  "message": "phone_send", "ask": "phone_ask", "sms": "phone_sms_send", "run_hidden": "phone_app_run",
+                  "stop": "phone_stop"}
+_PHONE_ARGS = {"phone_open_app": ("app",), "phone_app_run": ("app",), "phone_screen_tap": ("x", "y"),
+               "phone_screen_act": ("do", "target", "x", "y", "text", "direction"),
+               "phone_send": ("text",), "phone_ask": ("question", "options"), "phone_sms_send": ("to", "text"),
+               "phone_contacts": ("query",), "phone_files_list": ("path",), "phone_file_read": ("path",)}
+_PHONE_REQUIRED = {"app", "x", "y", "text", "question", "to", "do"}
+
+
+# Names models reach for that a tool calls something else.
+_ARG_ALIASES = {"computer_open_item": {"target": ("path", "url", "file", "app", "app_name", "item")}}
+
+
+def _alias_args(name: str, arguments: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    args = dict(arguments or {})
+    for key, alts in _ARG_ALIASES.get(name, {}).items():
+        if not args.get(key):
+            hit = next((a for a in alts if args.get(a)), None)
+            if hit:
+                args[key] = args.pop(hit) if hit != "app_name" else args[hit]
+    return args
+
+
+def _missing_required(name: str, arguments: Dict[str, Any]) -> List[str]:
+    """The required arguments a call left out (from the tool's own schema: Xod's, or an MCP server's)."""
+    schema = next((t["function"].get("parameters") for t in TOOL_DEFINITIONS if t["function"]["name"] == name), None)
+    if schema is None and name.startswith("mcp__"):
+        try:
+            from app.services.mcp_client import mcp_hub
+            _, t = mcp_hub._find(name)
+            schema = getattr(t, "inputSchema", None) if t else None
+        except Exception:
+            schema = None
+    required = (schema or {}).get("required") or [] if isinstance(schema, dict) else []
+    missing = []
+    for k in required:
+        if (arguments or {}).get(k) not in (None, "", [], {}):
+            continue
+        # computer_write_file: an explicitly passed empty content is a real
+        # write, not a missing argument — its handler makes a folder of a bare
+        # path and an empty file of a .gitkeep or Makefile. Only an absent (or
+        # None) content is missing. Plan-level empty content is a different
+        # fault, stopped at assembly in services/missions.py before tools run.
+        if name == "computer_write_file" and k == "content" and (arguments or {}).get(k) == "":
+            continue
+        missing.append(k)
+    return missing
+
+
+# ------------------------------------------------------------------ placeholder arguments
+# A literal placeholder passed as a real value (the L7 hunt shape: the model
+# called computer_read_file on "<matching file path from search results>",
+# the search result's rendering having dropped the actual path) is a hard
+# failure at this dispatch layer, never something to execute as a real path.
+# The rule: a string argument that IS an angle-bracketed placeholder (its
+# whole value is one <...> chunk whose inner text is a multi-word phrase or
+# a known placeholder token), or a path argument CONTAINING such a chunk, is
+# unresolved template text. Payload keys (content, text, message, ...) are
+# exempt from the whole-value rule: their text is data, not a reference.
+_PLACEHOLDER_TOKENS = {"path", "filepath", "file path", "filename", "file name", "name", "value",
+                       "result", "output", "input", "todo", "placeholder", "x", "id", "url",
+                       "the path", "file", "folder", "directory", "location"}
+_PLACEHOLDER_PAYLOAD_KEYS = {"content", "text", "message", "body", "html", "command", "prompt",
+                             "instructions", "description", "title", "caption"}
+_PLACEHOLDER_WHOLE_RE = re.compile(r"^<([^<>\n]{1,200})>$")
+_PLACEHOLDER_PART_RE = re.compile(r"<([^<>\n]{1,200})>")
+
+
+def _is_placeholder_inner(inner: str) -> bool:
+    inner = (inner or "").strip().lower()
+    if not inner:
+        return False
+    if inner in _PLACEHOLDER_TOKENS:
+        return True
+    # a phrase: two or more words joined by spaces, underscores or hyphens
+    return bool(re.fullmatch(r"[a-z0-9]+(?:[ _\-]+[a-z0-9]+)+", inner))
+
+
+def placeholder_argument(arguments):
+    """The first (key, value) argument that is unresolved placeholder text, or None."""
+    def scan(value, key):
+        if isinstance(value, str):
+            s = value.strip()
+            m = _PLACEHOLDER_WHOLE_RE.match(s)
+            if m and key not in _PLACEHOLDER_PAYLOAD_KEYS and _is_placeholder_inner(m.group(1)):
+                return value
+            if key in PATH_ARGS or key == "cwd":
+                for part in _PLACEHOLDER_PART_RE.finditer(value):
+                    if _is_placeholder_inner(part.group(1)):
+                        return value
+            return None
+        if isinstance(value, dict):
+            for k, v in value.items():
+                hit = scan(v, str(k))
+                if hit is not None:
+                    return hit
+        if isinstance(value, (list, tuple)):
+            for v in value:
+                hit = scan(v, key)
+                if hit is not None:
+                    return hit
+        return None
+
+    for k, v in (arguments or {}).items():
+        hit = scan(v, str(k))
+        if hit is not None:
+            return str(k), hit
+    return None
+
+
+def placeholder_error(name: str, key: str, value: str) -> Dict[str, Any]:
+    return {"success": False, "error_code": "placeholder_argument",
+            "error": (f"PlaceholderArgumentError: argument '{key}' for {name} is an unresolved "
+                      f"placeholder ({value!r}), not a real value. Nothing was run. Use the actual "
+                      "value an earlier tool result returned, or run the search that produces it first.")}
+
+
 async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None,
                        reviewed: bool = False) -> Dict[str, Any]:
     """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first.
     Sentinel (services/sentinel.py) looks at it first, against what the person asked; a hit waits for their OK
     (reviewed=True is that OK). What comes back from tools that read others' content is remembered for the next look."""
+    import time
+    _obs_t0 = time.time()          # the tool call's wall clock, for the observability step log
     from app.services import activity, sentinel
-    arguments = _expand_path_args(arguments)
+    arguments = _expand_path_args(_alias_args(name, arguments))
+    bad = placeholder_argument(arguments)
+    if bad:
+        return placeholder_error(name, bad[0], bad[1])
+    if name == "computer_run_applescript":
+        # Permission guard (services/abilities.py applescript_block), after the placeholder guard above
+        # (a malformed call is rejected before any permission state is read or surfaced) and before
+        # anything here can reach _execute_tool: a script telling an app macOS has not allowed Xod to
+        # control (ask or denied) must not fire, because firing it is what shows the Automation prompt
+        # mid-task. The guard is a no-prompt pre-check, so it sits before the spawn; Lane 4's bounded,
+        # reaped osascript run in SystemControlService.run_applescript is untouched below it.
+        try:
+            from app.services import abilities
+            block = await asyncio.to_thread(abilities.applescript_block, arguments.get("script") or "")
+        except Exception as e:
+            logger.warning(f"applescript permission guard skipped for {name}: {e}")
+            block = None
+        if block:
+            return block
+    missing = _missing_required(name, arguments)
+    if missing:
+        # A call without what the tool needs only fails, or worse does something nobody asked for (a delete with no
+        # target, made while "seeing what works"): nothing runs, and the model is told what's missing.
+        return {"success": False, "error": f"{name} needs {', '.join(missing)}. Nothing was done. "
+                "If you don't know what the person wants here, ask them instead of trying tools."}
     if not reviewed:
         read_only = None
         if name.startswith("mcp__"):
@@ -3003,7 +3296,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         if hit:
             held = sentinel.hold(name, arguments or {}, hit)
             from app.services import agent_log
-            agent_log.step(name, arguments or {}, held)
+            agent_log.step(name, arguments or {}, held,
+                           duration_ms=round((time.time() - _obs_t0) * 1000))
             return held
     ctx = None
     try:
@@ -3017,7 +3311,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         logger.warning(f"activity log failed for {name}: {e}")
     sentinel.saw(name, result)
     from app.services import agent_log
-    agent_log.step(name, arguments or {}, result)      # the Agent page's step list (by job and by agent)
+    agent_log.step(name, arguments or {}, result,
+                   duration_ms=round((time.time() - _obs_t0) * 1000))      # the Agent page's step list (by job and by agent)
     return result
 
 
@@ -3034,7 +3329,7 @@ AGENT_TOOL_DEFS = [
                 "action": {"type": "string", "enum": ["start", "status", "message", "interrupt", "stop", "review", "merge", "pr", "discard"]},
                 "agent": {"type": "string", "enum": ["claude", "muse"], "description": "For start: the one the person named; default Claude Code"},
                 "task": {"type": "string", "description": "For start: the job, in the person's words, with what counts as done"},
-                "folder": {"type": "string", "description": "For start: the project folder"},
+                "folder": {"type": "string", "description": "For start: the project folder. Leave it out for work that isn't in one project (their GitHub or PRs across repos): the agent starts in the home folder"},
                 "title": {"type": "string", "description": "For start: a short name for the job"},
                 "job": {"type": "string", "description": "For status, message, interrupt, stop: the job's name (claude-job-1) or id; status without it lists all"},
                 "text": {"type": "string", "description": "For message: what to tell it"},
@@ -3145,17 +3440,50 @@ def _desktop_setup_card(a: Dict[str, Any]) -> Dict[str, Any]:
     if token and token in _setup_grants:
         _setup_grants.discard(token)
         packs.set_enabled(desktop.PACK, True)
-        res = desktop.request_permissions(force=True) if desktop.MAC else desktop.permissions()
+        res = desktop.request_permissions(force=True) if desktop.SUPPORTED else desktop.permissions()
         return {"success": True, "enabled": True, **{k: res.get(k) for k in ("screen", "accessibility", "app", "message")},
                 "note": "The screen tools are available from the next message."}
-    if not desktop.MAC:
-        return {"success": False, "error": "Using the screen, mouse and keyboard works on a Mac for now."}
+    if not desktop.SUPPORTED:
+        return {"success": False, "error": "Using the screen, mouse and keyboard works on a Mac or Windows for now."}
     t = uuid.uuid4().hex
     _setup_grants.add(t)
     held = sentinel.hold("desktop_setup", {"_grant": t}, {"rule": "desktop_setup",
                          "why": "Xod wants to turn on using your screen, mouse and keyboard (Add-ons → Use this computer's screen). "
                                 "It asks before each new app, never types passwords, and stops when you move the mouse."})
     held["args"] = {}
+    return held
+
+
+_send_grants: set = set()
+
+
+async def _taildrop_tool(a: Dict[str, Any]) -> Dict[str, Any]:
+    """Files to and from the person's devices (services/taildrop.py). Sends to their own devices go straight through;
+    with taildrop_ask_first on, a send waits for their OK on a card and the card's approval runs it."""
+    from app.services import sentinel, taildrop
+    act = (a.get("action") or "devices").lower()
+    try:
+        if act == "devices":
+            found = await asyncio.to_thread(taildrop.devices)
+            return {"success": True, "devices": found, "count": len(found)}
+        if act == "receive":
+            got = await asyncio.to_thread(taildrop.receive, a.get("folder") or "")
+            return {"success": True, **got, "count": len(got["files"])}
+        if act != "send":
+            return {"success": False, "error": f"Unknown action '{act}': devices, send or receive."}
+        token = a.pop("_grant", None)
+        if (token and token in _send_grants) or not taildrop.ask_first():
+            _send_grants.discard(token)
+            return {"success": True, **await asyncio.to_thread(taildrop.send, a.get("path") or "", a.get("device") or "")}
+        plan = await asyncio.to_thread(taildrop.check_send, a.get("path") or "", a.get("device") or "")
+    except taildrop.TaildropError as e:
+        return {"success": False, "error": str(e)}
+    t = uuid.uuid4().hex
+    _send_grants.add(t)
+    mb = plan["size"] / 1024 ** 2
+    held = sentinel.hold("tailscale_files", {"action": "send", "path": plan["file"], "device": plan["device"], "_grant": t},
+                         {"rule": "taildrop_send", "why": f"Xod wants to send {plan['name']} ({mb:.1f} MB) to {plan['device']} over Tailscale."})
+    held["args"] = {"action": "send", "path": plan["file"], "device": plan["device"]}
     return held
 
 
@@ -3236,7 +3564,7 @@ async def _crew_tool(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
 
 def _screen_on() -> bool:
     from app.services import desktop
-    return desktop.MAC and desktop.enabled()
+    return desktop.SUPPORTED and desktop.enabled()
 
 
 async def _cli_start(ac, agent: str, folder: str, visible: bool, name: str = "", new: bool = False) -> Dict[str, Any]:
@@ -3439,6 +3767,79 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         return await _desktop(name, dict(arguments or {}))
     if name == "desktop_setup":
         return _desktop_setup_card(dict(arguments or {}))
+    if name == "tailscale_files":
+        return await _taildrop_tool(dict(arguments or {}))
+    if name == "memory_sync_accept":    # only from an approved card, like xod_network_accept
+        from app.services import memory_sync
+        a = arguments or {}
+        return await asyncio.to_thread(memory_sync.accept, a.get("key") or "", a.get("_grant") or "")
+    if name == "xod_network_accept":    # only from an approved card: its grant is never shown to the model
+        from app.services import xod_network
+        a = arguments or {}
+        return await asyncio.to_thread(xod_network.accept, a.get("ref") or "", a.get("_grant") or "")
+    if name == "phone":
+        from app.services import phone_mcp
+        a = dict(arguments or {})
+        act = str(a.pop("action", "status") or "status").lower()
+        address = str(a.pop("phone", "") or "")
+        if act == "status":
+            return phone_mcp.phone_list()
+        if act == "task":
+            from app.services import phone_task
+            if not str(a.get("goal") or "").strip():
+                return {"success": False, "error": "phone task needs goal. Nothing was done."}
+            return await phone_task.run(str(a["goal"]), address, int(a.get("max_steps") or phone_task.MAX_STEPS), str(a.get("app") or ""))
+        if act == "act" and "element" in a and "target" not in a:
+            a["target"] = a.pop("element")
+        tool = _PHONE_ACTIONS.get(act)
+        if not tool:
+            return {"success": False, "error": f"Phone actions: {', '.join(sorted(_PHONE_ACTIONS))} or status."}
+        keep = _PHONE_ARGS.get(tool, ())
+        args = {k: v for k, v in a.items() if k in keep and v not in (None, "")}
+        missing = [k for k in keep if k in _PHONE_REQUIRED and k not in args]
+        if missing:
+            return {"success": False, "error": f"phone {act} needs {', '.join(missing)}. Nothing was done."}
+        return await phone_mcp.call_tool(tool, address, **args)
+    if name == "muse_approvals":
+        from app.services import muse_app
+        a = arguments or {}
+        act = str(a.get("action") or "status").lower()
+        try:
+            if a.get("away_minutes"):
+                await asyncio.to_thread(muse_app.set_away_minutes, int(a["away_minutes"]))
+            if act == "status":
+                st = await asyncio.to_thread(muse_app.status)
+            else:
+                from app.services import activity
+                who = str(activity.origin.get() or "chat").split(":")[0]
+                who = {"task": "a task", "routine": "a routine"}.get(who, who)
+                st = await asyncio.to_thread(muse_app.set_mode, act, a.get("minutes"), who)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+        return {"success": True, "summary": muse_app.describe(st),
+                **{k: st.get(k) for k in ("mode", "paused_until", "away_minutes", "pressing_now", "approved", "accessibility_error")}}
+    if name == "xod_machines":
+        from app.services import xod_network
+        a = arguments or {}
+        if a.get("action") == "sign_in":
+            return await asyncio.to_thread(xod_network.sign_in)
+        if a.get("action") in ("models", "set_model"):
+            try:
+                if a["action"] == "models":
+                    return {"success": True, **await xod_network.machine_models(a.get("machine") or "")}
+                return {"success": True, **await xod_network.machine_use_model(a.get("machine") or "", a.get("provider") or "",
+                                                                                a.get("model") or "")}
+            except xod_network.NetworkError as e:
+                return {"success": False, "error": str(e)}
+        if a.get("action") in ("send_task", "task_status"):
+            try:
+                if a["action"] == "send_task":
+                    return {"success": True, **await xod_network.send_task(a.get("machine") or "", a.get("task") or "")}
+                return {"success": True, **await xod_network.task_status(a.get("machine") or "", a.get("ref") or "")}
+            except xod_network.NetworkError as e:
+                return {"success": False, "error": str(e)}
+        st = await asyncio.to_thread(xod_network.status)
+        return {"success": True, "status": st, **(await xod_network.find() if st.get("signed_in") else {"xods": []})}
     if name in CLI_TOOLS or name in LEGACY_AGENT_TOOLS:
         return await _cli_agents(name, dict(arguments or {}))
     if name in ("agent_mail_send", "agent_mail_inbox"):
@@ -3849,7 +4250,7 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
             return filesystem_service.organize_files(resolved_files, resolved_folder)
 
         elif name == "browser_navigate":
-            return await browser_sandbox_service.navigate(arguments["url"])
+            return await _with_signin_note(await browser_sandbox_service.navigate(arguments["url"]))
 
         elif name == "browser_click":
             return await browser_sandbox_service.click(arguments["target"])
@@ -3901,10 +4302,10 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
             )
 
         elif name == "browser_observe":
-            return await browser_sandbox_service.observe(
-                max_count=arguments.get("max_elements", 60),
-                filter=arguments.get("filter_type", "all")
-            )
+            return await _with_signin_note(await browser_sandbox_service.observe(
+                filter_type=arguments.get("filter_type") or None,
+                max_results=int(arguments.get("max_elements") or 60),
+            ))
 
         elif name == "browser_interact":
             return await browser_sandbox_service.interact_by_index(
@@ -4043,6 +4444,15 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
             if head and tail and os.path.isabs(head) and os.path.isdir(head) and not root:
                 query, root = tail, head
             return await system_control_service.find_files(query=query, root_dir=root, max_results=arguments.get("max_results", 25))
+
+        elif name == "locate_files":
+            request = (arguments.get("request") or arguments.get("query") or arguments.get("description") or "")
+            if not request:
+                return {"success": False, "error": "Say what to find: pass the person's find request as 'request'."}
+            extra = {k: arguments[k] for k in ("kind", "year", "content_words", "name") if arguments.get(k)}
+            root = (arguments.get("root_dir") or arguments.get("root") or arguments.get("directory") or "")
+            roots = [os.path.expanduser(str(root))] if root else None
+            return await asyncio.to_thread(_locate_files, str(request), extra, roots)
 
         elif name == "computer_manage_file":
             # The words models use for these: "compress", "extract", "delete", "rename"...
@@ -4536,9 +4946,12 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
         "computer_inspect_port",
         "computer_run_command",
         "computer_find_files",
+        "locate_files",
         "computer_directory_tree",
         "computer_read_file",
+        "computer_write_file",
         "computer_edit_file",
+        "computer_manage_file",
         "fs_list_workspace_files",
         "fs_read_workspace_file",
         "fs_search_workspace",
@@ -4573,6 +4986,25 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
                              "what's wrong", "whats wrong", "keeps failing", "self heal", "self-heal", "check yourself", "stuck"]):
         affinities.append("xod_doctor")
 
+    # The person's paired phone (the Xod phone app)
+    if any(k in q for k in ["my phone", "on my android", "my android", "on the phone", "my galaxy", "my samsung", "on my cell", "tiktok", "instagram"]):
+        affinities.append("phone")
+
+    # The Muse approvals switch
+    if any(k in q for k in ["muse", "approval", "approve", "auto-approve", "autoapprove", "auto approve"]):
+        affinities.append("muse_approvals")
+
+    # Files to and from the person's own devices
+    if any(k in q for k in ["taildrop", "tailscale", "to my phone", "to my iphone", "to my android", "from my phone",
+                             "my devices", "airdrop", "send it to my", "send this to my", "send the file to"]):
+        affinities.append("tailscale_files")
+
+    # The person's other Xods
+    if any(k in q for k in ["other xod", "my xods", "xod machines", "other computers", "my computers", "my machines", "on my laptop",
+                             "on my desktop", "on my other", "on the other computer",
+                             "sign in to tailscale", "log in to tailscale", "tailscale login", "other machines"]):
+        affinities.append("xod_machines")
+
     # Local Workspace & Computer Filesystem affinities
     if active_workspace_path or any(k in q for k in ["file", "files", "folder", "folders", "code", "read", "write", "search", "workspace", "project", "dir", "directory", "directories", "script", "readme", "config", "env", "inspect", "audit", "check", "move", "organize", "create folder", "mkdir", "directory tree", "file tree", "folder tree", "edit", "update", "patch"]):
         affinities.extend([
@@ -4580,7 +5012,7 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
             "computer_write_file", "computer_edit_file", "computer_batch_organize",
             "fs_list_workspace_files", "fs_read_workspace_file", "fs_write_workspace_file",
             "fs_search_workspace", "fs_create_folder", "fs_move_file", "fs_organize_files",
-            "computer_manage_file"
+            "computer_manage_file", "locate_files"
         ])
 
     # Autonomous Browser Sandbox affinities

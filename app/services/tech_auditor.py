@@ -251,8 +251,10 @@ class TechAuditor:
         }
 
         try:
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, verify=False) as client:
+            from app.services import tls_fetch
+            async with tls_fetch.client(timeout=10.0, follow_redirects=True) as client:
                 res = await client.get(url, headers=headers)
+                tls_certificate = client.tls_note
                 final_url = str(res.url)
                 status_code = res.status_code
                 resp_headers = {k.lower(): v for k, v in res.headers.items()}
@@ -296,6 +298,7 @@ class TechAuditor:
             "domain": domain,
             "final_url": final_url,
             "status_code": status_code,
+            "tls_certificate": tls_certificate,
             "technologies": detected_tech,
             "technologies_by_category": tech_by_category,
             "total_technologies_detected": len(detected_tech),

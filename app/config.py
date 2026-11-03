@@ -10,7 +10,7 @@ from app.paths import ENV_PATH, DEV_ENV_PATH
 load_dotenv(dotenv_path=ENV_PATH)
 load_dotenv(dotenv_path=DEV_ENV_PATH)
 
-from app.services.storage import get_setting, set_setting, get_all_settings
+from app.services.storage import get_setting, set_setting, get_all_settings, has_setting
 
 class Settings(BaseModel):
     trustmrr_api_key: str = ""
@@ -44,13 +44,18 @@ def load_synced_settings() -> Settings:
     for field in secret_store.SECRET_FIELDS:
         setattr(s, field, secret_store.get(field))
     for field in ["llm_provider", "llm_base_url", "llm_model"]:
+        if has_setting(field):
+            # A saved value wins verbatim, even when it is empty. An empty
+            # llm_base_url is a real choice (the provider's own endpoint),
+            # not "unset": treating it as unset let a stale LM Studio URL
+            # from .env (or the Settings class default) resurrect at every
+            # launch, which is the 2026-11-01 keys/config drift.
+            setattr(s, field, get_setting(field, ""))
+            continue
         env_val = os.getenv(field.upper(), "")
-        db_val = get_setting(field, "")
-        final_val = db_val if db_val else env_val
-        if final_val:
-            setattr(s, field, final_val)
-        if final_val and not db_val:
-            set_setting(field, final_val)
+        if env_val:
+            setattr(s, field, env_val)
+            set_setting(field, env_val)
 
     s.host = os.getenv("HOST", "127.0.0.1")
     s.port = int(os.getenv("PORT", "8000"))
