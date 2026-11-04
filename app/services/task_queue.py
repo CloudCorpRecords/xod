@@ -121,6 +121,13 @@ def _conn() -> sqlite3.Connection:
 
 def _init() -> None:
     c = _conn()
+    # Write-ahead logging: a read no longer waits for a write. Xod reads xod.db on its event loop (settings, task
+    # state), and with tasks and workers writing progress side by side those reads waited on the lock: the server
+    # stalled up to 1.3 s under load (live, 2026-11-04). The setting stays with the file; nothing copies xod.db.
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.DatabaseError as e:
+        logger.warning(f"xod.db stays in rollback-journal mode: {e}")
     c.execute(
         """
         CREATE TABLE IF NOT EXISTS tasks (
@@ -171,6 +178,9 @@ def _init() -> None:
         c.execute("ALTER TABLE tasks ADD COLUMN mode TEXT")
     if "memory_json" not in cols:          # the pre-work memory search, with sources (services/memory_layers.py)
         c.execute("ALTER TABLE tasks ADD COLUMN memory_json TEXT")
+    if "external_ref" not in cols:         # another agent's id for this same task (a later Xod and Tree sync matches on it)
+        c.execute("ALTER TABLE tasks ADD COLUMN external_ref TEXT")
+        c.execute("CREATE INDEX IF NOT EXISTS tasks_external_ref ON tasks(external_ref)")
     c.commit()
     c.close()
 
@@ -641,7 +651,8 @@ class TaskQueue:
         return {r["status"]: r["n"] for r in rows}
 
     # ------------------------------------------------------------------ user actions
-    def create(self, request: str, title: Optional[str] = None, mode: Optional[str] = None) -> Dict[str, Any]:
+    def create(self, request: str, title: Optional[str] = None, mode: Optional[str] = None,
+               external_ref: Optional[str] = None) -> Dict[str, Any]:
         request = (request or "").strip()
         if not request:
             raise ValueError("Tell Xod what to do.")
@@ -650,19 +661,28 @@ class TaskQueue:
         title = title or (request if len(request) <= 70 else request[:67].rsplit(" ", 1)[0] + "…")
         c = _conn()
         c.execute(
-            "INSERT INTO tasks (id, created_at, updated_at, title, request, status, next_action, history, last_progress_at, mode) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO tasks (id, created_at, updated_at, title, request, status, next_action, history, last_progress_at, mode, "
+            "external_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (task_id, now, now, title, request, "queued", json.dumps({"type": "start"}),
              json.dumps([{"at": now, "text": "Acknowledged; added to your tasks" if mode == "stepwise" else "Added to your tasks",
-                          "kind": "ack" if mode == "stepwise" else None}]), now, mode),
+                          "kind": "ack" if mode == "stepwise" else None}]), now, mode, (external_ref or "").strip()[:200] or None),
         )
         c.commit()
         c.close()
         self._kick()
         made = self.get(task_id)
         from app.services import event_log
-        event_log.emit("task.created", actor="task_queue", ids={"task_id": task_id},
+        event_log.emit("task.created", actor="task_queue",
+                       ids={"task_id": task_id, **({"external_ref": made.get("external_ref")} if made.get("external_ref") else {})},
                        payload={"title": title, "request": request[:300]})
         return made
+
+    def by_external_ref(self, ref: str) -> Optional[Dict[str, Any]]:
+        """The task another agent knows by this id, if any (the most recent one)."""
+        c = _conn()
+        r = c.execute("SELECT id FROM tasks WHERE external_ref = ? ORDER BY created_at DESC LIMIT 1", ((ref or "").strip(),)).fetchone()
+        c.close()
+        return self.get(r["id"]) if r else None
 
     def approve(self, task_id: str) -> Dict[str, Any]:
         t = self.get(task_id)

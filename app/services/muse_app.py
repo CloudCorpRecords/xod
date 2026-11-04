@@ -888,9 +888,9 @@ async def _watch() -> None:
         _state["debouncer"] = _Debouncer(DEBOUNCE_SEC, _fire_scan)
     while True:
         try:
-            try:
+            try:   # off the event loop: it reads Crew's jobs, and under load that waited on xod.db (live: 0.6-1 s stalls)
                 from app.services import power
-                power.sync_crew()
+                await asyncio.to_thread(power.sync_crew)
             except Exception:
                 pass
             if enabled():
