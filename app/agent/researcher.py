@@ -2710,6 +2710,9 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             if mcp_tools:
                 extra.append("6. Connected apps (MCP; actions wait for the user's approval):")
                 extra += [f"   - {t['name']}: {t['description'][:110]}" for t in mcp_tools]
+            from app.services import browser_ops as _bops
+            if _bops.wanted(query):
+                extra += _bops.planner_lines()      # empty unless browser-ops applies here
             deliberator_system_prompt = deliberator_system_prompt.replace("\nCONTEXT:", "\n" + "\n".join(extra) + "\n\nCONTEXT:", 1)
         except Exception as e:
             logger.debug(f"planner tool list not adjusted: {e}")
