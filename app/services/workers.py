@@ -460,7 +460,9 @@ Write the combined answer. Rules:
 - Use only what the workers reported. Never be more certain than the worker you rely on.
 - Keep confirmed facts, inferences, and unknowns apart.
 - Where workers disagree, say so and say which evidence is stronger.
-- Do not paper over a failed worker: its part is unknown."""
+- Do not paper over a failed worker: its part is unknown.
+- A worker marked outcome="unverified" gave an answer it could not confirm: you may give that answer, but
+  label it unverified and say why (its own words), never as a confirmed fact."""
 
 
 async def _default_synth(job: str, results: List[Dict[str, Any]]) -> str:
@@ -553,8 +555,13 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
                 or f"it is {state} (no result yet)"
             failures.append({"worker": wid, "task": s["task"], "outcome": outcome, "why": why[:400]})
     ok = [p for p in per if p["outcome"] == "done"]
+    # A worker that answered but could not confirm it is not dropped: its answer goes to the synthesis
+    # labeled unverified (live P1: a sourced "1991" was discarded and the parent said "unknown").
+    partial = [{**p, "outcome": "unverified"} for p in per
+               if p["outcome"] == "failed" and (p.get("report") or "").strip()
+               and any(f["worker"] == p["id"] and "its report says" in f["why"] for f in failures)]
     try:
-        synthesis = await synthesize(job, ok) if ok else ""
+        synthesis = await synthesize(job, ok + partial) if (ok or partial) else ""
     except Exception as e:
         synthesis = ""
         failures.append({"worker": cid, "task": "synthesis", "outcome": "failed", "why": f"synthesis failed: {e}"})

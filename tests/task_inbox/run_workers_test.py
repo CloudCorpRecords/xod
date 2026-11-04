@@ -105,8 +105,12 @@ W.agent = fake_agent
 SYNTH_INPUTS = []
 
 
+SYNTH_OUTCOMES = []
+
+
 async def fake_synth(job, ok_results):
     SYNTH_INPUTS.append((job, [r["report"] for r in ok_results]))
+    SYNTH_OUTCOMES.append([r["outcome"] for r in ok_results])
     return " | ".join(r["report"] for r in ok_results)
 
 
@@ -349,6 +353,8 @@ async def w9_failed_sources(q):
     j3 = f"Source admits {tag}"
     JOB_SCRIPT[j3] = ("admit", "**Could not read:** The status line, because the file was not found.")
     r2 = await W.coordinate("w9b", "one source", [{"task": j3}])
+    check("its unconfirmed answer still reaches the synthesis, labeled unverified",
+          any("Could not read" in rep for rep in SYNTH_INPUTS[-1][1]) and SYNTH_OUTCOMES[-1] == ["unverified"], str(SYNTH_OUTCOMES[-1:]))
     check("a worker whose report admits it could not do the job is a failed check",
           [f["task"] for f in r2["failures"]] == [j3] and "Could not read" in r2["failures"][0]["why"], json.dumps(r2["failures"])[:200])
     check("the broken source is itemized as failed, with why",
