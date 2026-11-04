@@ -129,7 +129,9 @@ _STOP = {"the", "a", "an", "is", "are", "was", "were", "and", "or", "of", "in", 
 
 
 def _tokens(text: str):
-    low = (text or "").lower()
+    # Paths and code are where the finding was read, not what was found (live S7: a "…stock-2ec2.txt" path's
+    # digit made the same restock look new).
+    low = re.sub(r"`[^`]*`|\S*/\S+", " ", (text or "")).lower()
     nums = set(re.findall(r"\d+(?:[.,]\d+)?", low))
     words = {w for w in re.findall(r"[a-z][a-z'-]+", low) if w not in _STOP and len(w) > 1}
     return nums, words

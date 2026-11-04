@@ -167,6 +167,8 @@ def d3b_finding_above_verdict():
     check("delivered with the finding in it", len(msgs) == n + 1 and "RESTOCKED today" in msgs[-1]["content"], msgs[-1]["content"][:200])
     one_run(r["id"], f"Found in the file:\n\nWATCH: found\nblue size 10: RESTOCKED today{TAG['t']}")
     check("the same finding written below the verdict next time is deduped", len(background_messages()) == n + 1)
+    one_run(r["id"], f"In `/tmp/work/stock-2ec2.txt`:\n\nWATCH: found\nblue size 10: RESTOCKED today{TAG['t']}")   # live S7 shape
+    check("a path around the same finding does not make it new", len(background_messages()) == n + 1)
 
 
 def d4_failures():
