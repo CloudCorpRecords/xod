@@ -579,6 +579,24 @@ if os.environ.get("XOD_TEST_HOOKS") == "1":
         from app.services import workers
         return await workers.run_watchdog(stall_sec=stall_sec, stop_sec=stop_sec)
 
+    class _TestScripted(BaseModel):
+        request: str
+        tool: str
+        args: Dict[str, Any]
+
+    @app.post("/api/test/scripted_task")
+    async def _test_scripted_task(req: _TestScripted):
+        """An orchestrated task whose one step is a scripted tool call (the model is not asked)."""
+        from app.services import orchestrator
+        ack = orchestrator.submit(req.request)
+        orchestrator.SCRIPTED[ack["task_id"]] = [(req.tool, req.args)]
+        c = orchestrator._conn()
+        c.execute("UPDATE tasks SET plan_json = ?, plan_version = 1 WHERE id = ?",
+                  (json.dumps({"items": [orchestrator._item(req.request)], "instructions": []}), ack["task_id"]))
+        c.commit()
+        c.close()
+        return {"ack": ack}
+
     @app.post("/api/test/workers/{worker_id}/kill")
     async def _test_kill_worker(worker_id: str):
         """A worker that dies without cleaning up: its run is cancelled, its claims are NOT released

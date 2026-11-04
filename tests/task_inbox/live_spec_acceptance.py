@@ -287,8 +287,12 @@ def s9():
     for mode, label in (("record_then_drop", "landed"), ("drop_first", "did not land")):
         text = f"hello-{label.replace(' ', '-')}-{uuid.uuid4().hex[:4]}"
         sink.arm(mode, down_sec=15)
-        # No address in the words: an address sends the agent down its browser route, where the action is not offered.
-        p = wait_task(task(f"Use the test_send tool to send the text '{text}' to the test inbox. Send it exactly once."))
+        # The step's action is scripted (test hook): this exercises the engine (executor, outcome ledger,
+        # destination checks, step judging) on the live server with a real network drop, independent of
+        # which tool the model would pick. (Asked in words, the model sent with curl via a shell command.)
+        tid = http("/api/test/scripted_task", {"request": f"Send the text '{text}' to the test inbox exactly once.",
+                                               "tool": "test_send", "args": {"text": text}})["ack"]["task_id"]
+        p = wait_task(tid)
         oc = db("SELECT outcome, resolved_outcome, evidence FROM tool_outcomes WHERE origin = ? AND tool = 'test_send' ORDER BY created_at",
                 f"task:{p['task_id']}")
         print(f"     [{label}] outcomes: {[(o['outcome'], o['resolved_outcome']) for o in oc]}  inbox: {sink.msgs.count(text)}")
