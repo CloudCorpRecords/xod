@@ -440,10 +440,18 @@ def core_note() -> str:
     fs = facts()
     if not fs:
         return ""
-    lines = [f"- {f['text']}" for f in _core(fs)]
+    lines = [f"- {f['text']} {_where(f)}" for f in _core(fs)]
     return ("What you know about the user (they told you, or it's from their Mac with their OK). Use it naturally "
             "when it helps, e.g. their name or what they're working on; don't recite it or say where you learned it "
-            "unless asked:\n" + "\n".join(lines))
+            "unless asked. When asked, the bracket after each fact says where and when you learned it:\n" + "\n".join(lines))
+
+
+def _where(f: Dict[str, Any]) -> str:
+    """Where and when a fact was learned, as the model can repeat it (spec section 8: it can say where it learned it)."""
+    src = f.get("source") or "unknown source"
+    via = " on the phone" if f.get("via") == "phone" else (" in a chat" if (f.get("via") == "chat") else "")
+    when = time.strftime("%Y-%m-%d", time.localtime(f.get("added"))) if f.get("added") else "unknown date"
+    return f"[{src}{via}, {when}]"
 
 
 def relevant(query: str, k: int = 4) -> List[Dict[str, Any]]:
@@ -469,7 +477,7 @@ PAST_Q_RE = re.compile(r"\b(before|used to|previous(ly)?|former|old|earlier|firs
 
 def relevant_note(query: str) -> str:
     rel = relevant(query)
-    out = ("\n\n(Also known about the user: " + "; ".join(f["text"] for f in rel) + ".)") if rel else ""
+    out = ("\n\n(Also known about the user: " + "; ".join(f"{f['text']} {_where(f)}" for f in rel) + ".)") if rel else ""
     past = load().get("past") or []
     if past and PAST_Q_RE.search(query or ""):
         q = _norm(query)

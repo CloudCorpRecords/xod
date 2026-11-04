@@ -119,6 +119,30 @@ def classify(kind: str, task: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return {"outcome": "changed", "finding": m.group(2).strip(), "note": ""}
 
 
+_STOP = {"the", "a", "an", "is", "are", "was", "were", "and", "or", "of", "in", "on", "at", "to", "for", "it", "its", "this",
+         "that", "with", "as", "be", "now", "today", "found", "new", "line", "lines", "file", "says", "contains", "watch"}
+
+
+def _tokens(text: str):
+    low = (text or "").lower()
+    nums = set(re.findall(r"\d+(?:[.,]\d+)?", low))
+    words = {w for w in re.findall(r"[a-z][a-z'-]+", low) if w not in _STOP and len(w) > 1}
+    return nums, words
+
+
+def same_finding(a: str, b: str) -> bool:
+    """The same thing found again, however the model words it (live S7: a restock re-delivered because the
+    report was phrased differently). Every number must match exactly (a new price or size is new) and the
+    words must largely overlap."""
+    na, wa = _tokens(a)
+    nb, wb = _tokens(b)
+    if na != nb:
+        return False
+    if not wa or not wb:
+        return wa == wb
+    return len(wa & wb) / len(wa | wb) >= 0.5
+
+
 def _fingerprint(finding: str) -> str:
     norm = "\n".join(sorted(l.strip().lower() for l in (finding or "").splitlines() if l.strip()))
     return hashlib.sha256(norm.encode()).hexdigest()[:20]
@@ -235,6 +259,17 @@ def deliver_pending() -> List[str]:
             fresh = cur.rowcount == 1
             if not fresh:
                 existing = c.execute("SELECT * FROM deliveries WHERE key = ?", (key,)).fetchone()
+        if fresh and run["outcome"] == "changed":
+            with _conn() as c:
+                earlier = c.execute("SELECT r.excerpt FROM deliveries d JOIN routine_runs r ON r.id = d.run_id "
+                                    "WHERE d.routine_id = ? AND d.state = 'sent' AND r.outcome = 'changed' AND d.key != ?",
+                                    (run["routine_id"], key)).fetchall()
+            if any(same_finding(e["excerpt"] or "", run.get("excerpt") or "") for e in earlier):
+                with _conn() as c:
+                    c.execute("DELETE FROM deliveries WHERE key = ? AND state = 'sending'", (key,))
+                    c.execute("UPDATE routine_runs SET delivery_state = 'deduped' WHERE id = ?", (run["id"],))
+                _emit("delivery.deduped", run_id=run["id"], key=key, why="same finding, worded differently")
+                continue
         if not fresh and existing["state"] == "sent":
             # This finding already reached the person (an earlier run found the same thing).
             with _conn() as c:

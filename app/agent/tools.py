@@ -3879,14 +3879,14 @@ if TEST_HOOKS:
     # mid-send on a test action"). Only on a dev instance started with XOD_TEST_HOOKS=1.
     TOOL_DEFINITIONS.append({"type": "function", "function": {
         "name": "test_send",
-        "description": "TEST ONLY. Sends a message to a test inbox at a URL (HTTP POST). Use when the task says to use test_send.",
-        "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "text": {"type": "string"}},
-                       "required": ["url", "text"]}}})
+        "description": "TEST ONLY. Sends a message to the local test inbox on a port. Use when the task says to use test_send.",
+        "parameters": {"type": "object", "properties": {"port": {"type": "integer"}, "text": {"type": "string"}},
+                       "required": ["port", "text"]}}})
 
 
 async def _test_send(a: Dict[str, Any]) -> Dict[str, Any]:
     import urllib.request
-    req = urllib.request.Request(str(a["url"]).rstrip("/") + "/send", data=json.dumps({"text": a["text"]}).encode(),
+    req = urllib.request.Request(f"http://127.0.0.1:{int(a['port'])}/send", data=json.dumps({"text": a["text"]}).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     body = await asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=10).read())
     return {"success": True, "response": body.decode()[:200]}

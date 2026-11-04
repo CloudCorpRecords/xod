@@ -526,13 +526,22 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
         r = w.get("result") or {}
         state = w.get("shown_state") or w.get("state")
         outcome = r.get("outcome") or state
+        why_failed = None
         if outcome == "done" and r.get("failures") and not r.get("evidence"):
             outcome = "failed"     # every source it tried failed: its "answer" rests on nothing
+        elif outcome == "done":
+            # A worker whose own report says it could not do the job is a failed check, however
+            # politely it says so (live S5: "Could not read: the status line, because the file was not found").
+            from app.services.orchestrator import _self_report_problem
+            admitted = _self_report_problem(s["task"], r.get("report") or "")
+            if admitted:
+                outcome, why_failed = "failed", admitted
         entry = {"id": wid, "task": s["task"], "outcome": outcome, "report": r.get("report", ""),
                  "evidence": r.get("evidence", []), "failures": r.get("failures", [])}
         per.append(entry)
         if outcome != "done":
-            why = "; ".join(f["summary"] for f in r.get("failures", [])) or f"it is {state} (no result yet)"
+            why = "; ".join(x for x in [why_failed] + [f["summary"] for f in r.get("failures", [])] if x) \
+                or f"it is {state} (no result yet)"
             failures.append({"worker": wid, "task": s["task"], "outcome": outcome, "why": why[:400]})
     ok = [p for p in per if p["outcome"] == "done"]
     try:

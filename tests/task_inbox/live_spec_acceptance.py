@@ -274,8 +274,10 @@ def s8():
     check("the task recorded where it learned it", bool(fact) and fact.get("source"), str(fact))
     ans = chat("Where did you learn that text files you create for me should end with a signature line? One sentence.")
     print(f"     answer: {ans[:200]!r}")
-    check("Xod can say where it learned it", bool(re.search(r"\byou (told|said|asked)|\byour (request|preference|message|instruction)|"
-                                                            r"\bremember", ans, re.I)), ans[:120])
+    # It must name the source, not just know the preference ("in the context I was given ... can't tell" fails).
+    named = re.search(r"\byou (told|said|asked)|\bin (a|our|this|an earlier) (chat|conversation)|\b20\d\d-\d\d-\d\d\b", ans, re.I)
+    hedged = re.search(r"can.t tell|not sure where|don.t know where", ans, re.I)
+    check("Xod can say where it learned it", bool(named) and not hedged, ans[:160])
 
 
 # ------------------------------------------------------------------------- S9
@@ -285,7 +287,7 @@ def s9():
     for mode, label in (("record_then_drop", "landed"), ("drop_first", "did not land")):
         text = f"hello-{label.replace(' ', '-')}-{uuid.uuid4().hex[:4]}"
         sink.arm(mode, down_sec=15)
-        p = wait_task(task(f"Use the test_send tool to send the text '{text}' to http://127.0.0.1:{args.sink_port}. "
+        p = wait_task(task(f"Use the test_send tool to send the text '{text}' to the test inbox on port {args.sink_port}. "
                            f"Send it exactly once."))
         oc = db("SELECT outcome, resolved_outcome, evidence FROM tool_outcomes WHERE origin = ? AND tool = 'test_send' ORDER BY created_at",
                 f"task:{p['task_id']}")

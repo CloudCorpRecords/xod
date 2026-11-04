@@ -95,6 +95,10 @@ def d2_found_once(r):
     runs = DL.runs(r["id"], 5)
     check("the same finding again is deduped, not re-delivered",
           len(background_messages()) == n + 1 and [x["delivery_state"] for x in runs[:3]] == ["deduped"] * 3)
+    # verbatim shape of live S7: the same restock, reported in other words on the next run
+    one_run(r["id"], "Checked again.\nWATCH: found\nShop A still lists the Trail Runner 2 at 74.99")
+    check("the same finding in other words is deduped too", len(background_messages()) == n + 1
+          and DL.runs(r["id"], 1)[0]["delivery_state"] == "deduped", DL.runs(r["id"], 1)[0]["delivery_state"])
     one_run(r["id"], "Even lower.\nWATCH: found\nTrail Runner 2 is 69.99 at Shop B")
     check("a different finding is delivered", len(background_messages()) == n + 2 and "69.99" in background_messages()[-1]["content"])
 
