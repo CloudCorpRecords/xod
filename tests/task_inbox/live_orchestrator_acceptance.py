@@ -26,6 +26,7 @@ ap.add_argument("--only", default="")
 ap.add_argument("--pidfile", default="")
 ap.add_argument("--restart-cmd", default="")
 ap.add_argument("--long-steps", type=int, default=8)
+ap.add_argument("--step-sleep", type=int, default=40)
 args = ap.parse_args()
 BASE, DB, WORK = args.base.rstrip("/"), Path(args.data) / "xod.db", Path(args.work)
 WORK.mkdir(parents=True, exist_ok=True)
@@ -223,10 +224,10 @@ def chat(question):
 
 
 def l4():
-    print(f"L4 responsiveness during a long task ({args.long_steps} steps of ~40 s)")
+    print(f"L4 responsiveness during a long task ({args.long_steps} steps of ~{args.step_sleep} s)")
     d = WORK / f"l4-{int(time.time())}"
     d.mkdir()
-    steps = "\n".join(f"{n}. Run the shell command: sleep 40 && echo step{n} >> {d}/log.txt"
+    steps = "\n".join(f"{n}. Run the shell command: sleep {args.step_sleep} && echo step{n} >> {d}/log.txt"
                       for n in range(1, args.long_steps + 1))
     req = f"Do these steps one at a time, one per step, in order:\n{steps}"
     t_start = time.time()
@@ -250,6 +251,7 @@ def l4():
     check("the long task completed normally", p["status"] == "done", p["status"])
     check("every step's effect happened exactly once, in order", log == [f"step{n}" for n in range(1, args.long_steps + 1)], str(log))
     print(f"     long task took {elapsed / 60:.1f} minutes")
+    check("the long task ran at least 10 minutes", elapsed >= 600, f"{elapsed / 60:.1f} min")
 
 
 tests = {"L1": l1, "L2": l2, "L3": l3, "L4": l4}
