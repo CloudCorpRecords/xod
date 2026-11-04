@@ -661,7 +661,11 @@ class EvidenceBoard:
             lines.append("* Other tool results:")
             for t in others[-6:]:
                 compact = {k: v for k, v in t["result"].items() if k not in ("raw", "html", "screenshot_uri")}
-                if str(t.get("tool", "")).startswith("mcp__"):
+                if t.get("tool") in ("tabs_register", "tabs_heartbeat", "tabs_mark_done", "tabs_list", "tabs_close_mine",
+                                     "tabs_sweep_now", "screen_capture_tab", "screen_capture_desktop"):
+                    from app.services import browser_ops
+                    lines.append(f"  - {t['tool']}: {browser_ops.summary(t['tool'], t['result'])}")
+                elif str(t.get("tool", "")).startswith("mcp__"):
                     # A connected app's list (places, messages, events…): all of it the answer can use, not the first two.
                     text = re.sub(r"\s*\n\s*", " ", str(compact.get("content") or json.dumps(compact, default=str)))
                     lines.append(f"  - {t['tool']}: {text[:3000]}")

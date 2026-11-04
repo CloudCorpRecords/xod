@@ -191,6 +191,26 @@ def main(repeat):
         two = {t["function"]["name"]: t["function"] for t in B.tool_definitions(["local", "remote"])}
         check("with two devices, a device argument", two["tabs_list"]["parameters"]["properties"]["device"]["enum"] == ["local", "remote"])
 
+        print("V14 shared-browser requests are routed to these tools")
+        cases = [("Open https://example.com in a new tab of the shared browser, registered as yours", True),
+                 ("Take a screenshot of that example.com tab and tell me what the page says.", True),
+                 ("which tabs are open and who owns them?", True), ("run the sweeper", True), ("close my tabs", True),
+                 ("open example.com and sign me up for the newsletter", False), ("search the web for the best tabs app", False),
+                 ("go to github.com/owner/repo and star it", False)]
+        bad = [q for q, want in cases if B.addressed(q) != want]
+        check("shared-browser requests recognized, web errands not", not bad, str(bad))
+        from app.agent.researcher import AgenticResearcher
+        r = AgenticResearcher.__new__(AgenticResearcher)
+        B.config_path().parent.mkdir(parents=True, exist_ok=True)
+        B.config_path().write_text(json.dumps({"device_runtime": {"cdp_port": 9}}))
+        B._native.update(at=time.time(), value=False)
+        check("no sandbox mission for a shared-browser request", r._mission_request(cases[0][0], {}) is None)
+        planned = {"plan_steps": [{"tools": ["browser_run_mission"], "tool_args": [{"goal": "x"}]}]}
+        check("not even when the planner picked one", r._mission_request(cases[0][0], planned) is None)
+        check("a web errand still runs as a mission", r._mission_request("open example.com and sign me up for the newsletter", planned) is not None)
+        check("an earlier step's target_id fills a later step's placeholder", "target_id" in AgenticResearcher._CARRY_KEYS)
+        B.config_path().unlink()
+
         chrome = Chrome()
         try:
             print("V3 where it applies")
@@ -307,6 +327,34 @@ def main(repeat):
             finally:
                 activity.origin.reset(tok)
             check("execute_tool runs it, owned by the calling task", r.get("success") and r.get("owner") == "xod-task-zzz", str(r)[:300])
+
+            print("V15 readable results, screenshots by name")
+            l = B.call_sync("tabs_list", {}, "task:any")
+            text = B.summary("tabs_list", {**l, "success": True})
+            check("the list reads in words, unregistered tabs included", "owned by nobody" in text and "stray" in text
+                  and "xod-task-ggg" in text, text[:400])
+            q1 = B.call_sync("tabs_register", {"url": "data:text/html,<title>Quarterly Numbers</title>q", "task": "q"}, "task:qqq")
+            s1 = asyncio.run(B.call("screen_capture_tab", {"target_id": "the quarterly numbers tab"}, "task:any"))
+            check("named by its title, and it says which tab", s1.get("success") and s1.get("target_id") == q1["target_id"]
+                  and "resolved" in s1, str(s1)[:300])
+            from app.agent import tools as _tools
+            from app.services import activity as _activity
+            _tok = _activity.origin.set("task:qqq")
+            try:   # through the executor, as the agent calls it (its placeholder guard runs first)
+                s2 = asyncio.run(_tools.execute_tool("screen_capture_tab", {"target_id": "<target_id from step 1>"}, reviewed=True))
+            finally:
+                _activity.origin.reset(_tok)
+            check("a plan's placeholder: the lane's one tab", s2.get("success") and s2.get("target_id") == q1["target_id"], str(s2)[:300])
+            s3 = asyncio.run(B.call("screen_capture_tab", {"target_id": "<target_id from step 1>"}, "task:nobody"))
+            check("no single match: the tabs come back, nothing is guessed", not s3.get("success") and s3.get("tabs"), str(s3)[:300])
+            check("the screenshot result says what it shows, or that nothing can read it", s1.get("screen"))
+            q2 = B.call_sync("tabs_register", {"url": "data:text/html,<title>Quarterly Numbers</title>q2", "task": "q2"}, "task:qq2")
+            s4 = asyncio.run(B.call("screen_capture_tab", {"target_id": "my quarterly numbers tab"}, "task:qq2"))
+            check("two tabs match: the caller's own one", s4.get("success") and s4.get("target_id") == q2["target_id"], str(s4)[:300])
+            s5 = asyncio.run(B.call("screen_capture_tab", {"target_id": "the quarterly numbers tab"}, "task:any"))
+            check("two match and neither is the caller's: the tabs come back", not s5.get("success") and s5.get("tabs"), str(s5)[:300])
+            m = B.call_sync("tabs_mark_done", {"target_id": "the quarterly numbers tab"}, "task:qqq")
+            check("a change never resolves names (mark done by a title marks nothing)", m.get("marked_done") == 0, str(m)[:300])
 
             print("V13 remote, over (stand-in) SSH through the module's wrapper")
             dev = TMP / f"device-{n}"

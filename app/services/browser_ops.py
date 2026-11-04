@@ -406,8 +406,77 @@ def call_sync(name: str, args: Dict[str, Any], origin: str) -> Dict[str, Any]:
     return out
 
 
+def resolve_shot_target(args: Dict[str, Any], origin: str) -> Optional[Dict[str, Any]]:
+    """screen_capture_tab only (it reads, never changes anything): a target_id that is not a live tab id, such as
+    "the example.com tab" or a plan's "<target_id from step 1>", is matched against the live tabs' URLs and
+    titles. Exactly one match is used, and the result says so; none, or several, is answered with the
+    candidates. Returns a refusal, or None after setting args["target_id"]."""
+    given = str(args.get("target_id") or "")
+    listing = run_cli(args.get("device") or devices()[0], ["list"])
+    if not listing.get("ok"):
+        return None
+    rows = [{"target_id": r["target_id"], "url": r.get("live_url", ""), "title": r.get("live_title", ""), "owner": r.get("owner")}
+            for r in listing.get("registered", []) if r.get("alive")] + \
+           [{**u, "owner": None} for u in listing.get("unregistered_pages", [])]
+    if any(r["target_id"] == given for r in rows):
+        return None
+    words = [w for w in re.findall(r"[a-z0-9][a-z0-9.-]{2,}", given.lower())
+             if w not in {"target", "target_id", "tab", "the", "from", "step", "that", "this", "id"}]
+    hits = [r for r in rows if words and any(w in (r["url"] + " " + r["title"]).lower() for w in words)]
+    mine = [r for r in rows if r["owner"] == lane_owner(origin)]
+    if not hits:   # a bare placeholder: the lane's own single live tab is the one it means
+        hits = mine if len(mine) == 1 else []
+    elif len(hits) > 1:   # several match: the caller's own one, if exactly one of them is its
+        own = [r for r in hits if r in mine]
+        hits = own if len(own) == 1 else hits
+    if len(hits) == 1:
+        args["target_id"] = hits[0]["target_id"]
+        args["_resolved_from"] = given
+        return None
+    return {"success": False, "error": f"'{given}' is not a tab id, and it does not name exactly one tab. Use a target_id "
+                                       "from this list.", "tabs": rows}
+
+
 async def call(name: str, args: Dict[str, Any], origin: str) -> Dict[str, Any]:
-    return await asyncio.to_thread(call_sync, name, args, origin)
+    args = dict(args or {})
+    if name == "screen_capture_tab" and args.get("target_id") and devices():
+        refused = await asyncio.to_thread(resolve_shot_target, args, origin)
+        if refused:
+            return refused
+    out = await asyncio.to_thread(call_sync, name, {k: v for k, v in args.items() if k != "_resolved_from"}, origin)
+    if args.get("_resolved_from"):
+        out["resolved"] = f"'{args['_resolved_from']}' is tab {args['target_id']} ({out.get('title') or out.get('url') or ''})"
+    if name.startswith("screen_capture") and out.get("success"):
+        img = out.get("local_path") or out.get("path")
+        vm, desc = None, None
+        try:   # as desktop_look does: the vision model reads the image, so any chat model can use it
+            from app.services import vision
+            vm = await vision.model()
+            desc = await vision.describe(img, "What this browser tab or screen shows: the page, its headings and text, "
+                                              "and anything in front of it.") if img and vm else None
+        except Exception:
+            desc = None
+        out["screen"] = (desc or "")[:1500] or (
+            f"The vision model ({vm}) could not read the image; it is saved at the path above." if vm
+            else "No vision model is set up to read the image; it is saved at the path above.")
+    return out
+
+
+def summary(name: str, result: Dict[str, Any]) -> str:
+    """A browser-ops result as the answer-writer reads it: complete, and in words."""
+    if not isinstance(result, dict):
+        return str(result)[:1500]
+    if not result.get("success", result.get("ok")):
+        return f"failed: {result.get('error')}" + (f" Tabs: {json.dumps(result.get('tabs'))[:1200]}" if result.get("tabs") else "")
+    if name == "tabs_list":
+        reg = [f"{r.get('live_title') or '(no title)'} <{r.get('live_url')}> id {r['target_id']}, owned by {r.get('owner')} "
+               f"for '{r.get('task')}'{', done' if r.get('done') else ''}{'' if r.get('alive') else ', gone'}"
+               for r in result.get("registered", [])]
+        unreg = [f"{u.get('title') or '(no title)'} <{u.get('url')}> id {u['target_id']}, owned by nobody (unregistered)"
+                 for u in result.get("unregistered_pages", [])]
+        return (f"{result.get('page_tab_count')} tab(s) on {result.get('device')}. " + " | ".join(reg + unreg))[:3000]
+    keep = {k: v for k, v in result.items() if k not in ("success", "ok")}
+    return json.dumps(keep, default=str)[:2500]
 
 
 _WANTS_RE = re.compile(r"\b(tabs?|browser|chrome|chromium|screenshots?|screen ?shots?|screen|desktop|web ?page|page|sweep|"
@@ -418,13 +487,25 @@ def wanted(query: str) -> bool:
     return bool(_WANTS_RE.search(query or ""))
 
 
+# A request about the shared browser itself: its tabs and their owners, not a web errand.
+_ADDRESSED_RE = re.compile(r"\bshared (browser|chrome|chromium)\b|\bbrowser-ops\b|\b(sweep(er)?|heartbeat)\b"
+                           r"|\btabs?\b[^?!\n]{0,60}\b(own|owns|owned|owner|owners|whose|registered|register|claim|mine|my own|lanes?)\b"
+                           r"|\b(own|owns|owned|owner|owners|whose|registered|register|claim|my own|lanes?)\b[^?!\n]{0,60}\btabs?\b"
+                           r"|\bclose (only )?my (own )?tabs\b|\bscreenshot (of )?(the|that|this|a) [^?!\n]{0,40}\btab\b", re.I)
+
+
+def addressed(query: str) -> bool:
+    return bool(_ADDRESSED_RE.search(query or ""))
+
+
 def planner_lines() -> List[str]:
     """The tools as the planner's list shows them (the planner only plans with tools named in its prompt)."""
     devs = devices()
     if not devs:
         return []
     lines = [f"7. Shared browser on {' and '.join(devs)} (browser-ops; register every tab you open, look before you act, "
-             "close only your own):"]
+             "close only your own). For the shared browser and its tabs use these, not browser_* (those drive Xod's own "
+             "separate browser). A later step can use an earlier step's target_id:"]
     for t in tool_definitions(devs):
         f = t["function"]
         args = {k: "..." for k in f["parameters"].get("properties", {}) if k != "owner"}

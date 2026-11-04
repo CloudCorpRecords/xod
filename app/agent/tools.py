@@ -3266,7 +3266,9 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     _obs_t0 = time.time()          # the tool call's wall clock, for the observability step log
     from app.services import activity, sentinel
     arguments = _expand_path_args(_alias_args(name, arguments))
-    bad = placeholder_argument(arguments)
+    # screen_capture_tab only reads, and its adapter resolves a tab named by URL, title or a plan's placeholder
+    # against the live tabs, or answers with the tabs (services/browser_ops.py resolve_shot_target).
+    bad = None if name == "screen_capture_tab" else placeholder_argument(arguments)
     if bad:
         return placeholder_error(name, bad[0], bad[1])
     if name == "computer_run_applescript":
