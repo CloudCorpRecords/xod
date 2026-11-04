@@ -522,6 +522,16 @@ def _describe_saved_login(url: str) -> str:
     return f"yes (username {info['username']})" if info else "none"
 
 
+# What makes a mission more than reading: anything typed, filled, chosen, uploaded or signed into.
+_WRITE_ACTIONS = {"type", "fill", "fill_form", "select", "choose", "check", "uncheck", "upload", "upload_resume", "log_in",
+                  "submit", "press_key"}
+
+
+def _read_only_mission(allow_submit: bool, steps: List[Dict[str, Any]]) -> bool:
+    """True while a mission has only read: no submit allowed and nothing typed, filled or signed into yet."""
+    return not allow_submit and not any(s.get("action") in _WRITE_ACTIONS and s.get("status") == "success" for s in steps)
+
+
 def _looks_like_search_box(element: Optional[Dict[str, Any]]) -> bool:
     """Search inputs are the only fields where pressing Enter is safe (it runs a search, sends nothing)."""
     if not element:
@@ -3898,6 +3908,8 @@ class BrowserSandboxService:
         profile = load_user_profile()
         sites_seen: List[str] = []
         walled_sites: List[str] = []           # sites that answered with a bot-check / block page
+        check_skipped: List[str] = []          # sites whose bot check a read-only mission skipped instead of waiting
+        stuck_on_check = 0
         try:
             from app.services.llm import llm_service as _llm
             _ep = _llm.get_endpoint_info()
@@ -3984,16 +3996,37 @@ class BrowserSandboxService:
                 captcha = {}
             if captcha.get("has_captcha"):
                 c_type = captcha.get("type") or "verification"
-                record("waiting_for_human", True, f"Site is showing a {c_type} check. Waiting for you to clear it with Take Over.", c_type, status="waiting")
-                cleared = await self._wait_for_human_check(MISSION_HUMAN_WAIT_SEC)
-                if not cleared:
-                    return await finish(
-                        "blocked",
-                        f"I got stuck at a {c_type} check on {_page_name(self.current_title, self.current_url)} and couldn't continue. "
-                        "Open the browser card, press **Take Over**, clear the check, then ask me to continue."
-                    )
-                record("human_cleared_check", True, "Check cleared, continuing.")
-                continue
+                # Only reading (nothing typed or filled, no submit allowed): a bot check is a source that can't be
+                # read, not a reason to stop for the person. Skip the site and get it elsewhere (live 2026-11-04: a
+                # research task stopped at a reCAPTCHA while re-checking a fact it already had). Never solved.
+                if _read_only_mission(allow_submit, mission_record["steps"]):
+                    here = credential_vault.site_key(self.current_url) or self.current_url
+                    stuck_on_check += 1
+                    if here not in check_skipped:
+                        check_skipped.append(here)
+                        record("skipped_bot_check", False, f"{here} showed a {c_type} check. I'm only reading, so I skipped "
+                               "that site instead of stopping for you.", here, status="failed")
+                        history.append(f"NOTE: {here} is showing a {c_type} check. Never try to solve or get past it. Go to "
+                                       "another site for what's still needed, or finish with what you have and say plainly "
+                                       f"that {here} could not be read.")
+                    elif stuck_on_check >= 3:
+                        return await finish(
+                            "incomplete",
+                            f"I couldn't read {', '.join(check_skipped)}: each showed a {c_type} check, and I don't get past "
+                            "those. Nothing was filled in or submitted. What I found elsewhere is above.")
+                else:
+                    record("waiting_for_human", True, f"Site is showing a {c_type} check. Waiting for you to clear it with Take Over.", c_type, status="waiting")
+                    cleared = await self._wait_for_human_check(MISSION_HUMAN_WAIT_SEC)
+                    if not cleared:
+                        return await finish(
+                            "blocked",
+                            f"I got stuck at a {c_type} check on {_page_name(self.current_title, self.current_url)} and couldn't continue. "
+                            "Open the browser card, press **Take Over**, clear the check, then ask me to continue."
+                        )
+                    record("human_cleared_check", True, "Check cleared, continuing.")
+                    continue
+            else:
+                stuck_on_check = 0
 
             # --- Look at the page -------------------------------------------------------
             site = credential_vault.site_key(self.current_url)
@@ -4007,7 +4040,8 @@ class BrowserSandboxService:
             page_key = (self.current_url, len(page_md))
             if page_key != last_page_key:
                 page_offset, last_page_key = 0, page_key
-            walled = _bot_wall(self.current_title, page_md)
+            # A page showing a bot check is a wall too: nothing on it is pressed or filled (the guard below).
+            walled = _bot_wall(self.current_title, page_md) or bool(captcha.get("has_captcha"))
             if walled and site not in walled_sites:
                 walled_sites.append(site)
                 record("blocked_site", False, f"{site or 'This site'} answered with a bot-check page; not trying to get past it.", site,
