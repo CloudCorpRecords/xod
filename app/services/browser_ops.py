@@ -453,18 +453,47 @@ async def call(name: str, args: Dict[str, Any], origin: str) -> Dict[str, Any]:
         out["resolved"] = f"'{args['_resolved_from']}' is tab {args['target_id']} ({out.get('title') or out.get('url') or ''})"
     if name.startswith("screen_capture") and out.get("success"):
         img = out.get("local_path") or out.get("path")
-        vm, desc = None, None
-        try:   # as desktop_look does: the vision model reads the image, so any chat model can use it
-            from app.services import vision
-            vm = await vision.model()
-            desc = await vision.describe(img, "What this browser tab or screen shows: the page, its headings and text, "
-                                              "and anything in front of it.") if img and vm else None
-        except Exception:
-            desc = None
-        out["screen"] = (desc or "")[:1500] or (
-            f"The vision model ({vm}) could not read the image; it is saved at the path above." if vm
-            else "No vision model is set up to read the image; it is saved at the path above.")
+        out["screen"] = await read_screenshot(img, "What this browser tab or screen shows: the page, its headings and "
+                                                   "text (read it out exactly), and anything in front of it.")
     return out
+
+
+CLOUD_SEEING = ("openai", "anthropic", "gemini", "openrouter")
+
+
+async def read_screenshot(img: Optional[str], focus: str) -> str:
+    """The screenshot in words, so any chat model can use it: the local vision model first (as desktop_look
+    does), else the main model when it is a cloud model that reads images (live 2026-11-04: the local
+    moondream failed on every page capture, "token repeat limit reached")."""
+    if not img or not os.path.exists(img):
+        return "The image is not on this computer, so it could not be read."
+    vm = None
+    try:
+        from app.services import vision
+        vm = await vision.model()
+        desc = await vision.describe(img, focus) if vm else None
+        if desc:
+            return desc[:1500]
+    except Exception:
+        pass
+    try:
+        from app.services.llm import llm_service
+        if llm_service.get_endpoint_info().get("provider") in CLOUD_SEEING and os.path.getsize(img) < 15_000_000:
+            import base64
+            data = base64.b64encode(Path(img).read_bytes()).decode()
+            msg = await llm_service.chat_completion(
+                [{"role": "user", "content": [
+                    {"type": "text", "text": "Describe this screenshot precisely and factually. Read out visible text exactly. "
+                                             "Don't guess about what isn't visible. " + focus},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}}]}],
+                temperature=0.1, max_tokens=900)
+            text = (msg.get("content") or "").strip()
+            if text:
+                return text[:1500]
+    except Exception as e:
+        logger.info(f"browser-ops: the main model could not read the screenshot: {e}")
+    return (f"The vision model ({vm}) could not read the image; it is saved at the path above." if vm
+            else "No model here can read the image; it is saved at the path above.")
 
 
 def summary(name: str, result: Dict[str, Any]) -> str:

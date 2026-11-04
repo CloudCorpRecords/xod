@@ -370,6 +370,28 @@ def main(repeat):
             chrome.new_tab_in(lone4, "data:text/html,<title>m4</title>m")
             B.sweep_all()
 
+            print("V17 screenshots read in words")
+            from app.services import vision as _vision
+            from app.services.llm import llm_service as _llm
+            real = (_vision.model, _vision.describe, _llm.get_endpoint_info, _llm.chat_completion)
+            png = str(s1.get("path"))
+            async def _vm(): return "moondream:latest"
+            async def _fail(*a, **k): return None
+            async def _main(messages, **k):
+                assert messages[0]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+                return {"content": "A page titled Quarterly Numbers."}
+            try:
+                _vision.model, _vision.describe = _vm, _fail
+                _llm.get_endpoint_info = lambda: {"provider": "openai", "model": "x"}
+                _llm.chat_completion = _main
+                t = asyncio.run(B.read_screenshot(png, "what it shows"))
+                check("local vision fails: the cloud main model reads it", t == "A page titled Quarterly Numbers.", t)
+                _llm.get_endpoint_info = lambda: {"provider": "ollama", "model": "x"}
+                t = asyncio.run(B.read_screenshot(png, "what it shows"))
+                check("neither can: it says so, naming the vision model", "moondream" in t and "could not read" in t, t)
+            finally:
+                _vision.model, _vision.describe, _llm.get_endpoint_info, _llm.chat_completion = real
+
             print("V13 remote, over (stand-in) SSH through the module's wrapper")
             dev = TMP / f"device-{n}"
             dev.mkdir()
