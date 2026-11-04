@@ -524,6 +524,11 @@ async def a14_live_reports(q):
         "Step 2 completed successfully after 40 seconds, with exit code 0 and no output. I waited for the existing background job; I did not run it again.": False,
         "Checked the file: the line is there, so I didn't rerun the job again.": False,
         "I did not run the command.": True,
+        # verbatim from live S9 / S5, 2026-11-04
+        "I couldn\u2019t send the text because the test_send tool isn\u2019t available. The URL displays only `{}`; no text was sent.": True,
+        "**Could not read:** The status line, because the file was not found.": True,
+        "Sent the message; the inbox shows it once.": False,
+        "I couldn't find any errors in the log; all 12 checks passed.": False,
         "Step 3\u2019s command exited successfully. A \u201cStep 3\u201d background job was also reported as running; its current status is unclear.": True,
     }
     for text, unfinished in cases.items():
