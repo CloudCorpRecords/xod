@@ -275,7 +275,7 @@ async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
     try:
         while not run.done():
             await asyncio.wait({run}, timeout=0.5)
-            if not run.done() and any(s["urgent"] for s in _queued_steers(wid)):
+            if not run.done() and any(s["urgent"] for s in await asyncio.to_thread(_queued_steers, wid)):
                 run.cancel()
                 try:
                     await run
@@ -320,7 +320,7 @@ async def _run(wid: str, brief: str, env: str, needs: Optional[List[str]] = None
             state = await asyncio.wait_for(_turn(wid, prompt, sink), timeout=max(1.0, deadline - time.time()))
             for need in needs or []:
                 resources.acquire(need, holder)          # beat the heartbeat between turns
-            pending = _queued_steers(wid)
+            pending = await asyncio.to_thread(_queued_steers, wid)
             cancel = next((s for s in pending if s["kind"] == "cancel"), None)
             if cancel:
                 O._mark_steer(cancel["id"], "applied", f"stopped after {turns} turn(s)")
