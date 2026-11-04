@@ -848,6 +848,8 @@ async def _start_task_worker():
         asyncio.create_task(autoconnect.loop())  # keeps finding the AI on this computer and keeps it working
     from app.services import local_servers
     asyncio.create_task(local_servers.idle_loop())   # stops the built-in engine after a while unused
+    from app.services import browser_ops
+    browser_ops.start()                     # the browser-ops sweeper's schedule, where it applies (15 min)
     from app.services import phone
     phone.start()                           # the linked phone (Telegram), if there is one
     if not run_mode.skip("partner_watchdog"):

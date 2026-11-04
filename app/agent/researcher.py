@@ -1995,7 +1995,7 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
 
     # Values a plan step can't know in advance (they come from earlier steps' results).
     _PLACEHOLDER_RE = re.compile(r"replace[_ ]?with|from[_ ]step|<[^>]+>|\{\{.*\}\}|^\$\w+$|previous[_ ]step|placeholder", re.I)
-    _CARRY_KEYS = ("job_id", "pid", "output_path", "path", "filepath", "url", "port", "session_id", "tab_id")
+    _CARRY_KEYS = ("job_id", "pid", "output_path", "path", "filepath", "url", "port", "session_id", "tab_id", "target_id")
 
     _ABOUT_SELF_RE = re.compile(
         r"\b(what (can|can't|cannot|can not) you (do|see|use|access|connect to)\s*(\?|$|\.|for me\b|here\b|now\b|right now|on (this|my)\b|and\b)|"
@@ -2333,6 +2333,16 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         from app.agent import worker as _worker
         if _worker.wants_phone(query):
             return None
+
+        # A request about the shared browser (its tabs, their owners, registering, sweeping) is for the
+        # browser-ops tools, not Xod's own sandbox browser (live 2026-11-04: "open example.com in a new tab
+        # of the shared browser, registered as yours" became a sandbox mission that could not see any tabs).
+        try:
+            from app.services import browser_ops as _bops
+            if _bops.addressed(query) and _bops.available():
+                return None
+        except Exception:
+            pass
 
         planned = [
             (t, (s.get("tool_args") or [{}])[i] if i < len(s.get("tool_args") or []) else {})
@@ -2770,6 +2780,9 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             if mcp_tools:
                 extra.append("6. Connected apps (MCP; actions wait for the user's approval):")
                 extra += [f"   - {t['name']}: {t['description'][:110]}" for t in mcp_tools]
+            from app.services import browser_ops as _bops
+            if _bops.wanted(query):
+                extra += _bops.planner_lines()      # empty unless browser-ops applies here
             deliberator_system_prompt = deliberator_system_prompt.replace("\nCONTEXT:", "\n" + "\n".join(extra) + "\n\nCONTEXT:", 1)
         except Exception as e:
             logger.debug(f"planner tool list not adjusted: {e}")

@@ -3009,6 +3009,15 @@ def _localize_tools() -> None:
 
 _localize_tools()
 
+
+# browser-ops (app/vendor/browser_ops, adapter services/browser_ops.py): its tools.json surface, registered
+# once so calls are checked like any tool; offered to the model only where it applies (select_tools_for_query).
+try:
+    from app.services import browser_ops as _browser_ops
+    TOOL_DEFINITIONS.extend(_browser_ops.tool_definitions(devs=[]))
+except Exception as _e:
+    logger.warning(f"browser-ops tools not registered: {_e}")
+
 def compact_startup(s: Dict[str, Any]) -> Dict[str, Any]:
     """Compacts startup dictionary to reduce token consumption for local LLMs."""
     if not isinstance(s, dict):
@@ -3262,7 +3271,9 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     _obs_t0 = time.time()          # the tool call's wall clock, for the observability step log
     from app.services import activity, sentinel
     arguments = _expand_path_args(_alias_args(name, arguments))
-    bad = placeholder_argument(arguments)
+    # screen_capture_tab only reads, and its adapter resolves a tab named by URL, title or a plan's placeholder
+    # against the live tabs, or answers with the tabs (services/browser_ops.py resolve_shot_target).
+    bad = None if name == "screen_capture_tab" else placeholder_argument(arguments)
     if bad:
         return placeholder_error(name, bad[0], bad[1])
     if name == "computer_run_applescript":
@@ -3917,6 +3928,10 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         from app.services import xod_network
         a = arguments or {}
         return await asyncio.to_thread(xod_network.accept, a.get("ref") or "", a.get("_grant") or "")
+    if name in ("tabs_register", "tabs_heartbeat", "tabs_mark_done", "tabs_list", "tabs_close_mine", "tabs_sweep_now",
+                "screen_capture_tab", "screen_capture_desktop"):
+        from app.services import activity as _act, browser_ops
+        return await browser_ops.call(name, dict(arguments or {}), str(_act.origin.get() or "chat"))
     if name == "phone":
         from app.services import phone_mcp
         a = dict(arguments or {})
@@ -5048,6 +5063,12 @@ def select_tools_for_query(query: str, persona: str = "ultimate_researcher", max
         tools = tools + [t for t in TOOL_DEFINITIONS if t["function"]["name"] in ("agent_mail_setup", "agent_mail_send", "agent_mail_inbox")]
     if any(k in (query or "").lower() for k in ("report", "pdf", "share", "send this", "write up", "write-up")):
         tools = tools + [t for t in TOOL_DEFINITIONS if t["function"]["name"] == "xod_make_report"]
+    try:   # browser-ops: when this computer has no screen tools of its own, or a remote device is configured
+        from app.services import browser_ops as _bops
+        if _bops.wanted(query) and _bops.available():
+            tools = [t for t in tools if t["function"]["name"] not in _bops.TOOL_NAMES] + _bops.tool_definitions()
+    except Exception as e:
+        logger.warning(f"browser-ops tools not offered: {e}")
     from app.services import packs
     tools = [t for t in tools if packs.tool_allowed(t["function"]["name"])]   # add-ons that are off stay hidden
     try:

@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""
+bops: reference host-side wrapper for the browser-ops module.
+
+Runs on the agent host (Tree's VM today; an Xod host tomorrow). It forwards
+each browser-ops subcommand to the device over SSH, prints the device's JSON
+result, and for screenshot commands also downloads the PNG and adds a
+"local_path" field so the calling agent can view the image.
+
+Usage:
+  bops status
+  bops open --owner <lane> --task <text> --url <url>
+  bops register --owner <lane> --task <text> --target <target_id>
+  bops heartbeat --owner <lane> [--target <id>]
+  bops done --owner <lane> [--target <id>]
+  bops list
+  bops close-mine --owner <lane>
+  bops sweep
+  bops shot-tab --target <target_id>
+  bops shot-desktop
+
+Remote connection settings come from the "remote" block of
+~/workspace/browser-ops/config.json if present, else config.example.json.
+Any host may ignore this wrapper and use its own transport; the contract is
+the device-side CLI (src/browser_ops.py) and its JSON in and out.
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+MODULE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOCAL_SHOTS = os.path.join(MODULE_DIR, "screenshots")
+
+
+def load_remote():
+    for name in ("config.json", "config.example.json"):
+        path = os.path.join(MODULE_DIR, name)
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if "remote" in data:
+                return data["remote"]
+    raise SystemExit("no remote config found in " + MODULE_DIR)
+
+
+def expand(opt):
+    home = os.path.expanduser("~")
+    if opt.startswith("~"):
+        opt = home + opt[1:]
+    return opt.replace("~/", home + "/")
+
+
+def ssh_base(remote):
+    opts = [expand(o) for o in remote.get("ssh_options", [])]
+    return opts, remote["ssh_user_host"]
+
+
+def quote(arg):
+    if any(c in arg for c in ' \t"'):
+        return '"' + arg.replace('"', "'") + '"'
+    return arg
+
+
+def run_remote(remote, argv):
+    opts, host = ssh_base(remote)
+    device_py = remote.get("device_dir", "") + "\\browser_ops.py"
+    remote_cmd = " ".join([remote.get("python", "python"), device_py] + [quote(a) for a in argv])
+    proc = subprocess.run(["ssh"] + opts + [host, remote_cmd],
+                          capture_output=True, text=True, timeout=120)
+    out = proc.stdout.strip()
+    if not out:
+        print(json.dumps({"ok": False, "error": "empty response from device",
+                          "stderr": proc.stderr.strip()[:400]}))
+        return None, 1
+    try:
+        return json.loads(out.splitlines()[-1]), proc.returncode
+    except json.JSONDecodeError:
+        print(out)
+        return None, proc.returncode
+
+
+def download(remote, device_path):
+    opts, host = ssh_base(remote)
+    os.makedirs(LOCAL_SHOTS, exist_ok=True)
+    base = device_path.replace("\\", "/").rsplit("/", 1)[-1]
+    remote_spec = "%s:%s" % (host, device_path.replace("\\", "/"))
+    dest = os.path.join(LOCAL_SHOTS, base)
+    proc = subprocess.run(["scp"] + opts + [remote_spec, dest],
+                          capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0:
+        return None
+    return dest
+
+
+def main(argv):
+    if not argv:
+        print(__doc__)
+        return 2
+    remote = load_remote()
+    result, code = run_remote(remote, argv)
+    if result is None:
+        return code
+    if argv[0] in ("shot-tab", "shot-desktop") and result.get("ok") and result.get("path"):
+        local = download(remote, result["path"])
+        if local:
+            result["local_path"] = local
+        else:
+            result["download_error"] = "scp of the screenshot failed"
+    print(json.dumps(result))
+    return 0 if result.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

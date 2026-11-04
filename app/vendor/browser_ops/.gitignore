@@ -1,0 +1,5 @@
+screenshots/
+registry.json
+config.json
+sweep.log
+__pycache__/
