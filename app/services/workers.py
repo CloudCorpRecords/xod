@@ -527,8 +527,17 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
         state = w.get("shown_state") or w.get("state")
         outcome = r.get("outcome") or state
         why_failed = None
+        meta = {"xod_self_check", "memory_search", "memory_list", "notebook_search", None}
+        # Interchangeable sources count as one: a search provider that failed is covered by one that answered.
+        group = lambda t: "search" if t in ("web_search", "tavily_search", "you_search") else t
+        ok_groups = {group(e.get("tool")) for e in r.get("evidence") or []}
+        unread = [f for f in r.get("failures") or [] if f.get("tool") not in meta and group(f.get("tool")) not in ok_groups]
         if outcome == "done" and r.get("failures") and not r.get("evidence"):
             outcome = "failed"     # every source it tried failed: its "answer" rests on nothing
+        elif outcome == "done" and unread:
+            # A source it tried never answered (live S5: a missing file's worker still "reported"). An unread
+            # source is reported as unread, never as an answer (spec ladder, Tier 4).
+            outcome, why_failed = "failed", f"{unread[0]['tool']} failed and never succeeded: {unread[0]['summary'][:200]}"
         elif outcome == "done":
             # A worker whose own report says it could not do the job is a failed check, however
             # politely it says so (live S5: "Could not read: the status line, because the file was not found").
