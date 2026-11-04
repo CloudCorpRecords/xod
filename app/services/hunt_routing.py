@@ -87,6 +87,18 @@ _PHYSICAL_RE = re.compile(r"\b(?:phone|iphone|android|airpods|keys|wallet)\b", r
 _FILE_NOUN_RE = re.compile(r"\b(?:files?|folders?|directory|pdf|documents?)\b", re.I)
 
 
+_ABS_PATH_RE = re.compile(r"(?:~|/)[^\s\"'<>|`]+")
+
+
+def _names_existing_file(text: str) -> bool:
+    import os
+    for m in _ABS_PATH_RE.finditer(text or ""):
+        p = os.path.expanduser(m.group(0).rstrip(".,;:)`'\""))
+        if len(p) > 3 and os.path.isfile(p):
+            return True
+    return False
+
+
 def is_find_intent(text: str) -> bool:
     """True when the request is a hunt for the person's own file or folder.
 
@@ -104,6 +116,11 @@ def is_find_intent(text: str) -> bool:
     if _WEB_ASK_RE.search(q):
         return False
     if _CHANGE_RE.search(q):
+        return False
+    if _names_existing_file(q):
+        # A file named outright by its full path is read, not hunted (this lane's own contract above). Live
+        # orchestrator S10: "Summarize the file /abs/report-7569.txt" was routed to locate_files and came
+        # back "two close matches, too close to call" because similar names sat in the same folder.
         return False
     if _PHYSICAL_RE.search(q) and not _FILE_NOUN_RE.search(q):
         return False
