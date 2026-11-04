@@ -490,6 +490,20 @@ async def a13_unknown_not_redone(q):
     check("the verifying retry completed the step", t["status"] == "done" and items[0]["attempts"] == 2, f"{t['status']} {items[0]}")
 
 
+async def a14_live_reports(q):
+    print("A14 real reports from live runs are judged correctly")
+    step = "Run the shell command: sleep 40 && echo step8 >> /tmp/log.txt"
+    cases = {   # verbatim from live L3/L4 runs on the real model, 2026-11-04
+        "Step 8 was still running when last checked. I can\u2019t confirm its exit code or whether it appended `step8` because I no longer have shell or file access.": True,
+        "No background job is currently listed, so I can\u2019t tell whether the earlier command finished successfully.": True,
+        "Started the job, but I can't confirm that it finished.": True,
+        "Step 7 completed successfully in 40 seconds with exit code 0 and no output. I verified that `step7` was appended to the log.": False,
+    }
+    for text, unfinished in cases.items():
+        got = O._self_report_problem(step, text) is not None
+        check(f"{'not completed' if unfinished else 'completed'}: {text[:50]}", got == unfinished)
+
+
 async def main(repeat):
     for r in range(repeat):
         print(f"=== run {r + 1}/{repeat}")
@@ -508,6 +522,7 @@ async def main(repeat):
         await a11_approval(q)
         await a12_hedged_report(q)
         await a13_unknown_not_redone(q)
+        await a14_live_reports(q)
         q._worker.cancel()
         q._watchdog.cancel()
     failed = [n for n, ok in results if not ok]
