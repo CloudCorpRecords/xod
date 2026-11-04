@@ -945,6 +945,20 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         else:
             yield {"type": "status", "content": "Writing the answer…"}
 
+        # The answer is written from what this turn's background jobs observably did, not from a check
+        # seconds after they started (agent/turn_jobs.py).
+        try:
+            from app.agent import turn_jobs
+            _ids = turn_jobs.started_ids(getattr(evidence_board, "tool_audit_trail", []))
+            if _ids:
+                async for _ev in turn_jobs.settle(_ids):
+                    if _ev["type"] == "status":
+                        yield _ev
+                    else:
+                        evidence_board.update_from_tool("computer_check_job", {"job_id": _ev["job_id"]}, _ev["result"])
+        except Exception as e:
+            logger.warning(f"turn jobs: {e}")
+
         stats = evidence_board.get_stats()
         # Only compute and emit a formal M&A scorecard if verified financial/business metrics were uncovered
         has_real_financials = (
