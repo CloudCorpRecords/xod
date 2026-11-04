@@ -545,6 +545,24 @@ async def list_workers_api(parent: Optional[str] = None):
     return {"workers": workers.list_workers(parent)}
 
 
+class WorkerSteerRequest(BaseModel):
+    body: str = ""
+    now: bool = False
+    kind: str = "steer"
+
+
+@app.post("/api/workers/{worker_id}/steer")
+async def steer_worker(worker_id: str, req: WorkerSteerRequest):
+    from app.services import workers
+    return workers.steer(worker_id, req.body, now=req.now, source="user", kind=req.kind)
+
+
+@app.get("/api/resources")
+async def resources_status():
+    from app.services import resources
+    return {"resources": resources.status()}
+
+
 @app.get("/api/tasks/{task_id}/plan")
 async def task_plan(task_id: str):
     from app.services import orchestrator
@@ -726,6 +744,7 @@ async def _start_task_worker():
     task_queue.start()
     from app.services import workers as _workers
     _workers.mark_orphans_interrupted()     # a worker the last process was running is not running now
+    _workers.start_watchdog()               # flags quiet workers stalled with their true last activity
     doctor.start()
     from app.services import missions
     missions.start()

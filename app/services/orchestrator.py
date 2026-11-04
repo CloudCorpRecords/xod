@@ -128,8 +128,17 @@ def _item(text: Any, origin: str = "plan") -> Dict[str, Any]:
 
 def public_plan(task_id: str) -> Dict[str, Any]:
     items, version, instructions = load_plan(task_id)
-    return {"task_id": task_id, "version": version, "items": items, "instructions": instructions,
-            "inbox": inbox(task_id)}
+    out = {"task_id": task_id, "version": version, "items": items, "instructions": instructions,
+           "inbox": inbox(task_id)}
+    try:   # observed worker state: running vs quiet vs stalled, with the true last-activity time
+        from app.services import workers
+        crds = workers.list_workers(task_id)
+        out["workers"] = [{k: w.get(k) for k in ("id", "role", "shown_state", "last_activity_at", "last_activity",
+                                                 "stalled_reason", "parent_id")}
+                          for c in crds for w in [c] + workers.list_workers(c["id"])]
+    except Exception:
+        pass
+    return out
 
 
 def inbox(task_id: str, state: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -146,7 +155,7 @@ def inbox(task_id: str, state: Optional[str] = None) -> List[Dict[str, Any]]:
 
 def _mark_steer(steer_id: str, state: str, note: str) -> None:
     c = _conn()
-    c.execute("UPDATE steer_inbox SET state = ?, applied_at = ?, applied_note = ? WHERE id = ? AND state = 'queued'",
+    c.execute("UPDATE steer_inbox SET state = ?, applied_at = ?, applied_note = ? WHERE id = ? AND state IN ('queued', 'taken')",
               (state, time.time(), note[:500], steer_id))
     c.commit()
     c.close()
@@ -494,9 +503,17 @@ async def _run_parallel(q: Any, task_id: str, step: Dict[str, Any], instructions
     facts = [f"The person's standing instruction: {x}" for x in instructions]
     jobs = [{"task": j, "facts": facts} for j in step["parallel"]]
     q._progress(task_id, f"⚡ Fanning out {len(jobs)} parallel read-only jobs")
-    run = asyncio.ensure_future(workers.coordinate(task_id, step["text"], jobs))
+    # A fan-out interrupted earlier (a restart) keeps the jobs its workers already finished.
+    prev = [w for w in workers.list_workers(task_id) if w["role"] == "coordinator" and w["brief"] == step["text"]
+            and w["state"] in ("interrupted", "running")]
+    run = asyncio.ensure_future(workers.coordinate(task_id, step["text"], jobs,
+                                                   reuse_from=prev[-1]["id"] if prev else None))
     while not run.done():
-        await asyncio.wait({run}, timeout=STEER_POLL_SEC)
+        try:
+            await asyncio.wait({run}, timeout=STEER_POLL_SEC)
+        except asyncio.CancelledError:
+            run.cancel()        # the task's own run is going away: so does its fan-out
+            raise
         if run.done():
             break
         q._touch_progress(task_id)

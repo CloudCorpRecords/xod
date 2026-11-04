@@ -78,6 +78,13 @@ def _conn() -> sqlite3.Connection:
         finished_at REAL,
         result_json TEXT)""")
     c.execute("CREATE INDEX IF NOT EXISTS workers_parent ON workers(parent_id)")
+    cols = [r[1] for r in c.execute("PRAGMA table_info(workers)").fetchall()]
+    if "needs" not in cols:
+        c.execute("ALTER TABLE workers ADD COLUMN needs TEXT DEFAULT '[]'")
+    if "stalled_reason" not in cols:
+        c.execute("ALTER TABLE workers ADD COLUMN stalled_reason TEXT")
+    if "job_key" not in cols:
+        c.execute("ALTER TABLE workers ADD COLUMN job_key TEXT")
     return c
 
 
@@ -165,76 +172,189 @@ def render_brief(task: str, outcome: str, constraints: List[str], facts: List[st
 
 def spawn(parent_id: str, task: str, outcome: str = "", constraints: Optional[List[str]] = None,
           facts: Optional[List[str]] = None, parent_type: str = "task", role: str = "worker",
-          env: str = "read_only") -> str:
-    """Starts a worker in the background and returns its id immediately."""
+          env: str = "read_only", needs: Optional[List[str]] = None) -> str:
+    """Starts a worker in the background and returns its id immediately. needs: resources it
+    declares in advance (services/resources.py); it runs only once all are granted, and shows
+    the queue reason meanwhile."""
     if role == "worker" and current_worker.get() and (get(current_worker.get()) or {}).get("role") == "worker":
         raise PermissionError("A worker cannot start workers of its own (two delegation levels at most).")
     if role == "coordinator" and parent_type == "coordinator":
         raise PermissionError("A coordinator cannot start another coordinator.")
     if env not in ("read_only",):
-        raise PermissionError("Phase 2 workers run read-only; side-effecting work stays with the task itself.")
+        raise PermissionError("Workers run read-only; side-effecting work stays with the task itself.")
     wid = f"wrk-{uuid.uuid4().hex[:8]}"
     brief = render_brief(task, outcome or "A clear, sourced answer.", constraints or [], facts or [], env)
     now = time.time()
     c = _conn()
     c.execute("INSERT INTO workers (id, parent_id, parent_type, role, brief, envelope, session_id, state, created_at, "
-              "last_activity_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-              (wid, parent_id, parent_type, role, brief, env, f"worker-session-{wid}", "running", now, now))
+              "last_activity_at, needs) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+              (wid, parent_id, parent_type, role, brief, env, f"worker-session-{wid}", "running", now, now,
+               json.dumps(needs or [])))
     c.commit()
     c.close()
     w = get(wid)
-    _emit("worker.spawned", w, role=role, task=task[:200], envelope=env)
+    _emit("worker.spawned", w, role=role, task=task[:200], envelope=env, needs=needs or [])
     _done_events[wid] = asyncio.Event()
-    _runs[wid] = asyncio.ensure_future(_run(wid, brief, env))
+    _runs[wid] = asyncio.ensure_future(_run(wid, brief, env, needs or []))
     return wid
 
 
-async def _run(wid: str, brief: str, env: str) -> None:
-    from app.services import activity
+# ------------------------------------------------------------- steering a running worker
+def steer(worker_id: str, body: str, now: bool = False, source: str = "orchestrator", kind: str = "steer") -> Dict[str, Any]:
+    """A follow-up for a running worker: queued behind its current turn (default), or now=True to
+    interrupt the turn and start a fresh one with the new instruction. Applied only when the
+    worker's next report arrives; until then it is queued, and is reported as queued."""
+    from app.services import orchestrator as O
+    w = get(worker_id)
+    if not w:
+        return {"success": False, "error": "No such worker."}
+    if w["state"] != "running":
+        return {"success": False, "error": f"The worker is {w['state']}; it cannot take a steer."}
+    if kind not in ("steer", "cancel"):
+        return {"success": False, "error": "A worker takes steer or cancel."}
+    sid = f"steer-{uuid.uuid4().hex[:8]}"
+    c = O._conn()
+    c.execute("INSERT INTO steer_inbox (id, target_type, target_id, kind, body, source, urgent, state, created_at) "
+              "VALUES (?,?,?,?,?,?,?,?,?)", (sid, "worker", worker_id, kind, body, source,
+                                             1 if (now or kind == "cancel") else 0, "queued", time.time()))
+    c.commit()
+    c.close()
+    _emit("steer.received", w, steer_id=sid, kind=kind, body=body[:200], urgent=bool(now))
+    return {"success": True, "steer_id": sid, "state": "queued",
+            "applies": "now: its current turn is interrupted" if now or kind == "cancel" else "after its current turn"}
+
+
+def _queued_steers(worker_id: str) -> List[Dict[str, Any]]:
+    from app.services import orchestrator as O
+    return O.inbox(worker_id, state="queued")
+
+
+async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
+    """One agent turn. Returns 'done', or 'interrupted' when an urgent steer cut it short."""
+    async def consume():
+        async for ev in agent(prompt, wid):
+            t = ev.get("type")
+            if t == "content":
+                piece = ev.get("content", "")
+                sink["content"].append(piece if isinstance(piece, str) else json.dumps(piece))
+            elif t in ("tool_result", "subagent_tool_result"):
+                data = ev.get("data")
+                ok = not (isinstance(data, dict) and (data.get("error") or data.get("success") is False))
+                entry = {"tool": ev.get("name"), "ok": ok,
+                         "summary": (json.dumps(data, default=str) if not isinstance(data, str) else data)[:600]}
+                (sink["evidence"] if ok else sink["failures"]).append(entry)
+            elif t == "status":
+                _save(wid, last_activity_at=time.time(), last_activity=str(ev.get("content", ""))[:200], stalled_reason=None)
+                continue
+            _save(wid, last_activity_at=time.time(), stalled_reason=None)
+    run = asyncio.ensure_future(consume())
+    try:
+        while not run.done():
+            await asyncio.wait({run}, timeout=0.5)
+            if not run.done() and any(s["urgent"] for s in _queued_steers(wid)):
+                run.cancel()
+                try:
+                    await run
+                except BaseException:
+                    pass
+                return "interrupted"
+        run.result()
+        return "done"
+    except asyncio.CancelledError:
+        run.cancel()
+        raise
+
+
+async def _run(wid: str, brief: str, env: str, needs: Optional[List[str]] = None) -> None:
+    from app.services import activity, resources
+    from app.services import orchestrator as O
     activity.origin.set(f"worker:{wid}")
     envelope.set(env)
     current_worker.set(wid)
-    content: List[str] = []
-    evidence: List[Dict[str, Any]] = []
-    failures: List[Dict[str, Any]] = []
+    sink: Dict[str, List[Any]] = {"content": [], "evidence": [], "failures": []}
     outcome = "done"
+    holder = f"worker:{wid}"
+    deadline = time.time() + WORKER_TIMEOUT_SEC
     try:
-        async def consume():
-            async for ev in agent(brief, wid):
-                t = ev.get("type")
-                if t == "content":
-                    piece = ev.get("content", "")
-                    content.append(piece if isinstance(piece, str) else json.dumps(piece))
-                elif t in ("tool_result", "subagent_tool_result"):
-                    data = ev.get("data")
-                    ok = not (isinstance(data, dict) and (data.get("error") or data.get("success") is False))
-                    entry = {"tool": ev.get("name"), "ok": ok,
-                             "summary": (json.dumps(data, default=str) if not isinstance(data, str) else data)[:600]}
-                    (evidence if ok else failures).append(entry)
-                elif t == "status":
-                    _save(wid, last_activity_at=time.time(), last_activity=str(ev.get("content", ""))[:200])
-                    continue
-                _save(wid, last_activity_at=time.time())
-        await asyncio.wait_for(consume(), timeout=WORKER_TIMEOUT_SEC)
+        for need in needs or []:
+            while True:
+                got = resources.acquire(need, holder)
+                if got["granted"]:
+                    break
+                _save(wid, last_activity=f"queued for {need}: {got.get('reason') or 'busy'}", last_activity_at=time.time())
+                if time.time() > deadline:
+                    raise asyncio.TimeoutError()
+                await resources.wait_for(need, holder, max_wait=min(5.0, max(0.1, deadline - time.time())))
+                if resources.acquire(need, holder)["granted"]:
+                    break
+            _save(wid, last_activity=f"holding {need}")
+        prompt = brief
+        turns = 0
+        while True:
+            turns += 1
+            sink["content"] = []
+            state = await asyncio.wait_for(_turn(wid, prompt, sink), timeout=max(1.0, deadline - time.time()))
+            for need in needs or []:
+                resources.acquire(need, holder)          # beat the heartbeat between turns
+            pending = _queued_steers(wid)
+            cancel = next((s for s in pending if s["kind"] == "cancel"), None)
+            if cancel:
+                O._mark_steer(cancel["id"], "applied", f"stopped after {turns} turn(s)")
+                outcome = "interrupted"
+                break
+            if state == "done":
+                # The report of this turn is the confirmation of any steer applied by it.
+                for s in _applied_now.pop(wid, []):
+                    O._mark_steer(s, "applied", "confirmed by the worker's next report")
+                    _emit("steer.applied", {"id": wid, "parent_id": ""}, steer_id=s)
+            if not pending:
+                if state == "done":
+                    break
+                continue
+            # A follow-up: a fresh turn with the new instruction, keeping what it found so far.
+            new = "\n".join(f"- {s['body']}" for s in pending if s["kind"] == "steer")
+            so_far = "".join(sink["content"]).strip()
+            prompt = (brief + ("\n\nWHAT YOU REPORTED SO FAR:\n" + so_far[:3000] if so_far else "")
+                      + "\n\nNEW INSTRUCTION FROM YOUR PARENT (it wins where it conflicts with the job above):\n" + new)
+            _applied_now[wid] = [s["id"] for s in pending if s["kind"] == "steer"]
+            for s in pending:
+                if s["kind"] == "steer":
+                    # Taken into the next turn; "applied" only once that turn reports.
+                    c = O._conn()
+                    c.execute("UPDATE steer_inbox SET state = 'taken' WHERE id = ?", (s["id"],))
+                    c.commit()
+                    c.close()
     except asyncio.TimeoutError:
         outcome = "failed"
-        failures.append({"tool": None, "ok": False, "summary": f"the worker hit its {WORKER_TIMEOUT_SEC}s limit"})
+        sink["failures"].append({"tool": None, "ok": False, "summary": f"the worker hit its {WORKER_TIMEOUT_SEC}s limit"})
     except asyncio.CancelledError:
         outcome = "interrupted"
     except Exception as e:
         outcome = "failed"
-        failures.append({"tool": None, "ok": False, "summary": f"the worker crashed: {e}"})
-    report = "".join(content).strip()
+        sink["failures"].append({"tool": None, "ok": False, "summary": f"the worker crashed: {e}"})
+    finally:
+        try:
+            resources.release_holder(holder)
+        except Exception:
+            pass
+    report = "".join(sink["content"]).strip()
     if outcome == "done" and not report:
         outcome = "failed"
-        failures.append({"tool": None, "ok": False, "summary": "the worker returned no report"})
-    result = {"outcome": outcome, "report": report, "evidence": evidence, "failures": failures}
+        sink["failures"].append({"tool": None, "ok": False, "summary": "the worker returned no report"})
+    cur = get(wid) or {}
+    if cur.get("state") == "failed" and cur.get("stalled_reason"):
+        outcome = "failed"         # the watchdog already stopped it; keep its honest reason
+        sink["failures"].append({"tool": None, "ok": False, "summary": cur["stalled_reason"]})
+    result = {"outcome": outcome, "report": report, "evidence": sink["evidence"], "failures": sink["failures"]}
     _save(wid, state=outcome, finished_at=time.time(), result_json=result)
     w = get(wid)
-    _emit("worker.result", w, outcome=outcome, report=report[:300], failures=len(failures), evidence=len(evidence))
+    _emit("worker.result", w, outcome=outcome, report=report[:300], failures=len(sink["failures"]), evidence=len(sink["evidence"]))
     ev = _done_events.get(wid)
     if ev:
         ev.set()
+
+
+_applied_now: Dict[str, List[str]] = {}
 
 
 async def wait(worker_ids: List[str], timeout: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
@@ -269,6 +389,62 @@ def mark_orphans_interrupted() -> int:
     return n
 
 
+# ------------------------------------------------------------- stall watchdog
+STALL_SEC = 180
+STOP_SEC = 2 * STALL_SEC
+
+
+async def run_watchdog(now: Optional[float] = None, stall_sec: Optional[float] = None,
+                       stop_sec: Optional[float] = None) -> Dict[str, List[str]]:
+    """One pass over running workers, on their last-activity clock. Past stall_sec: flagged
+    stalled with the TRUE last activity time (not a guess, not a verdict). Past stop_sec: the
+    worker is stopped and fails with that observed fact as its reason."""
+    now = time.time() if now is None else now
+    stall_sec = STALL_SEC if stall_sec is None else stall_sec
+    stop_sec = STOP_SEC if stop_sec is None else stop_sec
+    stalled, stopped = [], []
+    c = _conn()
+    rows = c.execute("SELECT * FROM workers WHERE state = 'running' AND role = 'worker'").fetchall()
+    c.close()
+    for r in rows:
+        last = r["last_activity_at"] or r["created_at"]
+        quiet = now - last
+        at = time.strftime("%H:%M:%S", time.localtime(last))
+        if quiet >= stop_sec and r["id"] in _runs:
+            reason = f"stopped by the watchdog: no activity since {at} ({int(quiet)} s); last seen: {r['last_activity'] or 'nothing'}"
+            _save(r["id"], stalled_reason=reason, state="failed")
+            await interrupt(r["id"])
+            stopped.append(r["id"])
+        elif quiet >= stall_sec:
+            reason = f"stalled: no activity since {at} ({int(quiet)} s); last seen: {r['last_activity'] or 'nothing'}"
+            if r["stalled_reason"] != reason:
+                _save(r["id"], stalled_reason=reason)
+                if not r["stalled_reason"]:
+                    _emit("worker.stalled", dict(r), reason=reason, last_activity_at=last)
+            stalled.append(r["id"])
+    return {"stalled": stalled, "stopped": stopped}
+
+
+_watchdog_task: Optional[asyncio.Task] = None
+
+
+def start_watchdog(interval: float = 30.0) -> None:
+    global _watchdog_task
+    if _watchdog_task is not None and not _watchdog_task.done():
+        return
+
+    async def loop():
+        while True:
+            try:
+                await asyncio.sleep(interval)
+                await run_watchdog()
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("worker watchdog")
+    _watchdog_task = asyncio.ensure_future(loop())
+
+
 # --------------------------------------------------------------------- coordinator
 SYNTH_PROMPT = """You are a coordinator combining the results of several workers into ONE result for your parent.
 
@@ -297,7 +473,7 @@ synthesize: Callable[[str, List[Dict[str, Any]]], Awaitable[str]] = _default_syn
 
 
 async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
-                     timeout: Optional[float] = WORKER_TIMEOUT_SEC) -> Dict[str, Any]:
+                     timeout: Optional[float] = WORKER_TIMEOUT_SEC, reuse_from: Optional[str] = None) -> Dict[str, Any]:
     """Runs one coordinated job: a coordinator record, one read-only worker per subtask, all in
     parallel, then ONE synthesized result with every failure itemized. Subtasks are dicts:
     {task, outcome?, facts?, constraints?}."""
@@ -309,12 +485,29 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
     c.commit()
     c.close()
     _emit("worker.spawned", {"id": cid, "parent_id": parent_id}, role="coordinator", task=job[:200], n=len(subtasks))
+    # Resume after an interruption: a job a previous coordinator for this same step already
+    # finished keeps its result; only the jobs that did not finish run again.
+    reuse: Dict[str, str] = {}
+    if reuse_from:
+        for w in list_workers(reuse_from):
+            if w["state"] == "done" and w.get("job_key"):
+                reuse[w["job_key"]] = w["id"]
     tok = current_worker.set(cid)
     try:
-        ids = [spawn(cid, s["task"], s.get("outcome", ""), s.get("constraints"), s.get("facts"),
-                     parent_type="coordinator", role="worker") for s in subtasks]
+        ids = []
+        for s_ in subtasks:
+            key = s_["task"]
+            if key in reuse:
+                ids.append(reuse[key])
+                _done_events.setdefault(reuse[key], asyncio.Event()).set()
+                continue
+            wid = spawn(cid, s_["task"], s_.get("outcome", ""), s_.get("constraints"), s_.get("facts"),
+                        parent_type="coordinator", role="worker", needs=s_.get("needs"))
+            _save(wid, job_key=key)
+            ids.append(wid)
     finally:
         current_worker.reset(tok)
+    reused = [i for i in ids if i in reuse.values()]
     try:
         got = await wait(ids, timeout=timeout)
     except asyncio.CancelledError:
@@ -343,7 +536,7 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
         synthesis = ""
         failures.append({"worker": cid, "task": "synthesis", "outcome": "failed", "why": f"synthesis failed: {e}"})
     outcome = "done" if not failures else ("partial" if ok else "failed")
-    result = {"coordinator": cid, "job": job, "outcome": outcome, "synthesis": synthesis,
+    result = {"coordinator": cid, "job": job, "outcome": outcome, "synthesis": synthesis, "reused": reused,
               "workers": [{k: p[k] for k in ("id", "task", "outcome")} for p in per],
               "failures": failures, "evidence": [e for p in ok for e in p["evidence"]][:40]}
     _save(cid, state="done" if outcome != "failed" else "failed", finished_at=time.time(), result_json=result)
