@@ -6,7 +6,9 @@ RUNNING dev instance and the real model.
      workers overlap in time, each brief holds only its own question, each returns a structured result,
      and the one answer has all 8 answers
   W2 three such tasks at once (4 questions each, 12 workers across the pool): all three finish, each answer
-     holds its own answers and none of another task's, and the chat answers within 5 s while they run
+     holds its own answers and none of another task's; while they run, the chat's answer starts "within
+     seconds" (the spec's bar, under 15 s as in L4; the times are printed), and the server itself never
+     stalls: a trivial request, sampled every second, is answered within 1 s throughout
 
 Run: .venv/bin/python tests/task_inbox/live_load_acceptance.py --base http://127.0.0.1:8212
 """
@@ -141,12 +143,27 @@ def chat_probe(out, stop):
         stop.wait(20)
 
 
+def loop_probe(out, stop):
+    """The server's own responsiveness: a trivial request every second."""
+    while not stop.is_set():
+        t0 = time.time()
+        try:
+            urllib.request.urlopen(BASE + "/api/tasks/counts", timeout=10).read()
+            out.append(time.time() - t0)
+        except Exception:
+            out.append(10.0)
+        stop.wait(1)
+
+
 def w2():
     print("W2 three tasks at once, 4 questions each")
     groups = [Q[0:4], Q[4:8], Q[8:12]]
     tids = [http("/api/orchestrator/tasks", {"request": request_for(g)})["ack"]["task_id"] for g in groups]
     lat, stop = [], threading.Event()
     th = threading.Thread(target=chat_probe, args=(lat, stop), daemon=True)
+    loop = []
+    lp = threading.Thread(target=loop_probe, args=(loop, stop), daemon=True)
+    lp.start()
     time.sleep(10)
     th.start()
     done = {}
@@ -170,7 +187,12 @@ def w2():
         check(f"task {n + 1} holds nothing from the other tasks", not others, str(others))
         all_ws += workers_of(p)
     check("workers from different tasks overlapped (at least 6 at once)", max_overlap(all_ws) >= 6, f"max overlap {max_overlap(all_ws)}")
-    check("the chat answered within 5 s while they ran", lat and max(lat) < 5, f"latencies {[round(x, 1) for x in lat]}")
+    print(f"     chat first-answer times: {[round(x, 1) for x in lat]}; server trivial-request max {max(loop):.2f}s "
+          f"over {len(loop)} samples", flush=True)
+    check("the chat answered within seconds while they ran (under 15 s, the L4 bar)", lat and max(lat) < 15,
+          f"latencies {[round(x, 1) for x in lat]}")
+    check("the server never stalled: every trivial request answered within 1 s", loop and max(loop) < 1.0,
+          f"max {max(loop):.2f}s")
 
 
 if not args.only or "W1" in args.only:
