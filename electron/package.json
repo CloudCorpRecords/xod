@@ -35,6 +35,7 @@
     },
     "files": [
       "main.js",
+      "mode.js",
       "updater.js",
       "own_server.js",
       "preload.js",
