@@ -66,6 +66,11 @@ async def fake_agent(brief, wid):
         yield {"type": "tool_result", "name": "web_search", "data": {"success": False, "error": payload}}
         rec["end"] = time.time()
         return
+    if kind == "admit":
+        yield {"type": "tool_result", "name": "xod_self_check", "data": {"done": True}}
+        yield {"type": "content", "content": payload}
+        rec["end"] = time.time()
+        return
     if kind == "fail_quietly":
         # Every tool failed, yet the worker still writes a confident-looking report.
         yield {"type": "tool_result", "name": "computer_read_file", "data": {"success": False, "error": payload}}
@@ -285,7 +290,7 @@ async def w8_resolve_unknowns(q):
             return OC.UNKNOWN, "unreachable"
         return (OC.CONFIRMED, "in inbox") if args["text"] in dest else (OC.FAILED, "not in inbox")
     OC.VERIFIERS["test_send"] = verifier
-    args = {"url": "http://x", "text": f"m-{uuid.uuid4().hex[:4]}"}
+    args = {"port": 1, "text": f"m-{uuid.uuid4().hex[:4]}"}
     dest.append(args["text"])
     OC.settle(origin, "test_send", args, error=ConnectionResetError("dropped"))
 
@@ -306,6 +311,11 @@ async def w9_failed_sources(q):
     JOB_SCRIPT[jobs[0]] = ("answer", "fine")
     JOB_SCRIPT[jobs[1]] = ("fail_quietly", "file not found")
     r = await W.coordinate("w9", "two sources", [{"task": j} for j in jobs])
+    j3 = f"Source admits {tag}"
+    JOB_SCRIPT[j3] = ("admit", "**Could not read:** The status line, because the file was not found.")
+    r2 = await W.coordinate("w9b", "one source", [{"task": j3}])
+    check("a worker whose report admits it could not do the job is a failed check",
+          [f["task"] for f in r2["failures"]] == [j3] and "Could not read" in r2["failures"][0]["why"], json.dumps(r2["failures"])[:200])
     check("the broken source is itemized as failed, with why",
           [f["task"] for f in r["failures"]] == [jobs[1]] and "file not found" in r["failures"][0]["why"], json.dumps(r["failures"])[:200])
 

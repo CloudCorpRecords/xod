@@ -78,7 +78,7 @@ def _test_send_verifier(args: Dict[str, Any]) -> Tuple[str, str]:
     import urllib.parse
     import urllib.request
     try:
-        url = str(args.get("url", "")).rstrip("/") + "/inbox?" + urllib.parse.urlencode({"text": args.get("text", "")})
+        url = f"http://127.0.0.1:{int(args.get('port'))}/inbox?" + urllib.parse.urlencode({"text": args.get("text", "")})
         n = json.loads(urllib.request.urlopen(url, timeout=3).read()).get("count", 0)
     except Exception as e:
         return UNKNOWN, f"the inbox could not be read ({type(e).__name__})"
