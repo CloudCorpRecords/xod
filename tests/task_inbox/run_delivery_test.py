@@ -158,6 +158,17 @@ def d3_restarts():
           and sum(1 for m in background_messages() if f"Red size 11 restocked{TAG['t']}" in m["content"]) == 1)
 
 
+def d3b_finding_above_verdict():
+    print("D3b a finding written above the verdict line is the finding")
+    r = RT.create(f"Order watch{TAG['t']}", "Watch the order page.", schedule={"kind": "every", "hours": 1}, kind="watch")
+    n = len(background_messages())
+    one_run(r["id"], f"blue size 10: RESTOCKED today{TAG['t']}\n\nWATCH: found")          # verbatim shape, live S7
+    msgs = background_messages()
+    check("delivered with the finding in it", len(msgs) == n + 1 and "RESTOCKED today" in msgs[-1]["content"], msgs[-1]["content"][:200])
+    one_run(r["id"], f"Found in the file:\n\nWATCH: found\nblue size 10: RESTOCKED today{TAG['t']}")
+    check("the same finding written below the verdict next time is deduped", len(background_messages()) == n + 1)
+
+
 def d4_failures():
     print("D4 failures reach the person; a broken job is turned off with notice")
     r = RT.create("News digest", "Summarise the news.", schedule={"kind": "every", "hours": 6})
@@ -216,6 +227,7 @@ def main(repeat):
         r = d1_silent_week()
         d2_found_once(r)
         d3_restarts()
+        d3b_finding_above_verdict()
         d4_failures()
         d5_task_pings()
         d6_decision()
