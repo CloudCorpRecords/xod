@@ -538,6 +538,13 @@ async def steer_task(task_id: str, req: SteerRequest):
     return orchestrator.steer(task_id, req.kind, req.body, source="user", now=req.now)
 
 
+@app.get("/api/workers")
+async def list_workers_api(parent: Optional[str] = None):
+    """Workers and coordinators with honest states (running, quiet, done, failed, interrupted)."""
+    from app.services import workers
+    return {"workers": workers.list_workers(parent)}
+
+
 @app.get("/api/tasks/{task_id}/plan")
 async def task_plan(task_id: str):
     from app.services import orchestrator
@@ -717,6 +724,8 @@ async def _start_task_worker():
     from app.services.task_queue import task_queue
     from app.services.doctor import doctor
     task_queue.start()
+    from app.services import workers as _workers
+    _workers.mark_orphans_interrupted()     # a worker the last process was running is not running now
     doctor.start()
     from app.services import missions
     missions.start()

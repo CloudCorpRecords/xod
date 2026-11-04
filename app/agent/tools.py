@@ -3281,6 +3281,21 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         # target, made while "seeing what works"): nothing runs, and the model is told what's missing.
         return {"success": False, "error": f"{name} needs {', '.join(missing)}. Nothing was done. "
                 "If you don't know what the person wants here, ask them instead of trying tools."}
+    # Orchestrator Phase 2: a worker's permission envelope, checked before anything else can run.
+    # Delegation never widens permission; a refused call does nothing and says so.
+    from app.services import workers as _workers, outcomes as _outcomes
+    if _workers.envelope.get() not in (None, "full"):
+        _mcp_ro = None
+        if name.startswith("mcp__"):
+            try:
+                from app.services.mcp_client import mcp_hub, _read_only
+                _, _t = mcp_hub._find(name)
+                _mcp_ro = _read_only(_t) if _t else None
+            except Exception:
+                pass
+        refusal = _workers.allowed(name, _mcp_ro)
+        if refusal:
+            return {"success": False, "error": refusal, "outside_envelope": True}
     if not reviewed:
         read_only = None
         if name.startswith("mcp__"):
@@ -3304,7 +3319,24 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         ctx = await asyncio.to_thread(activity.before, name, arguments or {}, active_workspace_path)
     except Exception as e:
         logger.warning(f"activity log skipped for {name}: {e}")
-    result = await _execute_tool(name, arguments, active_workspace_path)
+    # Verified outcomes (services/outcomes.py): no blind retry of an UNKNOWN action, no repeat
+    # of a confirmed send; every side-effecting call comes back with CONFIRMED, FAILED, UNKNOWN
+    # or UNVERIFIED, read back at the destination where a reader exists.
+    _origin = str(activity.origin.get() or "chat")
+    answered = _outcomes.guard(_origin, name, arguments or {})
+    if answered is not None:
+        return answered
+    try:
+        result = await _execute_tool(name, arguments, active_workspace_path)
+    except asyncio.CancelledError:
+        _outcomes.settle(_origin, name, arguments or {}, error=asyncio.CancelledError("cancelled mid-call"))
+        raise
+    except (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError) as e:
+        if name not in _outcomes.SIDE_EFFECT_TOOLS:
+            raise
+        result = _outcomes.settle(_origin, name, arguments or {}, error=e)
+    else:
+        result = _outcomes.settle(_origin, name, arguments or {}, result=result)
     try:
         await asyncio.to_thread(activity.after, ctx, result)
     except Exception as e:

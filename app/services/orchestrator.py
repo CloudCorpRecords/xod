@@ -41,6 +41,7 @@ STEER_KINDS = ("pause", "resume", "steer", "redirect", "cancel", "note")
 URGENT_KINDS = ("cancel",)
 STEER_POLL_SEC = 0.5
 MAX_STEPS = 8
+MAX_PARALLEL = 8
 
 
 # --------------------------------------------------------------------- storage
@@ -116,8 +117,11 @@ def save_plan(task_id: str, items: List[Dict[str, Any]], instructions: List[str]
     return new
 
 
-def _item(text: str, origin: str = "plan") -> Dict[str, Any]:
-    return {"id": f"s-{uuid.uuid4().hex[:6]}", "text": text.strip(), "status": "pending",
+def _item(text: Any, origin: str = "plan") -> Dict[str, Any]:
+    parallel = None
+    if isinstance(text, dict):
+        parallel, text = text.get("parallel"), text.get("text", "")
+    return {"id": f"s-{uuid.uuid4().hex[:6]}", "text": str(text).strip(), "status": "pending", "parallel": parallel,
             "blocker": None, "result": None, "evidence": [], "origin": origin,
             "attempts": 0, "started_at": None, "finished_at": None, "note": None}
 
@@ -159,7 +163,12 @@ checked (a file exists with given content, a value was found, a message was draf
 detail from the task in the step that needs it: full file paths, names, numbers, quoted text. Do not
 add steps the person did not ask for. A task that is genuinely one action is one step.
 
-Answer with JSON only: {{"steps": ["step one", "step two", ...]}}"""
+When the task asks for several INDEPENDENT look-ups or research jobs (reading only: no writing, sending or
+changing anything), put them in ONE step that runs them in parallel:
+  {{"text": "short name of the combined job", "parallel": ["job one, fully self-contained", "job two, ..."]}}
+Each parallel job must carry every detail it needs; it will not see the task or the other jobs.
+
+Answer with JSON only: {{"steps": ["step one", {{"text": "...", "parallel": ["...", "..."]}}, "step three", ...]}}"""
 
 REPLAN_PROMPT = """You are re-planning a task for a personal AI agent after the person changed direction mid-task.
 
@@ -190,11 +199,23 @@ async def _ask_model(prompt: str) -> str:
     return reply.get("content", "") or ""
 
 
-def _parse_steps(raw: str) -> List[str]:
+def _parse_steps(raw: str) -> List[Any]:
+    """Steps as text, or {"text", "parallel": [jobs]} for a fan-out of independent read-only jobs."""
     from app.services.llm import parse_llm_json
     data = parse_llm_json(raw)
     steps = data.get("steps") if isinstance(data, dict) else data if isinstance(data, list) else None
-    out = [str(s).strip() for s in (steps or []) if str(s).strip()]
+    out: List[Any] = []
+    for s in steps or []:
+        if isinstance(s, dict) and isinstance(s.get("parallel"), list):
+            jobs = [str(j).strip() for j in s["parallel"] if str(j).strip()][:MAX_PARALLEL]
+            if len(jobs) >= 2:
+                out.append({"text": str(s.get("text") or "; ".join(jobs))[:300], "parallel": jobs})
+            elif jobs:
+                out.append(jobs[0])
+        elif isinstance(s, dict) and s.get("text"):
+            out.append(str(s["text"]).strip())
+        elif str(s).strip():
+            out.append(str(s).strip())
     return out[:MAX_STEPS]
 
 
@@ -454,6 +475,38 @@ async def _apply_inbox(q: Any, task_id: str, task: Dict[str, Any]) -> Optional[s
     return None
 
 
+async def _run_parallel(q: Any, task_id: str, step: Dict[str, Any], instructions: List[str],
+                        steps: int) -> Tuple[str, int, bool, Optional[str]]:
+    """A fan-out step: one coordinator, one read-only worker per job, ONE result back with every
+    failure itemized. Urgent steers interrupt it like any step (its workers are stopped).
+    Returns (report, steps, interrupted, problem)."""
+    from app.services import workers
+    facts = [f"The person's standing instruction: {x}" for x in instructions]
+    jobs = [{"task": j, "facts": facts} for j in step["parallel"]]
+    q._progress(task_id, f"⚡ Fanning out {len(jobs)} parallel read-only jobs")
+    run = asyncio.ensure_future(workers.coordinate(task_id, step["text"], jobs))
+    while not run.done():
+        await asyncio.wait({run}, timeout=STEER_POLL_SEC)
+        if run.done():
+            break
+        q._touch_progress(task_id)
+        if any(s["urgent"] for s in inbox(task_id, state="queued")):
+            run.cancel()        # the coordinator stops its own workers on the way out
+            try:
+                await run
+            except BaseException:
+                pass
+            return "", steps, True, None
+    result = run.result()
+    step["coordinator"] = result["coordinator"]
+    step["workers"] = result["workers"]
+    step["failures"] = result["failures"]
+    problem = None
+    if result["outcome"] == "failed":
+        problem = "every parallel job failed: " + "; ".join(f"{f['task'][:60]}: {f['why'][:120]}" for f in result["failures"])
+    return workers.render_result(result), steps + len(jobs), False, problem
+
+
 async def _run_step(q: Any, task_id: str, prompt: str, steps: int) -> Tuple[str, int, bool]:
     """Runs one step's agent stream as its own asyncio task, watching the inbox for urgent
     steers while it runs. Returns (report, steps, interrupted)."""
@@ -524,6 +577,8 @@ def _final_report(items: List[Dict[str, Any]]) -> str:
         if i["status"] != "cancelled":
             n += 1
             lines.append(f"{marks[i['status']]} {n}. {i['text']}")
+            for f in i.get("failures") or []:
+                lines.append(f"   unread/failed: {f['task'][:100]} ({f['outcome']}: {f['why'][:160]})")
         else:
             lines.append(f"{marks['cancelled']} (dropped) {i['text']}" + (f" ({i['note']})" if i.get("note") else ""))
     return "\n".join(lines)
@@ -598,9 +653,16 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             prompt = _step_prompt(task, items, instr, step, prior_ops)
             if resume_msg is not None:
                 prompt, resume_msg = resume_msg, None   # the person's OK or answer continues the paused page
-            report, steps, interrupted = await _run_step(q, task_id, prompt, steps)
+            fan_problem = None
+            if step.get("parallel"):
+                report, steps, interrupted, fan_problem = await _run_parallel(q, task_id, step, instr, steps)
+                fan = {k: step.get(k) for k in ("coordinator", "workers", "failures")}
+            else:
+                report, steps, interrupted = await _run_step(q, task_id, prompt, steps)
+                fan = {}
             items, version, instr = load_plan(task_id)
             step = next(i for i in items if i["id"] == step["id"])
+            step.update({k: v for k, v in fan.items() if v is not None})
             if interrupted:
                 step["note"] = "interrupted by your instruction"
                 save_plan(task_id, items, instr)
@@ -609,9 +671,11 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             if _paused_on_person(q, task_id, items, instr, step, report, began, mark):
                 return
             problems = q._verify_file_effects({"id": task_id, "request": step["text"]}, began)
-            own = _self_report_problem(step["text"], report)
+            own = None if step.get("parallel") else _self_report_problem(step["text"], report)
             if own:
                 problems = problems + [own]
+            if fan_problem:
+                problems = problems + [fan_problem]
             if problems and step["attempts"] < 2:
                 step["note"] = "first attempt did not check out: " + "; ".join(problems)
                 step["retry_pending"] = True
