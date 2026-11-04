@@ -33,52 +33,52 @@ class YouSearchClient:
     def is_configured(self) -> bool:
         return bool(self.api_key and len(self.api_key.strip()) > 5)
 
-    async def verify_key(self) -> Dict[str, Any]:
-        """Tests whether the configured You.com API key is active and authorized."""
-        key = self.api_key
+    async def verify_key(self, test_key: Optional[str] = None) -> Dict[str, Any]:
+        """Tests whether the provided or configured You.com API key is active and authorized.
+
+        Mirrors TavilySearchClient.verify_key: an unsaved key can be tested before it is
+        stored, and the failure message reports the status You.com actually returned.
+        The key itself never appears in a message or a log line."""
+        key = (test_key or self.api_key or "").strip()
         if not key:
             return {"valid": False, "message": "No You.com API key configured."}
 
         headers = {
-            "X-API-Key": key.strip(),
+            "X-API-Key": key,
             "Accept": "application/json"
         }
         params = {"query": "SaaS industry trends", "count": 1}
 
-        # Candidate endpoints to verify against
-        endpoints = [
-            f"{self.base_url}/search",
-            "https://ydc-index.io/v1/search",
-            "https://api.you.com/v1/answer"
-        ]
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.get(f"{self.base_url}/search", params=params, headers=headers)
+        except Exception as e:
+            logger.warning(f"You.com key test could not reach the search endpoint: {type(e).__name__}")
+            return {"valid": False, "message": "Could not reach You.com. Check your connection and try again."}
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            for url in endpoints:
-                try:
-                    if "answer" in url:
-                        res = await client.post(url, json={"query": "test"}, headers=headers)
-                    else:
-                        res = await client.get(url, params=params, headers=headers)
-
-                    if res.status_code == 200:
-                        data = res.json()
-                        web_items = data.get("results", {}).get("web", []) or data.get("hits", [])
-                        count = len(web_items) or 1
-                        return {
-                            "valid": True,
-                            "message": f"You.com API Key verified! Search index active ({count} test result received).",
-                            "hits_count": count
-                        }
-                    elif res.status_code in (401, 403):
-                        continue  # Try next candidate endpoint before declaring 403
-                    else:
-                        logger.warning(f"You.com test on {url} returned HTTP {res.status_code}")
-                except Exception as e:
-                    logger.warning(f"Error testing candidate endpoint {url}: {e}")
-
+        if res.status_code == 200:
+            data = res.json()
+            web_items = data.get("results", {}).get("web", []) or data.get("hits", [])
+            count = len(web_items) or 1
+            return {
+                "valid": True,
+                "message": f"You.com API Key verified! Search index active ({count} test result received).",
+                "hits_count": count
+            }
+        if res.status_code in (401, 403):
+            return {
+                "valid": False,
+                "message": f"You.com turned this key down (HTTP {res.status_code}). Please verify your key on you.com/platform."
+            }
+        if res.status_code == 429:
+            return {
+                "valid": False,
+                "message": "You.com rate limit or credit quota reached (HTTP 429). Check your usage on you.com/platform."
+            }
+        logger.warning(f"You.com key test returned HTTP {res.status_code}")
         return {
             "valid": False,
-            "message": "Invalid or unauthorized You.com API key (HTTP 403). Please verify your key on you.com/platform."
+            "message": f"You.com returned HTTP {res.status_code}. Please try again in a moment."
         }
 
     async def search(
