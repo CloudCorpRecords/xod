@@ -945,6 +945,20 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         else:
             yield {"type": "status", "content": "Writing the answer…"}
 
+        # The answer is written from what this turn's background jobs observably did, not from a check
+        # seconds after they started (agent/turn_jobs.py).
+        try:
+            from app.agent import turn_jobs
+            _ids = turn_jobs.started_ids(getattr(evidence_board, "tool_audit_trail", []))
+            if _ids:
+                async for _ev in turn_jobs.settle(_ids):
+                    if _ev["type"] == "status":
+                        yield _ev
+                    else:
+                        evidence_board.update_from_tool("computer_check_job", {"job_id": _ev["job_id"]}, _ev["result"])
+        except Exception as e:
+            logger.warning(f"turn jobs: {e}")
+
         stats = evidence_board.get_stats()
         # Only compute and emit a formal M&A scorecard if verified financial/business metrics were uncovered
         has_real_financials = (
@@ -2352,14 +2366,36 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         call_args = {"goal": goal, "start_url": start_url, "max_steps": max_steps}
         yield {"type": "tool_call", "name": "browser_run_mission", "args": call_args, "id": "mission_1"}
 
+        # The browser is claimed like any browser tool call (agent/tools.py execute_tool): sticky for this
+        # task or chat, so two lanes never drive it at once, and a mission that stops for the person is
+        # known to be this task's (orchestrator._paused_on_person). Live 2026-11-04: missions started here
+        # bypassed the claim, and a stop for the person was reported as a finished step.
+        from app.services import activity as _activity, resources as _resources
+        _origin = str(_activity.origin.get() or "chat")
+        _chat = _origin.startswith("chat")
+        _claim = _resources.acquire("browser", _origin, ttl=45 if _chat else 120)
+        if not _claim["granted"]:
+            yield {"type": "status", "content": f"⏳ Waiting for the browser ({_claim.get('reason') or 'another task is using it'})…"}
+            _claim = await _resources.wait_for("browser", _origin, max_wait=30 if _chat else 600, ttl=45 if _chat else 120)
+        if not _claim["granted"]:
+            yield {"type": "tool_result", "name": "browser_run_mission", "summary": "browser busy",
+                   "data": {"status": "deferred", "reason": _claim.get("reason")}, "id": "mission_1"}
+            yield {"type": "content", "content": "The browser is busy with other work "
+                   f"({_claim.get('reason') or 'held by another task'}), so I didn't start. Nothing was done; ask again in a moment."}
+            return
+
         task = asyncio.create_task(sandbox.run_browser_mission(
             goal=goal, start_url=start_url, max_steps=max_steps, allow_submit=allow_submit
         ))
         mission_id = None
         seen = 0
         shown_now = ""
+        _beat = time.time()
         while not task.done():
             await asyncio.sleep(0.5)
+            if time.time() - _beat > 10:
+                _beat = time.time()
+                _resources.heartbeat(_claim["claim_id"])
             rec = sandbox.latest_mission or {}
             if mission_id is None and rec.get("goal") == goal:
                 mission_id = rec.get("mission_id")

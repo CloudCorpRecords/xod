@@ -86,9 +86,77 @@ def _test_send_verifier(args: Dict[str, Any]) -> Tuple[str, str]:
     return (CONFIRMED, f"found in the inbox ({n})") if n else (FAILED, "not in the inbox")
 
 
+def _agent_mail_verifier(args: Dict[str, Any]) -> Tuple[str, str]:
+    """agent_mail_send drafts a message that waits for the person's OK: read Agent Mail's store for it."""
+    try:
+        from app.services import agent_mail
+        try:
+            recips = agent_mail._recipients(args.get("to"))
+        except agent_mail.MailError as e:
+            return FAILED, f"no message can go to that address: {e}"
+        text = str(args.get("text") or "")[:20000]
+        with agent_mail._db() as c:
+            rows = c.execute("SELECT id, status, recipients, problem FROM mail_messages WHERE direction='out' AND text=? "
+                             "AND created_at >= ? ORDER BY created_at DESC", (text, time.time() - 86400)).fetchall()
+    except Exception as e:
+        return UNKNOWN, f"Agent Mail's store could not be read ({type(e).__name__})"
+    for r in rows:
+        if sorted(json.loads(r["recipients"] or "[]")) == sorted(recips):
+            st = r["status"]
+            if st == "draft":
+                return CONFIRMED, f"drafted to {', '.join(recips)} ({r['id']}); it waits for the person's OK, nothing was sent"
+            if st in ("sent", "queued"):
+                return CONFIRMED, f"{st} to {', '.join(recips)}"
+            if st == "failed":
+                return FAILED, f"Agent Mail marked it failed: {r['problem'] or 'no reason given'}"
+            if st == "discarded":
+                return CONFIRMED, "it was drafted and the person discarded the draft"
+    return FAILED, f"no message with this text to {', '.join(recips)} is in Agent Mail"
+
+
+def _phone_call(args: Dict[str, Any]) -> Tuple[str, str, Dict[str, Any]]:
+    """The phone tool's arguments as the phone call they become (agent/tools.py's dispatch)."""
+    from app.agent.tools import _PHONE_ACTIONS, _PHONE_ARGS
+    a = dict(args or {})
+    act = str(a.pop("action", "status") or "status").lower()
+    address = str(a.pop("phone", "") or "")
+    if act == "act" and "element" in a and "target" not in a:
+        a["target"] = a.pop("element")
+    tool = _PHONE_ACTIONS.get(act) or ""
+    keep = _PHONE_ARGS.get(tool, ())
+    return tool, address, {k: v for k, v in a.items() if k in keep and v not in (None, "")}
+
+
+def _phone_verifier(args: Dict[str, Any]) -> Tuple[str, str]:
+    from app.services import phone_mcp
+    tool, address, call = _phone_call(args)
+    return phone_mcp.verify_request(tool, address, call)
+
+
+def _phone_applies(args: Dict[str, Any]) -> bool:
+    """Only calls that send or change something on a paired phone are read back at the phone."""
+    try:
+        from app.services import phone_mcp
+        tool, address, _ = _phone_call(args)
+        return tool in phone_mcp.TOOLS and tool not in phone_mcp._READ_ONLY and address.lower() != phone_mcp.MIRROR_ADDRESS
+    except Exception:
+        return False
+
+
+_phone_verifier.applies = _phone_applies
+
+
+def verifier_for(tool: str, args: Dict[str, Any]) -> Optional[Verifier]:
+    v = VERIFIERS.get(tool)
+    applies = getattr(v, "applies", None)
+    return None if v is None or (applies is not None and not applies(args)) else v
+
+
 VERIFIERS["test_send"] = _test_send_verifier
 VERIFIERS["computer_write_file"] = _file_verifier
 VERIFIERS["fs_write_workspace_file"] = _file_verifier
+VERIFIERS["agent_mail_send"] = _agent_mail_verifier
+VERIFIERS["phone"] = _phone_verifier
 
 
 # --------------------------------------------------------------------- ledger
@@ -166,7 +234,7 @@ def guard(origin: str, tool: str, args: Dict[str, Any]) -> Optional[Dict[str, An
         return None
     state = last.get("resolved_outcome") or last["outcome"]
     if state == UNKNOWN:
-        verify = VERIFIERS.get(tool)
+        verify = verifier_for(tool, args)
         if verify is None:
             return {"success": False, "outcome": UNKNOWN,
                     "error": (f"An earlier {tool} with these exact arguments broke off and its outcome is UNKNOWN. "
@@ -241,8 +309,8 @@ async def resolve_unknowns(origin: str, args_by_hash: Dict[str, Dict[str, Any]],
     import asyncio
     out = []
     for row in unresolved_unknowns(origin, since):
-        verify = VERIFIERS.get(row["tool"])
         args = args_by_hash.get(row["args_hash"])
+        verify = verifier_for(row["tool"], args) if args is not None else None
         if not verify or args is None:
             out.append({**row, "final": UNKNOWN, "evidence": "no way to read the destination"})
             continue
@@ -270,7 +338,7 @@ def settle(origin: str, tool: str, args: Dict[str, Any], result: Any = None,
         return result
     h = args_hash(args, tool)
     ARGS_SEEN[h] = {k: v for k, v in (args or {}).items() if not str(k).startswith("_")}
-    verify = VERIFIERS.get(tool)
+    verify = verifier_for(tool, args)
     if error is not None:
         if verify:
             outcome, evidence = verify(args)

@@ -12,6 +12,10 @@ the browser claim, so tasks that need the browser serialize on it and everything
   K3 classic (non-orchestrated) tasks still run through the classic queue alongside the pool
   K4 a forced cancel stops a pool task that ignores the graceful one
   K5 a task that never held the browser is not paused by another task's browser mission
+  K6 a whole browser mission (the agent's mission path, not a single tool) claims the browser too: two
+     tasks' missions never run at once (live 2026-11-04: missions bypassed the claim)
+  K7 a mission that stops to ask the person leaves its task waiting with the question, not "done"
+     (live 2026-11-04: "I need something from you" became a completed step's result)
 
 Run: .venv/bin/python tests/task_inbox/run_concurrency_test.py [--repeat N]
 """
@@ -52,6 +56,27 @@ def check(name, ok, detail=""):
     print(f"  {'PASS' if ok else 'FAIL'} {name}" + (f"  [{detail}]" if detail and not ok else ""), flush=True)
 
 
+RealResearcher = RS.AgenticResearcher
+MISSIONS = {"active": 0, "max": 0}
+
+
+async def fake_mission(goal, start_url=None, max_steps=25, allow_submit=False):
+    """The sandbox's mission: holds the browser a moment; a goal with 'ask' stops for the person."""
+    MISSIONS["active"] += 1
+    MISSIONS["max"] = max(MISSIONS["max"], MISSIONS["active"])
+    stops = "ask" in goal.lower()
+    rec = {"mission_id": uuid.uuid4().hex[:8], "goal": goal, "started_at": time.time(), "steps": [],
+           "status": "needs_input" if stops else "done"}
+    BS.browser_sandbox_service.latest_mission = rec
+    await asyncio.sleep(0.6)
+    MISSIONS["active"] -= 1
+    answer = 'The form on **Example** asks: **"Your phone number"**. I do not know your answer, so I did not fill it in.'
+    return {"status": rec["status"], "final_answer": answer if stops else "Read the page.", "steps": []}
+
+
+BS.browser_sandbox_service.run_browser_mission = fake_mission
+
+
 class FakeResearcher:
     def __init__(self, *a, **k):
         pass
@@ -64,6 +89,13 @@ class FakeResearcher:
         if step.startswith("Browse "):
             for _ in range(2):
                 await tools.execute_tool("browser_navigate", {"url": "https://example.test"}, reviewed=True)
+        elif step.startswith("Mission2 "):
+            real = RealResearcher.__new__(RealResearcher)
+            async for ev in real._stream_browser_mission(step, None, False, 25, False):
+                if ev.get("type") == "content":
+                    SPANS[step] = (t0, time.time())
+                    yield ev
+            return
         elif step.startswith("Hang "):
             while True:
                 await asyncio.sleep(3600)
@@ -180,6 +212,33 @@ async def k5_no_cross_pause(q):
     await q.cancel(tm)
 
 
+async def k6_mission_claims(q):
+    print("K6 whole browser missions claim the browser")
+    MISSIONS["max"] = 0
+    tag = uuid.uuid4().hex[:4]
+    ta, tb = O.submit(f"Mission2 read page one {tag}")["task_id"], O.submit(f"Mission2 read page two {tag}")["task_id"]
+    saw_queue = None
+    t0 = time.time()
+    while time.time() - t0 < 20 and not saw_queue:
+        st = R.status("browser")[0]
+        if st["queue"]:
+            saw_queue = st
+        await asyncio.sleep(0.05)
+    ra, rb = await wait_status(q, ta, ("done", "failed")), await wait_status(q, tb, ("done", "failed"))
+    check("both finished", ra["status"] == rb["status"] == "done", f"{ra['status']} {rb['status']}")
+    check("never two missions in the browser at once", MISSIONS["max"] == 1, str(MISSIONS))
+    check("the waiting one was queued with a reason", saw_queue and "held by task:" in (saw_queue["queue"][0]["reason"] or ""))
+
+
+async def k7_mission_question(q):
+    print("K7 a mission that asks the person leaves the task waiting")
+    tid = O.submit(f"Mission2 ask for the phone number {uuid.uuid4().hex[:4]}")["task_id"]
+    t = await wait_status(q, tid, ("waiting", "done", "failed"))
+    check("the task waits for the person, not done", t["status"] == "waiting" and t["waiting_kind"] == "question",
+          f"{t['status']} {t.get('waiting_kind')}")
+    await q.cancel(tid)
+
+
 async def main(repeat):
     for i in range(repeat):
         print(f"=== run {i + 1}/{repeat}")
@@ -190,6 +249,8 @@ async def main(repeat):
         await k3_classic(q)
         await k4_force(q)
         await k5_no_cross_pause(q)
+        await k6_mission_claims(q)
+        await k7_mission_question(q)
         q.stop()
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")

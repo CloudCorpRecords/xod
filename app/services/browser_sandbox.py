@@ -526,7 +526,12 @@ def _looks_like_search_box(element: Optional[Dict[str, Any]]) -> bool:
     """Search inputs are the only fields where pressing Enter is safe (it runs a search, sends nothing)."""
     if not element:
         return False
-    hint = f"{element.get('text', '')} {element.get('type', '')} {element.get('name', '')} {element.get('placeholder', '')}".lower()
+    if str(element.get("role") or "").lower() == "searchbox" or str(element.get("type") or "").lower() == "search":
+        return True
+    # The label too: a search box that already holds a query shows the query as its text, and its
+    # only "search" is the label (live, 2026-11-04: Google's box, labelled "Search", holding
+    # "site:clevelandclinic.org adult human body 206 bones", was taken for a form question).
+    hint = " ".join(str(element.get(k) or "") for k in ("text", "label", "type", "name", "placeholder")).lower()
     return bool(re.search(r"\bsearch\b|keyword|job title|what\b|where\b|city, state|query|\bfind\b", hint))
 
 

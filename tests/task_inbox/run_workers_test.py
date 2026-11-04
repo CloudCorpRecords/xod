@@ -237,6 +237,7 @@ async def w4_unknown(q):
             return (OC.CONFIRMED, f"found in the sent folder ({n})") if n else (OC.FAILED, "not in the sent folder")
 
         tools._execute_tool = fake_exec
+        saved_verifier = OC.VERIFIERS.get("agent_mail_send")
         OC.VERIFIERS["agent_mail_send"] = verifier
         origin = f"task:w4-{uuid.uuid4().hex[:6]}"
         from app.services import activity
@@ -252,7 +253,7 @@ async def w4_unknown(q):
         finally:
             activity.origin.reset(tok)
             tools._execute_tool = real
-            OC.VERIFIERS.pop("agent_mail_send", None)
+            OC.VERIFIERS["agent_mail_send"] = saved_verifier
         label = "landed" if landed else "did not land"
         check(f"[{label}] first attempt reports UNKNOWN", r1.get("outcome") == OC.UNKNOWN, str(r1)[:200])
         check(f"[{label}] no blind retry while the destination is unreadable", r2.get("outcome") == OC.UNKNOWN and sends_after_r2 == 1, f"r2={r2} sends={sends_after_r2}")

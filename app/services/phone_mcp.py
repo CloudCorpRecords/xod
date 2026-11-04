@@ -280,6 +280,71 @@ async def _call_mirror(tool: str, **args: Any) -> Dict[str, Any]:
     return out
 
 
+# ------------------------------------------------------------------ what was sent, read back at the phone
+
+REQUESTS_PATH = DATA_DIR / "phone_requests.json"
+_READ_ONLY = {t for t, (_a, _c, needs_ok) in TOOLS.items() if not needs_ok} - {"phone_ask"}
+
+
+def request_key(tool: str, address: str, args: Dict[str, Any]) -> str:
+    import hashlib
+    clean = {k: str(v) for k, v in sorted((args or {}).items())}
+    return hashlib.sha256(json.dumps([tool, (address or "").strip().lower(), clean]).encode()).hexdigest()[:24]
+
+
+def _remember_request(tool: str, address: str, args: Dict[str, Any], rid: str, phone: str) -> None:
+    """The request that left for the phone, so an interrupted call can be checked at the phone's reply."""
+    try:
+        reqs = json.loads(REQUESTS_PATH.read_text(encoding="utf-8")) if REQUESTS_PATH.exists() else {}
+    except Exception:
+        reqs = {}
+    reqs[request_key(tool, address, args)] = {"request_id": rid, "phone": phone, "tool": tool, "at": time.time()}
+    if len(reqs) > 500:
+        reqs = dict(sorted(reqs.items(), key=lambda kv: kv[1]["at"])[-500:])
+    try:
+        REQUESTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = REQUESTS_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(reqs), encoding="utf-8")
+        tmp.replace(REQUESTS_PATH)
+    except Exception as e:
+        logger.warning(f"phone requests: {e}")
+
+
+def _reply_for(phone: str, rid: str) -> Optional[Dict[str, Any]]:
+    """The phone's own signed reply to a request, if it has arrived (read from Agent Mail's store)."""
+    from app.services import agent_mail
+    with agent_mail._db() as c:
+        rows = c.execute("SELECT text FROM mail_messages WHERE direction='in' AND peer=? ORDER BY created_at DESC LIMIT 200",
+                         (phone,)).fetchall()
+    for r in rows:
+        try:
+            d = json.loads(r["text"] or "")
+        except ValueError:
+            continue
+        if isinstance(d, dict) and d.get("request_id") == rid:
+            return d
+    return None
+
+
+def verify_request(tool: str, address: str, args: Dict[str, Any]) -> tuple:
+    """(outcome, evidence) for a phone call, read at the destination: the phone's reply to that request."""
+    req = None
+    try:
+        req = json.loads(REQUESTS_PATH.read_text(encoding="utf-8")).get(request_key(tool, address, args))
+    except Exception:
+        pass
+    if not req:
+        return "FAILED", "no request for this ever left for the phone"
+    reply = _reply_for(req["phone"], req["request_id"])
+    if reply is None:
+        if tool in _READ_ONLY:
+            return "FAILED", "the phone has not answered this read; asking again is safe"
+        return "UNKNOWN", f"sent to {req['phone']} (request {req['request_id'][:8]}); the phone has not answered yet"
+    if reply.get("ok", True) is False:
+        return "FAILED", f"the phone answered no: {str(reply.get('error') or reply.get('reason') or 'declined')[:150]}"
+    return "CONFIRMED", f"the phone confirmed request {req['request_id'][:8]}"
+
+
 # ------------------------------------------------------------------ calling a phone
 
 async def call_tool(tool: str, address: str = "", timeout: float = ASK_TIMEOUT, **args: Any) -> Dict[str, Any]:
@@ -314,6 +379,7 @@ async def call_tool(tool: str, address: str = "", timeout: float = ASK_TIMEOUT, 
     except Exception as e:  # changed keys raise here (Agent Mail): refuse, never fall back
         _audit({"tool": tool, "phone": phone["address"], "result": f"refused: {e}"})
         return {"success": False, "error": str(e)}
+    _remember_request(tool, address, args, rid, phone["address"])
     reply = await transport.wait_reply(phone["address"], rid, timeout if tool == "phone_ask" else min(timeout, 120.0))
     if reply is None:
         out = {"success": False, "error": "The phone didn't answer in time (it may be asleep or offline)."}
