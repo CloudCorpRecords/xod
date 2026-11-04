@@ -22,11 +22,12 @@ synthesis: its parent gets ONE result, with every worker's failure itemized insi
 import asyncio
 import contextvars
 import json
+import re
 import logging
 import sqlite3
 import time
 import uuid
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("xod.workers")
 
@@ -168,6 +169,27 @@ def render_brief(task: str, outcome: str, constraints: List[str], facts: List[st
     parts.append("\nWhen done, reply with your findings. Keep what you confirmed (with the source), what you "
                  "inferred, and what you could not find or could not read clearly apart.")
     return "\n".join(parts)
+
+
+_CONFIRMED_RE = re.compile(r"\*{0,2}confirmed\*{0,2}\s*:?\s*\*{0,2}:?\s*(.+?)(?=\n\s*\*\*[A-Z][^*\n]{0,40}:?\*\*|\Z)",
+                           re.I | re.S)
+_SOURCE_RE = re.compile(r"\]\((?:https?://|/)[^)\s]+\)|https?://\S+")
+_EMPTY_RE = re.compile(r"^\W*(?:nothing|none|n/?a|no(?:thing)? (?:was )?(?:confirmed|found))\b", re.I)
+
+
+def judge_report(task: str, report: str) -> Tuple[Optional[str], Optional[str]]:
+    """(admission, caveat) for a finished worker's report. An admission fails the worker. A report that also
+    has a Confirmed section with a linked source is done: the admission becomes its caveat, kept for the
+    synthesis."""
+    from app.services.orchestrator import _self_report_problem
+    admitted = _self_report_problem(task, report)
+    if not admitted:
+        return None, None
+    m = _CONFIRMED_RE.search((report or "").split("<!--", 1)[0])
+    body = (m.group(1) if m else "").strip()
+    if body and not _EMPTY_RE.match(body) and _SOURCE_RE.search(body):
+        return None, admitted
+    return admitted, None
 
 
 def spawn(parent_id: str, task: str, outcome: str = "", constraints: Optional[List[str]] = None,
@@ -540,15 +562,18 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
             # A source it tried never answered (live S5: a missing file's worker still "reported"). An unread
             # source is reported as unread, never as an answer (spec ladder, Tier 4).
             outcome, why_failed = "failed", f"{unread[0]['tool']} failed and never succeeded: {unread[0]['summary'][:200]}"
-        elif outcome == "done":
-            # A worker whose own report says it could not do the job is a failed check, however
-            # politely it says so (live S5: "Could not read: the status line, because the file was not found").
-            from app.services.orchestrator import _self_report_problem
-            admitted = _self_report_problem(s["task"], r.get("report") or "")
+        caveat = None
+        if outcome == "done" and not (r.get("failures") and not r.get("evidence")) and not unread:
+            # A worker whose own report says it could not do the job is a failed check, however politely it says so
+            # (live S5). One whose job is answered, confirmed with a linked source, and that only lists more it could
+            # have checked, is done with a caveat (live P1 count g1: "Confirmed: 1991, according to Codecademy" plus
+            # "Not finished yet: read a second source" failed the whole task).
+            admitted, caveat = judge_report(s["task"], r.get("report") or "")
             if admitted:
                 outcome, why_failed = "failed", admitted
         entry = {"id": wid, "task": s["task"], "outcome": outcome, "report": r.get("report", ""),
-                 "evidence": r.get("evidence", []), "failures": r.get("failures", [])}
+                 "evidence": r.get("evidence", []), "failures": r.get("failures", []),
+                 **({"caveat": caveat} if caveat else {})}
         per.append(entry)
         if outcome != "done":
             why = "; ".join(x for x in [why_failed] + [f["summary"] for f in r.get("failures", [])] if x) \
@@ -568,7 +593,8 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
     outcome = "done" if not failures else ("partial" if ok else "failed")
     result = {"coordinator": cid, "job": job, "outcome": outcome, "synthesis": synthesis, "reused": reused,
               "workers": [{k: p[k] for k in ("id", "task", "outcome")} for p in per],
-              "failures": failures, "evidence": [e for p in ok for e in p["evidence"]][:40]}
+              "failures": failures, "evidence": [e for p in ok for e in p["evidence"]][:40],
+              "caveats": [{"worker": p["id"], "task": p["task"], "caveat": p["caveat"]} for p in ok if p.get("caveat")]}
     _save(cid, state="done" if outcome != "failed" else "failed", finished_at=time.time(), result_json=result)
     _emit("worker.result", {"id": cid, "parent_id": parent_id}, outcome=outcome, failures=len(failures))
     return result
