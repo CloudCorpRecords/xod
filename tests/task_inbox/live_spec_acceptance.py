@@ -287,8 +287,8 @@ def s9():
     for mode, label in (("record_then_drop", "landed"), ("drop_first", "did not land")):
         text = f"hello-{label.replace(' ', '-')}-{uuid.uuid4().hex[:4]}"
         sink.arm(mode, down_sec=15)
-        p = wait_task(task(f"Use the test_send tool to send the text '{text}' to the test inbox on port {args.sink_port}. "
-                           f"Send it exactly once."))
+        # No address in the words: an address sends the agent down its browser route, where the action is not offered.
+        p = wait_task(task(f"Use the test_send tool to send the text '{text}' to the test inbox. Send it exactly once."))
         oc = db("SELECT outcome, resolved_outcome, evidence FROM tool_outcomes WHERE origin = ? AND tool = 'test_send' ORDER BY created_at",
                 f"task:{p['task_id']}")
         print(f"     [{label}] outcomes: {[(o['outcome'], o['resolved_outcome']) for o in oc]}  inbox: {sink.msgs.count(text)}")
