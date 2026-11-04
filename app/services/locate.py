@@ -41,6 +41,14 @@ The kind block also reads the candidate's structured kind field, not
 only the evidence prose, and purpose credit in a name requires a
 whole-token match, so a purpose term cannot earn name credit as a
 substring of a longer token ("tax" inside "taxonomy").
+
+Two later layers (defect DEFECT-FILE-FINDER-SELF-KNOWLEDGE-2026-11-02):
+hunts about Xod's own files are answered from a canonical self-knowledge
+pin before any route runs, and build/cache/archive copies are excluded
+from candidacy outright (prefix-tolerant segment match, waived when a
+clue names the scope), so a same-file-twice junk pair can never become
+an "ask" - it falls to an honest not_found with the pair recorded as
+checked-and-rejected.
 """
 import os
 import re
@@ -959,6 +967,180 @@ def partial_name_only(cand: Dict[str, Any], clues: "Clues") -> bool:
     return True
 
 
+def _clues_dict(clues: Clues) -> Dict[str, Any]:
+    return {
+        "name_tokens": clues.name_tokens, "kind": clues.kind, "year": clues.year,
+        "excluded_years": clues.excluded_years, "content_words": clues.content_words,
+        "purpose_terms": clues.purpose_terms, "want_folder": clues.want_folder,
+        "folder_by_contents": clues.folder_by_contents, "date_label": clues.date_label,
+    }
+
+
+# ------------------------------------------------------- self-knowledge
+# Hunts about Xod's OWN files must not be settled by a whole-home search:
+# the home tree holds dozens of lookalike trees (lane checkouts, staging
+# copies, archived worktrees, iOS build products), and a search ranks
+# whichever copy it happens to reach first - on 2026-11-02 the source
+# folder hunt asked between two DerivedData build products, and the
+# changelog hunt was won by a staging checkout's copy. Xod knows where
+# it lives. These canonical paths are checked first, existence-verified
+# like every other candidate, and a hunt that matches no pin falls
+# through to the normal search untouched.
+
+def _xod_self_paths() -> Dict[str, Path]:
+    home = Path.home()
+    return {
+        "source": home / "Documents" / "xod",
+        "github": home / "Documents" / "GitHub" / "xod",
+        "data": home / "Library" / "Application Support" / "Xod",
+        "app": Path("/Applications/Xod.app"),
+    }
+
+
+def _self_knowledge_result(request: str, clues: Clues,
+                            roots: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+    """The canonical answer for a hunt about Xod's own source, changelog,
+    GitHub clone, data folder, or app bundle - or None when the request
+    is not about Xod itself, or the canonical tree is absent (in which
+    case the honest move is the normal hunt, not an invented path).
+    A caller that scopes the hunt to explicit roots keeps that scope:
+    the pin fires only when the canonical path lives under one of the
+    roots (production passes the home tree, which contains them; the
+    graded-hunt rigs pass a planted forest, which does not)."""
+    tokens = {t.lower() for t in clues.name_tokens}
+    if "xod" not in tokens:
+        return None
+    paths = _xod_self_paths()
+    target: Optional[Path] = None
+    label = ""
+    if "changelog" in tokens:
+        for base in (paths["github"], paths["source"]):
+            for rel in ("docs/CHANGELOG.md", "CHANGELOG.md", "docs/CHANGELOG", "CHANGELOG"):
+                p = base / rel
+                if p.is_file():
+                    target, label = p, "Xod's changelog"
+                    break
+            if target is not None:
+                break
+    elif clues.want_folder and tokens & {"source", "code"}:
+        if paths["source"].is_dir():
+            target, label = paths["source"], "the Xod source folder"
+    elif clues.want_folder and "github" in tokens:
+        if paths["github"].is_dir():
+            target, label = paths["github"], "the Xod GitHub clone"
+    elif clues.want_folder and "data" in tokens:
+        if paths["data"].is_dir():
+            target, label = paths["data"], "Xod's data folder"
+    elif tokens & {"app", "application"}:
+        if paths["app"].is_dir():
+            target, label = paths["app"], "the Xod app"
+    if target is None:
+        return None
+    if roots:
+        t = str(target)
+        if not any(t == r or t.startswith(r.rstrip("/") + "/") for r in roots):
+            return None
+    cand = _candidate_dict(str(target), 200.0,
+                           [f"this is {label}: Xod's own path, answered from "
+                            "self-knowledge, not a search"])
+    if cand is None:
+        return None
+    return {
+        "request": request,
+        "clues": _clues_dict(clues),
+        "tried": [{"route": "self_knowledge", "terms": sorted(tokens), "hits": 1}],
+        "candidates": [cand],
+        "status": "found",
+        "diagnostics": {
+            "candidates": [{"path": str(target), "routes": ["self_knowledge"],
+                            "in_index": False}],
+            "index_used": False,
+            "index_missed_count": 0,
+            "index_missed_examples": [],
+            "excluded_scoped_count": 0,
+        },
+    }
+
+
+# ------------------------------------------------- junk-scope exclusion
+# Build output, caches, and archive/backup copies are never candidates
+# for a live-project find: they are copies or intermediates, and asking
+# the person to choose between two of them (the 2026-11-02 shapes: two
+# identical Kotlin cache files, a live changelog vs its archived copy,
+# DerivedData build products standing in for the source folder) is worse
+# than not asking. Segment match is prefix-tolerant (DerivedDataGeneric,
+# Intermediates.noindex are the real-world spellings; the scope penalty
+# above only knew the exact segment names, which is why it never fired
+# for them). Each rule is waived when a clue term names the scope
+# itself, so a hunt that is actually ABOUT a build folder, a backup, or
+# an archive is unaffected.
+
+def _exclusion_key(part: str) -> Optional[str]:
+    p = part.lower()
+    if p == "build":
+        return "build"
+    if p.startswith("deriveddata"):
+        return "deriveddata"
+    if p.startswith("intermediates"):
+        return "intermediates"
+    if p.startswith("_archive"):
+        return "archive"
+    if "backup" in p:
+        return "backup"
+    if p in (".venv", "venv", "node_modules", ".git", "__pycache__"):
+        return "packages"
+    if p == "xod-ios-build-logs":
+        return "build-logs"
+    if p == ".cache" or p.startswith("caches") or p.startswith("cache-"):
+        return "cache"
+    return None
+
+
+_EXCLUSION_WAIVERS = {
+    "build": {"build"},
+    "deriveddata": {"deriveddata", "derived"},
+    "intermediates": {"intermediates"},
+    "archive": {"archive", "archived"},
+    "backup": {"backup", "backups"},
+    "packages": {"node_modules", "venv", "packages"},
+    "build-logs": {"build", "logs", "buildlogs"},
+    "cache": {"cache", "caches"},
+}
+
+
+def _excluded_scope(path: str, clues: Clues) -> Optional[str]:
+    """The path segment that makes this path a build/cache/archive copy,
+    else None. Waived per segment when a clue term names that scope."""
+    terms = (set(_distinctive_name_tokens(clues)) | set(clues.purpose_terms)
+             | set(clues.content_words))
+    for part in [p for p in path.replace("\\", "/").split("/") if p]:
+        key = _exclusion_key(part)
+        if key is None:
+            continue
+        if terms & _EXCLUSION_WAIVERS.get(key, set()):
+            continue
+        return part
+    return None
+
+
+def _junk_pair(a: Dict[str, Any], b: Dict[str, Any], clues: Clues) -> bool:
+    """True when the top two are the same file twice in junk scopes:
+    same name, same size, both inside build/cache/archive trees. Such a
+    pair is never a real choice, so it must never become an ask; the
+    candidates are checked-and-rejected instead."""
+    if a.get("is_folder") or b.get("is_folder"):
+        return False
+    if a.get("name") != b.get("name") or a.get("size") != b.get("size"):
+        return False
+
+    def _junky(p: str) -> bool:
+        if _is_cache_scoped(p, clues):
+            return True
+        return any(_exclusion_key(seg) for seg in p.replace("\\", "/").split("/") if seg)
+
+    return _junky(str(a.get("path") or "")) and _junky(str(b.get("path") or ""))
+
+
 def _candidate_dict(path: str, score: float, why: List[str]) -> Optional[Dict[str, Any]]:
     try:
         st = os.stat(path)
@@ -999,6 +1181,9 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
     is recorded in the tried list and the fallbacks still run."""
     clues = parse_clues(request, extra, now=now)
     roots = list(roots) if roots else default_roots()
+    pinned = _self_knowledge_result(request, clues, roots)
+    if pinned is not None:
+        return pinned
     hunt_started = time.monotonic()
     hunt_deadline_at = hunt_started + max(0.0, float(hunt_deadline_s))
     tried: List[Dict[str, Any]] = []
@@ -1054,8 +1239,14 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
 
     scored: List[Dict[str, Any]] = []
     folder_children: Dict[str, List[Tuple[float, str]]] = {}
+    excluded_scoped = 0
     for path, hits_words in pool.items():
         if not os.path.exists(path):
+            continue
+        if _excluded_scope(path, clues):
+            # Build/cache/archive copies never enter the candidate list:
+            # they are not ask-worthy and must not shadow the live tree.
+            excluded_scoped += 1
             continue
         is_dir = os.path.isdir(path)
         if is_dir and not clues.want_folder:
@@ -1077,6 +1268,9 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
     if clues.folder_by_contents:
         for parent, children in folder_children.items():
             if not os.path.isdir(parent):
+                continue
+            if _excluded_scope(parent, clues):
+                excluded_scoped += 1
                 continue
             best = max(s for s, _ in children)
             bonus = min(30.0, 8.0 * len(children))
@@ -1144,16 +1338,12 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
         "index_used": use_index,
         "index_missed_count": len(missed),
         "index_missed_examples": missed[:5],
+        "excluded_scoped_count": excluded_scoped,
     }
 
     result: Dict[str, Any] = {
         "request": request,
-        "clues": {
-            "name_tokens": clues.name_tokens, "kind": clues.kind, "year": clues.year,
-            "excluded_years": clues.excluded_years, "content_words": clues.content_words,
-            "purpose_terms": clues.purpose_terms, "want_folder": clues.want_folder,
-            "folder_by_contents": clues.folder_by_contents, "date_label": clues.date_label,
-        },
+        "clues": _clues_dict(clues),
         "tried": tried,
         "candidates": top,
         "diagnostics": diagnostics,
@@ -1194,6 +1384,14 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
             rejected.append(cand)
         else:
             eligible.append(cand)
+    # A same-name, same-size pair that lives twice in junk scopes is not
+    # a choice: drop the pair to checked-and-rejected and let whatever
+    # real candidates remain decide (found, a genuine ask, or not_found).
+    while (len(eligible) >= 2
+           and (eligible[0]["score"] - eligible[1]["score"]) <= ASK_MARGIN
+           and _junk_pair(eligible[0], eligible[1], clues)):
+        rejected.extend(eligible[:2])
+        eligible = eligible[2:]
     if not eligible:
         return _not_found(rejected)
     trace["rejected"] = [c["path"] for c in rejected]

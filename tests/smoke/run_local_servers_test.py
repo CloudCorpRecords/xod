@@ -96,7 +96,12 @@ async def main() -> None:
     check("saving another key leaves your pick alone", settings.llm_provider == "ollama" and not res.get("switched_to"), f"{res} {settings.llm_provider}")
 
     print("L4 local-first routing (cloud only for hard steps) is left alone")
-    setup_wizard.choose("ollama", "llama3.1", how="auto")
+    # Xod's own local pick, set up directly: an auto choose may no longer
+    # re-mark a person's pick as Xod's own (the boot-guard fix, 0.9.25),
+    # so the fixture writes the ownership stamp it means. The checks
+    # below are unchanged.
+    from app.services.storage import set_setting
+    set_setting(setup_wizard.CHOSEN_BY_KEY, "auto")
     llm_routing.save_settings(mode="ask")
     check("no switch while routing is on", setup_wizard.prefer_key()["switched"] is False and settings.llm_provider == "ollama")
     llm_routing.save_settings(mode="off")
