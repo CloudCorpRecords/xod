@@ -314,7 +314,7 @@ async def w8_resolve_unknowns(q):
             return OC.UNKNOWN, "unreachable"
         return (OC.CONFIRMED, "in inbox") if args["text"] in dest else (OC.FAILED, "not in inbox")
     OC.VERIFIERS["test_send"] = verifier
-    args = {"port": 1, "text": f"m-{uuid.uuid4().hex[:4]}"}
+    args = {"text": f"m-{uuid.uuid4().hex[:4]}"}
     dest.append(args["text"])
     OC.settle(origin, "test_send", args, error=ConnectionResetError("dropped"))
 
