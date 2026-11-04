@@ -400,15 +400,25 @@ def _step_prompt(task: Dict[str, Any], items: List[Dict[str, Any]], instructions
         parts.append("\nSteps already completed. Their effects already exist; do NOT redo any of them:\n"
                      + "\n".join(f"- {i['text']}" + (f" -> {str(i.get('result') or '')[:300]}" if i.get("result") else "")
                                  for i in done))
-    if prior_ops:
+    retrying = str(step.get("note") or "").startswith("first attempt did not check out")
+    if prior_ops and retrying:
+        # Unknown is not failed (spec section 9): actions already taken get checked, never redone blindly.
+        parts.append("\nYour earlier attempt at this step already took these actions:\n"
+                     + "\n".join(f"- {o}" for o in prior_ops)
+                     + "\nTheir outcome is UNKNOWN, not failed. Do NOT repeat them. First check whether they took "
+                     "effect: a background job may still be running (wait for it or check its status), a file or "
+                     "destination can be read. Repeat an action only if you have verified its effect is absent and "
+                     "it is no longer running, and then only once.")
+    elif prior_ops:
         parts.append("\nThis step was started before and interrupted (by a restart or by the person). These actions "
                      "from it were already taken:\n" + "\n".join(f"- {o}" for o in prior_ops)
                      + "\nFirst check whether their effects are in place. Do not redo an action whose effect is "
                      "already there. Redo only what is missing: a background job or command started before a "
                      "restart may have been stopped by it, so its effect may be missing.")
-    if str(step.get("note") or "").startswith("first attempt did not check out"):
-        parts.append("\nYou already attempted this step once and checking found: "
-                     + step["note"].split(": ", 1)[1] + ". Do it now for real, using your tools.")
+    if retrying:
+        found = step["note"].split(": ", 1)[1]
+        parts.append("\nYou already attempted this step once and checking found: " + found + "."
+                     + (" Establish the real outcome as above." if prior_ops else " Do it now for real, using your tools."))
     parts.append(f"\nYOUR STEP NOW (step {k} of {len(live)}):\n{step['text']}")
     parts.append("\nDo only this step, using your tools. Then reply with a short report of what you did "
                  "and what you found. If you cannot do it, say exactly what blocks it.")

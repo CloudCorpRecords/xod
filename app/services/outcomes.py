@@ -37,7 +37,7 @@ SIDE_EFFECT_TOOLS = {
 }
 # Sending twice is a second message; writing the same bytes twice is the same file.
 NON_IDEMPOTENT = {"agent_mail_send", "phone", "tailscale_files", "browser_run_mission", "browser_interact",
-                  "computer_run_applescript"}
+                  "computer_run_applescript", "computer_start_job"}
 
 # tool -> fn(args) -> (outcome, evidence): read the destination now. Tests register their own.
 Verifier = Callable[[Dict[str, Any]], Tuple[str, str]]
@@ -160,6 +160,13 @@ def guard(origin: str, tool: str, args: Dict[str, Any]) -> Optional[Dict[str, An
     if state == CONFIRMED and tool in NON_IDEMPOTENT:
         return {"success": True, "outcome": CONFIRMED, "already_done": True,
                 "message": "This exact action was already done and confirmed in this task. Not repeated."}
+    if state == UNVERIFIED and tool in NON_IDEMPOTENT:
+        # It ran and reported success, but nothing could read it back: its effect is not known
+        # to be absent, so a second run would be a blind duplicate (live L4: a background job
+        # started twice). Check it instead.
+        return {"success": False, "outcome": UNVERIFIED, "already_done": True,
+                "error": (f"This exact {tool} already ran earlier in this task (it reported success; its effect "
+                          "was not read back). Not repeated: check its status or its result instead.")}
     if state == FAILED and tool in NON_IDEMPOTENT:
         tries = sum(1 for r in history(origin) if r["tool"] == tool and r["args_hash"] == h and r["outcome"] == FAILED)
         if tries >= 2:
