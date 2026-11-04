@@ -298,12 +298,14 @@ def main(repeat):
             check("close-mine that would empty a window is refused, nothing closed", not cm["success"] and lone2 in chrome.ids(), str(cm)[:300])
 
             print("V11 stale tabs")
-            write_config(chrome, stale_minutes=0.05)          # 3 s
+            # 6 s window; the module stamps heartbeats to the second, and the sweep's own window check takes a
+            # moment, so the margins are seconds wide: g's heartbeat is ~3 s old at the sweep, h's ~8 s
+            write_config(chrome, stale_minutes=0.1)
             g = B.call_sync("tabs_register", {"url": "data:text/html,<title>g</title>g", "task": "g"}, "task:ggg")
             h = B.call_sync("tabs_register", {"url": "data:text/html,<title>h</title>h", "task": "h"}, "task:hhh")
-            time.sleep(2.2)
+            time.sleep(5.0)
             B.call_sync("tabs_heartbeat", {}, "task:ggg")
-            time.sleep(1.4)
+            time.sleep(2.5)
             sw = B.call_sync("tabs_sweep_now", {}, "task:any")
             ids = chrome.settle([x["target_id"] for x in sw.get("closed", [])])
             closed = {x["target_id"]: x["reason"] for x in sw.get("closed", [])}
