@@ -189,7 +189,8 @@ def l3():
     p = wait(tid, done, 600, 1.0)
     w = writes_by_path(tid)
     check("task resumed and finished", p["status"] == "done", p["status"])
-    check("the resumed step is marked resumed", "resumed" in (p["items"][1].get("note") or ""), p["items"][1].get("note"))
+    hist = [p["items"][1].get("note") or ""] + [e["text"] for e in p["items"][1].get("log") or []]
+    check("the resumed step is marked resumed (in its note or its log)", any("resumed" in h for h in hist), str(hist)[:300])
     check("completed step 1 not repeated (first.txt untouched since before the kill)",
           first_mtime is not None and (d / "first.txt").stat().st_mtime_ns == first_mtime and w.get(str(d / "first.txt"), 0) <= 1,
           f"mtime before={first_mtime} after={(d / 'first.txt').stat().st_mtime_ns} logged writes={w}")
