@@ -23,7 +23,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("xod.outcomes")
 
@@ -36,7 +36,8 @@ SIDE_EFFECT_TOOLS = {
     "agent_mail_send", "browser_interact", "browser_run_mission", "phone", "tailscale_files",
 }
 # Sending twice is a second message; writing the same bytes twice is the same file.
-NON_IDEMPOTENT = {"agent_mail_send", "phone", "tailscale_files", "browser_run_mission", "browser_interact",
+SIDE_EFFECT_TOOLS.add("test_send")
+NON_IDEMPOTENT = {"test_send", "agent_mail_send", "phone", "tailscale_files", "browser_run_mission", "browser_interact",
                   "computer_run_applescript", "computer_start_job"}
 
 # tool -> fn(args) -> (outcome, evidence): read the destination now. Tests register their own.
@@ -72,6 +73,19 @@ def _file_verifier(args: Dict[str, Any]) -> Tuple[str, str]:
         return UNKNOWN, f"could not read {p} back: {e}"
 
 
+def _test_send_verifier(args: Dict[str, Any]) -> Tuple[str, str]:
+    """The test inbox is the destination: read it back."""
+    import urllib.parse
+    import urllib.request
+    try:
+        url = str(args.get("url", "")).rstrip("/") + "/inbox?" + urllib.parse.urlencode({"text": args.get("text", "")})
+        n = json.loads(urllib.request.urlopen(url, timeout=3).read()).get("count", 0)
+    except Exception as e:
+        return UNKNOWN, f"the inbox could not be read ({type(e).__name__})"
+    return (CONFIRMED, f"found in the inbox ({n})") if n else (FAILED, "not in the inbox")
+
+
+VERIFIERS["test_send"] = _test_send_verifier
 VERIFIERS["computer_write_file"] = _file_verifier
 VERIFIERS["fs_write_workspace_file"] = _file_verifier
 
@@ -90,6 +104,9 @@ def _conn() -> sqlite3.Connection:
 def args_hash(args: Dict[str, Any]) -> str:
     clean = {k: v for k, v in (args or {}).items() if not str(k).startswith("_")}
     return hashlib.sha256(json.dumps(clean, sort_keys=True, default=str).encode()).hexdigest()[:24]
+
+
+ARGS_SEEN: Dict[str, Dict[str, Any]] = {}     # args_hash -> args, so an UNKNOWN can be re-checked later
 
 
 def _record(origin: str, tool: str, h: str, outcome: str, evidence: str) -> None:
@@ -201,6 +218,40 @@ def _job_for(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
 
 
+def unresolved_unknowns(origin: str, since: float = 0) -> List[Dict[str, Any]]:
+    c = _conn()
+    rows = c.execute("SELECT * FROM tool_outcomes WHERE origin = ? AND outcome = 'UNKNOWN' AND resolved_at IS NULL "
+                     "AND created_at >= ?", (origin, since)).fetchall()
+    c.close()
+    return [dict(r) for r in rows]
+
+
+async def resolve_unknowns(origin: str, args_by_hash: Dict[str, Dict[str, Any]], since: float = 0,
+                           wait_sec: float = 120, every: float = 3.0) -> List[Dict[str, Any]]:
+    """An UNKNOWN outcome is checked at its destination before the work is judged: polled until the
+    destination answers (CONFIRMED or FAILED) or the wait ends. Returns the settled rows."""
+    import asyncio
+    out = []
+    for row in unresolved_unknowns(origin, since):
+        verify = VERIFIERS.get(row["tool"])
+        args = args_by_hash.get(row["args_hash"])
+        if not verify or args is None:
+            out.append({**row, "final": UNKNOWN, "evidence": "no way to read the destination"})
+            continue
+        deadline = time.time() + wait_sec
+        outcome, evidence = UNKNOWN, ""
+        while time.time() < deadline:
+            outcome, evidence = verify(args)
+            if outcome != UNKNOWN:
+                break
+            await asyncio.sleep(every)
+        if outcome != UNKNOWN:
+            _resolve(row["id"], outcome)
+            _record(origin, row["tool"], row["args_hash"], outcome, f"checked after the call broke off: {evidence}")
+        out.append({**row, "final": outcome, "evidence": evidence})
+    return out
+
+
 def settle(origin: str, tool: str, args: Dict[str, Any], result: Any = None,
            error: Optional[BaseException] = None) -> Dict[str, Any]:
     """After a side-effecting call (or its exception): records and returns its outcome, adding
@@ -210,6 +261,7 @@ def settle(origin: str, tool: str, args: Dict[str, Any], result: Any = None,
             raise error
         return result
     h = args_hash(args)
+    ARGS_SEEN[h] = {k: v for k, v in (args or {}).items() if not str(k).startswith("_")}
     verify = VERIFIERS.get(tool)
     if error is not None:
         if verify:

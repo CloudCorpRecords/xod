@@ -66,6 +66,12 @@ async def fake_agent(brief, wid):
         yield {"type": "tool_result", "name": "web_search", "data": {"success": False, "error": payload}}
         rec["end"] = time.time()
         return
+    if kind == "fail_quietly":
+        # Every tool failed, yet the worker still writes a confident-looking report.
+        yield {"type": "tool_result", "name": "computer_read_file", "data": {"success": False, "error": payload}}
+        yield {"type": "content", "content": "Here is what the source says."}
+        rec["end"] = time.time()
+        return
     yield {"type": "tool_result", "name": "web_search", "data": {"success": True, "results": [payload]}}
     yield {"type": "content", "content": payload}
     rec["end"] = time.time()
@@ -269,6 +275,41 @@ async def w4b_job_not_restarted(q):
     check("and that new run is guarded the same way", r5.get("already_done") and starts["n"] == 2)
 
 
+async def w8_resolve_unknowns(q):
+    print("W8 an UNKNOWN is checked at its destination before the work is judged")
+    origin = f"task:w8-{uuid.uuid4().hex[:6]}"
+    dest, up = [], {"v": False}
+
+    def verifier(args):
+        if not up["v"]:
+            return OC.UNKNOWN, "unreachable"
+        return (OC.CONFIRMED, "in inbox") if args["text"] in dest else (OC.FAILED, "not in inbox")
+    OC.VERIFIERS["test_send"] = verifier
+    args = {"url": "http://x", "text": f"m-{uuid.uuid4().hex[:4]}"}
+    dest.append(args["text"])
+    OC.settle(origin, "test_send", args, error=ConnectionResetError("dropped"))
+
+    async def come_back():
+        await asyncio.sleep(0.5)
+        up["v"] = True
+    asyncio.ensure_future(come_back())
+    got = await OC.resolve_unknowns(origin, OC.ARGS_SEEN, wait_sec=5, every=0.1)
+    check("UNKNOWN waited for the destination and resolved CONFIRMED", [g["final"] for g in got] == [OC.CONFIRMED], str(got)[:200])
+    check("and nothing is left unresolved", OC.unresolved_unknowns(origin) == [])
+    OC.VERIFIERS.pop("test_send", None)
+
+
+async def w9_failed_sources(q):
+    print("W9 a worker whose every source failed counts as failed")
+    tag = uuid.uuid4().hex[:4]
+    jobs = [f"Source ok {tag}", f"Source broken {tag}"]
+    JOB_SCRIPT[jobs[0]] = ("answer", "fine")
+    JOB_SCRIPT[jobs[1]] = ("fail_quietly", "file not found")
+    r = await W.coordinate("w9", "two sources", [{"task": j} for j in jobs])
+    check("the broken source is itemized as failed, with why",
+          [f["task"] for f in r["failures"]] == [jobs[1]] and "file not found" in r["failures"][0]["why"], json.dumps(r["failures"])[:200])
+
+
 async def w5_file_confirmed(q):
     print("W5 a real file write is CONFIRMED by read-back")
     p = TMP / "w5" / "note.txt"
@@ -325,6 +366,8 @@ async def main(repeat):
         await w4_unknown(q)
         await w4b_job_not_restarted(q)
         await w5_file_confirmed(q)
+        await w8_resolve_unknowns(q)
+        await w9_failed_sources(q)
         await w6_cancel_fanout(q)
         if r == 0:
             await w7_orphans(q)

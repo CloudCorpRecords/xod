@@ -811,6 +811,21 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 save_plan(task_id, items, instr)
                 continue
             job_problems, job_evidence = _job_problems(jobs)
+            # Unknown is not failed (spec section 9): an action of this step that broke off is checked at
+            # its destination (waiting for it to become readable) before the step is judged.
+            try:
+                from app.services import outcomes
+                settled = await outcomes.resolve_unknowns(f"task:{task_id}", outcomes.ARGS_SEEN,
+                                                          since=step.get("started_at") or began)
+            except Exception:
+                settled = []
+            for u in settled:
+                if u["final"] == "CONFIRMED":
+                    job_evidence.append(f"{u['tool']} broke off but landed: {u['evidence']}")
+                elif u["final"] == "FAILED":
+                    job_problems.append(f"{u['tool']} broke off and did not land ({u['evidence']}); it may be retried once")
+                else:
+                    job_problems.append(f"{u['tool']} outcome is still UNKNOWN ({u['evidence']}); not retried blindly")
             problems = q._verify_file_effects({"id": task_id, "request": step["text"]}, began)
             own = None if step.get("parallel") else _self_report_problem(step["text"], report)
             if own and jobs and not job_problems:

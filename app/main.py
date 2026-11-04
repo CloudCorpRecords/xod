@@ -557,6 +557,48 @@ async def steer_worker(worker_id: str, req: WorkerSteerRequest):
     return workers.steer(worker_id, req.body, now=req.now, source="user", kind=req.kind)
 
 
+if os.environ.get("XOD_TEST_HOOKS") == "1":
+    # Acceptance-test hooks: only on a dev instance started with XOD_TEST_HOOKS=1.
+    class _TestSpawn(BaseModel):
+        parent: str = "acceptance"
+        jobs: List[Dict[str, Any]]
+
+    @app.post("/api/test/workers/spawn")
+    async def _test_spawn_workers(req: _TestSpawn):
+        from app.services import workers
+        return {"ids": [workers.spawn(req.parent, j["task"], needs=j.get("needs")) for j in req.jobs]}
+
+    @app.post("/api/test/workers/{worker_id}/freeze")
+    async def _test_freeze_worker(worker_id: str, on: bool = True):
+        from app.services import workers
+        (workers._frozen.add if on else workers._frozen.discard)(worker_id)
+        return {"frozen": sorted(workers._frozen)}
+
+    @app.post("/api/test/workers/watchdog")
+    async def _test_worker_watchdog(stall_sec: float, stop_sec: float):
+        from app.services import workers
+        return await workers.run_watchdog(stall_sec=stall_sec, stop_sec=stop_sec)
+
+    @app.post("/api/test/workers/{worker_id}/kill")
+    async def _test_kill_worker(worker_id: str):
+        """A worker that dies without cleaning up: its run is cancelled, its claims are NOT released
+        (the heartbeat simply stops), exactly like a crashed holder."""
+        from app.services import workers, resources
+        run = workers._runs.get(worker_id)
+        orig = resources.release_holder
+        resources.release_holder = lambda holder: 0
+        try:
+            if run is not None:
+                run.cancel()
+                try:
+                    await run
+                except BaseException:
+                    pass
+        finally:
+            resources.release_holder = orig
+        return {"killed": worker_id}
+
+
 @app.get("/api/resources")
 async def resources_status():
     from app.services import resources

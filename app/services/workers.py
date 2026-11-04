@@ -233,6 +233,8 @@ async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
     """One agent turn. Returns 'done', or 'interrupted' when an urgent steer cut it short."""
     async def consume():
         async for ev in agent(prompt, wid):
+            while wid in _frozen:          # test hook: a frozen worker makes no progress at all
+                await asyncio.sleep(0.2)
             t = ev.get("type")
             if t == "content":
                 piece = ev.get("content", "")
@@ -355,6 +357,7 @@ async def _run(wid: str, brief: str, env: str, needs: Optional[List[str]] = None
 
 
 _applied_now: Dict[str, List[str]] = {}
+_frozen: set = set()       # test hook only (XOD_TEST_HOOKS=1): workers whose progress is held
 
 
 async def wait(worker_ids: List[str], timeout: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
@@ -523,6 +526,8 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
         r = w.get("result") or {}
         state = w.get("shown_state") or w.get("state")
         outcome = r.get("outcome") or state
+        if outcome == "done" and r.get("failures") and not r.get("evidence"):
+            outcome = "failed"     # every source it tried failed: its "answer" rests on nothing
         entry = {"id": wid, "task": s["task"], "outcome": outcome, "report": r.get("report", ""),
                  "evidence": r.get("evidence", []), "failures": r.get("failures", [])}
         per.append(entry)

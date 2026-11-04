@@ -3873,8 +3873,29 @@ async def _desktop(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
     return res
 
 
+TEST_HOOKS = os.environ.get("XOD_TEST_HOOKS") == "1"
+if TEST_HOOKS:
+    # A test-only side-effecting action for the acceptance suite (spec section 9: "kill the network
+    # mid-send on a test action"). Only on a dev instance started with XOD_TEST_HOOKS=1.
+    TOOL_DEFINITIONS.append({"type": "function", "function": {
+        "name": "test_send",
+        "description": "TEST ONLY. Sends a message to a test inbox at a URL (HTTP POST). Use when the task says to use test_send.",
+        "parameters": {"type": "object", "properties": {"url": {"type": "string"}, "text": {"type": "string"}},
+                       "required": ["url", "text"]}}})
+
+
+async def _test_send(a: Dict[str, Any]) -> Dict[str, Any]:
+    import urllib.request
+    req = urllib.request.Request(str(a["url"]).rstrip("/") + "/send", data=json.dumps({"text": a["text"]}).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+    body = await asyncio.to_thread(lambda: urllib.request.urlopen(req, timeout=10).read())
+    return {"success": True, "response": body.decode()[:200]}
+
+
 async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None) -> Dict[str, Any]:
     """Dispatches tool execution to the appropriate service."""
+    if name == "test_send" and TEST_HOOKS:
+        return await _test_send(arguments or {})
     if name.startswith("mcp__"):
         from app.services.mcp_client import mcp_hub
         return await mcp_hub.call(name, arguments or {})
@@ -5079,6 +5100,7 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
     # Foundational pillars always available to the agent for autonomous planning
     selected_names = [
         "xod_task",
+        *(["test_send"] if TEST_HOOKS else []),
         "computer_inspect_system",
         "computer_inspect_port",
         "computer_run_command",
