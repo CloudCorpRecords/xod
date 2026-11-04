@@ -1061,6 +1061,11 @@ class TaskQueue:
                     # forced cancel unwinding through this loop): no tool child of
                     # this task survives the task.
                     await self._sweep_tool_children(r["id"])
+                    try:   # a task that stopped running holds no device (services/resources.py)
+                        from app.services import resources
+                        resources.release_holder(f"task:{r['id']}")
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.exception(f"Task worker error: {e}")
                 await asyncio.sleep(3)

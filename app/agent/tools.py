@@ -3326,6 +3326,18 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     answered = _outcomes.guard(_origin, name, arguments or {})
     if answered is not None:
         return answered
+    # Orchestrator Phase 3: capacity-1 resources (the browser, the Mac's screen, each phone) are
+    # claimed before use, sticky per holder, so two lanes never interleave on one device. A busy
+    # resource is defer-and-recheck: wait in the queue with the reason recorded, then say so.
+    from app.services import resources as _resources
+    _res = _resources.resource_for(name, arguments or {})
+    if _res:
+        _chat = _origin.startswith("chat")
+        _got = await _resources.wait_for(_res, _origin, max_wait=30 if _chat else 600, ttl=45 if _chat else 120)
+        if not _got["granted"]:
+            return {"success": False, "deferred": True, "resource": _res,
+                    "error": f"{_res} is busy ({_got.get('reason') or 'held by another lane'}). Nothing was done; "
+                             "it can be tried again once that work finishes."}
     try:
         result = await _execute_tool(name, arguments, active_workspace_path)
     except asyncio.CancelledError:
