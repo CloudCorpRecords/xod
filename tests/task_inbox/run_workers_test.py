@@ -328,8 +328,7 @@ async def main(repeat):
         await w6_cancel_fanout(q)
         if r == 0:
             await w7_orphans(q)
-        q._worker.cancel()
-        q._watchdog.cancel()
+        q.stop()
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
     if failed:

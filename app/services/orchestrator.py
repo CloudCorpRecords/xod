@@ -395,6 +395,36 @@ def _ops_summary(task_id: str, since: float) -> List[str]:
     return out
 
 
+def task_memory(task_id: str) -> Optional[Dict[str, Any]]:
+    c = _conn()
+    r = c.execute("SELECT memory_json FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    c.close()
+    try:
+        return json.loads(r["memory_json"]) if r and r["memory_json"] else None
+    except Exception:
+        return None
+
+
+async def _search_memory_first(q: Any, task_id: str, request: str) -> Dict[str, Any]:
+    """The mandatory pre-work step (spec section 8): memory is searched before any planning, once
+    per task, and the result (each fact with where it was learned) is stored on the task."""
+    mem = task_memory(task_id)
+    if mem is not None:
+        return mem
+    from app.services import memory_layers
+    try:
+        mem = await memory_layers.search_before_work(request)
+    except Exception as e:
+        mem = {"facts": [], "past": [], "error": str(e)}
+    c = _conn()
+    c.execute("UPDATE tasks SET memory_json = ? WHERE id = ?", (json.dumps(mem), task_id))
+    c.commit()
+    c.close()
+    q._progress(task_id, f"• Searched memory first: {len(mem.get('facts') or [])} fact(s), "
+                         f"{len(mem.get('past') or [])} related past item(s)")
+    return mem
+
+
 def _step_prompt(task: Dict[str, Any], items: List[Dict[str, Any]], instructions: List[str],
                  step: Dict[str, Any], prior_ops: List[str]) -> str:
     live = [i for i in items if i["status"] != "cancelled"]
@@ -402,6 +432,13 @@ def _step_prompt(task: Dict[str, Any], items: List[Dict[str, Any]], instructions
     done = [i for i in items if i["status"] == "completed"]
     parts = ["You are carrying out ONE step of a larger task for the person.",
              f"\nThe overall task:\n{task['request']}"]
+    try:
+        from app.services import memory_layers
+        mem_text = memory_layers.render(task_memory(task["id"]))
+    except Exception:
+        mem_text = ""
+    if mem_text:
+        parts.append("\n" + mem_text)
     if instructions:
         parts.append("\nChanges the person made since the task started (newest last; they win over the "
                      "original wording wherever they conflict):\n" + "\n".join(f"- {x}" for x in instructions))
@@ -501,6 +538,8 @@ async def _run_parallel(q: Any, task_id: str, step: Dict[str, Any], instructions
     Returns (report, steps, interrupted, problem)."""
     from app.services import workers
     facts = [f"The person's standing instruction: {x}" for x in instructions]
+    for f in (task_memory(task_id) or {}).get("facts") or []:
+        facts.append(f"From memory: {f['text']} (learned from: {f['source']}, {f['learned']})")
     jobs = [{"task": j, "facts": facts} for j in step["parallel"]]
     q._progress(task_id, f"⚡ Fanning out {len(jobs)} parallel read-only jobs")
     # A fan-out interrupted earlier (a restart) keeps the jobs its workers already finished.
@@ -646,6 +685,21 @@ def _self_report_problem(step_text: str, report: str) -> Optional[str]:
     return None
 
 
+def _flag_section(items: List[Dict[str, Any]]) -> str:
+    seen, lines = set(), []
+    for i in items:
+        for f in i.get("flags") or []:
+            if f["quote"] in seen:
+                continue
+            seen.add(f["quote"])
+            lines.append(f"- \"{f['quote'][:240]}\" (found by {f['tool']}; not followed"
+                         + (f"; nothing was sent to {', '.join(f['addresses'][:2])}" if f.get("addresses") else "") + ")")
+    if not lines:
+        return ""
+    return ("\n\nFlagged: content I read contained instructions aimed at an AI. They came from the content, not "
+            "from you, so I did not follow them:\n" + "\n".join(lines))
+
+
 def _final_report(items: List[Dict[str, Any]]) -> str:
     marks = {"completed": "✓", "cancelled": "–", "blocked": "✗", "pending": "·", "in_progress": "…"}
     last = next((i for i in reversed(items) if i["status"] == "completed" and i.get("result")), None)
@@ -663,16 +717,16 @@ def _final_report(items: List[Dict[str, Any]]) -> str:
                 lines.append(f"   unread/failed: {f['task'][:100]} ({f['outcome']}: {f['why'][:160]})")
         else:
             lines.append(f"{marks['cancelled']} (dropped) {i['text']}" + (f" ({i['note']})" if i.get("note") else ""))
-    return "\n".join(lines)
+    return "\n".join(lines) + _flag_section(items)
 
 
 async def run_stepwise(q: Any, task_id: str) -> None:
     """The background execution of one orchestrated task, from wherever its plan stands."""
     task = q.get(task_id)
-    q._running_id = task_id
     q._update(task_id, status="working", now="Starting…" if not task.get("plan_json") else "Picking up where it stood")
     q._touch_progress(task_id)
     try:
+        await _search_memory_first(q, task_id, task["request"])
         items, version, instr = load_plan(task_id)
         if not items:
             q._progress(task_id, "• Planning the steps")
@@ -691,11 +745,9 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             version = save_plan(task_id, items, instr, bump=True, why="first plan")
             q._progress(task_id, f"• Plan ready: {len(items)} step(s)")
         steps = task.get("steps") or 0
-        try:
-            await q._ensure_tab(task, False)   # a page of its own for any browser work, as classic tasks have
-        except Exception as e:
-            logger.info(f"Task {task_id}: no browser tab ({e}); continuing without one")
-        resume_msg = _take_resume(q, task_id, task)
+        # No browser tab is grabbed up front: tasks run side by side, and the browser is claimed (and
+        # its global mission state touched) only by a task that actually uses it (services/resources.py).
+        resume_msg = await _take_resume(q, task_id, task)
         while True:
             stop = await _apply_inbox(q, task_id, task)
             if stop:
@@ -778,6 +830,13 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 q._progress(task_id, f"🔄 Step {k} did not check out; trying it once more")
                 continue
             step["evidence"] = _ops_summary(task_id, step["started_at"] or began) + job_evidence
+            try:   # instructions found inside content this step read: recorded by code, reported, never followed
+                from app.services import sentinel
+                flags = sentinel.flags_for(f"task:{task_id}", step["started_at"] or began)
+                if flags:
+                    step["flags"] = [{"quote": f["quote"], "tool": f["tool"], "addresses": f["targets"][:5]} for f in flags]
+            except Exception:
+                pass
             step["result"] = (report or "")[:4000]
             step["finished_at"] = time.time()
             if problems:
@@ -791,8 +850,6 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             save_plan(task_id, items, instr)
             q._progress(task_id, f"✓ Step {k}/{n_live} done")
     finally:
-        if q._running_id == task_id:
-            q._running_id = None
         q._cancel_requested.discard(task_id)
         q._cancel_at.pop(task_id, None)
         esc = q._escalations.pop(task_id, None)
@@ -818,7 +875,13 @@ def _paused_on_person(q: Any, task_id: str, items: List[Dict[str, Any]], instr: 
     when the run must stop here."""
     try:
         from app.services.browser_sandbox import browser_sandbox_service as sb
+        from app.services import resources
     except Exception:
+        return False
+    # The browser's mission state belongs to whichever task holds the browser; a task that never
+    # held it this step cannot have been stopped by it (tasks run side by side).
+    holders = [h["holder_id"] for r in resources.status("browser") for h in r["holders"]]
+    if f"task:{task_id}" not in holders:
         return False
     mission = sb.latest_mission
     status = (mission or {}).get("status")
@@ -859,7 +922,7 @@ def _paused_on_person(q: Any, task_id: str, items: List[Dict[str, Any]], instr: 
     return True
 
 
-def _take_resume(q: Any, task_id: str, task: Dict[str, Any]) -> Optional[str]:
+async def _take_resume(q: Any, task_id: str, task: Dict[str, Any]) -> Optional[str]:
     """When the person approved or answered a waiting step: that step goes back in progress,
     the paused page's mission and pending approval are restored, and the message that
     continues it ("go ahead", or their answer) is returned for the step's next run."""
@@ -868,6 +931,11 @@ def _take_resume(q: Any, task_id: str, task: Dict[str, Any]) -> Optional[str]:
     step = next((i for i in items if i["status"] == "blocked" and i.get("waiting")), None)
     if step is None or action.get("type") not in ("approve", "continue"):
         return None
+    if task.get("mission_json") or task.get("pending_json"):
+        # Restoring the paused page's mission touches the browser's global state: only with the browser held.
+        from app.services import resources
+        q._progress(task_id, "⏳ Waiting for the browser to continue the paused page")
+        await resources.wait_for("browser", f"task:{task_id}", max_wait=3600)
     try:
         from app.services.browser_sandbox import browser_sandbox_service as sb
         if task.get("mission_json"):
@@ -905,3 +973,92 @@ def reopen(task_id: str) -> None:
             i["started_at"] = None
             i["note"] = "re-opened by your retry"
     save_plan(task_id, items, instr, bump=True, why="retry")
+
+
+# --------------------------------------------------------------------- the pool: tasks side by side
+POOL_SIZE = 3
+_pool: Dict[str, asyncio.Task] = {}
+_pool_loop: Optional[asyncio.Task] = None
+_pool_wake: Optional[asyncio.Event] = None
+
+
+def wake_pool(loop: Any = None) -> None:
+    if _pool_wake is None:
+        return
+    if loop is not None:
+        loop.call_soon_threadsafe(_pool_wake.set)
+    else:
+        _pool_wake.set()
+
+
+def _claim_next() -> Optional[str]:
+    """Atomically takes the oldest queued orchestrated task (one runner per task, even if two
+    pools share the database)."""
+    c = _conn()
+    r = c.execute("SELECT id FROM tasks WHERE status = 'queued' AND mode = 'stepwise' ORDER BY updated_at ASC LIMIT 1").fetchone()
+    if not r:
+        c.close()
+        return None
+    n = c.execute("UPDATE tasks SET status = 'working', updated_at = ? WHERE id = ? AND status = 'queued'",
+                  (time.time(), r["id"])).rowcount
+    c.commit()
+    c.close()
+    return r["id"] if n else None
+
+
+async def _pool_run(q: Any, task_id: str) -> None:
+    from app.services import activity, resources
+    activity.origin.set(f"task:{task_id}")
+    try:
+        await run_stepwise(q, task_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.exception(f"Task {task_id} failed")
+        q._update(task_id, note=f"Error: {e}", status="failed", finished_at=time.time(),
+                  result=f"Something went wrong inside Xod: {e}", now="Stopped", next_action=None)
+    finally:
+        try:
+            await q._sweep_tool_children(task_id)
+        except Exception:
+            pass
+        resources.release_holder(f"task:{task_id}")
+        _pool.pop(task_id, None)
+        wake_pool()
+
+
+async def _pool_main(q: Any) -> None:
+    while True:
+        try:
+            while len([t for t in _pool.values() if not t.done()]) < POOL_SIZE:
+                tid = _claim_next()
+                if not tid:
+                    break
+                _pool[tid] = asyncio.ensure_future(_pool_run(q, tid))
+            _pool_wake.clear()
+            try:
+                await asyncio.wait_for(_pool_wake.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("orchestrator pool")
+            await asyncio.sleep(2)
+
+
+def start_pool(q: Any) -> None:
+    global _pool_loop, _pool_wake
+    _pool_wake = asyncio.Event()
+    if _pool_loop is None or _pool_loop.done():
+        _pool_loop = asyncio.ensure_future(_pool_main(q))
+
+
+def stop_pool() -> None:
+    global _pool_loop
+    if _pool_loop is not None:
+        _pool_loop.cancel()
+        _pool_loop = None
+    for t in list(_pool.values()):
+        t.cancel()
+    _pool.clear()

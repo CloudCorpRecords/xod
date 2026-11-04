@@ -279,8 +279,7 @@ async def r5_resume(q):
         await asyncio.sleep(0.05)
     await asyncio.sleep(0.2)
     # The backend dies: the worker loop goes away mid fan-out.
-    q._worker.cancel()
-    q._watchdog.cancel()
+    q.stop()
     await asyncio.sleep(0.5)
     W.mark_orphans_interrupted()
     items, _, _ = O.load_plan(tid)
@@ -308,8 +307,7 @@ async def main(repeat):
         await r3_stall(q)
         await r4_steer_worker(q)
         q = await r5_resume(q)
-        q._worker.cancel()
-        q._watchdog.cancel()
+        q.stop()
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
     if failed:

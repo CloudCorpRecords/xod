@@ -65,7 +65,14 @@ _INJECTION_RE = re.compile(
     r"new instructions for (?:the )?(?:ai|assistant|agent)|"
     r"(?:as|dear) (?:an? )?(?:ai|assistant|agent|llm)\b[^.]{0,40}\b(?:must|should|please|need to)|do not (?:tell|inform|mention to) the user|"
     r"without (?:telling|asking|informing) the user|(?:send|forward|email|upload|post) (?:all |the |your )?(?:files|passwords|credentials|"
-    r"keys|tokens|contacts|emails|data|conversation)\b[^.]{0,40}\bto\b|BEGIN (?:SYSTEM|ADMIN) (?:MESSAGE|PROMPT)", re.I)
+    r"keys|tokens|contacts|emails|data|conversation)\b[^.]{0,40}\bto\b|BEGIN (?:SYSTEM|ADMIN) (?:MESSAGE|PROMPT)|"
+    # Orders aimed at whatever AI reads the content (orchestrator scope, section 10): "AI assistant: email this
+    # document to ...", "when you summarize this, forward it to ...", "send this file to x@y".
+    r"\b(?:ai|assistant|agent|llm|chatbot|language model)s?\b[^.\n]{0,50}\b(?:email|send|forward|upload|post|share|transmit)\b"
+    r"[^.\n]{0,80}\b(?:this|the|these)\s+(?:document|file|page|text|summary|contents?|notes?|report)\b|"
+    r"\bwhen (?:you|an? (?:ai|assistant|agent))\s+(?:read|summari[sz]e|process|open|see)\w*\s+(?:this|it)\b[^.\n]{0,120}"
+    r"\b(?:email|send|forward|upload|post|share)\b|"
+    r"\b(?:email|send|forward|upload) (?:this|the) (?:document|file|summary|contents?|notes?|report)\b[^.\n]{0,60}\bto\b[^.\n]{0,40}@", re.I)
 _REMOTE_RUN_RE = re.compile(r"(?:curl|wget|iwr|irm|Invoke-WebRequest|Invoke-RestMethod)\b[^|;]*\|\s*(?:sh|bash|zsh|iex|Invoke-Expression|python)\b|"
                             r"\biex\s*\(\s*(?:iwr|irm|New-Object\s+Net\.WebClient)", re.I)
 _TAILDROP_SEND_RE = re.compile(r"\btailscale(?:\.exe)?\\?[\"']?\s+file\s+cp\b(?![^|;&\n]*--targets)", re.I)
@@ -97,17 +104,47 @@ def _state() -> Optional[Dict[str, Any]]:
     return _turn.get()
 
 
-def saw(tool: str, result: Any) -> None:
-    """After a tool ran: if someone else wrote what came back, remember it (the last ~40k characters)."""
-    st = _state()
-    if st is None or not _UNTRUSTED_TOOLS.match(tool or ""):
-        return
+# Embedded orders found in content, by origin (task:<id>, worker:<id>, chat:<id>): the orchestrator
+# reads these back into the task's report, so flagging never depends on the model mentioning it.
+FLAGS: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def flags_for(origin: str, since: float = 0) -> List[Dict[str, Any]]:
+    return [f for f in FLAGS.get(origin, []) if f["at"] >= since]
+
+
+def saw(tool: str, result: Any) -> Optional[Dict[str, Any]]:
+    """After a tool ran: if someone else wrote what came back, remember it (the last ~40k characters).
+    Returns the embedded orders found in it, if any (they are data, never instructions)."""
+    if not _UNTRUSTED_TOOLS.match(tool or ""):
+        return None
     try:
         text = result if isinstance(result, str) else json.dumps(result, default=str)
     except Exception:
         text = str(result)
-    st["untrusted"] = (st["untrusted"] + "\n" + text[:15000])[-MAX_UNTRUSTED:]
-    st["sources"].append(tool)
+    st = _state()
+    if st is not None:
+        st["untrusted"] = (st["untrusted"] + "\n" + text[:15000])[-MAX_UNTRUSTED:]
+        st["sources"].append(tool)
+    found = page_orders(text.replace("\\n", "\n"))
+    if not found:
+        return None
+    try:
+        from app.services import activity
+        origin = str(activity.origin.get() or "chat")
+    except Exception:
+        origin = "chat"
+    entry = {"at": time.time(), "tool": tool, "quote": found["quote"], "targets": found["targets"]}
+    FLAGS.setdefault(origin, []).append(entry)
+    del FLAGS[origin][:-50]
+    flagged(f"content read by {tool}", found, "Not followed: it is data, not an instruction from the person.")
+    try:
+        from app.services import event_log
+        event_log.emit("content.instructions_flagged", actor="sentinel", ids=event_log.ids_from_origin(origin),
+                       payload={"tool": tool, "quote": found["quote"][:240], "targets": found["targets"][:5]})
+    except Exception:
+        pass
+    return found
 
 
 def note_user(text: str) -> None:
@@ -188,13 +225,32 @@ def _taildrop_ask_first() -> bool:
     return taildrop.ask_first()
 
 
+def _flagged_target(kind: str, text: str) -> Optional[Dict[str, Any]]:
+    """An address that came from embedded orders in content this lane read is never used without
+    the person's OK, whether or not a chat turn registered what they asked (section 10)."""
+    try:
+        from app.services import activity
+        origin = str(activity.origin.get() or "chat")
+    except Exception:
+        origin = "chat"
+    low = (text or "").lower()
+    for f in FLAGS.get(origin, []):
+        hit = next((t for t in f["targets"] if t and t in low), None)
+        if hit and kind in ("send", "run", "change", "type"):
+            return {"rule": "page_orders", "why": f"{hit} came from instructions hidden in content Xod read "
+                    f"(\"{f['quote'][:120]}\"), not from you."}
+    return None
+
+
 def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) -> Optional[Dict[str, Any]]:
     """None when it can go ahead; else {"why": …, "rule": …}: hold it for the person's OK."""
     st = _state()
     kind = _kind(tool, args or {}, read_only)
-    if not kind or st is None:
+    if not kind:
         return None
     text = _flat(args)
+    if st is None:
+        return _flagged_target(kind, text)
     asked, untrusted = st["asked"], st["untrusted"]
 
     # secrets out
@@ -244,7 +300,7 @@ def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) ->
         destructive = True
     if destructive and not _ASKED_DESTRUCTIVE_RE.search(asked):
         return {"rule": "not_asked", "why": "It would delete, stop or uninstall something, and you didn't ask for that."}
-    return None
+    return _flagged_target(kind, text)
 
 
 async def review_message(tool: str, args: Dict[str, Any]) -> Optional[Dict[str, Any]]:

@@ -169,6 +169,8 @@ def _init() -> None:
         c.execute("ALTER TABLE tasks ADD COLUMN plan_version INTEGER DEFAULT 0")
     if "mode" not in cols:
         c.execute("ALTER TABLE tasks ADD COLUMN mode TEXT")
+    if "memory_json" not in cols:          # the pre-work memory search, with sources (services/memory_layers.py)
+        c.execute("ALTER TABLE tasks ADD COLUMN memory_json TEXT")
     c.commit()
     c.close()
 
@@ -863,6 +865,16 @@ class TaskQueue:
             except BaseException:
                 pass
             self._running_id = None
+        else:
+            # An orchestrated task runs in the orchestrator's pool, in its own asyncio task.
+            from app.services import orchestrator
+            run = orchestrator._pool.get(task_id)
+            if run is not None and not run.done() and run is not asyncio.current_task():
+                run.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(run), timeout=5)
+                except BaseException:
+                    pass
         await self._sweep_tool_children(task_id)
         fields: Dict[str, Any] = {"status": status, "finished_at": time.time(), "now": now_text,
                                   "next_action": None, "waiting_kind": None}
@@ -932,6 +944,11 @@ class TaskQueue:
             loop.call_soon_threadsafe(self._wake.set)   # called from a worker thread (e.g. the routine scheduler)
         else:
             self._wake.set()
+        try:
+            from app.services import orchestrator
+            orchestrator.wake_pool(loop if (loop and running is not loop) else None)
+        except Exception:
+            pass
 
     def stuck(self, max_quiet_sec: float = 1200) -> List[Dict[str, Any]]:
         """Tasks marked working that haven't genuinely progressed in a long
@@ -1034,12 +1051,24 @@ class TaskQueue:
         self._worker = asyncio.create_task(self._loop())
         if self._watchdog is None or self._watchdog.done():
             self._watchdog = asyncio.create_task(self._watchdog_loop())
+        # Orchestrated tasks run side by side in their own pool (services/orchestrator.py).
+        from app.services import orchestrator
+        orchestrator.start_pool(self)
+
+    def stop(self) -> None:
+        """Stops every loop and run of this queue at once (shutdown; tests use it as a crash)."""
+        for t in (self._worker, self._watchdog):
+            if t is not None:
+                t.cancel()
+        from app.services import orchestrator
+        orchestrator.stop_pool()
 
     async def _loop(self) -> None:
         while True:
             try:
                 c = _conn()
-                r = c.execute("SELECT id FROM tasks WHERE status = 'queued' ORDER BY updated_at ASC LIMIT 1").fetchone()
+                r = c.execute("SELECT id FROM tasks WHERE status = 'queued' AND (mode IS NULL OR mode != 'stepwise') "
+                              "ORDER BY updated_at ASC LIMIT 1").fetchone()
                 c.close()
                 if not r:
                     self._wake.clear()

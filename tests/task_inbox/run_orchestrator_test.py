@@ -46,6 +46,17 @@ async def _no_tab(self, task, resuming):
 
 
 TQ.TaskQueue._ensure_tab = _no_tab      # no Chrome in this suite
+from app.agent import tools as _tools_mod
+_real_exec = _tools_mod._execute_tool
+
+
+async def _fake_exec(name, args, ws=None):
+    if name.startswith("browser_"):
+        return {"success": True}          # no Chrome: the browser call itself is a no-op here
+    return await _real_exec(name, args, ws)
+
+
+_tools_mod._execute_tool = _fake_exec
 GATED = {}             # step text -> label of a submit button the fake page stops at
 HEDGE = {}             # step text -> times run; the first report hedges
 JOBS_STARTED = []      # commands the fake agent started as real background jobs
@@ -98,6 +109,9 @@ class FakeResearcher:
             await asyncio.sleep(0.05)
         if step in GATED and msg.strip() != "go ahead":
             # The page stops at an irreversible submit: a browser mission waiting for the person's OK.
+            # A real mission drives the browser through the executor, which claims the browser for this task.
+            from app.agent import tools as _t
+            await _t.execute_tool("browser_navigate", {"url": "http://example.test/form"}, reviewed=True)
             BS.browser_sandbox_service.latest_mission = {"started_at": time.time(), "status": "needs_confirmation",
                                                          "steps": [], "final_answer": "Ready to send."}
             BS.browser_sandbox_service.pending_submit = {"label": GATED[step], "url": "http://example.test/form"}
@@ -363,8 +377,7 @@ async def a7_restart(q):
     tid = ack["task_id"]
     await wait_in_progress(tid, 1)
     # The backend dies: the worker and watchdog are killed with no chance to clean up.
-    q._worker.cancel()
-    q._watchdog.cancel()
+    q.stop()
     await asyncio.sleep(0.2)
     items, _, _ = O.load_plan(tid)
     check("after the crash the plan shows the in-flight step", [i["status"] for i in items] == ["completed", "in_progress", "pending"])
@@ -559,8 +572,7 @@ async def main(repeat):
         await a13_unknown_not_redone(q)
         await a14_live_reports(q)
         await a15_waits_for_step_jobs(q)
-        q._worker.cancel()
-        q._watchdog.cancel()
+        q.stop()
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
     if failed:
