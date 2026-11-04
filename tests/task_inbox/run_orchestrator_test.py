@@ -48,6 +48,7 @@ async def _no_tab(self, task, resuming):
 TQ.TaskQueue._ensure_tab = _no_tab      # no Chrome in this suite
 GATED = {}             # step text -> label of a submit button the fake page stops at
 HEDGE = {}             # step text -> times run; the first report hedges
+JOBS_STARTED = []      # commands the fake agent started as real background jobs
 TQ._phone = lambda task, kind: None
 
 results = []
@@ -112,6 +113,15 @@ class FakeResearcher:
         if w and w.group(1) not in SKIP_WRITE:
             _record_write(w.group(1), w.group(2))
             yield {"type": "status", "content": f"✓ wrote {w.group(1)}"}
+        if step.startswith("Run a real job"):
+            # A real background job through the real job registry; the agent looks seconds in and hedges.
+            from app.services.system_control import system_control_service as sc
+            cmd = step.split("Run a real job: ", 1)[1]
+            JOBS_STARTED.append(cmd)
+            await sc.start_background_job("step job", cmd)
+            await asyncio.sleep(0.3)
+            yield {"type": "content", "content": "Started the job. It was still running after 2 seconds, so I can't confirm it finished."}
+            return
         if step.startswith("Append with a background job"):
             if "Do NOT repeat them" not in msg:
                 # Starts the job (a real side effect), then cannot confirm it finished.
@@ -501,10 +511,32 @@ async def a14_live_reports(q):
         "Step 2 completed successfully after 40 seconds, with exit code 0 and no output. I waited for the existing background job; I did not run it again.": False,
         "Checked the file: the line is there, so I didn't rerun the job again.": False,
         "I did not run the command.": True,
+        "Step 3\u2019s command exited successfully. A \u201cStep 3\u201d background job was also reported as running; its current status is unclear.": True,
     }
     for text, unfinished in cases.items():
         got = O._self_report_problem(step, text) is not None
         check(f"{'not completed' if unfinished else 'completed'}: {text[:50]}", got == unfinished)
+
+
+async def a15_waits_for_step_jobs(q):
+    print("A15 the orchestrator waits for the step's own running job instead of spending the retry")
+    d = fresh_dir("jobs")
+    log = d / "log.txt"
+    ok_step = f"Run a real job: sleep 2 && echo one >> {log}"
+    n0 = len(JOBS_STARTED)
+    ack = O.submit(request_for(ok_step))
+    t = await wait_status(q, ack["task_id"], ("done", "failed"), timeout=30)
+    items, _, _ = O.load_plan(ack["task_id"])
+    check("hedged 'still running' report, job observed to finish: step completed on its first attempt",
+          t["status"] == "done" and items[0]["attempts"] == 1, f"{t['status']} {json.dumps(items[0])[:300]}")
+    check("the evidence names the observed job end", any("observed: job" in e for e in items[0]["evidence"]), str(items[0]["evidence"]))
+    check("the job ran exactly once", len(JOBS_STARTED) - n0 == 1 and log.read_text().split() == ["one"])
+    bad = f"Run a real job: sleep 1 && exit 3"
+    ack = O.submit(request_for(bad))
+    t = await wait_status(q, ack["task_id"], ("done", "failed"), timeout=30)
+    items, _, _ = O.load_plan(ack["task_id"])
+    check("a job that exits non-zero never completes the step", t["status"] == "failed" and items[0]["status"] == "blocked"
+          and "exit code 3" in (items[0]["blocker"] or ""), json.dumps(items[0])[:300])
 
 
 async def main(repeat):
@@ -526,6 +558,7 @@ async def main(repeat):
         await a12_hedged_report(q)
         await a13_unknown_not_redone(q)
         await a14_live_reports(q)
+        await a15_waits_for_step_jobs(q)
         q._worker.cancel()
         q._watchdog.cancel()
     failed = [n for n, ok in results if not ok]
