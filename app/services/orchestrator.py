@@ -545,9 +545,12 @@ async def _run_step(q: Any, task_id: str, prompt: str, steps: int) -> Tuple[str,
 
 
 _UNVERIFIED_RES = (
-    r"\b(?:can't|cannot|can not|couldn't|could not|unable to|wasn't able to|was not able to) "
-    r"(?:tell|verify|confirm|check|see) (?:whether|if|that)\b",
+    r"\b(?:can't|cannot|can not|couldn't|could not|unable to|wasn't able to|was not able to|did not|didn't) "
+    r"(?:tell|verify|confirm|check|see)\b",
     r"\b(?:access|shell|tool|tools) (?:is|are|was|were) (?:unavailable|not available)\b",
+    r"\bno longer have (?:shell|file|tool)",
+    r"\b(?:is|was) still running\b",
+    r"\bnot (?:yet )?(?:verified|confirmed)\b",
 )
 
 
