@@ -41,20 +41,26 @@ CHAT_FILE = DATA_DIR / "cli-chat.json"           # the last terminal chat, for -
 SERVER_LOG = DATA_DIR / "logs" / "cli-server.log"
 START_WAIT = 180                                 # seconds; a first start loads a lot
 
-COMMANDS = {"status", "stop", "start", "task", "tasks", "approvals", "ask", "help"}
+COMMANDS = {"status", "stop", "start", "task", "tasks", "approvals", "ask", "help", "mode", "plan", "steer"}
 HELP = f"""Xod {VERSION} in the terminal
 
   xod                       chat (Ctrl-D or /exit to leave, /help for chat commands)
   xod "question"            ask once and print the answer
   xod ask "status"          ask once (when the question is a command word)
-  xod task "job"            add a background task and follow it (--no-wait: just add it)
+  xod task "job"            add a background task (acknowledged at once, planned, then followed; --no-wait: ack only)
   xod tasks                 your tasks and what they're doing
+  xod plan <task>           a task's live plan: each step's state, steers queued or applied
+  xod steer <task> pause | resume | cancel | redirect "new target" | steer "extra instruction"
+  xod mode                  headless / lightweight switch (shared with the desktop app's tray and Settings)
+  xod mode headless on|off  start the desktop app with no window (use the terminal, or Open Xod)
+  xod mode light on|off     a lean server: optional background loops off, idle browser closes after 3 min
   xod approvals             answer what's waiting for your OK
   xod status                which model answers, model servers on this computer, add-ons
   xod start | xod stop      start / stop the background server the terminal uses
 
 Options
   -c, --continue            carry on from the last terminal chat
+  --light                   with `xod start`: start the server lightweight for this run
   -y, --yes                 approve ordinary actions of connected apps without asking (never safety-check
                             holds, deletes, or a task pressing Submit: those always ask)
   --cloud                   answer this on your cloud model (needs an API key in Settings)
@@ -257,6 +263,8 @@ def start_server() -> str:
     url = f"http://127.0.0.1:{port}"
     SERVER_LOG.parent.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, "XOD_DATA_DIR": str(DATA_DIR), "PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"}
+    if START_LIGHT:
+        env["XOD_LIGHTWEIGHT"] = "1"
     kw: Dict[str, Any] = {}
     if sys.platform == "win32":
         kw["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
@@ -281,6 +289,9 @@ def start_server() -> str:
         _kill(proc.pid)
     STATE_FILE.unlink(missing_ok=True)
     raise SystemExit(red("Xod's server didn't start.") + f"\n{tail}\n(log: {SERVER_LOG})")
+
+
+START_LIGHT = False       # `xod start --light`: this server starts lightweight whatever the saved switch says
 
 
 def server(explicit: Optional[str] = None) -> str:
@@ -713,12 +724,85 @@ def _task_waiting(x: Xod, t: Dict[str, Any]) -> bool:
 
 
 def cmd_task(x: Xod, request: str, opts: Dict[str, Any]) -> int:
-    r = x.post("/api/tasks", {"request": request})
-    t = r.get("task") or {}
-    say(f"Added task: {t.get('title')}  {dim(t.get('id') or '')}")
+    # Orchestrated: acknowledged at once with its id and scope, then planned and worked in the background.
+    ack = x.post("/api/orchestrator/tasks", {"request": request}).get("ack") or {}
+    say(green("Acknowledged") + f" {bold(ack.get('task_id') or '')}: {short(ack.get('scope') or request, 120)}")
+    say(dim(f"  steer it any time: xod steer {ack.get('task_id')} pause|redirect \"…\"|cancel   ·   xod plan {ack.get('task_id')}"))
     if opts.get("no_wait"):
         return 0
-    return follow_task(x, t["id"])
+    return follow_task(x, ack["task_id"])
+
+
+_PLAN_MARK = {"completed": "✓", "in_progress": "…", "pending": "·", "blocked": "✗", "cancelled": "–"}
+
+
+def cmd_plan(x: Xod, tid: str, opts: Dict[str, Any]) -> int:
+    p = x.get(f"/api/tasks/{tid}/plan")
+    if opts.get("json"):
+        say(json.dumps(p, indent=1))
+        return 0
+    say(f"{bold(tid)}  {p.get('status')}  {dim(short(p.get('now') or '', 80))}  {dim('plan v' + str(p.get('version') or 0))}")
+    for i in p.get("items") or []:
+        line = f"  {_PLAN_MARK.get(i['status'], '·')} {short(i['text'], 110)}"
+        say(dim(line) if i["status"] in ("cancelled", "completed") else line)
+        if i.get("blocker"):
+            say(yellow(f"      blocked: {short(i['blocker'], 110)}"))
+    for s in (p.get("inbox") or [])[-5:]:
+        state = yellow("queued, not applied yet") if s["state"] == "queued" else green(s["state"])
+        say(f"  steer {s['kind']}{(' “' + short(s['body'], 60) + '”') if s.get('body') else ''}: {state}"
+            + (dim(f" ({short(s.get('applied_note') or '', 80)})") if s.get("applied_note") else ""))
+    for w in p.get("workers") or []:
+        if w.get("role") == "worker":
+            say(dim(f"  worker {w['id']}: {w.get('shown_state')}" + (f" — {w['stalled_reason']}" if w.get("stalled_reason") else "")))
+    return 0
+
+
+def cmd_steer(x: Xod, words: List[str], opts: Dict[str, Any]) -> int:
+    if len(words) < 2:
+        say('xod steer <task> pause | resume | cancel | redirect "new target" | steer "extra instruction" [--now]')
+        return 2
+    tid, kind, body = words[0], words[1].lower(), " ".join(words[2:]).strip()
+    r = x.post(f"/api/tasks/{tid}/steer", {"kind": kind, "body": body, "now": bool(opts.get("now"))})
+    if r.get("success") is False:
+        say(red(r.get("error") or "Not accepted."))
+        return 1
+    if r.get("state") == "applied":
+        say(green("Applied") + (f": {r.get('note')}" if r.get("note") else ""))
+    else:
+        say(yellow("Queued, not applied yet") + dim(f": applies {r.get('applies') or 'at the next step'}"))
+    return 0
+
+
+def cmd_mode(words: List[str], opts: Dict[str, Any]) -> int:
+    """Reads or flips the shared headless / lightweight switch. Works with no server running."""
+    from app.services import run_mode
+    if len(words) >= 2:
+        which, val = words[0].lower(), words[1].lower()
+        if which not in ("headless", "light", "lightweight") or val not in ("on", "off"):
+            say("xod mode headless on|off   ·   xod mode light on|off")
+            return 2
+        on = val == "on"
+        run_mode.set(**({"headless": on} if which == "headless" else {"lightweight": on}))
+    m = run_mode.get()
+    say(f"headless     {green('on') if m['headless'] else 'off'}" + dim("   (desktop app starts with no window; the terminal is the way in)"))
+    say(f"lightweight  {green('on') if m['lightweight'] else 'off'}" + dim("   (lean server; applies when the server next starts)"))
+    if m["overridden_by_env"]:
+        say(yellow(f"overridden for this process by {', '.join(m['overridden_by_env'])}"))
+    try:
+        url = find_server(opts.get("url"))
+    except SystemExit:
+        url = None             # no server: the saved switch is all there is to show
+    if url:
+        try:
+            s = Xod(url).get("/api/mode")
+            if s.get("pending_restart"):
+                say(yellow("The running server started " + ("lightweight" if s["server_lightweight"] else "full")
+                           + "; `xod stop` then `xod start` (or restart the app) to apply."))
+        except Exception:
+            pass
+    if len(words) == 1 or opts.get("json"):
+        say(dim("lightweight skips: " + "; ".join(m["lightweight_skips"].values())))
+    return 0
 
 
 def cmd_approvals(x: Xod, opts: Dict[str, Any]) -> int:
@@ -811,6 +895,7 @@ def show_status(x: Xod, opts: Dict[str, Any]) -> int:
 def parse(argv: List[str]) -> Dict[str, Any]:
     opts: Dict[str, Any] = {"words": []}
     flags = {"-y": "yes", "--yes": "yes", "-c": "continue", "--continue": "continue", "--cloud": "cloud", "--json": "json",
+             "--light": "light", "--now": "now",
              "--no-wait": "no_wait", "--no-color": "no_color", "-h": "help", "--help": "help", "-V": "version", "--version": "version"}
     it = iter(argv)
     for a in it:
@@ -844,7 +929,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if cmd == "stop":
         return cmd_stop(opts)
+    if cmd == "mode":
+        return cmd_mode(words[1:], opts)
     if cmd == "start":
+        global START_LIGHT
+        START_LIGHT = bool(opts.get("light"))
         return cmd_start(opts)
     try:
         x = Xod(server(opts.get("url")))
@@ -855,6 +944,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 0
         if cmd == "approvals":
             return cmd_approvals(x, opts)
+        if cmd == "plan":
+            if len(words) < 2:
+                say("xod plan <task id>  (ids: xod tasks)")
+                return 2
+            return cmd_plan(x, words[1], opts)
+        if cmd == "steer":
+            return cmd_steer(x, words[1:], opts)
         if cmd == "task":
             if not rest:
                 say('Say what to do: xod task "find three flights to Lisbon in May"')

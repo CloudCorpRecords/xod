@@ -935,6 +935,9 @@
 
       <!-- Modal Body -->
       <div class="p-6 space-y-5 overflow-y-auto flex-1">
+        <!-- How Xod runs: headless / lightweight (js/run_mode.js, services/run_mode.py; same switch as the tray and `xod mode`) -->
+        <div id="runModeSection"></div>
+
         <!-- What Xod knows about you (js/about_you.js, services/user_memory.py) -->
         <div id="aboutYouSection"></div>
 
@@ -4425,6 +4428,7 @@
 
   <script src="/static/js/app.js?v=moonlit75"></script>
   <script src="/static/js/sidebar.js?v=moonlit75"></script>
+  <script src="/static/js/run_mode.js"></script>
   <script src="/static/js/tasks.js?v=moonlit75"></script>
   <script src="/static/js/missions.js?v=moonlit75"></script>
   <script src="/static/js/health.js?v=moonlit75"></script>

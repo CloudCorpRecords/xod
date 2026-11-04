@@ -32,3 +32,13 @@ test("the window sheds only when background running AND the lightweight choice a
   assert.equal(shouldShedOnClose(null), false);
   assert.equal(shouldShedOnClose(undefined), false);
 });
+
+test("the saved switch decides, and a launch flag or env var overrides it for one launch", () => {
+  const { resolveMode } = require("./mode");
+  assert.equal(resolveMode([], {}, { headless: true }).headless, true);
+  assert.equal(resolveMode([], {}, { headless: false }).headless, false);
+  assert.equal(resolveMode(["--window"], {}, { headless: true }).headless, false);
+  assert.equal(resolveMode([], { XOD_HEADLESS: "0" }, { headless: true }).headless, false);
+  assert.equal(resolveMode(["--headless"], {}, { headless: false }).headless, true);
+  assert.equal(resolveMode([], {}, undefined).headless, false);
+});

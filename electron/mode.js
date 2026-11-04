@@ -6,12 +6,19 @@
 //             dock, or "Open Xod" in the tray) attaches the window to the same server;
 //             nothing restarts, nothing is re-paired, no setting moves.
 //
-// Headless is a launch choice (--headless, or XOD_HEADLESS=1), never a state the app
-// drifts into on its own.
-function resolveMode(argv, env) {
-  const flag = Array.isArray(argv) && argv.includes("--headless");
+// Headless is the person's choice, never a state the app drifts into on its own: the saved
+// switch (prefs.headless in desktop.json, shared with Settings and `xod mode headless on|off`),
+// overridden for one launch by --headless / --window or XOD_HEADLESS.
+const TRUE = ["1", "true", "yes", "on"];
+const FALSE = ["0", "false", "no", "off"];
+function resolveMode(argv, env, prefs) {
+  const args = Array.isArray(argv) ? argv : [];
+  if (args.includes("--headless")) return { headless: true, why: "--headless" };
+  if (args.includes("--window")) return { headless: false, why: "--window" };
   const raw = String((env && env.XOD_HEADLESS) || "").trim().toLowerCase();
-  return { headless: flag || ["1", "true", "yes", "on"].includes(raw) };
+  if (TRUE.includes(raw)) return { headless: true, why: "XOD_HEADLESS" };
+  if (FALSE.includes(raw)) return { headless: false, why: "XOD_HEADLESS" };
+  return { headless: !!(prefs && prefs.headless), why: "saved switch" };
 }
 
 // Closing the window normally only hides it, and a hidden window keeps its renderer

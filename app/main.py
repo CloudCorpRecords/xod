@@ -599,6 +599,25 @@ if os.environ.get("XOD_TEST_HOOKS") == "1":
         return {"killed": worker_id}
 
 
+class ModeChange(BaseModel):
+    headless: Optional[bool] = None
+    lightweight: Optional[bool] = None
+
+
+@app.get("/api/mode")
+async def get_run_mode():
+    """The headless / lightweight switch (shared with the desktop tray and `xod mode`)."""
+    from app.services import run_mode
+    return run_mode.server_status()
+
+
+@app.post("/api/mode")
+async def set_run_mode(req: ModeChange):
+    from app.services import run_mode
+    run_mode.set(headless=req.headless, lightweight=req.lightweight)
+    return run_mode.server_status()
+
+
 @app.get("/api/resources")
 async def resources_status():
     from app.services import resources
@@ -797,18 +816,24 @@ async def _start_task_worker():
     asyncio.create_task(mcp_hub.start())   # connect outside tool servers in the background
     from app.services import agent_mail
     agent_mail.start()                      # picks up Agent Mail every 30 s once an address is set up
-    from app.services import soul
-    asyncio.create_task(soul.life_loop())   # when you're away, the companion does things for itself
-    from app.services import recall
-    recall.schedule_index(20)               # catch Xod's memory up on chats and tasks since it last ran
-    from app.services import autoconnect
-    asyncio.create_task(autoconnect.loop())  # keeps finding the AI on this computer and keeps it working
+    # Lightweight mode (services/run_mode.py) skips the optional loops; the work itself is unchanged.
+    from app.services import run_mode
+    if not run_mode.skip("soul_life"):
+        from app.services import soul
+        asyncio.create_task(soul.life_loop())   # when you're away, the companion does things for itself
+    if not run_mode.skip("recall_startup_index"):
+        from app.services import recall
+        recall.schedule_index(20)               # catch Xod's memory up on chats and tasks since it last ran
+    if not run_mode.skip("autoconnect"):
+        from app.services import autoconnect
+        asyncio.create_task(autoconnect.loop())  # keeps finding the AI on this computer and keeps it working
     from app.services import local_servers
     asyncio.create_task(local_servers.idle_loop())   # stops the built-in engine after a while unused
     from app.services import phone
     phone.start()                           # the linked phone (Telegram), if there is one
-    from app.services import partner_client
-    partner_client.start_watchdog()         # reciprocal supervision: Xod watches the Partner back
+    if not run_mode.skip("partner_watchdog"):
+        from app.services import partner_client
+        partner_client.start_watchdog()         # reciprocal supervision: Xod watches the Partner back
     from app.services import phone_mcp
     phone_mcp.start_bridge()                # Approvals/Crew questions to a paired Android phone, if one is paired
     asyncio.create_task(browser_sandbox_service.idle_loop())   # an unused sandbox browser closes itself (services/browser_sandbox.py)
@@ -2987,14 +3012,18 @@ async def crew_loop():
 
 @app.on_event("startup")
 async def _watch_handoffs():
-    from app.services import handoff_dispatch
+    from app.services import handoff_dispatch, run_mode
+    if run_mode.skip("handoff_dispatch"):
+        return
     if handoff_dispatch.repos():
         handoff_dispatch.start()
 
 
 @app.on_event("startup")
 async def _watch_muse_app():
-    from app.services import muse_app
+    from app.services import muse_app, run_mode
+    if run_mode.skip("muse_app"):
+        return
     muse_app.start()
 
 
@@ -3004,13 +3033,17 @@ _xod_network_task = None
 @app.on_event("startup")
 async def _xod_network():
     global _xod_network_task
-    from app.services import xod_network
+    from app.services import xod_network, run_mode
+    if run_mode.skip("xod_network"):
+        return
     _xod_network_task = asyncio.get_running_loop().create_task(xod_network.run_forever())
 
 
 @app.on_event("startup")
 async def _memory_sync():
-    from app.services import memory_sync
+    from app.services import memory_sync, run_mode
+    if run_mode.skip("memory_sync"):
+        return
     memory_sync._state["task"] = asyncio.get_running_loop().create_task(memory_sync.run_forever())
 
 
@@ -5140,7 +5173,9 @@ async def lab_group_feedback_endpoint(req: GroupFeedbackRequest):
 
 @app.on_event("startup")
 async def _restart_enabled_specialists():
-    from app.services import specialists
+    from app.services import specialists, run_mode
+    if run_mode.skip("specialists"):
+        return
     asyncio.create_task(specialists.start_enabled_servers())
 
 

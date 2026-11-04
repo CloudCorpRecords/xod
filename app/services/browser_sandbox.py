@@ -660,9 +660,14 @@ def browser_idle_minutes() -> int:
     except Exception:
         raw = os.environ.get("XOD_BROWSER_IDLE_MINUTES", "")
     try:
-        return max(0, int(raw)) if raw != "" else 10
+        from app.services import run_mode
+        default = run_mode.LIGHT_BROWSER_IDLE_MINUTES if run_mode.lightweight_active() else 10
+    except Exception:
+        default = 10
+    try:
+        return max(0, int(raw)) if raw != "" else default
     except (TypeError, ValueError):
-        return 10
+        return default
 
 
 class BrowserSandboxService:

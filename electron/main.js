@@ -72,7 +72,7 @@ let hiddenStartPending = startedHidden;
 // the window to the server this launch started (see mode.js). "Quit Xod, keep the server
 // running" sets detachServer: this shell then leaves without stopping the server it
 // started, and the next launch (window or headless) attaches to it the usual way.
-const HEADLESS = resolveMode(process.argv, process.env).headless;
+const HEADLESS = resolveMode(process.argv, process.env, prefs).headless;
 let detachServer = false;
 
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -379,6 +379,11 @@ function trayMenu(counts) {
       click: (item) => { prefs.background = item.checked; savePrefs(); } },
     { label: "Lightweight background (fully close the window)", type: "checkbox", checked: !!prefs.lightBackground,
       click: (item) => { prefs.lightBackground = item.checked; savePrefs(); } },
+    // The same switch as Settings and `xod mode` (app/services/run_mode.py): saved in desktop.json.
+    { label: "Start headless next time (no window; use the terminal or Open Xod)", type: "checkbox", checked: !!loadPrefs().headless,
+      click: (item) => { prefs = { ...loadPrefs(), headless: item.checked }; savePrefs(); } },
+    { label: "Lightweight server (applies when Xod restarts)", type: "checkbox", checked: !!loadPrefs().lightweight,
+      click: (item) => { prefs = { ...loadPrefs(), lightweight: item.checked }; savePrefs(); } },
     { label: "Start Xod when I log in", type: "checkbox", checked: atLogin, enabled: loginItemsWork(),
       click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked, args: ["--hidden"] }) },
     { type: "separator" },
