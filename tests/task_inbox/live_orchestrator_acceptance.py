@@ -231,7 +231,17 @@ def l4():
                       for n in range(1, args.long_steps + 1))
     req = f"Do these steps one at a time, one per step, in order:\n{steps}"
     t_start = time.time()
-    tid = http("/api/orchestrator/tasks", {"request": req})["ack"]["task_id"]
+    # Started FROM THE CHAT, as spec section 1 says: the chat hands the job to a background task and answers.
+    before = {t["id"] for t in http("/api/tasks")["tasks"]}
+    reply_t0 = time.time()
+    first, total, reply = chat(f"Start this as a background task and tell me its id: {req}")
+    created = [t for t in http("/api/tasks")["tasks"] if t["id"] not in before and t.get("mode") == "stepwise"]
+    print(f"     chat reply in {total:.1f} s: {reply[:160]!r}")
+    check("the chat handed the job to a background task", len(created) == 1, str([t["id"] for t in created]))
+    if not created:
+        return
+    tid = created[0]["id"]
+    check("the chat's reply carried the task id (the ack) within seconds", tid in reply and total < 30, f"{total:.1f}s")
     wait(tid, lambda p: any(i["status"] == "in_progress" for i in p["items"]), 300, 0.5)
     qs = ["What is the capital of Portugal? One word.",
           "What is 17 times 23? Just the number.",
