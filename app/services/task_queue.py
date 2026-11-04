@@ -121,6 +121,13 @@ def _conn() -> sqlite3.Connection:
 
 def _init() -> None:
     c = _conn()
+    # Write-ahead logging: a read no longer waits for a write. Xod reads xod.db on its event loop (settings, task
+    # state), and with tasks and workers writing progress side by side those reads waited on the lock: the server
+    # stalled up to 1.3 s under load (live, 2026-11-04). The setting stays with the file; nothing copies xod.db.
+    try:
+        c.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.DatabaseError as e:
+        logger.warning(f"xod.db stays in rollback-journal mode: {e}")
     c.execute(
         """
         CREATE TABLE IF NOT EXISTS tasks (
