@@ -617,6 +617,12 @@ _UNVERIFIED_RES = (
     r"\bnot (?:yet )?(?:verified|confirmed)\b",
     r"\b(?:status|outcome|result) (?:is|was|remains) (?:unclear|unknown)\b",
     r"\bunclear\b",
+    # Live S9 and S5 (2026-11-04): "I couldn't send the text because the test_send tool isn't available"
+    # was marked completed. Not being able to do the step's action is not doing it.
+    r"\b(?:couldn't|could not|can't|cannot|unable to|wasn't able to|was not able to|did not|didn't)\s+"
+    r"(?:send|post|upload|submit|save|deliver|read|open|access|reach|connect|download|install|start|perform|load|fetch|use)\b",
+    r"\b(?:isn't|is not|wasn't|was not|aren't|are not)\s+(?:available|accessible|reachable)\b",
+    r"\b(?:no|nothing)\s+(?:\w+\s+)?(?:was|were)\s+(?:sent|written|saved|delivered|uploaded|posted|submitted)\b",
 )
 
 
