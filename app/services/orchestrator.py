@@ -255,14 +255,14 @@ def restate(request: str) -> str:
     return one if len(one) <= 160 else one[:157].rsplit(" ", 1)[0] + "…"
 
 
-def submit(request: str, title: Optional[str] = None, source: str = "user") -> Dict[str, Any]:
+def submit(request: str, title: Optional[str] = None, source: str = "user", external_ref: Optional[str] = None) -> Dict[str, Any]:
     """Creates an orchestrated task and returns its ack immediately. Nothing has run yet:
     planning and every step happen afterwards in the background worker."""
     from app.services.task_queue import task_queue
     if source != "user":
         # Only user-originated direction may create goals (spec section 10).
         raise PermissionError("Only the person can start a task.")
-    t = task_queue.create(request, title=title, mode="stepwise")
+    t = task_queue.create(request, title=title, mode="stepwise", external_ref=external_ref)
     ack = {"type": "ack", "task_id": t["id"], "scope": restate(request), "status": t["status"],
            "acked_at": time.time(),
            "text": f"Got it. Task {t['id']}: {restate(request)}. I'm on it in the background; "

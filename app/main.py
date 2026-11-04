@@ -479,6 +479,7 @@ async def secrets_list():
 # --------------------------------------------------------------
 class NewTaskRequest(BaseModel):
     request: str
+    external_ref: Optional[str] = None     # another agent's id for this task, kept for matching (a later Xod-Tree sync)
 
 
 class TaskAnswerRequest(BaseModel):
@@ -526,7 +527,7 @@ async def orchestrator_submit(req: NewTaskRequest):
     the task id and the scope, before anything has run."""
     from app.services import orchestrator
     try:
-        return {"success": True, "ack": orchestrator.submit(req.request)}
+        return {"success": True, "ack": orchestrator.submit(req.request, external_ref=req.external_ref)}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
