@@ -1877,8 +1877,11 @@ async def chat_endpoint(request: ChatRequest):
             logger.debug(f"turn: {e}")
 
         try:
+            # A long chat goes in as a stored checkpoint plus its recent turns (services/memory_layers.py).
+            from app.services import memory_layers
+            chat_messages = await memory_layers.checkpointed(session_id, request.messages)
             async for event in researcher.run_research_stream(
-                messages=request.messages,
+                messages=chat_messages,
                 active_workspace_path=request.active_workspace_path,
                 attached_document=request.attached_document,
                 spoken=bool(request.voice),

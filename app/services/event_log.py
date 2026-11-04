@@ -110,7 +110,12 @@ def emit(kind: str, actor: str = "", ids: Optional[Dict[str, Any]] = None,
             _appends += 1
             if _appends % TRIM_EVERY == 0:
                 _trim_locked()
-            return rec
+        try:   # the append-only daily log (services/memory_layers.py) keeps what this bounded log trims
+            from app.services import memory_layers
+            memory_layers.from_event(rec)
+        except Exception:
+            pass
+        return rec
     except Exception as e:
         logger.debug(f"event log skipped: {e}")
         return None

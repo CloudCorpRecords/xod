@@ -48,7 +48,7 @@ TOMBSTONE_DAYS = 90
 # Who said it, for facts learned in this turn: "phone" when the chat came from the paired phone (main.chat_endpoint).
 VIA = contextvars.ContextVar("user_memory_via", default="")
 
-TOPICS = ["identity", "work", "location", "people", "projects", "interests", "preferences", "routines", "other"]
+TOPICS = ["identity", "work", "location", "people", "projects", "interests", "preferences", "routines", "decisions", "other"]
 # One fact per key: a new one replaces the old ("works at Acme" -> "works at Globex").
 KEYS = ["name", "nickname", "pronouns", "birthday", "email", "phone", "city", "country", "timezone", "language",
         "job", "company", "school", "partner"]
@@ -306,6 +306,13 @@ def add(text: str, topic: str = "other", key: Optional[str] = None, source: str 
         save(d)
         if fresh:
             _log("put", fact=_shareable(fact))
+    if fresh:
+        try:   # into the daily log too (services/memory_layers.py), whichever lane learned it
+            from app.services import event_log
+            event_log.emit("memory.learned", actor="user_memory",
+                           payload={"text": fact["text"], "source": source, "topic": fact.get("topic")})
+        except Exception:
+            pass
     if key == "name":
         _sync_name(text)
     return {**fact, "_new": fresh}
