@@ -112,6 +112,14 @@ class FakeResearcher:
         if w and w.group(1) not in SKIP_WRITE:
             _record_write(w.group(1), w.group(2))
             yield {"type": "status", "content": f"✓ wrote {w.group(1)}"}
+        if step.startswith("Append with a background job"):
+            if "Do NOT repeat them" not in msg:
+                # Starts the job (a real side effect), then cannot confirm it finished.
+                _record_write(step.split()[-1], "appended")
+                yield {"type": "content", "content": "Started the job, but I can't confirm that it finished."}
+                return
+            yield {"type": "content", "content": "Checked: the job finished and the line is in the file."}
+            return
         if step.startswith("Check the job"):
             n = HEDGE.get(step, 0)
             HEDGE[step] = n + 1
@@ -470,6 +478,18 @@ async def a12_hedged_report(q):
           json.dumps(items[0])[:300])
 
 
+async def a13_unknown_not_redone(q):
+    print("A13 a retry after an unconfirmed side effect checks, never redoes")
+    d = fresh_dir("unknown")
+    target = str(d / "log.txt")
+    ack = O.submit(request_for(f"Append with a background job to {target}"))
+    t = await wait_status(q, ack["task_id"], ("done", "failed"))
+    items, _, _ = O.load_plan(ack["task_id"])
+    n = sum(1 for w in WRITES if w[0] == target)
+    check("the side effect happened exactly once across the retry", n == 1, f"writes={n}")
+    check("the verifying retry completed the step", t["status"] == "done" and items[0]["attempts"] == 2, f"{t['status']} {items[0]}")
+
+
 async def main(repeat):
     for r in range(repeat):
         print(f"=== run {r + 1}/{repeat}")
@@ -487,6 +507,7 @@ async def main(repeat):
         await a10_responsive(q)
         await a11_approval(q)
         await a12_hedged_report(q)
+        await a13_unknown_not_redone(q)
         q._worker.cancel()
         q._watchdog.cancel()
     failed = [n for n, ok in results if not ok]
