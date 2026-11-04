@@ -555,7 +555,12 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
         # Interchangeable sources count as one: a search provider that failed is covered by one that answered.
         group = lambda t: "search" if t in ("web_search", "tavily_search", "you_search") else t
         ok_groups = {group(e.get("tool")) for e in r.get("evidence") or []}
-        unread = [f for f in r.get("failures") or [] if f.get("tool") not in meta and group(f.get("tool")) not in ok_groups]
+        # A step the envelope refused ran nothing: it is not a source that failed. The worker's answer stands or falls
+        # on what it did read, and the refusal is passed on (live, final count h3: a research worker tried a command,
+        # was refused, and the refusal alone failed its sourced answer and then the whole task).
+        refused = [f for f in r.get("failures") or [] if "permission envelope" in str(f.get("summary") or "")]
+        unread = [f for f in r.get("failures") or [] if f.get("tool") not in meta and group(f.get("tool")) not in ok_groups
+                  and f not in refused]
         if outcome == "done" and r.get("failures") and not r.get("evidence"):
             outcome = "failed"     # every source it tried failed: its "answer" rests on nothing
         elif outcome == "done" and unread:
@@ -571,6 +576,10 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
             admitted, caveat = judge_report(s["task"], r.get("report") or "")
             if admitted:
                 outcome, why_failed = "failed", admitted
+            if outcome == "done" and refused:
+                note = "; ".join(sorted({f"it wanted {f.get('tool')}, which a read-only worker can't use (nothing was run)"
+                                         for f in refused}))
+                caveat = f"{caveat}; {note}" if caveat else note
         entry = {"id": wid, "task": s["task"], "outcome": outcome, "report": r.get("report", ""),
                  "evidence": r.get("evidence", []), "failures": r.get("failures", []),
                  **({"caveat": caveat} if caveat else {})}
