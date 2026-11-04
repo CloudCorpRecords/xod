@@ -95,7 +95,7 @@ SHOTS_DIR = DATA_DIR / "tasks"
 
 LIVE_FIELDS = ("id", "title", "request", "status", "waiting_kind", "waiting_detail", "result", "now",
                "created_at", "updated_at", "finished_at", "steps", "has_screenshot", "history",
-               "last_progress_at", "stalled", "stalled_reason")
+               "last_progress_at", "stalled", "stalled_reason", "mode", "plan_version")
 
 # Cancel and watchdog timing. A first cancel is graceful (the run stops after
 # its current step); if the task is still working CANCEL_GRACE_SEC later, or
@@ -130,7 +130,7 @@ def _init() -> None:
             finished_at REAL,
             title TEXT NOT NULL,
             request TEXT NOT NULL,
-            status TEXT NOT NULL,          -- queued | working | waiting | done | failed | cancelled
+            status TEXT NOT NULL,          -- queued | working | waiting | paused | done | failed | cancelled
             next_action TEXT,              -- json: what the worker should do next
             waiting_kind TEXT,             -- approval | question | blocked
             waiting_detail TEXT,           -- json shown to the user
@@ -160,6 +160,15 @@ def _init() -> None:
         c.execute("ALTER TABLE tasks ADD COLUMN stalled INTEGER DEFAULT 0")
     if "stalled_reason" not in cols:
         c.execute("ALTER TABLE tasks ADD COLUMN stalled_reason TEXT")
+    # Orchestrator Phase 1 (services/orchestrator.py): a task's durable plan, its version,
+    # and the execution mode ("stepwise" runs the plan one step at a time with the steer
+    # inbox checked between steps; NULL is the classic one-stream run).
+    if "plan_json" not in cols:
+        c.execute("ALTER TABLE tasks ADD COLUMN plan_json TEXT")
+    if "plan_version" not in cols:
+        c.execute("ALTER TABLE tasks ADD COLUMN plan_version INTEGER DEFAULT 0")
+    if "mode" not in cols:
+        c.execute("ALTER TABLE tasks ADD COLUMN mode TEXT")
     c.commit()
     c.close()
 
@@ -168,7 +177,7 @@ def _row(r: sqlite3.Row) -> Dict[str, Any]:
     d = dict(r)
     if "stalled" in d:
         d["stalled"] = bool(d["stalled"])
-    for k in ("next_action", "waiting_detail", "mission_json", "pending_json", "history", "evidence_json"):
+    for k in ("next_action", "waiting_detail", "mission_json", "pending_json", "history", "evidence_json", "plan_json"):
         if d.get(k):
             try:
                 d[k] = json.loads(d[k])
@@ -618,7 +627,7 @@ class TaskQueue:
     def list(self, limit: int = 60) -> List[Dict[str, Any]]:
         c = _conn()
         rows = c.execute(
-            "SELECT * FROM tasks ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'working' THEN 1 WHEN 'queued' THEN 2 ELSE 3 END, "
+            "SELECT * FROM tasks ORDER BY CASE status WHEN 'waiting' THEN 0 WHEN 'working' THEN 1 WHEN 'paused' THEN 2 WHEN 'queued' THEN 2 ELSE 3 END, "
             "updated_at DESC LIMIT ?", (limit,)).fetchall()
         c.close()
         return [{k: v for k, v in _row(r).items() if k in LIVE_FIELDS} for r in rows]
@@ -630,7 +639,7 @@ class TaskQueue:
         return {r["status"]: r["n"] for r in rows}
 
     # ------------------------------------------------------------------ user actions
-    def create(self, request: str, title: Optional[str] = None) -> Dict[str, Any]:
+    def create(self, request: str, title: Optional[str] = None, mode: Optional[str] = None) -> Dict[str, Any]:
         request = (request or "").strip()
         if not request:
             raise ValueError("Tell Xod what to do.")
@@ -639,9 +648,10 @@ class TaskQueue:
         title = title or (request if len(request) <= 70 else request[:67].rsplit(" ", 1)[0] + "…")
         c = _conn()
         c.execute(
-            "INSERT INTO tasks (id, created_at, updated_at, title, request, status, next_action, history, last_progress_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO tasks (id, created_at, updated_at, title, request, status, next_action, history, last_progress_at, mode) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (task_id, now, now, title, request, "queued", json.dumps({"type": "start"}),
-             json.dumps([{"at": now, "text": "Added to your tasks"}]), now),
+             json.dumps([{"at": now, "text": "Acknowledged; added to your tasks" if mode == "stepwise" else "Added to your tasks",
+                          "kind": "ack" if mode == "stepwise" else None}]), now, mode),
         )
         c.commit()
         c.close()
@@ -755,6 +765,10 @@ class TaskQueue:
         t = self.get(task_id)
         if not t or t["status"] not in ("failed", "waiting", "cancelled"):
             return {"success": False, "error": "Only stopped tasks can be retried."}
+        if t.get("mode") == "stepwise" and t["status"] in ("failed", "cancelled"):
+            # A retry re-opens the plan's unfinished steps; completed steps stay done.
+            from app.services import orchestrator
+            orchestrator.reopen(task_id)
         # A bot check the user cleared continues on the same page; everything else picks up where it stopped.
         self._update(task_id, note="Trying again", status="queued",
                      next_action={"type": "continue", "text": "continue"}, waiting_kind=None, now="Trying again")
@@ -768,6 +782,16 @@ class TaskQueue:
         t = self.get(task_id)
         if not t or t["status"] in ("done", "cancelled"):
             return {"success": False, "error": "Nothing to cancel."}
+        if t.get("mode") == "stepwise" and not (t["status"] == "working" and task_id in self._cancel_requested):
+            # An orchestrated task cancels through its steer inbox, so the cancel is recorded
+            # and reports exactly what it stopped. A second cancel still forces (below).
+            from app.services import orchestrator
+            res = orchestrator.steer(task_id, "cancel", source="user")
+            if t["status"] == "working":
+                self._cancel_requested.add(task_id)
+                self._cancel_at[task_id] = time.time()
+                self._schedule_cancel_escalation(task_id)
+            return res
         if t["status"] == "working":
             if task_id in self._cancel_requested:
                 # A second cancel while the first is still only "stopping"
@@ -1202,6 +1226,10 @@ class TaskQueue:
         from app.services.browser_sandbox import browser_sandbox_service as sb
 
         task = self.get(task_id)
+        if task.get("mode") == "stepwise":
+            from app.services import orchestrator
+            await orchestrator.run_stepwise(self, task_id)
+            return
         action = task.get("next_action") or {"type": "start"}
         self._running_id = task_id
         self._update(task_id, status="working", now="Starting…" if action["type"] == "start" else task.get("now"))

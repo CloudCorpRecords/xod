@@ -3393,6 +3393,67 @@ LEGACY_AGENT_TOOLS = {"cli_agents", "cli_agent_run", "cli_agent_login", "cli_age
 TOOL_DEFINITIONS[:] = [t for t in TOOL_DEFINITIONS if t["function"]["name"] not in LEGACY_AGENT_TOOLS] + AGENT_TOOL_DEFS
 CLI_TOOLS = {"agent_job", "agent_ask", "agent_terminal", "agent_setup"}
 
+# Orchestrator Phase 1 (services/orchestrator.py): long work leaves the chat turn.
+TOOL_DEFINITIONS.append({
+    "type": "function",
+    "function": {
+        "name": "xod_task",
+        "description": ("Background tasks, so the chat never blocks on long work. Use start for anything with several steps or "
+                        "that will take more than a minute (research across sources, writing several files, multi-step jobs): "
+                        "it returns at once with a task id and the task runs in the background with a written plan; tell the "
+                        "person the id and that they can keep talking. When the person refers to a running task (\"actually "
+                        "make it X\", \"stop that\", \"hold on\"), use steer: kind redirect changes the target (completed steps "
+                        "are kept), steer adds an instruction, pause, resume, cancel. A steer is queued until the task applies "
+                        "it; say queued, not done. status shows one task's plan, or lists active tasks."),
+        "parameters": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["start", "steer", "status"]},
+            "request": {"type": "string", "description": "For start: the whole job in the person's words, with every exact detail"},
+            "task": {"type": "string", "description": "For steer and status: the task id"},
+            "kind": {"type": "string", "enum": ["pause", "resume", "steer", "redirect", "cancel", "note"]},
+            "text": {"type": "string", "description": "For steer and redirect: the new instruction, in the person's words"},
+            "now": {"type": "boolean", "description": "For steer: interrupt the current step instead of waiting for it to end"}},
+            "required": ["action"]}
+    }
+})
+
+
+def _xod_task_tool(a: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import activity, orchestrator
+    from app.services.task_queue import task_queue
+    act = str(a.get("action") or "status").lower().strip()
+    if act == "start":
+        if str(activity.origin.get() or "").startswith("task:"):
+            return {"success": False, "error": "You are already working inside a task; do this step yourself instead of starting another task."}
+        req = str(a.get("request") or a.get("task") or "").strip()
+        if not req:
+            return {"success": False, "error": "start needs request. Nothing was started."}
+        return {"success": True, **orchestrator.submit(req)}
+    tid = str(a.get("task") or "").strip()
+    if act == "steer":
+        if not tid:
+            active = [t for t in task_queue.list(limit=20) if t.get("mode") == "stepwise"
+                      and t["status"] in ("working", "queued", "paused", "waiting")]
+            if len(active) != 1:
+                return {"success": False, "error": "Which task? " + ("; ".join(f"{t['id']}: {t['title']}" for t in active) or "No task is active.")}
+            tid = active[0]["id"]
+        # The chat's tool calls act on what the person said in this conversation: source user.
+        return orchestrator.steer(tid, str(a.get("kind") or "steer"), str(a.get("text") or a.get("body") or ""),
+                                  source="user", now=bool(a.get("now")))
+    if tid:
+        t = task_queue.get(tid)
+        if not t:
+            return {"success": False, "error": "No such task."}
+        plan = orchestrator.public_plan(tid)
+        return {"success": True, "task": tid, "status": t["status"], "now": t.get("now"),
+                "last_progress_at": t.get("last_progress_at"),
+                "plan": [{"text": i["text"], "status": i["status"], "blocker": i.get("blocker")} for i in plan["items"]],
+                "steers": [{"kind": s["kind"], "body": s["body"], "state": s["state"], "note": s.get("applied_note")}
+                           for s in plan["inbox"][-5:]],
+                "result": t.get("result") if t["status"] in ("done", "failed", "cancelled") else None}
+    return {"success": True, "tasks": [{"id": t["id"], "title": t["title"], "status": t["status"], "now": t.get("now")}
+                                       for t in task_queue.list(limit=15)
+                                       if t["status"] in ("working", "queued", "paused", "waiting")]}
+
 
 def _agent_tool(name: str, a: Dict[str, Any]) -> tuple:
     """One of the four agent tools, as the narrower tool that does it (and its arguments)."""
@@ -3763,6 +3824,8 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         return await mcp_hub.call(name, arguments or {})
     if name == "agent_mail_setup":
         return await _agent_mail_setup(arguments or {})
+    if name == "xod_task":
+        return _xod_task_tool(dict(arguments or {}))
     if name in DESKTOP_TOOLS:
         return await _desktop(name, dict(arguments or {}))
     if name == "desktop_setup":
@@ -4942,6 +5005,7 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
 
     # Foundational pillars always available to the agent for autonomous planning
     selected_names = [
+        "xod_task",
         "computer_inspect_system",
         "computer_inspect_port",
         "computer_run_command",

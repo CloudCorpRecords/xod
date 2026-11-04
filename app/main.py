@@ -507,6 +507,41 @@ async def create_task(req: NewTaskRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class SteerRequest(BaseModel):
+    kind: str
+    body: str = ""
+    now: bool = False
+
+
+@app.post("/api/orchestrator/tasks")
+async def orchestrator_submit(req: NewTaskRequest):
+    """Starts an orchestrated task (services/orchestrator.py) and returns its ack at once:
+    the task id and the scope, before anything has run."""
+    from app.services import orchestrator
+    try:
+        return {"success": True, "ack": orchestrator.submit(req.request)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/tasks/{task_id}/steer")
+async def steer_task(task_id: str, req: SteerRequest):
+    """Pause, resume, steer, redirect, cancel or note: queued in the task's inbox, applied by its loop."""
+    from app.services import orchestrator
+    return orchestrator.steer(task_id, req.kind, req.body, source="user", now=req.now)
+
+
+@app.get("/api/tasks/{task_id}/plan")
+async def task_plan(task_id: str):
+    from app.services import orchestrator
+    from app.services.task_queue import task_queue
+    t = task_queue.get(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="No such task")
+    return {**orchestrator.public_plan(task_id), "status": t["status"], "now": t.get("now"),
+            "last_progress_at": t.get("last_progress_at"), "result": t.get("result")}
+
+
 @app.post("/api/tasks/{task_id}/approve")
 async def approve_task(task_id: str):
     from app.services.task_queue import task_queue
