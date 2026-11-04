@@ -247,6 +247,16 @@ history = [{"role": "user", "content": "set up a python virtual environment and 
            {"role": "assistant", "content": answer}, {"role": "user", "content": "continue"}]
 r = worker.route("continue", history)
 check("'continue' picks the same job up", r and r["goal"].startswith("set up a python virtual environment"), r)
+
+# W12b: a draft the done-check sent back is not thrown away when the steps run out (count j, 2026-11-04: the Eiffel
+# worker had "330 metres" with a source, the check kept asking for more, and the pause report listed only step names).
+fresh([("tool", "computer_run_command", {"command": "echo look"}),
+       ("say", "The Eiffel Tower is 330 metres tall including antennas. Source: https://example.org/eiffel"),
+       ("tool", "computer_run_command", {"command": "echo more"}),
+       ("tool", "computer_run_command", {"command": "echo more2"})],
+      [{"done": False, "missing": "cite the official page"}])
+evs, answer = asyncio.run(run("find the height of the eiffel tower with a source"))
+check("a paused job keeps its best draft", "330 metres" in answer and "Paused after" in answer, answer)
 worker.MAX_STEPS = 30
 
 # ------------------------------------------------------------------ W15 an empty write to a folder path

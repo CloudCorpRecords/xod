@@ -741,6 +741,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     checks = 0
     answer, verdict, stopped, left = "", None, "", ""
     nudged_empty = 0
+    draft = ""
     held: Optional[Dict[str, Any]] = None
     subs = 0
     from app.services import usage as usage_log
@@ -801,6 +802,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 answer = content
                 stopped = f"**Not finished yet:** {left or 'it never proved it works'}. Say **continue** and I'll keep going."
                 break
+            if content.strip():
+                draft = content       # the best answer so far: kept if the steps run out before a better one
             yield {"type": "status", "content": f"Not done yet: {left[:120]}"}
             convo.append({"role": "assistant", "content": content})
             convo.append({"role": "user", "content": f"(Note from Xod, not from the person) Not finished: {left} Keep going with the tools."})
@@ -888,6 +891,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         except Exception:
             pass
 
+    if not answer and draft:
+        answer = draft
     if not answer and log:
         answer = "Here's where it got to:\n" + "\n".join(
             f"- {'✗' if e['failed'] else '✓'} `{str(e['args'].get('command') or e['args'].get('filepath') or e['name'])[:120]}`"
