@@ -66,6 +66,25 @@ async def fake_agent(brief, wid):
         yield {"type": "tool_result", "name": "web_search", "data": {"success": False, "error": payload}}
         rec["end"] = time.time()
         return
+    if kind == "fallback":
+        yield {"type": "tool_result", "name": "tavily_search", "data": {"success": False, "error": "no API key"}}
+        yield {"type": "tool_result", "name": "you_search", "data": {"results": ["the answer, sourced"]}}
+        yield {"type": "content", "content": "The answer is 42 (source: example.org)."}
+        rec["end"] = time.time()
+        return
+    if kind == "unread":
+        # The real agent's shape: the read fails, a self-check and a stray search succeed, a polite report follows.
+        yield {"type": "tool_result", "name": "computer_read_file", "data": {"success": False, "error": payload}}
+        yield {"type": "tool_result", "name": "xod_self_check", "data": {"done": True}}
+        yield {"type": "tool_result", "name": "web_search", "data": {"results": ["an unrelated page"]}}
+        yield {"type": "content", "content": "The file could not be found, so there is no status line."}
+        rec["end"] = time.time()
+        return
+    if kind == "tidy":
+        yield {"type": "tool_result", "name": "computer_read_file", "data": {"success": True, "content": "status OK"}}
+        yield {"type": "content", "content": payload}
+        rec["end"] = time.time()
+        return
     if kind == "admit":
         yield {"type": "tool_result", "name": "xod_self_check", "data": {"done": True}}
         yield {"type": "content", "content": payload}
@@ -316,6 +335,17 @@ async def w9_failed_sources(q):
     JOB_SCRIPT[jobs[0]] = ("answer", "fine")
     JOB_SCRIPT[jobs[1]] = ("fail_quietly", "file not found")
     r = await W.coordinate("w9", "two sources", [{"task": j} for j in jobs])
+    j4 = f"Source missing {tag}"
+    JOB_SCRIPT[j4] = ("unread", "File not found: /x/check2.txt")
+    j5 = f"Source fine {tag}"
+    JOB_SCRIPT[j5] = ("tidy", "**Confirmed:** status OK\n**Could not read or find:** Nothing")
+    r3 = await W.coordinate("w9c", "two files", [{"task": j4}, {"task": j5}])
+    check("a source that never answered fails its worker, with the error", [f["task"] for f in r3["failures"]] == [j4]
+          and "File not found" in r3["failures"][0]["why"], json.dumps(r3["failures"])[:200])
+    j6 = f"Search fallback {tag}"
+    JOB_SCRIPT[j6] = ("fallback", "")
+    r4 = await W.coordinate("w9d", "one search", [{"task": j6}])
+    check("one search provider failing is covered by another that answered", r4["failures"] == [], json.dumps(r4["failures"])[:200])
     j3 = f"Source admits {tag}"
     JOB_SCRIPT[j3] = ("admit", "**Could not read:** The status line, because the file was not found.")
     r2 = await W.coordinate("w9b", "one source", [{"task": j3}])
