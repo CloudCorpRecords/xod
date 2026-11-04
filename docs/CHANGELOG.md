@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.25
+
+**A saved provider wins at startup, on every boot path**
+- The 0.9.24 fix made the saved provider win in one startup path; a second path, the setup wizard's auto-pick, could still overwrite a saved provider when its best pick flipped to a cloud key, which is how the Windows machine came up on a cloud model over its local address after a restart. The auto-pick now refuses to overwrite a provider a person saved, whichever path runs, and the covering suite runs in the shape that failed in production: a saved local provider, cloud keys present, and a local server that answers slowly or not at all. (PR #36)
+- The update guardian's restores are staged and verified before anything is swapped, and a restore that fails verification now holds its snapshot instead of leaving a half-copied app behind. (PR #36)
+
+**Phone jobs go to the phone tool**
+- Tasks and chat turns that are about the phone now route to the phone tool, so the work happens where the phone actually is. (PR #38)
+
+**The file finder knows its own house**
+- The finder answers from canonical paths for Xod's own folders, refuses junk pairs (a cache copy offered as the real file), and its locate answers are consumed by the flows that asked for them. The partner autoclick helper ships in the same change, as that pull request disclosed. (PR #39)
+
+**Search and research keys get a proper home in Settings**
+- The API key section is rebuilt as one card per provider. Each card says in plain words what the key is for, shows whether a key is saved (and only its last four characters), and offers test, save and remove as separate actions. Testing a key no longer saves it first, so a typo cannot overwrite a working key. (PR #37)
+- You.com joins the key cards: save a You.com key and Xod's web search and research prefer You.com, fall back to Tavily when a Tavily key is saved, and to the keyless path when neither is. (PR #37)
+
+**One sign-in for the family: SSO control**
+- The Phones panel is SSO-first, and a phone enrolls into the signed family registry only with a backend that proves both legs: the device is a trusted registry member, and the sign-in session is live for the same account. Anything else is refused, with the reason shown. (PR #40)
+- Xod signs in with GitHub by device code: the app shows a short code, you approve it in any browser, and no client secret is stored on the machine. The Family panel becomes the control surface for the signed-in family: who you are signed in as, every device's live state, key presence at a glance, the approvals entry point, and a recovery state that says plainly what a vault apply restores. A machine whose keys were wiped recovers them from the vault after sign-in, with no manual key entry. (PR #41)
+- A service secret the family server needs can be staged once into the family vault and delivered encrypted per device, like the API keys, instead of being pasted into a config file by hand. The Xod side of that delivery ships here; the family server picking it up is the follow-on. (PR #41)
+
+**Xod can message Tree directly**
+- The Family panel gains a Message Tree composer (note, task or result). Messages land in an inbox in the family's synced drive space, stamped with the sending device. If the drive is not reachable, the message queues on the machine, the panel says so, and the queue drains on the next successful send. (PR #42)
+
+**Checked before it shipped**
+- Every pull request's own suite ran against a byte-identical copy of what shipped: the provider suite in its production-failure shape (PR #36), the phone-routing suite (PR #38), the finder suite (PR #39), the You.com suite 17 of 17 (PR #37), the phone-enrollment suite 51 of 51 (PR #40), the SSO-control suite 35 of 35 (PR #41) and the tree-inbox suite 20 of 20 (PR #42).
+- The full pre-release battery on the merged tree (95 suites across smoke, brain, self-heal and partner) matches the 0.9.24 baseline: every failure sits in the environmental set already recorded there, the suites behind every change in this release pass, and the continuous-integration run on this exact tree is fully green.
+
+**Known issues carried into 0.9.25, named plainly**
+- Windows copies still update manually: the NSIS self-update wedge named since 0.9.20 is unchanged, so download the setup and run it with Xod fully closed rather than using self-update. Mac self-update is unaffected.
+- Every build still re-asks for its Accessibility switch once after an update: Xod's builds are ad-hoc signed, so a new build is a new identity to macOS and the previous grant does not carry over. Flip Xod on once in the Accessibility settings after updating.
+- The SSO control surface proves the GitHub leg locally through device flow; the family server's own session attestation is a follow-on, and until it lands that leg reports as unproven rather than assumed.
+- The companion suite's live-UI checks still want a real desktop session; they are re-run at install time and their state is recorded in the release record rather than claimed here.
+
 ## 0.9.24
 
 **Xod replies to people on X and LinkedIn, with your approval on every post**

@@ -7,7 +7,7 @@
   const primary = `${btn} bg-brand-500 text-surface-900 hover:bg-brand-400`;
   const quiet = `${btn} font-medium text-zinc-300 hover:text-white hover:bg-surface-700`;
   const field = "w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[13px] text-white font-mono focus:outline-none focus:border-brand-500";
-  let st = null, poll = null;
+  let st = null, poll = null, fam = null;
 
   function connectView() {
     return `
@@ -66,12 +66,40 @@
       </section>`;
   }
 
+  function familyView() {
+    if (!fam || fam.registry_state !== "ok" || !fam.account) return "";
+    const prov = fam.provider ? ` (via ${esc(fam.provider)})` : "";
+    const pend = (fam.pending || []).map((p) => `
+      <div class="task-card space-y-1.5">
+        <p class="task-title">${esc((p.record || {}).name || (p.record || {}).id || "A phone")} wants to join your family</p>
+        <p class="text-[12px] text-zinc-400">${esc((p.record || {}).platform || "")} \u00b7 signed in as ${esc(p.account || fam.account)}. Compare the safety number with the phone's screen, then approve:
+          <span class="font-mono text-white">${esc(p.safety || "")}</span></p>
+        <div class="flex gap-2">
+          <button data-enroll-approve="${esc((p.record || {}).id || "")}" class="${primary}">Approve</button>
+          <button data-enroll-deny="${esc((p.record || {}).id || "")}" class="${quiet}">Deny</button>
+        </div>
+      </div>`).join("");
+    const members = (fam.members || []).map((m) => `
+      <p class="text-[12px] text-zinc-300">${esc(m.name)} <span class="text-zinc-500">${esc(m.platform)} \u00b7 ${esc(m.status)}</span>${m.status === "active" && m.id !== fam.my_device_id ? ` <button data-enroll-revoke="${esc(m.id)}" class="${quiet} text-red-300">Revoke</button>` : ""}</p>`).join("");
+    const joining = (fam.joining || []).length ? `<p class="text-[12px] text-amber-300">${(fam.joining || []).length} device(s) are waiting for a family approval \u2014 an enrolled phone can approve them from its Family screen.</p>` : "";
+    return `
+      <section class="space-y-3">
+        <div class="task-card space-y-2">
+          <p class="task-title">Your family</p>
+          <p class="text-[12px] text-zinc-400">Signed in as <span class="text-white">${esc(fam.account)}</span>${prov}. Devices signed in with the same account join here with one tap \u2014 no pairing code to hunt for. Each device keeps its own key, an enrolled phone can approve new devices, and you can revoke any one of them here.</p>
+          ${joining}
+          ${members}
+        </div>
+        ${pend}
+      </section>`;
+  }
+
   function androidView() {
     return `
       <section class="space-y-3">
         <div class="task-card space-y-2">
-          <p class="task-title">Pair an Android phone (Xod app)</p>
-          <p class="text-[12px] text-zinc-400">For the Xod phone app (not Telegram): Xod shows a QR, the phone scans it and is
+          <p class="task-title">Pair an Android phone (Xod app) \u2014 offline fallback</p>
+          <p class="text-[12px] text-zinc-400">Offline fallback: use this only when the family sign-in above isn't reachable. For the Xod phone app (not Telegram): Xod shows a QR, the phone scans it and is
             set up and paired in one step. The code inside works once and expires in 10 minutes. Compare the safety number on
             both screens. The phone always shows it's connected, nothing hidden.</p>
           <div id="phPairBox"></div>
@@ -127,7 +155,8 @@
     const body = document.getElementById("phoneBody");
     if (!body) return;
     try { st = await api("/api/phone"); } catch (e) { body.innerHTML = `<p class="text-red-300 text-[12px]">Couldn't reach Xod.</p>`; return; }
-    body.innerHTML = (!st.connected ? connectView() : !st.paired ? pairView() : linkedView()) + androidView() + iphoneView();
+    try { fam = await api("/api/phone/enroll/state"); } catch (e) { fam = null; }
+    body.innerHTML = familyView() + (!st.connected ? connectView() : !st.paired ? pairView() : linkedView()) + androidView() + iphoneView();
     loadPhones(); loadMirror();
     clearInterval(poll);
     if (st.connected && !st.paired) poll = setInterval(async () => {       // pairing happens on the phone: notice it here
@@ -137,6 +166,16 @@
   }
 
   async function onClick(e) {
+    const enrollBtn = e.target.closest("[data-enroll-approve], [data-enroll-deny], [data-enroll-revoke]");
+    if (enrollBtn) {
+      const what = enrollBtn.hasAttribute("data-enroll-approve") ? "approve" : enrollBtn.hasAttribute("data-enroll-deny") ? "deny" : "revoke";
+      const id = enrollBtn.dataset.enrollApprove || enrollBtn.dataset.enrollDeny || enrollBtn.dataset.enrollRevoke;
+      if (what === "revoke" && !confirm("Revoke this device from the family? It keeps its own data, but this family won't trust or control it until it re-enrolls under a new key.")) return;
+      enrollBtn.disabled = true;
+      const r = await api("/api/phone/enroll/" + what, "POST", { device_id: id });
+      if (!r.ok) showToast(r.error || "That didn't work.");
+      return render();
+    }
     const el = e.target.closest("[data-ph], [data-close-phone]");
     if (!el) return;
     if (el.hasAttribute("data-close-phone")) return window.closePhonePanel();

@@ -50,7 +50,13 @@ The guardian's job around that swap:
    first (the v1.1 marker protocol, so the revival accounting stays
    honest), quit the app, restore the snapshot over the app path,
    relaunch, re-run the battery, and write a block marker naming the bad
-   payload version, the time, and the failure. If that same version
+   payload version, the time, and the failure. The restore is staged:
+   the snapshot is copied aside and verified byte for byte before the
+   app path is touched, then swapped in — a copy that dies halfway
+   leaves a complete tree in place, never a half-copied husk. And after
+   a failed restore the guardian holds snapshots: the suspect installed
+   state is never copied over the retained last-good snapshot until a
+   battery has passed for the installed version again. If that same version
    stages again, the guardian does NOT overwrite the retained good
    snapshot with the post-bad-update state, still rolls back if the
    swap happens and the battery fails, logs every cycle, and after a
@@ -471,6 +477,57 @@ class UpdateGuardian:
         tmp.write_text(json.dumps({"at": self.now_fn(), "reason": reason}))
         tmp.replace(self.state_dir / "planned-shutdown.json")
 
+    def _restore_snapshot(self, snapshot, pending):
+        """Restore the retained snapshot over the app path, staged: the
+        snapshot is copied to a staging tree and verified byte for byte
+        BEFORE anything at the app path moves, then swapped in and
+        verified again. A copy that dies halfway (the 0.9.24 incident:
+        Errno 1 across the tree) therefore leaves the app path holding
+        a complete tree — the verified restored build, or, if the swap
+        itself fails, the pre-rollback build moved back — never a
+        half-copied husk. The snapshot itself is only ever read."""
+        want = pending.get("snapshot_version")
+        staging = self._snap_dir() / ".restore-staging"
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            shutil.copytree(snapshot, staging, symlinks=True)
+            staged_ok = (tree_manifest(staging) == tree_manifest(snapshot)
+                         and read_version(staging) == want)
+        except Exception as exc:
+            self.log("updates guardian: restore copy raised: %s" % exc)
+            staged_ok = False
+        if not staged_ok:
+            shutil.rmtree(staging, ignore_errors=True)
+            self.log("updates guardian: RESTORE FAILED before the swap: the staged copy "
+                     "did not verify; the app path was not touched")
+            return False
+        aside = self._snap_dir() / ".replaced-bad"
+        shutil.rmtree(aside, ignore_errors=True)
+        moved_aside = False
+        try:
+            if self.app_path.exists():
+                shutil.move(str(self.app_path), str(aside))
+                moved_aside = True
+            shutil.move(str(staging), str(self.app_path))
+            restored = (tree_manifest(self.app_path) == tree_manifest(snapshot)
+                        and read_version(self.app_path) == want)
+        except Exception as exc:
+            self.log("updates guardian: restore swap raised: %s" % exc)
+            restored = False
+        if restored:
+            shutil.rmtree(aside, ignore_errors=True)
+            return True
+        self.log("updates guardian: RESTORE FAILED verification; the replaced app "
+                 "is kept at %s" % aside)
+        if moved_aside and aside.exists():
+            shutil.rmtree(self.app_path, ignore_errors=True)
+            try:
+                shutil.move(str(aside), str(self.app_path))
+                self.log("updates guardian: the pre-rollback build was put back in place")
+            except Exception as exc:
+                self.log("updates guardian: putting the pre-rollback build back raised: %s" % exc)
+        return False
+
     def _rollback(self, pending, checks):
         bad_version = pending.get("payload_version")
         failure = "; ".join("%s: %s" % (c["name"], c["detail"]) for c in checks if not c["ok"])
@@ -485,21 +542,18 @@ class UpdateGuardian:
         snapshot = self._snapshot_path()
         restored = False
         if snapshot.exists():
-            aside = self._snap_dir() / ".replaced-bad"
-            shutil.rmtree(aside, ignore_errors=True)
-            try:
-                if self.app_path.exists():
-                    shutil.move(str(self.app_path), str(aside))
-                shutil.copytree(snapshot, self.app_path, symlinks=True)
-                restored = (tree_manifest(self.app_path) == tree_manifest(snapshot)
-                            and read_version(self.app_path) == pending.get("snapshot_version"))
-            except Exception as exc:
-                self.log("updates guardian: restore raised: %s" % exc)
-            if restored:
-                shutil.rmtree(aside, ignore_errors=True)
-            else:
-                self.log("updates guardian: RESTORE FAILED verification; the replaced app "
-                         "is kept at %s" % aside)
+            restored = self._restore_snapshot(snapshot, pending)
+            if not restored:
+                # The installed state is suspect now: whatever sits at the app
+                # path must never be snapshotted over the retained last-good
+                # copy (the 0.9.24 incident: a failed restore left a husk in
+                # place and the NEXT payload's snapshot overwrote the good
+                # 0.9.23 snapshot with it). Snapshots hold until a battery
+                # passes for the installed version again.
+                self.state["snapshot_hold"] = True
+                self.log("updates guardian: snapshot hold set: after the failed restore, "
+                         "later payloads will not overwrite the retained snapshot of %s"
+                         % pending.get("snapshot_version"))
         else:
             self.log("updates guardian: no snapshot is retained, so there is nothing to "
                      "restore; the bad version stays installed and the block marker still lands")
@@ -562,6 +616,11 @@ class UpdateGuardian:
                      "with the current app state"
                      % (version, blocked.get("rollbacks", 0), blocked.get("at"),
                         pending["snapshot_version"]))
+        elif self.state.get("snapshot_hold") and self._snapshot_path().exists():
+            self.log("updates guardian: snapshot HELD for payload %s: the last restore "
+                     "failed, so the current installed state is not trusted as a new "
+                     "last-good; the retained snapshot of %s is kept untouched"
+                     % (version, pending["snapshot_version"]))
         else:
             if self._take_snapshot(installed, version):
                 pending["snapshot_version"] = self.state.get("snapshot_version")
@@ -584,6 +643,7 @@ class UpdateGuardian:
                  "running the health battery" % (pending.get("pre_version"), current))
         ok, checks = self.run_battery(current)
         if ok:
+            self.state.pop("snapshot_hold", None)   # the installed build just proved itself
             self.log("updates guardian: update accepted: Xod %s to %s passed the health "
                      "battery; the snapshot of %s is retained until the next payload"
                      % (pending.get("pre_version"), current, pending.get("snapshot_version")))

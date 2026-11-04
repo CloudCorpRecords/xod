@@ -938,50 +938,35 @@
         <!-- What Xod knows about you (js/about_you.js, services/user_memory.py) -->
         <div id="aboutYouSection"></div>
 
-        <!-- TrustMRR Key Section -->
-        <div class="space-y-2 rounded-xl bg-surface-750 p-4 border border-surface-700">
-          <div class="flex items-center justify-between">
-            <label class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
-              <i data-lucide="shield-check" class="size-4 text-emerald-400"></i>
-              TrustMRR API Key
-            </label>
-            <a href="https://trustmrr.com/dashboard-dev" target="_blank" class="text-[11px] text-brand-400 hover:underline">Get Key &rarr;</a>
+        <!-- API keys: Search & research — one card per provider, same shape for each.
+             Behavior lives in app.js (testKeyCard / saveKeyCard / removeKeyCard):
+             Test checks the key in the box before anything is stored, a pasted key is
+             saved only when the test passes, and Remove deletes the saved key. -->
+        <div class="space-y-3">
+          <div class="flex items-baseline justify-between pt-1">
+            <h4 class="text-xs font-semibold uppercase tracking-wider text-zinc-300">Search &amp; research keys</h4>
+            <span class="text-[11px] text-zinc-500">Saved in your Mac's Keychain — never in files.</span>
           </div>
-          <p class="text-xs text-zinc-400">Keys start with <code class="bg-surface-700 px-1 py-0.5 rounded text-zinc-200">tmrr_</code>. Stored securely in your local environment.</p>
-          <div class="flex gap-2">
-            <input
-              type="password"
-              id="inputTrustmrrKey"
-              placeholder="tmrr_xxxxxxxxxxxxxxxxxxxx"
-              class="flex-1 bg-surface-900 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"
-            >
-            <button
-              type="button"
-              onclick="testTrustMRRKey()"
-              id="btnTestTrustmrr"
-              class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap"
-            >
-              Test Key
-            </button>
-          </div>
-          <div id="testKeyFeedback" class="text-xs hidden"></div>
-        </div>
 
         <!-- You.com Search API Key Section -->
         <div class="space-y-2 rounded-xl bg-surface-750 p-4 border border-surface-700">
           <div class="flex items-center justify-between">
             <label class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
               <i data-lucide="search" class="size-4 text-cyan-400"></i>
-              You.com Search API Key
+              You.com
             </label>
-            <a href="https://you.com" target="_blank" class="text-[11px] text-cyan-400 hover:underline">Get Key &rarr;</a>
+            <div class="flex items-center gap-2">
+              <span id="pillYouKey" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-700 text-zinc-400">Not set</span>
+              <a href="https://you.com/platform" target="_blank" class="text-[11px] text-cyan-400 hover:underline">Get Key &rarr;</a>
+            </div>
           </div>
-          <p class="text-xs text-zinc-400">Powers live web research & AI snippets via <code class="bg-surface-700 px-1 py-0.5 rounded text-zinc-200">ydc-index.io</code>. Falls back to DuckDuckGo when unconfigured.</p>
+          <p class="text-xs text-zinc-400">Better web search and research results. When a key is saved, Xod asks You.com first and falls back to its other engines only if You.com can't answer.</p>
           <div class="flex gap-2">
             <input
               type="password"
               id="inputYouKey"
-              placeholder="ydc_... or your You.com API key"
+              placeholder="ydc_..."
+              autocomplete="off"
               class="flex-1 bg-surface-900 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"
             >
             <button
@@ -990,7 +975,23 @@
               id="btnTestYou"
               class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap"
             >
-              Test Key
+              Test
+            </button>
+            <button
+              type="button"
+              onclick="saveYouKey()"
+              id="btnSaveYou"
+              class="px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-xs font-semibold text-white transition-colors whitespace-nowrap"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              onclick="removeYouKey()"
+              id="btnRemoveYou"
+              class="hidden px-3 py-2 rounded-lg text-xs font-semibold text-red-300 hover:bg-surface-700 transition-colors whitespace-nowrap"
+            >
+              Remove
             </button>
           </div>
           <div id="testYouFeedback" class="text-xs hidden"></div>
@@ -1001,16 +1002,20 @@
           <div class="flex items-center justify-between">
             <label class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
               <i data-lucide="sparkles" class="size-4 text-emerald-400"></i>
-              Tavily AI Search API Key
+              Tavily
             </label>
-            <a href="https://tavily.com" target="_blank" class="text-[11px] text-emerald-400 hover:underline">Get Key &rarr;</a>
+            <div class="flex items-center gap-2">
+              <span id="pillTavilyKey" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-700 text-zinc-400">Not set</span>
+              <a href="https://tavily.com" target="_blank" class="text-[11px] text-emerald-400 hover:underline">Get Key &rarr;</a>
+            </div>
           </div>
-          <p class="text-xs text-zinc-400">Powers deep AI-synthesized web research, direct answers, and cited passages. Used when selected by the agent or when other engines run out or fail.</p>
+          <p class="text-xs text-zinc-400">Deep web research with AI-synthesized answers and cited sources. Used when You.com isn't set up or can't answer, and whenever the agent picks the Tavily tool directly.</p>
           <div class="flex gap-2">
             <input
               type="password"
               id="inputTavilyKey"
-              placeholder="tvly-... or your Tavily API key"
+              placeholder="tvly-..."
+              autocomplete="off"
               class="flex-1 bg-surface-900 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"
             >
             <button
@@ -1019,10 +1024,75 @@
               id="btnTestTavily"
               class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap"
             >
-              Test Key
+              Test
+            </button>
+            <button
+              type="button"
+              onclick="saveTavilyKey()"
+              id="btnSaveTavily"
+              class="px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-xs font-semibold text-white transition-colors whitespace-nowrap"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              onclick="removeTavilyKey()"
+              id="btnRemoveTavily"
+              class="hidden px-3 py-2 rounded-lg text-xs font-semibold text-red-300 hover:bg-surface-700 transition-colors whitespace-nowrap"
+            >
+              Remove
             </button>
           </div>
           <div id="testTavilyFeedback" class="text-xs hidden"></div>
+        </div>
+
+        <!-- TrustMRR Key Section -->
+        <div class="space-y-2 rounded-xl bg-surface-750 p-4 border border-surface-700">
+          <div class="flex items-center justify-between">
+            <label class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+              <i data-lucide="shield-check" class="size-4 text-emerald-400"></i>
+              TrustMRR
+            </label>
+            <div class="flex items-center gap-2">
+              <span id="pillTrustmrrKey" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-700 text-zinc-400">Not set</span>
+              <a href="https://trustmrr.com/dashboard-dev" target="_blank" class="text-[11px] text-brand-400 hover:underline">Get Key &rarr;</a>
+            </div>
+          </div>
+          <p class="text-xs text-zinc-400">Verified revenue data for startups and deals. Keys start with <code class="bg-surface-700 px-1 py-0.5 rounded text-zinc-200">tmrr_</code>.</p>
+          <div class="flex gap-2">
+            <input
+              type="password"
+              id="inputTrustmrrKey"
+              placeholder="tmrr_..."
+              autocomplete="off"
+              class="flex-1 bg-surface-900 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"
+            >
+            <button
+              type="button"
+              onclick="testTrustMRRKey()"
+              id="btnTestTrustmrr"
+              class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap"
+            >
+              Test
+            </button>
+            <button
+              type="button"
+              onclick="saveTrustMRRKey()"
+              id="btnSaveTrustmrr"
+              class="px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-xs font-semibold text-white transition-colors whitespace-nowrap"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              onclick="removeTrustMRRKey()"
+              id="btnRemoveTrustmrr"
+              class="hidden px-3 py-2 rounded-lg text-xs font-semibold text-red-300 hover:bg-surface-700 transition-colors whitespace-nowrap"
+            >
+              Remove
+            </button>
+          </div>
+          <div id="testKeyFeedback" class="text-xs hidden"></div>
         </div>
 
         <!-- YouTube Data API v3 Key Section -->
@@ -1030,16 +1100,20 @@
           <div class="flex items-center justify-between">
             <label class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
               <i data-lucide="video" class="size-4 text-red-400"></i>
-              YouTube Data API v3 Key
+              YouTube Data API
             </label>
-            <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="text-[11px] text-red-400 hover:underline">Get Key &rarr;</a>
+            <div class="flex items-center gap-2">
+              <span id="pillYoutubeKey" class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-700 text-zinc-400">Not set</span>
+              <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="text-[11px] text-red-400 hover:underline">Get Key &rarr;</a>
+            </div>
           </div>
-          <p class="text-xs text-zinc-400">Powers official channel analytics, verified subscriber counts, recent video uploads, and empirical view floor (<code class="bg-surface-700 px-1 py-0.5 rounded text-zinc-200">V50</code>) attention modeling.</p>
+          <p class="text-xs text-zinc-400">Official channel analytics: verified subscriber counts, recent uploads, and view data for attention modeling.</p>
           <div class="flex gap-2">
             <input
               type="password"
               id="inputYoutubeKey"
-              placeholder="AIzaSy... or your Google Cloud API key"
+              placeholder="AIzaSy..."
+              autocomplete="off"
               class="flex-1 bg-surface-900 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500 font-mono"
             >
             <button
@@ -1048,12 +1122,28 @@
               id="btnTestYoutube"
               class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors whitespace-nowrap"
             >
-              Test Key
+              Test
+            </button>
+            <button
+              type="button"
+              onclick="saveYoutubeKey()"
+              id="btnSaveYoutube"
+              class="px-3 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-xs font-semibold text-white transition-colors whitespace-nowrap"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              onclick="removeYoutubeKey()"
+              id="btnRemoveYoutube"
+              class="hidden px-3 py-2 rounded-lg text-xs font-semibold text-red-300 hover:bg-surface-700 transition-colors whitespace-nowrap"
+            >
+              Remove
             </button>
           </div>
           <div id="testYoutubeFeedback" class="text-xs hidden"></div>
         </div>
-
+        </div>
         <!-- 1Password: API keys as op:// references, website logins (onepassword.js) -->
         <div id="onePasswordSection" class="space-y-3 rounded-xl bg-surface-750 p-4 border border-surface-700">
           <label class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
