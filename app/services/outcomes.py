@@ -87,8 +87,15 @@ def _conn() -> sqlite3.Connection:
     return c
 
 
-def args_hash(args: Dict[str, Any]) -> str:
+# What makes two calls "the same action". A background job is its command and folder; the label the agent
+# gives it is not (live L4: the same append ran twice, once as "Step 8" and once as "Append step8").
+IDENTITY = {"computer_start_job": ("command", "cwd")}
+
+
+def args_hash(args: Dict[str, Any], tool: str = "") -> str:
     clean = {k: v for k, v in (args or {}).items() if not str(k).startswith("_")}
+    if tool in IDENTITY:
+        clean = {k: clean.get(k) for k in IDENTITY[tool]}
     return hashlib.sha256(json.dumps(clean, sort_keys=True, default=str).encode()).hexdigest()[:24]
 
 
@@ -135,7 +142,7 @@ def guard(origin: str, tool: str, args: Dict[str, Any]) -> Optional[Dict[str, An
     This is where blind retries of UNKNOWN actions, and repeats of confirmed sends, stop."""
     if tool not in SIDE_EFFECT_TOOLS:
         return None
-    h = args_hash(args)
+    h = args_hash(args, tool)
     last = _latest(origin, tool, h)
     if not last:
         return None
@@ -209,7 +216,7 @@ def settle(origin: str, tool: str, args: Dict[str, Any], result: Any = None,
         if error is not None:
             raise error
         return result
-    h = args_hash(args)
+    h = args_hash(args, tool)
     verify = VERIFIERS.get(tool)
     if error is not None:
         if verify:
