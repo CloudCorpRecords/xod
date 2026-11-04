@@ -67,7 +67,7 @@ mlx-whisper==0.4.3; sys_platform == "darwin"           # local speech to text fo
 
 # Seeing and using this Mac's screen, mouse and keyboard (services/desktop.py): screenshots, input events, accessibility
 pyte==0.8.2                                             # reads terminal agents' screens as you'd see them (services/agent_clis.py)
-wcwidth==0.8.3                                          # pyte
+wcwidth==0.9.3                                          # pyte
 pyobjc-core==12.2.2; sys_platform == "darwin"
 pyobjc-framework-Cocoa==12.2.2; sys_platform == "darwin"
 pyobjc-framework-Quartz==12.2.2; sys_platform == "darwin"
