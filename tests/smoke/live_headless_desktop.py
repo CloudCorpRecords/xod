@@ -7,7 +7,7 @@ unchanged before and after.
   D1 `xod mode headless on` (the terminal) saves the switch; the desktop shell started from it opens no
      window (no renderer page at all) and starts its server, which reports headless and lightweight
   D2 the terminal drives that headless Xod: a task is acknowledged at once and its effect lands on disk
-  D3 quitting the headless shell stops the server it started
+  D3 quitting the headless shell stops the server it started (within 15 s: it is force-stopped at 5 s)
   D4 `xod mode headless off`: the next launch opens a window (one renderer page on the app)
   D5 the installed Xod on port 8000, if running, was not touched (same process before and after)
 
@@ -25,7 +25,9 @@ ap.add_argument("--debug-port", type=int, default=9333)
 args = ap.parse_args()
 DATA = Path(args.data)
 URL = f"http://127.0.0.1:{args.port}"
-ELECTRON = ROOT / "electron" / "node_modules" / ".bin" / "electron"
+# The Electron binary itself (not npm's launcher, which forwards signals a second time).
+ELECTRON = Path(subprocess.run(["node", "-p", "require('electron')"], cwd=str(ROOT / "electron"),
+                               capture_output=True, text=True).stdout.strip())
 results = []
 
 
@@ -76,12 +78,13 @@ def pages():
 
 
 def quit_shell(p):
-    os.killpg(p.pid, signal.SIGTERM)
+    """One SIGTERM to the shell, as the system sends when it asks an app to stop."""
+    p.send_signal(signal.SIGTERM)
     try:
         p.wait(30)
     except subprocess.TimeoutExpired:
         os.killpg(p.pid, signal.SIGKILL)
-    for _ in range(30):
+    for _ in range(15):
         if not get(URL + "/api/mode", timeout=1):
             return True
         time.sleep(1)
@@ -135,7 +138,7 @@ try:
     pg = pages()
     check("a window opened on the app", any(str(args.port) in (t.get("url") or "") for t in pg), json.dumps(pg)[:300])
 finally:
-    quit_shell(shell)
+    check("quitting it stops its server too", quit_shell(shell))
 cli("mode", "light", "off")
 
 print("D5 the installed Xod")

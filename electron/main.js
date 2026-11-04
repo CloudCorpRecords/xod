@@ -235,19 +235,27 @@ async function startServer() {
 }
 
 function stopServer() {
-  if (!server) return;
+  // Returns a promise that settles once the server this shell started is gone (or left running on purpose).
+  if (!server) return Promise.resolve();
   const p = server;
   server = null;
-  if (detachServer) return;     // "keep the server running": it is detached, with its own session; leave it up
+  if (detachServer) return Promise.resolve();     // "keep the server running": it is detached, with its own session; leave it up
   if (WIN) {     // no signals on Windows: end the server and anything it started (browser, workers)
     spawnSync("taskkill", ["/pid", String(p.pid), "/T", "/F"]);
-    return;
+    return Promise.resolve();
   }
   // The server leads its own session (detached spawn). SIGTERM goes to the server alone
-  // first, so its own shutdown stops what it started, in order, as it always has; the
-  // force-kill after 5s takes the whole group, so nothing it started can be left behind.
-  try { p.kill("SIGTERM"); } catch (e) { /* already gone */ }
-  setTimeout(() => { try { process.kill(-p.pid, "SIGKILL"); } catch (e) { try { p.kill("SIGKILL"); } catch (e2) {} } }, 5000).unref();
+  // first, so its own shutdown stops what it started, in order; then, once it has exited or
+  // after 5 s, the whole group is force-killed so nothing it started is left behind. The quit
+  // waits for this (before-quit below): a timer left to fire after the shell exited never did,
+  // and a server slow to shut down was orphaned, still serving.
+  return new Promise((resolve) => {
+    const done = () => { try { process.kill(-p.pid, "SIGKILL"); } catch (e) { /* the group is gone */ } resolve(); };
+    if (p.exitCode !== null || p.signalCode !== null) return done();
+    const t = setTimeout(done, 5000);
+    p.once("exit", () => { clearTimeout(t); done(); });
+    try { p.kill("SIGTERM"); } catch (e) { clearTimeout(t); done(); }
+  });
 }
 
 // ------------------------------------------------------------------ security
@@ -548,5 +556,13 @@ app.whenReady().then(async () => {
 app.on("activate", () => showWindow());
 // Hiding to the tray doesn't close the window, so this only happens with the tray off (or missing).
 app.on("window-all-closed", () => { if (!prefs.background || !tray) app.quit(); });
-app.on("before-quit", () => { quitting = true; stopServer(); });
+app.on("before-quit", (e) => {
+  quitting = true;
+  if (!server) return;
+  e.preventDefault();               // quit once the server is down (stopServer), then for real
+  stopServer().then(() => app.quit());
+});
+// Asked to stop by a signal (kill, logout, a terminal's Ctrl+C): quit the usual way, so the
+// server this shell started stops with it, instead of the shell vanishing and the server staying.
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => app.quit());
 app.on("will-quit", () => globalShortcut.unregisterAll());
