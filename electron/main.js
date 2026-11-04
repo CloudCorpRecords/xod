@@ -13,8 +13,11 @@ const updater = require("./updater");
 const { resolveMode, shouldShedOnClose } = require("./mode");
 
 // Electron's own cache goes in a subfolder; Xod's data (xod.db, projects, models…) is next to it.
-app.setPath("userData", path.join(app.getPath("appData"), "Xod", "Electron"));
+// A run from source with its own data folder (XOD_DATA_DIR) keeps its cache there too, so a dev
+// launch never shares the installed app's cache or its single-instance lock.
 const DATA_DIR = process.env.XOD_DATA_DIR || path.join(app.getPath("appData"), "Xod");
+app.setPath("userData", !app.isPackaged && process.env.XOD_DATA_DIR
+  ? path.join(DATA_DIR, "Electron") : path.join(app.getPath("appData"), "Xod", "Electron"));
 
 // From source: the repository and its .venv. Installed (Xod.app): the Python code and a Python
 // with every package already installed are both inside the app (electron/scripts/bundle-python.js),
