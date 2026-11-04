@@ -37,6 +37,15 @@ def _conn() -> sqlite3.Connection:
         id TEXT PRIMARY KEY, name TEXT NOT NULL, instructions TEXT NOT NULL, steps TEXT, schedule TEXT,
         enabled INTEGER DEFAULT 1, created_at REAL, updated_at REAL, next_run_at REAL, last_run_at REAL,
         last_task_id TEXT, last_status TEXT, runs INTEGER DEFAULT 0, source TEXT)""")
+    # Orchestrator Phase 4 (services/delivery.py): what kind of job this is (a "watch" stays
+    # silent when it finds nothing), which outcomes reach the person, and the open run record.
+    cols = [r[1] for r in c.execute("PRAGMA table_info(routines)").fetchall()]
+    if "kind" not in cols:
+        c.execute("ALTER TABLE routines ADD COLUMN kind TEXT DEFAULT 'task'")
+    if "notify_on" not in cols:
+        c.execute("ALTER TABLE routines ADD COLUMN notify_on TEXT")
+    if "last_run_id" not in cols:
+        c.execute("ALTER TABLE routines ADD COLUMN last_run_id TEXT")
     return c
 
 
@@ -45,6 +54,11 @@ def _row(r: sqlite3.Row) -> Dict[str, Any]:
     d["steps"] = json.loads(d.get("steps") or "[]")
     d["schedule"] = json.loads(d.get("schedule") or '{"kind": "manual"}')
     d["enabled"] = bool(d["enabled"])
+    d["kind"] = d.get("kind") or "task"
+    try:
+        d["notify_on"] = json.loads(d["notify_on"]) if d.get("notify_on") else None
+    except Exception:
+        d["notify_on"] = None
     d["schedule_text"] = describe_schedule(d["schedule"])
     return d
 
@@ -143,6 +157,9 @@ def steps_from(origin: str) -> List[str]:
 
 def compose_request(r: Dict[str, Any]) -> str:
     text = r["instructions"].strip()
+    if (r.get("kind") or "task") == "watch":
+        from app.services import delivery
+        text += delivery.WATCH_PROTOCOL
     if r["steps"]:
         text += (f"\n\n(This is my saved routine \"{r['name']}\". Steps that worked last time, as a guide; "
                  "pages and files may have changed since, so check as you go:\n"
@@ -205,7 +222,7 @@ def get(rid: str) -> Optional[Dict[str, Any]]:
 
 
 def create(name: str, instructions: str, schedule: Optional[Dict[str, Any]] = None,
-           source: Optional[str] = None) -> Dict[str, Any]:
+           source: Optional[str] = None, kind: str = "task", notify_on: Optional[List[str]] = None) -> Dict[str, Any]:
     """source: "chat:<session id>" or "task:<task id>" to learn the steps from (optional)."""
     instructions = (instructions or "").strip()
     if not instructions:
@@ -215,10 +232,11 @@ def create(name: str, instructions: str, schedule: Optional[Dict[str, Any]] = No
     now = time.time()
     steps = steps_from(source) if source else []
     with _conn() as c:
-        c.execute("INSERT INTO routines (id, name, instructions, steps, schedule, enabled, created_at, updated_at, next_run_at, runs, source) "
-                  "VALUES (?,?,?,?,?,1,?,?,?,0,?)",
+        c.execute("INSERT INTO routines (id, name, instructions, steps, schedule, enabled, created_at, updated_at, next_run_at, runs, source, kind, notify_on) "
+                  "VALUES (?,?,?,?,?,1,?,?,?,0,?,?,?)",
                   (rid, (name or instructions[:60]).strip(), instructions, json.dumps(steps), json.dumps(sched), now, now,
-                   next_run(sched, now), source))
+                   next_run(sched, now), source, kind if kind in ("task", "watch") else "task",
+                   json.dumps(notify_on) if notify_on else None))
     return get(rid)
 
 
@@ -270,10 +288,12 @@ def run_now(rid: str, reason: str = "you asked") -> Dict[str, Any]:
                       (now, _after_run(r["schedule"], now), rid))
         return {"success": True, "reminded": True}
     task = task_queue.create(compose_request(r), title=f"↻ {r['name']}")
+    from app.services import delivery
+    run_id = delivery.run_started(rid, task["id"])   # a first-class run record (services/delivery.py)
     now = time.time()
     with _conn() as c:
-        c.execute("UPDATE routines SET last_run_at = ?, last_task_id = ?, last_status = 'running', runs = runs + 1, next_run_at = ? WHERE id = ?",
-                  (now, task["id"], _after_run(r["schedule"], now), rid))
+        c.execute("UPDATE routines SET last_run_at = ?, last_task_id = ?, last_status = 'running', runs = runs + 1, next_run_at = ?, last_run_id = ? WHERE id = ?",
+                  (now, task["id"], _after_run(r["schedule"], now), run_id, rid))
     logger.info(f"Routine {r['name']} started ({reason}) as {task['id']}")
     return {"success": True, "task": task}
 
@@ -288,6 +308,26 @@ def _follow_up() -> None:
             continue
         t = task_queue.get(r["last_task_id"])
         status = (t or {}).get("status")
+        waiting = status == "waiting"
+        if waiting and r.get("last_run_id"):
+            # It needs the person: that decision reaches them once per waiting episode, while the
+            # run itself stays open until its task really ends.
+            from app.services import delivery
+            delivery.note_decision(r, t)
+        if r.get("last_run_id") and (status in ("done", "failed", "cancelled") or not t):
+            from app.services import delivery
+            open_run = delivery.open_run_for_task(r["last_task_id"])
+            if open_run:
+                delivery.run_finished(open_run["id"], r, t)
+                if delivery.consecutive_failures(r["id"]) >= delivery.MAX_CONSECUTIVE_FAILURES and r["enabled"]:
+                    # A broken job is stopped, and the person told which result will no longer arrive.
+                    update(r["id"], enabled=False)
+                    delivery.run_finished(delivery.run_started(r["id"], None), {**r, "notify_on": ["failed"]},
+                                          {"status": "failed", "result": (
+                                              f"It failed {delivery.MAX_CONSECUTIVE_FAILURES} runs in a row, so Xod turned it off. "
+                                              f"You will not get \"{r['name']}\" results until it is fixed and turned back on.")})
+        if waiting:
+            continue
         if status in ("done", "failed", "cancelled") or not t:
             fields: Dict[str, Any] = {}
             if status == "done":
@@ -303,6 +343,11 @@ def _follow_up() -> None:
 def tick() -> List[str]:
     started = []
     _follow_up()
+    try:
+        from app.services import delivery
+        delivery.deliver_pending()        # results that reach the person, per each routine's policy, exactly once
+    except Exception as e:
+        logger.warning(f"delivery: {e}")
     now = time.time()
     for r in list_all():
         if r["enabled"] and r.get("next_run_at") and r["next_run_at"] <= now and r.get("last_status") != "running":
@@ -319,6 +364,11 @@ def start() -> None:
     global _loop_task
     if _loop_task and not _loop_task.done():
         return
+    try:   # a delivery a previous process left mid-send is settled at the destination first
+        from app.services import delivery
+        delivery.recover()
+    except Exception as e:
+        logger.warning(f"delivery recovery: {e}")
 
     async def loop():
         while True:

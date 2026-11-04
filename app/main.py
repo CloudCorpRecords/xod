@@ -1610,6 +1610,8 @@ class RoutineCreate(BaseModel):
     instructions: str
     schedule: Optional[Dict[str, Any]] = None
     source: Optional[str] = None      # "chat:<session id>" or "task:<task id>": learn the steps from it
+    kind: str = "task"                # "watch": silent when it finds nothing (services/delivery.py)
+    notify_on: Optional[List[str]] = None   # outcomes that reach you: changed, done, failed, decision
 
 
 class RoutineUpdate(BaseModel):
@@ -1634,7 +1636,8 @@ async def routines_list_endpoint():
 async def routines_create_endpoint(req: RoutineCreate):
     from app.services import routines
     try:
-        return {"success": True, "routine": routines.create(req.name or "", req.instructions, req.schedule, req.source)}
+        return {"success": True, "routine": routines.create(req.name or "", req.instructions, req.schedule, req.source,
+                                                            kind=req.kind, notify_on=req.notify_on)}
     except ValueError as e:
         return {"success": False, "error": str(e)}
 
@@ -1644,6 +1647,13 @@ async def routines_update_endpoint(rid: str, req: RoutineUpdate):
     from app.services import routines
     r = routines.update(rid, **req.model_dump())
     return {"success": bool(r), "routine": r}
+
+
+@app.get("/api/routines/{rid}/runs")
+async def routine_runs_endpoint(rid: str):
+    """Every run's record: started, finished, outcome, and whether (and how) it reached you."""
+    from app.services import delivery
+    return {"runs": delivery.runs(rid, 100)}
 
 
 @app.post("/api/routines/{rid}/run")

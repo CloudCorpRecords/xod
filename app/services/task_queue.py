@@ -1380,8 +1380,15 @@ class TaskQueue:
         self._update(task_id, note=note, status=status, result=report, finished_at=time.time(),
                      waiting_kind=None, now="Done" if status == "done" else "Stopped", **fields)
         t = self.get(task_id)
-        notify(t["title"], "Done." if status == "done" else "Couldn't finish. Open Tasks to see why.")
-        _phone(t, status)
+        routine_run = None
+        try:   # a scheduled run's result reaches the person through its delivery policy only
+            from app.services import delivery
+            routine_run = delivery.open_run_for_task(task_id)
+        except Exception:
+            pass
+        if routine_run is None:
+            notify(t["title"], "Done." if status == "done" else "Couldn't finish. Open Tasks to see why.")
+            _phone(t, status)
         try:   # it becomes part of Xod's memory of what it has done (services/recall.py)
             from app.services import recall
             recall.schedule_index(2.0)
