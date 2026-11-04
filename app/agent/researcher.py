@@ -2304,6 +2304,14 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                 "resuming": True,
             }
 
+        # A job for the person's own phone is never a browser mission: the phone's apps are already
+        # signed in, and "open Facebook and post" matching the web-action words below is exactly how a
+        # phone request once became a browser task that reported it could not control the phone. The
+        # worker's phone routing (below in run_research_stream) or the chat's phone tool handles it.
+        from app.agent import worker as _worker
+        if _worker.wants_phone(query):
+            return None
+
         planned = [
             (t, (s.get("tool_args") or [{}])[i] if i < len(s.get("tool_args") or []) else {})
             for s in deliberation.get("plan_steps", []) for i, t in enumerate(s.get("tools", []))

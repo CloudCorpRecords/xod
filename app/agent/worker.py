@@ -41,6 +41,24 @@ TOOLS = ("computer_run_command", "computer_start_job", "computer_wait_for", "com
          "computer_read_file", "computer_write_file", "computer_edit_file", "computer_list_directory",
          "computer_find_files", "locate_files", "web_search")
 WEB_TOOLS = ("web_search", "web_scrape", "computer_write_file", "computer_read_file")
+PHONE_TOOLS = ("phone",)
+
+# Jobs that belong on the person's own phone, not on this computer or the web: doing something in an app
+# that lives on the phone (Facebook, TikTok, ...), or on the phone itself when it's named with something
+# to do on it. Research ABOUT phones is not a phone job ("compare phones", "the best Android phone to
+# buy"): those never name the person's own phone with an action, and route() asks this only after its
+# question gate, so a question about a phone still goes to the chat.
+_PHONE_SOCIAL_RE = re.compile(r"\b(?:facebook|tiktok|instagram|whatsapp|telegram|messenger)\b(?!\.com)", re.I)
+_PHONE_DEVICE_RE = re.compile(r"\b(?:my|the) phone\b|\bcell ?phone\b|\bmobile phone\b|\bandroid phone\b|\bs25\b|\bmy galaxy\b", re.I)
+_PHONE_ACTION_RE = re.compile(r"\b(?:open|launch|post|publish|share|comment|reply|send|text|message|dm|tap|type|swipe|scroll|check|read|upload|call)\b", re.I)
+
+
+def wants_phone(query: str) -> bool:
+    """This job is to be done on the person's paired phone, in its apps."""
+    q = query or ""
+    if _PHONE_DEVICE_RE.search(q):
+        return bool(_PHONE_ACTION_RE.search(q))
+    return bool(_PHONE_SOCIAL_RE.search(q) and _PHONE_ACTION_RE.search(q))
 
 # ------------------------------------------------------------------ which requests are work on the computer
 _INSTALL_RE = re.compile(r"\b(?:install|uninstall|reinstall)(?:ed|ing|s)?\b", re.I)
@@ -120,6 +138,8 @@ def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
         return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
     if _QUESTION_RE.match(q) or len(q) > 1500:
         return None
+    if wants_phone(q):
+        return {"goal": q, "kind": "phone", "resume": "", "extra": ""}
     from app.agent import builder
     if builder.wants_build(q):
         return None
@@ -282,6 +302,20 @@ How you work:
 - Stop and ask only for what you truly can't do yourself (signing in, paying, a choice only they can make).
 - When it's done, give them the information itself: short, plain words, each fact with the page it came from as a
   markdown link. No headings about your process, no "evidence", no list of what you searched."""
+
+PHONE_SYSTEM = """You are Xod, doing a job on this person's own Android phone, through the phone tool. It's {now}.
+
+The phone is paired with this computer and online, and its apps are already signed in as the person.
+
+How you work:
+- Do the job with the phone tool. For a job inside an app, call it with action "task", the app's name, and the
+  goal in the person's own words: the phone side opens the app, reads the screen, and taps and types until
+  it's done. For a single step, use action "open_app", "screen_read" or "act" instead.
+- Never use web search, a browser, or this computer's tools for something the person asked for on the phone.
+- The phone asks the person before a step that posts, sends, pays or deletes, unless their own words asked
+  for exactly that. That pause is expected; it is not a failure, and it is not yours to wave through.
+- When the phone tool reports back, say plainly what was done and what the phone showed as proof. If it
+  failed, timed out or is waiting on the person, say that plainly instead of claiming it worked."""
 
 SHELL_WIN = """
 Windows notes:
@@ -471,6 +505,10 @@ FINISHED = {
     "web": "Finished means: every part of what the person asked for is covered by pages the worker actually read (web_scrape\n"
            "outputs), and the worker's last message gives them that information. Search results alone are not reading the\n"
            "websites. A page that was blocked or empty doesn't count: another source for the same thing does.",
+    "phone": "Finished means: the phone tool's steps succeeded on the phone itself, and what the phone "
+             "returned shows the thing the person asked for is there (the comment visible on their post, the "
+             "message sent, the app showing what they asked to see). The phone's own report of its screen is "
+             "the proof; the app merely being opened is not proof the job inside it is done.",
 }
 
 
@@ -603,8 +641,25 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         yield {"type": "done"}
         return
 
+    if kind == "phone":
+        # A phone job only exists while a paired phone is online: without one there is nothing to drive,
+        # and wandering off to the web or this computer's tools is how a Facebook-by-phone request once
+        # became a DuckDuckGo search for its own text.
+        try:
+            from app.services import phone_mcp
+            online = [p for p in phone_mcp.phone_list().get("phones", []) if p.get("online")]
+        except Exception:
+            online = []
+        if not online:
+            yield {"type": "content", "content": "I can't do that one yet: your phone isn't connected to Xod "
+                                                 "right now (it's offline or asleep). Open the Xod app on the "
+                                                 "phone so it connects, then ask me again."}
+            yield {"type": "done"}
+            return
+
     from app.agent.tools import TOOL_DEFINITIONS
-    tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in (WEB_TOOLS if kind == "web" else TOOLS)]
+    tools = [t for t in TOOL_DEFINITIONS if t["function"]["name"] in
+             (WEB_TOOLS if kind == "web" else PHONE_TOOLS if kind == "phone" else TOOLS)]
     try:
         from app.services import capabilities
         if kind == "computer" and not capabilities._browser():
@@ -631,6 +686,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     now = time.strftime("%A %B %d, %Y, %I:%M %p")
     if kind == "web":
         system = WEB_SYSTEM.format(now=now) + team_note
+    elif kind == "phone":
+        system = PHONE_SYSTEM.format(now=now) + team_note
     else:
         system = SYSTEM.format(now=now, ready=_ready_text(ready),
                                shell=(SHELL_WIN + "\n" + platform_info.SHELL_NOTE) if WIN else SHELL_MAC) + team_note
