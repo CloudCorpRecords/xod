@@ -3,6 +3,7 @@ import re
 import uuid
 import json
 import asyncio
+import contextvars
 import logging
 from typing import Dict, Any, List
 from app.services.trustmrr import trustmrr_client, TrustMRRError
@@ -3248,6 +3249,10 @@ def placeholder_error(name: str, key: str, value: str) -> Dict[str, Any]:
                       "value an earlier tool result returned, or run the search that produces it first.")}
 
 
+# Set by a caller that streams a shell command's output live (services: the agent's tool stream).
+command_stream_sink: contextvars.ContextVar = contextvars.ContextVar("xod_command_stream_sink", default=None)
+
+
 async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None,
                        reviewed: bool = False) -> Dict[str, Any]:
     """Runs a tool and records it in the activity log (services/activity.py), saving what undo needs first.
@@ -4526,7 +4531,24 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                 timeout = 45
             if _SLOW_COMMAND_RE.search(cmd or ""):
                 timeout = max(timeout, 900)     # installs and builds: 45 s killed "winget install" halfway
-            return await system_control_service.run_command(command=cmd, cwd=cwd, timeout_sec=timeout)
+            sink = command_stream_sink.get()
+            if sink is None:
+                return await system_control_service.run_command(command=cmd, cwd=cwd, timeout_sec=timeout)
+            # A caller that shows output live (the agent's tool stream) gets each chunk as it comes,
+            # while the call itself still goes through execute_tool's gates and records.
+            out_accum, err_accum = [], []
+            exit_code, status, duration = 0, "completed", 0.0
+            async for chunk in system_control_service.run_command_stream(command=cmd, cwd=cwd, timeout_sec=timeout):
+                if chunk.get("type") in ("stdout", "stderr"):
+                    (out_accum if chunk["type"] == "stdout" else err_accum).append(chunk.get("text", ""))
+                    sink(chunk)
+                elif chunk.get("type") == "done":
+                    exit_code = chunk.get("exit_code", 0)
+                    status = chunk.get("status", "completed")
+                    duration = chunk.get("duration_sec", 0.0)
+            return {"command": cmd, "cwd": system_control_service.current_working_directory, "status": status,
+                    "exit_code": exit_code, "stdout": "".join(out_accum), "stderr": "".join(err_accum),
+                    "duration_sec": duration}
 
         elif name == "computer_inspect_system":
             return system_control_service.get_system_telemetry()

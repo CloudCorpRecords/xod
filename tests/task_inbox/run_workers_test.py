@@ -233,14 +233,17 @@ async def w4_unknown(q):
 
 
 async def w4b_job_not_restarted(q):
-    print("W4b a background job that already ran in this task is not started again")
+    print("W4b a background job is judged by its observed fate before any restart")
+    from app.services.system_control import system_control_service as sc
     real = tools._execute_tool
     starts = {"n": 0}
 
     async def fake_exec(name, args, ws=None):
         if name == "computer_start_job":
             starts["n"] += 1
-            return {"success": True, "job_id": f"job-{starts['n']}"}
+            jid = f"job-{uuid.uuid4().hex[:8]}"
+            sc.background_jobs[jid] = {"id": jid, "name": args["name"], "status": "running", "exit_code": None}
+            return {"success": True, "job_id": jid}
         return await real(name, args, ws)
 
     tools._execute_tool = fake_exec
@@ -249,12 +252,21 @@ async def w4b_job_not_restarted(q):
     args = {"name": "Append step 7", "command": "sleep 40 && echo step7 >> /tmp/x"}
     try:
         r1 = await tools.execute_tool("computer_start_job", dict(args), reviewed=True)
+        n1 = starts["n"]
         r2 = await tools.execute_tool("computer_start_job", dict(args), reviewed=True)
+        sc.background_jobs[r1["job_id"]].update(status="completed", exit_code=0)
+        r3 = await tools.execute_tool("computer_start_job", dict(args), reviewed=True)
+        sc.background_jobs.pop(r1["job_id"])           # the process restarted: the job is gone
+        r4 = await tools.execute_tool("computer_start_job", dict(args), reviewed=True)
+        r5 = await tools.execute_tool("computer_start_job", dict(args), reviewed=True)
     finally:
         activity.origin.reset(tok)
         tools._execute_tool = real
-    check("first start runs and is UNVERIFIED", r1.get("outcome") == OC.UNVERIFIED and starts["n"] == 1, str(r1)[:200])
-    check("the identical second start is refused (check instead)", r2.get("already_done") and starts["n"] == 1, str(r2)[:200])
+    check("first start runs and is UNVERIFIED", r1.get("outcome") == OC.UNVERIFIED and n1 == 1, str(r1)[:200])
+    check("while it runs, an identical start is refused (wait instead)", r2.get("already_done") and "already running" in r2.get("error", ""))
+    check("once it finished OK, an identical start is refused as done", r3.get("outcome") == OC.CONFIRMED and r3.get("already_done"))
+    check("a job lost to a restart may run once more (its effect is not known)", starts["n"] == 2 and r4.get("job_id"), str(r4)[:200])
+    check("and that new run is guarded the same way", r5.get("already_done") and starts["n"] == 2)
 
 
 async def w5_file_confirmed(q):

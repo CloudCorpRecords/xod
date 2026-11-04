@@ -1131,8 +1131,14 @@ class SystemControlService:
         # group (via _shell) so stop_job can reap the whole group at once.
         proc = await self._shell(command, target_cwd, track=False)
 
+        try:   # which task or chat started it, so its owner can wait on it (services/orchestrator.py)
+            from app.services import activity
+            job_origin = str(activity.origin.get() or "chat")
+        except Exception:
+            job_origin = "chat"
         job_info: Dict[str, Any] = {
             "id": job_id,
+            "origin": job_origin,
             "name": name,
             "command": command,
             "cwd": target_cwd,

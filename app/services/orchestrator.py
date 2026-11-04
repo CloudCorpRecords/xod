@@ -534,6 +534,53 @@ async def _run_parallel(q: Any, task_id: str, step: Dict[str, Any], instructions
     return workers.render_result(result), steps + len(jobs), False, problem
 
 
+JOB_WAIT_SEC = 900
+
+
+def _step_jobs(task_id: str, since: float) -> List[Dict[str, Any]]:
+    """Background jobs this task started during the step, as the job registry observes them."""
+    try:
+        from app.services.system_control import system_control_service as sc
+    except Exception:
+        return []
+    return [j for j in sc.background_jobs.values()
+            if j.get("origin") == f"task:{task_id}" and j.get("start_time", 0) >= since - 1]
+
+
+async def _await_step_jobs(q: Any, task_id: str, since: float) -> Tuple[List[Dict[str, Any]], bool]:
+    """A step's own job still running when the agent's turn ended is waited for here, bounded,
+    with progress, and interruptible by an urgent steer. Returns (jobs, interrupted). The step is
+    judged on what the jobs observably did, not on the agent's guess from a check seconds in."""
+    jobs = _step_jobs(task_id, since)
+    running = [j for j in jobs if j.get("status") == "running"]
+    if not running:
+        return jobs, False
+    q._progress(task_id, f"⏳ Waiting for {len(running)} job(s) this step started: "
+                         + ", ".join(j.get("name") or j["id"] for j in running)[:150])
+    deadline = time.time() + JOB_WAIT_SEC
+    while any(j.get("status") == "running" for j in running) and time.time() < deadline:
+        await asyncio.sleep(1.0)
+        q._touch_progress(task_id)
+        if any(s["urgent"] for s in inbox(task_id, state="queued")):
+            return jobs, True
+    return _step_jobs(task_id, since), False
+
+
+def _job_problems(jobs: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
+    """(problems, evidence) from the observed end state of a step's jobs."""
+    problems, evidence = [], []
+    for j in jobs:
+        label = j.get("name") or j["id"]
+        st, code = j.get("status"), j.get("exit_code")
+        if st == "running":
+            problems.append(f"its job '{label}' was still running after {JOB_WAIT_SEC} s")
+        elif st == "completed" and code == 0:
+            evidence.append(f"observed: job '{label}' finished with exit code 0")
+        else:
+            problems.append(f"its job '{label}' ended {st} with exit code {code}")
+    return problems, evidence
+
+
 async def _run_step(q: Any, task_id: str, prompt: str, steps: int) -> Tuple[str, int, bool]:
     """Runs one step's agent stream as its own asyncio task, watching the inbox for urgent
     steers while it runs. Returns (report, steps, interrupted)."""
@@ -568,6 +615,8 @@ _UNVERIFIED_RES = (
     r"\bno longer have (?:shell|file|tool)",
     r"\b(?:is|was) still running\b",
     r"\bnot (?:yet )?(?:verified|confirmed)\b",
+    r"\b(?:status|outcome|result) (?:is|was|remains) (?:unclear|unknown)\b",
+    r"\bunclear\b",
 )
 
 
@@ -704,8 +753,19 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 continue
             if _paused_on_person(q, task_id, items, instr, step, report, began, mark):
                 return
+            jobs, cut = await _await_step_jobs(q, task_id, step.get("started_at") or began)
+            if cut:
+                step["note"] = "interrupted by your instruction"
+                save_plan(task_id, items, instr)
+                continue
+            job_problems, job_evidence = _job_problems(jobs)
             problems = q._verify_file_effects({"id": task_id, "request": step["text"]}, began)
             own = None if step.get("parallel") else _self_report_problem(step["text"], report)
+            if own and jobs and not job_problems:
+                # The agent could not see the end; the orchestrator did: every job it started
+                # for this step finished cleanly. The observation outranks the hedge.
+                own = None
+            problems = problems + job_problems
             if own:
                 problems = problems + [own]
             if fan_problem:
@@ -717,7 +777,7 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 save_plan(task_id, items, instr)
                 q._progress(task_id, f"🔄 Step {k} did not check out; trying it once more")
                 continue
-            step["evidence"] = _ops_summary(task_id, step["started_at"] or began)
+            step["evidence"] = _ops_summary(task_id, step["started_at"] or began) + job_evidence
             step["result"] = (report or "")[:4000]
             step["finished_at"] = time.time()
             if problems:

@@ -160,6 +160,19 @@ def guard(origin: str, tool: str, args: Dict[str, Any]) -> Optional[Dict[str, An
     if state == CONFIRMED and tool in NON_IDEMPOTENT:
         return {"success": True, "outcome": CONFIRMED, "already_done": True,
                 "message": "This exact action was already done and confirmed in this task. Not repeated."}
+    if tool == "computer_start_job" and state in (UNVERIFIED, CONFIRMED, UNKNOWN):
+        # A background job's fate is observable in the job registry: decide on that, never blindly.
+        job = _job_for(last)
+        if job is not None and job.get("status") == "running":
+            return {"success": False, "outcome": UNVERIFIED, "already_done": True, "job_id": job["id"],
+                    "error": f"This exact job is already running as {job['id']}. Not started again: wait for it "
+                             "(computer_wait_for) or check it (computer_check_job)."}
+        if job is not None and job.get("status") == "completed" and job.get("exit_code") == 0:
+            return {"success": True, "outcome": CONFIRMED, "already_done": True, "job_id": job["id"],
+                    "message": f"This exact job already ran to completion as {job['id']} (exit code 0). Not repeated."}
+        # Ended badly, or unknown to this process (it died with a restart): its effect is not
+        # known to be in place, so one more run is allowed; this one is recorded like any other.
+        return None
     if state == UNVERIFIED and tool in NON_IDEMPOTENT:
         # It ran and reported success, but nothing could read it back: its effect is not known
         # to be absent, so a second run would be a blind duplicate (live L4: a background job
@@ -173,6 +186,19 @@ def guard(origin: str, tool: str, args: Dict[str, Any]) -> Optional[Dict[str, An
             return {"success": False, "outcome": FAILED,
                     "error": "This exact action already failed twice in this task. Not retried again."}
     return None
+
+
+def _job_for(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The live registry entry for the job an earlier start recorded, or None (gone: restart)."""
+    import re
+    m = re.search(r"job_id=(job-[0-9a-f]+)", row.get("evidence") or "")
+    if not m:
+        return None
+    try:
+        from app.services.system_control import system_control_service as sc
+        return sc.background_jobs.get(m.group(1))
+    except Exception:
+        return None
 
 
 def settle(origin: str, tool: str, args: Dict[str, Any], result: Any = None,
@@ -208,5 +234,7 @@ def settle(origin: str, tool: str, args: Dict[str, Any], result: Any = None,
     else:
         outcome, evidence = (UNVERIFIED, "the tool reported success; no read-back exists for it") if ok \
             else (FAILED, f"the tool reported it did not happen: {str(res.get('error'))[:200]}")
+        if ok and tool == "computer_start_job" and res.get("job_id"):
+            evidence += f" (job_id={res['job_id']})"
     _record(origin, tool, h, outcome, evidence)
     return {**res, "outcome": outcome, "outcome_evidence": evidence}
