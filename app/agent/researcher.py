@@ -2725,6 +2725,9 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
                     "When they refer to running work (\"make it X instead\", \"pause that\", \"stop it\"): {\"action\": \"steer\", "
                     "\"task\": \"task-…\", \"kind\": \"redirect|steer|pause|resume|cancel\", \"text\": \"...\"}; a steer is queued "
                     "until the task applies it, so say queued. Where it stands: {\"action\": \"status\", \"task\": \"task-…\"}."]
+            from app.agent.tools import TEST_HOOKS
+            if TEST_HOOKS and "test_send" in (query or ""):
+                extra.append("   - test_send: TEST ONLY. Send a text to the test inbox. Args: {\"text\": \"...\"}")
             from app.services.mcp_client import mcp_hub
             # The connected apps' tools that fit this request (GitHub alone has 46: the first twelve were often the wrong ones)
             mcp_tools = [d["function"] for d in mcp_hub.tools_for_query(query, limit=12)]
