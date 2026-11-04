@@ -636,10 +636,30 @@ def _job_problems(jobs: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
     return problems, evidence
 
 
+# Test hooks only (XOD_TEST_HOOKS=1): a task whose step actions are scripted tool calls, so an acceptance
+# test can exercise the engine (executor, outcomes, step judging) without depending on the model's choices.
+SCRIPTED: Dict[str, List[Tuple[str, Dict[str, Any]]]] = {}
+
+
+async def _scripted_stream(task_id: str, calls: List[Tuple[str, Dict[str, Any]]], steps: int):
+    from app.agent import tools
+    lines = []
+    for name, args in calls:
+        try:
+            r = await tools.execute_tool(name, dict(args), reviewed=True)
+        except Exception as e:
+            r = {"success": False, "error": f"{type(e).__name__}: {e}"}
+        lines.append(f"{name}: outcome {r.get('outcome')} ({r.get('outcome_evidence') or r.get('error') or r.get('message') or ''})")
+    return "Ran the scripted action. " + " | ".join(lines), steps + len(calls), []
+
+
 async def _run_step(q: Any, task_id: str, prompt: str, steps: int) -> Tuple[str, int, bool]:
     """Runs one step's agent stream as its own asyncio task, watching the inbox for urgent
     steers while it runs. Returns (report, steps, interrupted)."""
-    run = asyncio.ensure_future(q._stream(task_id, prompt, steps))
+    if task_id in SCRIPTED:
+        run = asyncio.ensure_future(_scripted_stream(task_id, SCRIPTED[task_id], steps))
+    else:
+        run = asyncio.ensure_future(q._stream(task_id, prompt, steps))
     try:
         while not run.done():
             await asyncio.wait({run}, timeout=STEER_POLL_SEC)
