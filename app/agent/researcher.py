@@ -2108,24 +2108,32 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             yield {"type": "_result", "result": result}
             return
         if fn_name == "computer_run_command":
-            from app.services.system_control import system_control_service
-            cmd_str = args.get("command", "")
-            out_accum, err_accum = [], []
-            exit_code, status, duration = 0, "completed", 0.0
-            async for chunk in system_control_service.run_command_stream(
-                    command=cmd_str, cwd=args.get("cwd") or active_workspace_path or None,
-                    timeout_sec=args.get("timeout_sec", 45)):
-                if chunk.get("type") in ("stdout", "stderr"):
-                    txt = chunk.get("text", "")
-                    (out_accum if chunk["type"] == "stdout" else err_accum).append(txt)
-                    yield {"type": "tool_stream", "name": fn_name, "id": call_id, "stream_type": chunk["type"], "text": txt}
-                elif chunk.get("type") == "done":
-                    exit_code = chunk.get("exit_code", 0)
-                    status = chunk.get("status", "completed")
-                    duration = chunk.get("duration_sec", 0.0)
-            result = {"command": cmd_str, "cwd": system_control_service.current_working_directory, "status": status,
-                      "exit_code": exit_code, "stdout": "".join(out_accum), "stderr": "".join(err_accum),
-                      "duration_sec": duration}
+            # Through execute_tool like every other tool (activity log, Sentinel, outcome and
+            # envelope gates); only the live output is streamed here. This path used to call the
+            # shell directly, so commands left no record (orchestrator live runs, 2026-11-04).
+            from app.agent import tools as _tools
+            chunks: "asyncio.Queue" = asyncio.Queue()
+            tok = _tools.command_stream_sink.set(chunks.put_nowait)
+            try:
+                run = asyncio.ensure_future(execute_tool(fn_name, args, active_workspace_path=active_workspace_path))
+            finally:
+                _tools.command_stream_sink.reset(tok)
+            while True:
+                getter = asyncio.ensure_future(chunks.get())
+                done, _ = await asyncio.wait({run, getter}, return_when=asyncio.FIRST_COMPLETED)
+                if getter in done:
+                    ch = getter.result()
+                    yield {"type": "tool_stream", "name": fn_name, "id": call_id, "stream_type": ch["type"], "text": ch.get("text", "")}
+                    continue
+                getter.cancel()
+                while not chunks.empty():
+                    ch = chunks.get_nowait()
+                    yield {"type": "tool_stream", "name": fn_name, "id": call_id, "stream_type": ch["type"], "text": ch.get("text", "")}
+                break
+            try:
+                result = run.result()
+            except Exception as e:
+                result = {"success": False, "error": str(e)}
         else:
             try:
                 result = await execute_tool(fn_name, args, active_workspace_path=active_workspace_path)
