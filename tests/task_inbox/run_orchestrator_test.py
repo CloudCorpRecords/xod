@@ -498,6 +498,9 @@ async def a14_live_reports(q):
         "No background job is currently listed, so I can\u2019t tell whether the earlier command finished successfully.": True,
         "Started the job, but I can't confirm that it finished.": True,
         "Step 7 completed successfully in 40 seconds with exit code 0 and no output. I verified that `step7` was appended to the log.": False,
+        "Step 2 completed successfully after 40 seconds, with exit code 0 and no output. I waited for the existing background job; I did not run it again.": False,
+        "Checked the file: the line is there, so I didn't rerun the job again.": False,
+        "I did not run the command.": True,
     }
     for text, unfinished in cases.items():
         got = O._self_report_problem(step, text) is not None

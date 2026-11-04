@@ -568,6 +568,9 @@ def _self_report_problem(step_text: str, report: str) -> Optional[str]:
     if not (report or "").strip():
         return "the step ended without any report of what it did"
     report = report.replace("\u2019", "'").replace("\u2018", "'")   # models write curly apostrophes
+    # A verifying retry is told not to repeat what already happened; saying it did not is success.
+    report = re.sub(r"\b(?:i )?(?:did not|didn't|did not need to|without) (?:re-?run|run|repeat|restart|start)\w* "
+                    r"(?:it|them|the [\w-]+(?: [\w-]+)?|anything) again\b", "", report, flags=re.I)
     hit = missions._incompletion_signal(report) or missions._blocked_signal(report)
     if hit:
         return f"its report says: {hit}"
