@@ -29,6 +29,10 @@ Safety, kept exactly as the module has it, plus one Xod-side guard:
     saying why, if it would close every tab of a window. Unknown windows are refused too (fail closed);
   - owner is the calling lane's: Xod sets it from who is calling (a task, the chat), so an agent cannot act
     as another lane. A different owner in the call is ignored, and the result says so.
+
+The sweeper's schedule is the host's (the module's README): Xod runs it every SWEEP_EVERY_SEC (15 minutes,
+as recommended) on each device where browser-ops applies, through the same window guard. A config without
+device_runtime or remote never starts a sweep.
 """
 import asyncio
 import copy
@@ -70,6 +74,7 @@ CLI = {"tabs_heartbeat": "heartbeat", "tabs_mark_done": "done", "tabs_list": "li
 TOOL_NAMES = ("tabs_register",) + tuple(CLI)
 CLOSING = {"tabs_close_mine", "tabs_sweep_now"}
 CALL_TIMEOUT = 150
+SWEEP_EVERY_SEC = float(os.environ.get("XOD_BROWSER_OPS_SWEEP_SEC", "900"))
 
 
 class ConfigError(Exception):
@@ -511,3 +516,33 @@ def planner_lines() -> List[str]:
         args = {k: "..." for k in f["parameters"].get("properties", {}) if k != "owner"}
         lines.append(f"   - {f['name']}: {f['description'][:120]} Args: {json.dumps(args)}")
     return lines
+
+
+# ------------------------------------------------------------------ the sweeper's schedule (the host's job)
+
+def sweep_all() -> List[Dict[str, Any]]:
+    """One sweep on every device where browser-ops applies, each through the window guard."""
+    out = []
+    for dev in devices():
+        r = call_sync("tabs_sweep_now", {"device": dev}, "sweeper")
+        out.append(r)
+        if r.get("success"):
+            if r.get("closed"):
+                logger.info(f"browser-ops sweep on {dev}: closed {[(c['target_id'], c['owner'], c['reason']) for c in r['closed']]}")
+        else:
+            logger.warning(f"browser-ops sweep on {dev} did not run: {r.get('error')}")
+    return out
+
+
+async def sweep_loop() -> None:
+    while True:
+        await asyncio.sleep(SWEEP_EVERY_SEC)
+        try:
+            if available():
+                await asyncio.to_thread(sweep_all)
+        except Exception as e:
+            logger.warning(f"browser-ops sweep: {e}")
+
+
+def start() -> None:
+    asyncio.create_task(sweep_loop())

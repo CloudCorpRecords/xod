@@ -356,6 +356,20 @@ def main(repeat):
             m = B.call_sync("tabs_mark_done", {"target_id": "the quarterly numbers tab"}, "task:qqq")
             check("a change never resolves names (mark done by a title marks nothing)", m.get("marked_done") == 0, str(m)[:300])
 
+            print("V16 the scheduled sweep")
+            t1 = B.call_sync("tabs_register", {"url": "data:text/html,<title>sched</title>s", "task": "s"}, "task:sss")
+            B.call_sync("tabs_mark_done", {}, "task:sss")
+            res = B.sweep_all()
+            check("one pass on this computer closes done tabs", len(res) == 1 and res[0].get("success")
+                  and t1["target_id"] in {c["target_id"] for c in res[0].get("closed", [])}, str(res)[:300])
+            lone4 = chrome.new_window("data:text/html,<title>lone4</title>l")
+            B.call_sync("tabs_register", {"target_id": lone4, "task": "alone"}, "task:sss")
+            B.call_sync("tabs_mark_done", {}, "task:sss")
+            res = B.sweep_all()
+            check("and is held by the window guard like any sweep", res and not res[0].get("success") and lone4 in chrome.ids(), str(res)[:300])
+            chrome.new_tab_in(lone4, "data:text/html,<title>m4</title>m")
+            B.sweep_all()
+
             print("V13 remote, over (stand-in) SSH through the module's wrapper")
             dev = TMP / f"device-{n}"
             dev.mkdir()
