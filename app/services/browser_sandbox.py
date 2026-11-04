@@ -648,6 +648,23 @@ def _strip_link_targets(md: str) -> str:
     return re.sub(r"\[([^\[\]]*)\]", r"\1", md)
 
 
+def browser_idle_minutes() -> int:
+    """Minutes the sandbox browser may sit unused before Xod closes it (it starts again on
+    the next browser task). The setting "browser_idle_minutes" (0 = never) or the env var
+    XOD_BROWSER_IDLE_MINUTES; default 10. Mirrors the built-in engine's idle rule
+    (services/local_servers.py), which exists for the same reason: a process nobody is
+    using is memory and CPU spent on nothing."""
+    try:
+        from app.services.storage import get_setting
+        raw = get_setting("browser_idle_minutes", "") or os.environ.get("XOD_BROWSER_IDLE_MINUTES", "")
+    except Exception:
+        raw = os.environ.get("XOD_BROWSER_IDLE_MINUTES", "")
+    try:
+        return max(0, int(raw)) if raw != "" else 10
+    except (TypeError, ValueError):
+        return 10
+
+
 class BrowserSandboxService:
     # Set when a mission pauses right before an irreversible submit; cleared once handled.
     pending_submit: Optional[Dict[str, Any]] = None
@@ -660,6 +677,7 @@ class BrowserSandboxService:
 
     def __init__(self):
         self.proc: Optional[subprocess.Popen] = None
+        self.last_used: Optional[float] = None   # the last browser work (check_idle closes the browser after a quiet spell)
         self.ws_url: Optional[str] = None
         self.current_url: str = "about:blank"
         self.current_title: str = "Empty Tab"
@@ -752,6 +770,7 @@ class BrowserSandboxService:
         for wait in (1.0, 2.5, 4.0):
             state = self._probe_devtools(wait)
             if state == "ready":
+                self.last_used = time.time()
                 return True
             if state in ("empty", "refused"):
                 break
@@ -761,6 +780,7 @@ class BrowserSandboxService:
             # end the other instance's live browser mid-task. Give a busy
             # Chrome one long final chance before treating it as dead.
             if self._probe_devtools(10.0) == "ready":
+                self.last_used = time.time()
                 return True
 
         # If not responding, clean up any stale chrome processes & singleton locks
@@ -831,6 +851,7 @@ class BrowserSandboxService:
             _end_with_xod(self.proc)
 
         if await self._wait_for_devtools(20.0):
+            self.last_used = time.time()
             return True
 
         raise RuntimeError("Background Chrome failed to start or open remote debugging port.")
@@ -4826,6 +4847,33 @@ class BrowserSandboxService:
                 except Exception:
                     pass
             self.proc = None
+
+    async def check_idle(self) -> Optional[str]:
+        """Closes the sandbox browser when nothing has used it for browser_idle_minutes().
+        A mission paused on the person's OK (pending_submit) is using the browser however
+        long it waits, and an operation in flight holds the lock: neither is ever closed
+        from under. Returns what it did, or None."""
+        limit = browser_idle_minutes()
+        if not limit or not self.proc or self.proc.poll() is not None or not self.last_used:
+            return None
+        if self.pending_submit or self._lock.locked():
+            return None
+        if time.time() - self.last_used < limit * 60:
+            return None
+        self.close()
+        msg = (f"Closed the sandbox browser after {limit} minutes unused, to free its memory. "
+               "It starts again when a task needs it.")
+        logger.info(msg)
+        return msg
+
+    async def idle_loop(self) -> None:
+        """The once-a-minute idle check, started by app/main.py alongside the other loops."""
+        while True:
+            await asyncio.sleep(60)
+            try:
+                await self.check_idle()
+            except Exception as e:
+                logger.warning(f"Browser idle check failed: {e}")
 
 
 browser_sandbox_service = BrowserSandboxService()

@@ -10,6 +10,7 @@ const http = require("http");
 const net = require("net");
 const path = require("path");
 const updater = require("./updater");
+const { resolveMode, shouldShedOnClose } = require("./mode");
 
 // Electron's own cache goes in a subfolder; Xod's data (xod.db, projects, models…) is next to it.
 app.setPath("userData", path.join(app.getPath("appData"), "Xod", "Electron"));
@@ -39,7 +40,7 @@ let tray = null;
 // person has been told that it does.
 const PREFS_FILE = path.join(DATA_DIR, "desktop.json");
 function loadPrefs() {
-  try { return { background: true, ...JSON.parse(fs.readFileSync(PREFS_FILE, "utf8")) }; } catch (e) { return { background: true }; }
+  try { return { background: true, lightBackground: false, ...JSON.parse(fs.readFileSync(PREFS_FILE, "utf8")) }; } catch (e) { return { background: true, lightBackground: false }; }
 }
 function savePrefs() {
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(PREFS_FILE, JSON.stringify(prefs, null, 1)); } catch (e) { /* not fatal */ }
@@ -65,6 +66,14 @@ function writeAxTrust() {
 const startedHidden = process.argv.includes("--hidden") ||
   (process.platform === "darwin" && (() => { try { return app.getLoginItemSettings().wasOpenedAtLogin; } catch (e) { return false; } })());
 let hiddenStartPending = startedHidden;
+
+// Headless launch (--headless or XOD_HEADLESS=1): no splash, no window, no renderer at
+// all; the server, tray, shortcut and updater still run, and opening Xod again attaches
+// the window to the server this launch started (see mode.js). "Quit Xod, keep the server
+// running" sets detachServer: this shell then leaves without stopping the server it
+// started, and the next launch (window or headless) attaches to it the usual way.
+const HEADLESS = resolveMode(process.argv, process.env).headless;
+let detachServer = false;
 
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on("second-instance", () => showWindow());
@@ -187,18 +196,28 @@ async function startServer() {
   await ensurePythonEnv();
   const port = await pickPort();
   status("Starting Xod…");
+  // The server runs detached (its own session, output to a log file rather than a pipe to
+  // this shell): it can then outlive the shell when the person picks "Quit Xod, keep the
+  // server running", and a hard crash of the shell no longer takes the server, and the
+  // tasks it is running, down with it. While the shell lives it still holds the process
+  // handle, so an unexpected exit is reported exactly as before.
+  const logDir = path.join(DATA_DIR, "logs");
+  try { fs.mkdirSync(logDir, { recursive: true }); } catch (e) { /* the spawn below surfaces it */ }
+  const logFile = path.join(logDir, "desktop-server.log");
+  const logTail = () => { try { return fs.readFileSync(logFile, "utf8").slice(-1500); } catch (e) { return ""; } };
+  const logFd = fs.openSync(logFile, "a");
   server = spawn(PY, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)], {
     cwd: ROOT,
     env: serverEnv(),
+    detached: true,
+    windowsHide: true,
+    stdio: ["ignore", logFd, logFd],
   });
-  let log = "";
-  const keep = (d) => { log = (log + d.toString()).slice(-4000); };
-  server.stdout.on("data", keep);
-  server.stderr.on("data", keep);
+  try { fs.closeSync(logFd); } catch (e) { /* the child holds its own copy */ }
   server.on("exit", (code) => {
     server = null;
     if (!quitting) {
-      dialog.showErrorBox("Xod stopped", `The Xod server exited (code ${code}).\n\n${log.slice(-1500)}`);
+      dialog.showErrorBox("Xod stopped", `The Xod server exited (code ${code}).\n\n${logTail()}`);
       app.quit();
     }
   });
@@ -206,21 +225,26 @@ async function startServer() {
   for (let i = 0; i < 240; i++) {               // up to 2 minutes (first start loads a lot)
     const r = await get(`${url}/`);
     if (r && r.status === 200) return url;
-    if (!server) throw new Error(`The server didn't start.\n\n${log.slice(-1500)}`);
+    if (!server) throw new Error(`The server didn't start.\n\n${logTail()}`);
     await new Promise((r2) => setTimeout(r2, 500));
   }
-  throw new Error(`The server didn't answer in time.\n\n${log.slice(-1500)}`);
+  throw new Error(`The server didn't answer in time.\n\n${logTail()}`);
 }
 
 function stopServer() {
   if (!server) return;
   const p = server;
+  server = null;
+  if (detachServer) return;     // "keep the server running": it is detached, with its own session; leave it up
   if (WIN) {     // no signals on Windows: end the server and anything it started (browser, workers)
     spawnSync("taskkill", ["/pid", String(p.pid), "/T", "/F"]);
     return;
   }
-  p.kill("SIGTERM");
-  setTimeout(() => { try { p.kill("SIGKILL"); } catch (e) {} }, 5000).unref();
+  // The server leads its own session (detached spawn). SIGTERM goes to the server alone
+  // first, so its own shutdown stops what it started, in order, as it always has; the
+  // force-kill after 5s takes the whole group, so nothing it started can be left behind.
+  try { p.kill("SIGTERM"); } catch (e) { /* already gone */ }
+  setTimeout(() => { try { process.kill(-p.pid, "SIGKILL"); } catch (e) { try { p.kill("SIGKILL"); } catch (e2) {} } }, 5000).unref();
 }
 
 // ------------------------------------------------------------------ security
@@ -293,10 +317,11 @@ function showMain() {
   });
   // Closing the window keeps Xod running in the tray (tasks, routines and the phone link keep going), unless
   // the person turned that off. "Quit Xod" in the tray, or the app menu, really quits.
+  // With the lightweight background choice on, the window really closes instead of hiding:
+  // a hidden window keeps its renderer (and its polling) alive, a closed one does not.
+  // Everything the page showed lives in the server, so "Open Xod" rebuilds it as it was.
   mainWindow.on("close", (e) => {
     if (quitting || !prefs.background || !tray) return;
-    e.preventDefault();
-    mainWindow.hide();
     if (process.platform === "darwin" && app.dock) app.dock.hide();
     if (!prefs.toldBackground) {
       prefs.toldBackground = true;
@@ -306,6 +331,9 @@ function showMain() {
           body: `It keeps working on your tasks in the ${process.platform === "darwin" ? "menu bar" : "tray"}. Quit it from there.` }).show();
       }
     }
+    if (shouldShedOnClose(prefs)) return;     // let it close: the renderer goes away with it
+    e.preventDefault();
+    mainWindow.hide();
   });
   mainWindow.on("closed", () => { mainWindow = null; });
 }
@@ -349,9 +377,12 @@ function trayMenu(counts) {
     ...museMenu(),
     { label: "Keep running when the window is closed", type: "checkbox", checked: !!prefs.background,
       click: (item) => { prefs.background = item.checked; savePrefs(); } },
+    { label: "Lightweight background (fully close the window)", type: "checkbox", checked: !!prefs.lightBackground,
+      click: (item) => { prefs.lightBackground = item.checked; savePrefs(); } },
     { label: "Start Xod when I log in", type: "checkbox", checked: atLogin, enabled: loginItemsWork(),
       click: (item) => app.setLoginItemSettings({ openAtLogin: item.checked, args: ["--hidden"] }) },
     { type: "separator" },
+    { label: "Quit Xod, keep the server running", click: () => { detachServer = true; quitting = true; app.quit(); } },
     { label: "Quit Xod", click: () => { quitting = true; app.quit(); } },
   ]);
 }
@@ -418,7 +449,7 @@ const TALK_SHORTCUT = "Control+Alt+Space";
 function registerTalkShortcut() {
   try {
     globalShortcut.register(TALK_SHORTCUT, () => {
-      if (!mainWindow) return;
+      if (!mainWindow) { showWindow(); return; }     // headless, or the window was shed: the shortcut brings Xod back
       if (mainWindow.isMinimized()) mainWindow.showInactive();
       mainWindow.webContents.send("xod:talk");
     });
@@ -477,13 +508,20 @@ app.whenReady().then(async () => {
   lockDown();
   writeAxTrust();
   setInterval(writeAxTrust, 15000).unref();
-  showSplash();
+  if (!HEADLESS) showSplash();
   try {
     appUrl = await startServer();
     createTray();
-    showMain();
-    if (startedHidden && splash && !splash.isDestroyed()) splash.close();
-    if (startedHidden && process.platform === "darwin" && app.dock) app.dock.hide();
+    if (HEADLESS) {
+      // No window was ever made, so there is nothing to show or to keep hidden: the
+      // window arrives when the person asks for it (tray, dock, a second launch).
+      hiddenStartPending = false;
+      if (process.platform === "darwin" && app.dock) app.dock.hide();
+    } else {
+      showMain();
+      if (startedHidden && splash && !splash.isDestroyed()) splash.close();
+      if (startedHidden && process.platform === "darwin" && app.dock) app.dock.hide();
+    }
     registerTalkShortcut();
     const updates = updater.start(() => mainWindow, () => appUrl);
     setMenu(() => updates.menuCheck());

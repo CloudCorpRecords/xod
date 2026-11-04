@@ -699,6 +699,7 @@ async def _start_task_worker():
     partner_client.start_watchdog()         # reciprocal supervision: Xod watches the Partner back
     from app.services import phone_mcp
     phone_mcp.start_bridge()                # Approvals/Crew questions to a paired Android phone, if one is paired
+    asyncio.create_task(browser_sandbox_service.idle_loop())   # an unused sandbox browser closes itself (services/browser_sandbox.py)
 
 
 class ModelRef(BaseModel):
