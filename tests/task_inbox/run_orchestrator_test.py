@@ -38,6 +38,16 @@ import app.agent.researcher as RS
 from app.services import activity
 
 TQ.notify = lambda title, msg: None
+import app.services.browser_sandbox as BS
+
+
+async def _no_tab(self, task, resuming):
+    return True
+
+
+TQ.TaskQueue._ensure_tab = _no_tab      # no Chrome in this suite
+GATED = {}             # step text -> label of a submit button the fake page stops at
+HEDGE = {}             # step text -> times run; the first report hedges
 TQ._phone = lambda task, kind: None
 
 results = []
@@ -85,10 +95,31 @@ class FakeResearcher:
         end = time.time() + dur
         while time.time() < end:
             await asyncio.sleep(0.05)
+        if step in GATED and msg.strip() != "go ahead":
+            # The page stops at an irreversible submit: a browser mission waiting for the person's OK.
+            BS.browser_sandbox_service.latest_mission = {"started_at": time.time(), "status": "needs_confirmation",
+                                                         "steps": [], "final_answer": "Ready to send."}
+            BS.browser_sandbox_service.pending_submit = {"label": GATED[step], "url": "http://example.test/form"}
+            yield {"type": "content", "content": "Ready to send; waiting for your OK."}
+            return
+        if msg.strip() == "go ahead":
+            pend = BS.browser_sandbox_service.pending_submit or {}
+            step = next((k for k, v in GATED.items() if v == pend.get("label")), step)
+            BS.browser_sandbox_service.pending_submit = None
+            if BS.browser_sandbox_service.latest_mission:
+                BS.browser_sandbox_service.latest_mission["status"] = "completed"
         w = WRITE_RE.search(step)
         if w and w.group(1) not in SKIP_WRITE:
             _record_write(w.group(1), w.group(2))
             yield {"type": "status", "content": f"✓ wrote {w.group(1)}"}
+        if step.startswith("Check the job"):
+            n = HEDGE.get(step, 0)
+            HEDGE[step] = n + 1
+            if n <= 0:
+                yield {"type": "content", "content": "No job is listed, so I can't tell whether the command finished."}
+                return
+            yield {"type": "content", "content": "The job finished with exit code 0 and the marker is there."}
+            return
         yield {"type": "content", "content": f"Did: {step[:80]}"}
 
 
@@ -326,6 +357,7 @@ async def a7_restart(q):
     items, _, _ = O.load_plan(tid)
     check("restarted queue resumes and finishes", t["status"] == "done", t["status"])
     check("the resumed step is marked as resumed", "resumed" in (items[1].get("note") or ""))
+    check("resuming did not spend the step's retry", items[1]["attempts"] == 1, str(items[1]["attempts"]))
     check("completed step 1 was not repeated", sum(1 for w in WRITES if w[0] == str(d / "a.txt")) == 1)
     check("every step's effect exists once", all(sum(1 for w in WRITES if w[0] == str(d / f)) == 1 for f in ("a.txt", "b.txt", "c.txt")))
     STEP_SECONDS.pop(slow, None)
@@ -397,6 +429,47 @@ async def a10_responsive(q):
     STEP_SECONDS.pop(slow, None)
 
 
+async def a11_approval(q):
+    print("A11 a step that needs the person's OK waits, then continues on approval")
+    d = fresh_dir("approve")
+    gated = write_step(d / "sent.txt", "SENT")
+    GATED[gated] = "Send"
+    ack = O.submit(request_for(write_step(d / "draft.txt", "D"), gated, write_step(d / "after.txt", "Z")))
+    tid = ack["task_id"]
+    t = await wait_status(q, tid, ("waiting", "done", "failed"))
+    items, _, _ = O.load_plan(tid)
+    check("task waits for approval at the gated step", t["status"] == "waiting" and t["waiting_kind"] == "approval")
+    check("the step is blocked with what unblocks it",
+          items[1]["status"] == "blocked" and "OK to press \"Send\"" in (items[1]["blocker"] or ""), json.dumps(items[1])[:200])
+    check("nothing was sent before the OK; later steps did not run", not (d / "sent.txt").exists() and not (d / "after.txt").exists())
+    q.approve(tid)
+    t = await wait_status(q, tid, ("done", "failed"))
+    items, _, _ = O.load_plan(tid)
+    check("after the OK the step completes and the task finishes", t["status"] == "done" and [i["status"] for i in items] == ["completed"] * 3,
+          f"{t['status']} {[i['status'] for i in items]}")
+    check("each effect happened once", all(sum(1 for w in WRITES if w[0] == str(d / f)) == 1 for f in ("draft.txt", "sent.txt", "after.txt")))
+    GATED.clear()
+
+
+async def a12_hedged_report(q):
+    print("A12 a step whose own report cannot confirm its outcome is not completed")
+    d = fresh_dir("hedge")
+    ack = O.submit(request_for(write_step(d / "a.txt", "A"), f"Check the job {d.name} finished"))
+    tid = ack["task_id"]
+    t = await wait_status(q, tid, ("done", "failed"))
+    items, _, _ = O.load_plan(tid)
+    check("hedged first report triggered a retry, honest second report completed it",
+          t["status"] == "done" and items[1]["attempts"] == 2 and items[1]["status"] == "completed",
+          json.dumps(items[1])[:300])
+    ack = O.submit(request_for(f"Check the job never-{d.name} finished"))
+    HEDGE[f"Check the job never-{d.name} finished"] = -5      # hedges on every attempt
+    t = await wait_status(q, ack["task_id"], ("done", "failed"))
+    items, _, _ = O.load_plan(ack["task_id"])
+    check("a step that never confirms is blocked, not completed",
+          t["status"] == "failed" and items[0]["status"] == "blocked" and "can't tell" in (items[0]["blocker"] or ""),
+          json.dumps(items[0])[:300])
+
+
 async def main(repeat):
     for r in range(repeat):
         print(f"=== run {r + 1}/{repeat}")
@@ -412,6 +485,8 @@ async def main(repeat):
         await a8_midchain_failure(q)
         await a9_provenance(q)
         await a10_responsive(q)
+        await a11_approval(q)
+        await a12_hedged_report(q)
         q._worker.cancel()
         q._watchdog.cancel()
     failed = [n for n, ok in results if not ok]

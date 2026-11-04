@@ -380,8 +380,14 @@ def _step_prompt(task: Dict[str, Any], items: List[Dict[str, Any]], instructions
                      + "\n".join(f"- {i['text']}" + (f" -> {str(i.get('result') or '')[:300]}" if i.get("result") else "")
                                  for i in done))
     if prior_ops:
-        parts.append("\nThis step was started before and interrupted. These actions from it already happened; "
-                     "check them and do not repeat them:\n" + "\n".join(f"- {o}" for o in prior_ops))
+        parts.append("\nThis step was started before and interrupted (by a restart or by the person). These actions "
+                     "from it were already taken:\n" + "\n".join(f"- {o}" for o in prior_ops)
+                     + "\nFirst check whether their effects are in place. Do not redo an action whose effect is "
+                     "already there. Redo only what is missing: a background job or command started before a "
+                     "restart may have been stopped by it, so its effect may be missing.")
+    if str(step.get("note") or "").startswith("first attempt did not check out"):
+        parts.append("\nYou already attempted this step once and checking found: "
+                     + step["note"].split(": ", 1)[1] + ". Do it now for real, using your tools.")
     parts.append(f"\nYOUR STEP NOW (step {k} of {len(live)}):\n{step['text']}")
     parts.append("\nDo only this step, using your tools. Then reply with a short report of what you did "
                  "and what you found. If you cannot do it, say exactly what blocks it.")
@@ -475,6 +481,36 @@ async def _run_step(q: Any, task_id: str, prompt: str, steps: int) -> Tuple[str,
         raise
 
 
+_UNVERIFIED_RES = (
+    r"\b(?:can't|cannot|can not|couldn't|could not|unable to|wasn't able to|was not able to) "
+    r"(?:tell|verify|confirm|check|see) (?:whether|if|that)\b",
+    r"\b(?:access|shell|tool|tools) (?:is|are|was|were) (?:unavailable|not available)\b",
+)
+
+
+def _self_report_problem(step_text: str, report: str) -> Optional[str]:
+    """The step's own report admits it did not finish, was blocked, or could not tell whether
+    its outcome holds. A step whose outcome the disk check cannot establish (no file or run
+    claim in its words) is only completed on a report that does not say otherwise: a step is
+    never marked completed because it was attempted. A step with verifiable claims that all
+    held is judged by the disk, not by a hedge in its wording."""
+    import re
+    from app.services import missions
+    from app.services import task_queue as TQ
+    if TQ._claimed_file_effects(step_text) or TQ._claimed_run_effects(step_text, []):
+        return None
+    if not (report or "").strip():
+        return "the step ended without any report of what it did"
+    report = report.replace("\u2019", "'").replace("\u2018", "'")   # models write curly apostrophes
+    hit = missions._incompletion_signal(report) or missions._blocked_signal(report)
+    if hit:
+        return f"its report says: {hit}"
+    for sentence in re.split(r"[.\n]", report):
+        if any(re.search(p, sentence.lower()) for p in _UNVERIFIED_RES):
+            return f"its report says: {sentence.strip()[:200]}"
+    return None
+
+
 def _final_report(items: List[Dict[str, Any]]) -> str:
     marks = {"completed": "✓", "cancelled": "–", "blocked": "✗", "pending": "·", "in_progress": "…"}
     last = next((i for i in reversed(items) if i["status"] == "completed" and i.get("result")), None)
@@ -518,6 +554,11 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             version = save_plan(task_id, items, instr, bump=True, why="first plan")
             q._progress(task_id, f"• Plan ready: {len(items)} step(s)")
         steps = task.get("steps") or 0
+        try:
+            await q._ensure_tab(task, False)   # a page of its own for any browser work, as classic tasks have
+        except Exception as e:
+            logger.info(f"Task {task_id}: no browser tab ({e}); continuing without one")
+        resume_msg = _take_resume(q, task_id, task)
         while True:
             stop = await _apply_inbox(q, task_id, task)
             if stop:
@@ -536,19 +577,28 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 # In flight when the run stopped (a restart, a crash, an interrupt): resume it,
                 # carrying the actions it already took so they are not repeated.
                 prior_ops = _ops_summary(task_id, step["started_at"])
-                step["note"] = "resumed after an interruption"
+                resumed = not step.pop("retry_pending", False)
+                if resumed:
+                    step["note"] = "resumed after an interruption"
             else:
+                resumed = False
                 if step.get("prior_started_at"):
                     prior_ops = _ops_summary(task_id, step["prior_started_at"])
                 step["started_at"] = time.time()
             step["status"] = "in_progress"
-            step["attempts"] = int(step.get("attempts") or 0) + 1
+            if not resumed or not step.get("attempts"):
+                # An interrupted run is not a failed attempt: resuming it does not spend the retry.
+                step["attempts"] = int(step.get("attempts") or 0) + 1
             save_plan(task_id, items, instr)
             n_live = sum(1 for i in items if i["status"] != "cancelled")
             k = next((n for n, i in enumerate([i for i in items if i["status"] != "cancelled"], 1) if i["id"] == step["id"]), 0)
             q._progress(task_id, f"• Step {k}/{n_live}: {step['text'][:150]}")
             began = time.time()
-            report, steps, interrupted = await _run_step(q, task_id, _step_prompt(task, items, instr, step, prior_ops), steps)
+            mark = _mission_mark()
+            prompt = _step_prompt(task, items, instr, step, prior_ops)
+            if resume_msg is not None:
+                prompt, resume_msg = resume_msg, None   # the person's OK or answer continues the paused page
+            report, steps, interrupted = await _run_step(q, task_id, prompt, steps)
             items, version, instr = load_plan(task_id)
             step = next(i for i in items if i["id"] == step["id"])
             if interrupted:
@@ -556,9 +606,15 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 save_plan(task_id, items, instr)
                 q._progress(task_id, f"⏸ Step {k} interrupted by your instruction")
                 continue
+            if _paused_on_person(q, task_id, items, instr, step, report, began, mark):
+                return
             problems = q._verify_file_effects({"id": task_id, "request": step["text"]}, began)
+            own = _self_report_problem(step["text"], report)
+            if own:
+                problems = problems + [own]
             if problems and step["attempts"] < 2:
                 step["note"] = "first attempt did not check out: " + "; ".join(problems)
+                step["retry_pending"] = True
                 save_plan(task_id, items, instr)
                 q._progress(task_id, f"🔄 Step {k} did not check out; trying it once more")
                 continue
@@ -583,6 +639,94 @@ async def run_stepwise(q: Any, task_id: str) -> None:
         esc = q._escalations.pop(task_id, None)
         if esc is not None and not esc.done() and esc is not asyncio.current_task():
             esc.cancel()
+
+
+def _mission_mark() -> Tuple[int, Any, int]:
+    """Identity of the browser's mission state when a step starts, so a stop found afterwards
+    is known to be new (a restored, already-answered mission must not re-pause the step)."""
+    try:
+        from app.services.browser_sandbox import browser_sandbox_service as sb
+        return id(sb.latest_mission), (sb.latest_mission or {}).get("status"), id(sb.pending_submit)
+    except Exception:
+        return 0, None, 0
+
+
+def _paused_on_person(q: Any, task_id: str, items: List[Dict[str, Any]], instr: List[str],
+                      step: Dict[str, Any], report: str, began: float, mark: Tuple[int, Any, int]) -> bool:
+    """A browser mission inside the step stopped for the person (an irreversible submit needs
+    their OK, a question, a bot check). The step is blocked with what would unblock it and the
+    task waits, keeping the page and the pending approval, exactly like a classic task. True
+    when the run must stop here."""
+    try:
+        from app.services.browser_sandbox import browser_sandbox_service as sb
+    except Exception:
+        return False
+    mission = sb.latest_mission
+    status = (mission or {}).get("status")
+    if status not in ("needs_confirmation", "needs_input", "blocked"):
+        return False
+    same = id(mission) == mark[0] and status == mark[1]
+    new_gate = status == "needs_confirmation" and sb.pending_submit is not None and id(sb.pending_submit) != mark[2]
+    if same and not new_gate:
+        return False      # the state this step started from, not a new stop
+    snapshot = {k: v for k, v in mission.items() if k != "latest_screenshot_uri"}
+    snapshot["steps"] = [{k: v for k, v in s.items() if k != "screenshot_uri"} for s in mission.get("steps", [])]
+    q._save_screenshot(task_id, mission.get("latest_screenshot_uri"))
+    step["status"] = "blocked"
+    step["waiting"] = True
+    if status == "needs_confirmation":
+        pending = sb.pending_submit or {}
+        sb.pending_submit = None
+        step["blocker"] = f"waiting for your OK to press \"{pending.get('label', 'Submit')}\""
+        save_plan(task_id, items, instr)
+        q._update(task_id, note=f"Waiting for your OK to press \"{pending.get('label', '…')}\"", status="waiting",
+                  waiting_kind="approval", pending_json=pending, mission_json=snapshot, result=report,
+                  waiting_detail={"label": pending.get("label"), "page": pending.get("title") or pending.get("url"),
+                                  "message": mission.get("final_answer")},
+                  now="Waiting for your OK", next_action=None)
+        from app.services import task_queue as TQ
+        TQ.notify(q.get(task_id)["title"], f"Ready to press \"{pending.get('label', 'Submit')}\". Needs your OK.")
+        TQ._phone(q.get(task_id), "approval")
+    else:
+        kind = "question" if status == "needs_input" else "blocked"
+        step["blocker"] = "waiting for your answer" if kind == "question" else "stuck at a verification check you need to clear"
+        save_plan(task_id, items, instr)
+        q._update(task_id, note="Waiting for you", status="waiting", waiting_kind=kind, mission_json=snapshot,
+                  waiting_detail={"message": mission.get("final_answer")}, result=report, next_action=None,
+                  now="Needs your answer" if kind == "question" else "Stuck at a verification check")
+        from app.services import task_queue as TQ
+        TQ.notify(q.get(task_id)["title"], "Has a question for you." if kind == "question" else "Stuck at a verification check.")
+        TQ._phone(q.get(task_id), kind)
+    return True
+
+
+def _take_resume(q: Any, task_id: str, task: Dict[str, Any]) -> Optional[str]:
+    """When the person approved or answered a waiting step: that step goes back in progress,
+    the paused page's mission and pending approval are restored, and the message that
+    continues it ("go ahead", or their answer) is returned for the step's next run."""
+    action = task.get("next_action") or {}
+    items, version, instr = load_plan(task_id)
+    step = next((i for i in items if i["status"] == "blocked" and i.get("waiting")), None)
+    if step is None or action.get("type") not in ("approve", "continue"):
+        return None
+    try:
+        from app.services.browser_sandbox import browser_sandbox_service as sb
+        if task.get("mission_json"):
+            sb.latest_mission = task["mission_json"]
+        sb.pending_submit = None
+        if action["type"] == "approve" and task.get("pending_json"):
+            sb.pending_submit = {**task["pending_json"], "created_at": time.time()}
+    except Exception:
+        pass
+    step["status"] = "in_progress"
+    step["waiting"] = False
+    step["blocker"] = None
+    step["attempts"] = max(0, int(step.get("attempts") or 1) - 1)   # the person's turn is not a failed attempt
+    save_plan(task_id, items, instr)
+    q._update(task_id, next_action=None)
+    if action["type"] == "approve":
+        return "go ahead"
+    return f"{action.get('text', '')}\n(continue)"
 
 
 def reopen(task_id: str) -> None:

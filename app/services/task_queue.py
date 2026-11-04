@@ -95,7 +95,7 @@ SHOTS_DIR = DATA_DIR / "tasks"
 
 LIVE_FIELDS = ("id", "title", "request", "status", "waiting_kind", "waiting_detail", "result", "now",
                "created_at", "updated_at", "finished_at", "steps", "has_screenshot", "history",
-               "last_progress_at", "stalled", "stalled_reason", "mode", "plan_version")
+               "last_progress_at", "stalled", "stalled_reason", "mode", "plan_version", "plan_json")
 
 # Cancel and watchdog timing. A first cancel is graceful (the run stops after
 # its current step); if the task is still working CANCEL_GRACE_SEC later, or

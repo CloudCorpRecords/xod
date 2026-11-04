@@ -488,7 +488,14 @@ class TaskAnswerRequest(BaseModel):
 @app.get("/api/tasks")
 async def list_tasks():
     from app.services.task_queue import task_queue
-    return {"tasks": task_queue.list(), "counts": task_queue.counts()}
+    from app.services import orchestrator
+    tasks = task_queue.list()
+    for t in tasks:
+        if t.get("mode") == "stepwise":
+            # The inbox as it stands: a queued steer is shown as queued, never as applied.
+            t["steers"] = [{k: s[k] for k in ("id", "kind", "body", "state", "applied_note", "created_at", "applied_at")}
+                           for s in orchestrator.inbox(t["id"])[-6:]]
+    return {"tasks": tasks, "counts": task_queue.counts()}
 
 
 @app.get("/api/tasks/counts")

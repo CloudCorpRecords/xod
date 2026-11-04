@@ -98,6 +98,7 @@
     const groups = [
       ["Needs you", tasks.filter((t) => t.status === "waiting"), waitingCard],
       ["Working", tasks.filter((t) => t.status === "working"), workingCard],
+      ["Paused", tasks.filter((t) => t.status === "paused"), pausedCard],
       ["Up next", tasks.filter((t) => t.status === "queued"), queuedCard],
       ["Finished", tasks.filter((t) => ["done", "failed", "cancelled"].includes(t.status)), finishedCard],
     ];
@@ -163,6 +164,34 @@
       `<li><span>${esc(n.text)}</span><time>${ago(n.at)}</time></li>`).join("")}</ol>`;
   }
 
+  // The task's durable plan (services/orchestrator.py), one line per step, live.
+  const PLAN_MARK = { completed: "✓", in_progress: "…", pending: "·", blocked: "✗", cancelled: "–" };
+  function planList(t) {
+    const items = (t.plan_json && t.plan_json.items) || [];
+    if (!items.length) return t.mode === "stepwise" ? `<p class="text-[12px] text-zinc-500 mt-2">Planning…</p>` : "";
+    return `<ol class="task-plan mt-2 space-y-1 text-[12px]">${items.map((i) => `
+      <li class="plan-${i.status}" title="${esc(i.note || "")}">
+        <span class="inline-block w-4 text-center">${PLAN_MARK[i.status] || "·"}</span>
+        <span class="${i.status === "cancelled" ? "line-through text-zinc-500" : i.status === "in_progress" ? "text-zinc-100" : "text-zinc-300"}">${esc(i.text)}</span>
+        ${i.blocker ? `<div class="ml-5 text-amber-300/90">${esc(i.blocker)}</div>` : ""}
+      </li>`).join("")}</ol>
+      ${t.plan_version ? `<p class="text-[10px] text-zinc-600 mt-1">plan v${t.plan_version}</p>` : ""}`;
+  }
+  // Steers as they stand: queued is not applied.
+  function steerList(t) {
+    const st = (t.steers || []).filter((s) => s.state === "queued" || Date.now() / 1000 - (s.applied_at || 0) < 120);
+    if (!st.length) return "";
+    return `<ul class="mt-2 space-y-0.5 text-[11px]">${st.map((s) => `<li class="${s.state === "queued" ? "text-amber-300" : "text-emerald-300/80"}">
+      ${s.state === "queued" ? "Queued, not applied yet" : "Applied"}: ${esc(s.kind)}${s.body ? ` “${esc(s.body.slice(0, 80))}”` : ""}${s.applied_note && s.state !== "queued" ? ` — ${esc(s.applied_note.slice(0, 120))}` : ""}</li>`).join("")}</ul>`;
+  }
+  const steerButtons = (t, paused) => t.mode !== "stepwise" ? "" : `
+      <div class="flex flex-wrap gap-2 mt-2">
+        ${paused ? `<button class="task-btn task-btn-primary" onclick="steerTask('${t.id}','resume')">Resume</button>`
+                 : `<button class="task-btn" onclick="steerTask('${t.id}','pause')">Pause</button>`}
+        <button class="task-btn" onclick="steerTask('${t.id}','redirect')">Change target</button>
+        <button class="task-btn" onclick="steerTask('${t.id}','steer')">Add instruction</button>
+      </div>`;
+
   function workingCard(t) {
     return `<article class="task-card is-working">
       <div class="flex items-start justify-between gap-3">
@@ -170,8 +199,19 @@
         <button class="task-btn task-btn-quiet shrink-0" onclick="taskAction('${t.id}','cancel')">Stop</button>
       </div>
       <p class="task-now"><span class="task-pulse"></span>${esc(t.now || "Working…")}</p>
-      ${progressList(t, 5)}
-      <p class="text-[11px] text-zinc-500 mt-1">${t.steps || 0} steps · started ${ago(t.created_at)}</p>
+      ${t.mode === "stepwise" ? planList(t) + steerList(t) + steerButtons(t, false) : progressList(t, 5)}
+      <p class="text-[11px] text-zinc-500 mt-1">${t.id} · ${t.steps || 0} tool steps · started ${ago(t.created_at)}${t.last_progress_at ? ` · last activity ${ago(t.last_progress_at)}` : ""}</p>
+    </article>`;
+  }
+
+  function pausedCard(t) {
+    return `<article class="task-card">
+      <div class="flex items-start justify-between gap-3">
+        <p class="task-title">${esc(t.title)}</p>
+        <button class="task-btn task-btn-quiet shrink-0" onclick="taskAction('${t.id}','cancel')">Cancel</button>
+      </div>
+      <p class="text-[12px] text-zinc-400 mt-1">Paused. Nothing is running for it.</p>
+      ${planList(t)}${steerList(t)}${steerButtons(t, true)}
     </article>`;
   }
 
@@ -182,6 +222,7 @@
         <button class="task-btn task-btn-quiet shrink-0" onclick="taskAction('${t.id}','cancel')">Cancel</button>
       </div>
       <p class="text-[12px] text-zinc-500 mt-1">${esc(t.now || "Waiting its turn")}</p>
+      ${t.mode === "stepwise" ? `<p class="text-[11px] text-emerald-300/80 mt-1">Acknowledged · ${t.id}</p>` + planList(t) + steerList(t) : ""}
     </article>`;
   }
 
@@ -194,6 +235,7 @@
       </summary>
       <div class="mt-3 space-y-3">
         ${t.result ? `<div class="task-md prose-custom text-[13px]">${md(t.result)}</div>` : ""}
+        ${t.mode === "stepwise" && !t.result ? planList(t) : ""}
         ${(t.history || []).length ? `<details><summary class="text-[12px] text-zinc-400 cursor-pointer">How it went (${t.history.length} notes)</summary>${progressList(t, 40)}</details>` : ""}
         <div class="flex flex-wrap gap-2">
           ${t.status !== "done" ? `<button class="task-btn" onclick="taskAction('${t.id}','retry')">Try again</button>` : ""}
@@ -210,6 +252,19 @@
       ? await api(`/api/tasks/${id}`, { method: "DELETE" })
       : await api(`/api/tasks/${id}/${action}`, { method: "POST" });
     if (res && res.success === false && res.error) alert(res.error);
+    refresh();
+  };
+
+  window.steerTask = async (id, kind) => {
+    let body = "";
+    if (kind === "redirect" || kind === "steer") {
+      body = prompt(kind === "redirect" ? "What should it aim at instead? (finished steps are kept)" : "What should it also do or keep in mind?");
+      if (!body) return;
+    }
+    const res = await api(`/api/tasks/${id}/steer`, { method: "POST", body: JSON.stringify({ kind, body }) });
+    if (res.success === false) alert(res.error);
+    else toast(res.state === "applied" ? `Applied: ${res.note || kind}` : `Queued: ${kind}, applies ${res.applies || "at the next step"}`);
+    lastRendered = "";
     refresh();
   };
 
@@ -242,10 +297,11 @@
   };
 
   async function createTask(text) {
-    const res = await api("/api/tasks", { method: "POST", body: JSON.stringify({ request: text }) });
+    // Orchestrated: the ack (task id + scope) comes back before anything runs.
+    const res = await api("/api/orchestrator/tasks", { method: "POST", body: JSON.stringify({ request: text }) });
     if (!res.success) { alert((res.detail || res.error) || "Couldn't add that task."); return false; }
-    lastStatus[res.task.id] = res.task.status;
-    toast(`On it: ${res.task.title}`, () => openTasksPanel());
+    lastStatus[res.ack.task_id] = res.ack.status;
+    toast(`Acknowledged ${res.ack.task_id}: ${res.ack.scope}`, () => openTasksPanel());
     refresh();
     return true;
   }
