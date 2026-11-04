@@ -569,6 +569,15 @@ async def _await_step_jobs(q: Any, task_id: str, since: float) -> Tuple[List[Dic
 def _job_problems(jobs: List[Dict[str, Any]]) -> Tuple[List[str], List[str]]:
     """(problems, evidence) from the observed end state of a step's jobs."""
     problems, evidence = [], []
+    runs: Dict[Tuple[Any, Any], int] = {}
+    for j in jobs:
+        key = (j.get("command"), j.get("cwd"))
+        runs[key] = runs.get(key, 0) + 1
+    for (cmd, _cwd), n in runs.items():
+        if cmd and n > 1:
+            # Observed, not guessed (live L4: one append ran twice under two labels). It cannot be undone
+            # from here, so it is reported, never absorbed into a "done".
+            problems.append(f"duplicated side effect: the command '{str(cmd)[:120]}' ran {n} times in this step")
     for j in jobs:
         label = j.get("name") or j["id"]
         st, code = j.get("status"), j.get("exit_code")
