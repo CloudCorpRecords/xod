@@ -116,7 +116,12 @@ def classify(kind: str, task: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return {"outcome": "no_change", "finding": "", "note": ""}
     if verdict == "could not check":
         return {"outcome": "failed", "finding": m.group(2).strip()[:600], "note": "a source could not be checked"}
-    return {"outcome": "changed", "finding": m.group(2).strip(), "note": ""}
+    finding = m.group(2).strip()
+    if not finding:
+        # The model may put what it found above the verdict line (live S7: "blue size 10: RESTOCKED today\n\n
+        # WATCH: found"); an empty finding would deliver an empty message and make the next wording look new.
+        finding = result[:m.start()].strip()[-1200:]
+    return {"outcome": "changed", "finding": finding, "note": ""}
 
 
 _STOP = {"the", "a", "an", "is", "are", "was", "were", "and", "or", "of", "in", "on", "at", "to", "for", "it", "its", "this",
