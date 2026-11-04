@@ -668,6 +668,7 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 resumed = not step.pop("retry_pending", False)
                 if resumed:
                     step["note"] = "resumed after an interruption"
+                    step.setdefault("log", []).append({"at": time.time(), "text": "resumed after an interruption"})
             else:
                 resumed = False
                 if step.get("prior_started_at"):
@@ -711,6 +712,7 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 problems = problems + [fan_problem]
             if problems and step["attempts"] < 2:
                 step["note"] = "first attempt did not check out: " + "; ".join(problems)
+                step.setdefault("log", []).append({"at": time.time(), "text": step["note"][:300]})
                 step["retry_pending"] = True
                 save_plan(task_id, items, instr)
                 q._progress(task_id, f"🔄 Step {k} did not check out; trying it once more")
