@@ -579,6 +579,9 @@ def _self_report_problem(step_text: str, report: str) -> Optional[str]:
     if not (report or "").strip():
         return "the step ended without any report of what it did"
     report = report.replace("\u2019", "'").replace("\u2018", "'")   # models write curly apostrophes
+    # An empty "couldn't ...: Nothing" section of a confirmed/inferred/unknown report is not an admission (live S5).
+    report = re.sub(r"(?:could not|couldn't|can't|cannot|unable to)\s+[\w ,/]{0,40}?[:*]+\s*\**\s*(?:nothing|none|n/?a|-|—)\b\.?",
+                    "", report, flags=re.I)
     # A verifying retry is told not to repeat what already happened; saying it did not is success.
     report = re.sub(r"\b(?:i )?(?:did not|didn't|did not need to|without) (?:re-?run|run|repeat|restart|start)\w* "
                     r"(?:it|them|the [\w-]+(?: [\w-]+)?|anything) again\b", "", report, flags=re.I)

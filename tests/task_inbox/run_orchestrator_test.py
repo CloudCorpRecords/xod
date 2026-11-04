@@ -515,6 +515,8 @@ async def a14_live_reports(q):
         "I couldn\u2019t send the text because the test_send tool isn\u2019t available. The URL displays only `{}`; no text was sent.": True,
         "**Could not read:** The status line, because the file was not found.": True,
         "Sent the message; the inbox shows it once.": False,
+        "**Confirmed:** check1.txt says: status of check1.txt: OK\n**Could not read or find:** Nothing": False,
+        "**Could not read:** None.": False,
         "I couldn't find any errors in the log; all 12 checks passed.": False,
         "Step 3\u2019s command exited successfully. A \u201cStep 3\u201d background job was also reported as running; its current status is unclear.": True,
     }
