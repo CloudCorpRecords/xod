@@ -270,6 +270,9 @@ async def w4b_job_not_restarted(q):
         sc.background_jobs.pop(r1["job_id"])           # the process restarted: the job is gone
         r4 = await tools.execute_tool("computer_start_job", dict(args), reviewed=True)
         r5 = await tools.execute_tool("computer_start_job", dict(args), reviewed=True)
+        sc.background_jobs[r4["job_id"]].update(status="completed", exit_code=0)
+        renamed = {**args, "name": "Append step8"}     # live L4: the same job again under another label
+        r6 = await tools.execute_tool("computer_start_job", renamed, reviewed=True)
     finally:
         activity.origin.reset(tok)
         tools._execute_tool = real
@@ -278,6 +281,8 @@ async def w4b_job_not_restarted(q):
     check("once it finished OK, an identical start is refused as done", r3.get("outcome") == OC.CONFIRMED and r3.get("already_done"))
     check("a job lost to a restart may run once more (its effect is not known)", starts["n"] == 2 and r4.get("job_id"), str(r4)[:200])
     check("and that new run is guarded the same way", r5.get("already_done") and starts["n"] == 2)
+    check("the same command under another name is the same job (not run again)", r6.get("already_done") and starts["n"] == 2,
+          str(r6)[:200])
 
 
 async def w8_resolve_unknowns(q):

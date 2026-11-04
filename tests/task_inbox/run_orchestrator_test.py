@@ -549,6 +549,10 @@ async def a15_waits_for_step_jobs(q):
           t["status"] == "done" and items[0]["attempts"] == 1, f"{t['status']} {json.dumps(items[0])[:300]}")
     check("the evidence names the observed job end", any("observed: job" in e for e in items[0]["evidence"]), str(items[0]["evidence"]))
     check("the job ran exactly once", len(JOBS_STARTED) - n0 == 1 and log.read_text().split() == ["one"])
+    twice = O._job_problems([{"name": "Step 8", "command": "echo x >> f", "cwd": "/t", "status": "completed", "exit_code": 0},
+                             {"name": "Append step8", "command": "echo x >> f", "cwd": "/t", "status": "completed", "exit_code": 0}])
+    check("the same command run twice in a step is reported as a duplicated side effect",
+          any("duplicated side effect" in p for p in twice[0]), str(twice))
     bad = f"Run a real job: sleep 1 && exit 3"
     ack = O.submit(request_for(bad))
     t = await wait_status(q, ack["task_id"], ("done", "failed"), timeout=30)
