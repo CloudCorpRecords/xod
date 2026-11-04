@@ -232,6 +232,31 @@ async def w4_unknown(q):
               f"dest={dest} r4={str(r4)[:120]}")
 
 
+async def w4b_job_not_restarted(q):
+    print("W4b a background job that already ran in this task is not started again")
+    real = tools._execute_tool
+    starts = {"n": 0}
+
+    async def fake_exec(name, args, ws=None):
+        if name == "computer_start_job":
+            starts["n"] += 1
+            return {"success": True, "job_id": f"job-{starts['n']}"}
+        return await real(name, args, ws)
+
+    tools._execute_tool = fake_exec
+    from app.services import activity
+    tok = activity.origin.set(f"task:w4b-{uuid.uuid4().hex[:6]}")
+    args = {"name": "Append step 7", "command": "sleep 40 && echo step7 >> /tmp/x"}
+    try:
+        r1 = await tools.execute_tool("computer_start_job", dict(args), reviewed=True)
+        r2 = await tools.execute_tool("computer_start_job", dict(args), reviewed=True)
+    finally:
+        activity.origin.reset(tok)
+        tools._execute_tool = real
+    check("first start runs and is UNVERIFIED", r1.get("outcome") == OC.UNVERIFIED and starts["n"] == 1, str(r1)[:200])
+    check("the identical second start is refused (check instead)", r2.get("already_done") and starts["n"] == 1, str(r2)[:200])
+
+
 async def w5_file_confirmed(q):
     print("W5 a real file write is CONFIRMED by read-back")
     p = TMP / "w5" / "note.txt"
@@ -286,6 +311,7 @@ async def main(repeat):
         await w2_six_checks(q)
         await w3_envelopes(q)
         await w4_unknown(q)
+        await w4b_job_not_restarted(q)
         await w5_file_confirmed(q)
         await w6_cancel_fanout(q)
         if r == 0:
