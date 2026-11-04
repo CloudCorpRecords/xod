@@ -550,6 +550,16 @@ async def a15_waits_for_step_jobs(q):
           and "exit code 3" in (items[0]["blocker"] or ""), json.dumps(items[0])[:300])
 
 
+async def a16_results_travel(q):
+    print("A16 a later step gets the earlier step's result in full")
+    long = "line of the report. " * 150          # 3000 characters
+    items = [{**O._item("Read the report"), "status": "completed", "result": long},
+             {**O._item("Summarize it"), "status": "pending"}]
+    prompt = O._step_prompt({"id": "t", "request": "Summarize the report"}, items, [], items[1], [])
+    check("the whole earlier result is in the next step's prompt", long.strip() in prompt)
+    check("the planner is told not to split reading from using", "Never split reading" in O.PLAN_PROMPT)
+
+
 async def main(repeat):
     for r in range(repeat):
         print(f"=== run {r + 1}/{repeat}")
@@ -570,6 +580,7 @@ async def main(repeat):
         await a13_unknown_not_redone(q)
         await a14_live_reports(q)
         await a15_waits_for_step_jobs(q)
+        await a16_results_travel(q)
         q._worker.cancel()
         q._watchdog.cancel()
     failed = [n for n, ok in results if not ok]

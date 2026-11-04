@@ -167,10 +167,12 @@ PLAN_PROMPT = """You are planning a task for a personal AI agent that will carry
 Task from the person:
 {request}
 
-Break it into 2 to {max_steps} concrete steps, in order. Each step must have an outcome that can be
+Break it into 1 to {max_steps} concrete steps, in order. Each step must have an outcome that can be
 checked (a file exists with given content, a value was found, a message was drafted). Keep every exact
 detail from the task in the step that needs it: full file paths, names, numbers, quoted text. Do not
-add steps the person did not ask for. A task that is genuinely one action is one step.
+add steps the person did not ask for. A task that is genuinely one action is one step. Never split reading
+or looking something up from the step that uses it: "summarize the file X" is ONE step (read it and
+summarize it), not a read step followed by a summary step.
 
 When the task asks for several INDEPENDENT look-ups or research jobs (reading only: no writing, sending or
 changing anything), put them in ONE step that runs them in parallel:
@@ -406,8 +408,13 @@ def _step_prompt(task: Dict[str, Any], items: List[Dict[str, Any]], instructions
         parts.append("\nChanges the person made since the task started (newest last; they win over the "
                      "original wording wherever they conflict):\n" + "\n".join(f"- {x}" for x in instructions))
     if done:
+        # Results travel between steps in full (up to 4000 characters each for the last two): each step is a
+        # fresh agent run, and a 300-character snippet once left a "summarize" step without the text its
+        # "read" step had found (live S10).
+        recent = {i["id"] for i in done[-2:]}
         parts.append("\nSteps already completed. Their effects already exist; do NOT redo any of them:\n"
-                     + "\n".join(f"- {i['text']}" + (f" -> {str(i.get('result') or '')[:300]}" if i.get("result") else "")
+                     + "\n".join(f"- {i['text']}" + (f"\n  RESULT: {str(i.get('result') or '')[:4000 if i['id'] in recent else 300]}"
+                                                       if i.get("result") else "")
                                  for i in done))
     retrying = str(step.get("note") or "").startswith("first attempt did not check out")
     if prior_ops and retrying:
