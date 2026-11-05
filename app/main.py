@@ -575,6 +575,24 @@ async def create_mission(req: NewMissionRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class MissionPlanRequest(BaseModel):
+    goal: str
+
+
+@app.post("/api/missions/plan")
+async def preview_mission_plan(req: MissionPlanRequest):
+    """The plan for a goal, as plain step titles, without starting
+    anything (Phase 1: the one composer shows this before a big or
+    sensitive job runs)."""
+    from app.services import missions
+    try:
+        return {"success": True, **await missions.preview_plan(req.goal)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except missions.PlanRejected as e:
+        return {"success": False, "error": "Xod couldn't plan that one yet.", "problems": e.problems}
+
+
 @app.get("/api/missions")
 async def list_missions():
     from app.services import missions

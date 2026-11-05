@@ -70,38 +70,38 @@
   <!-- ============================================================== -->
   <div id="tasksPanel" class="tasks-panel hidden" aria-hidden="true">
     <div class="tasks-scrim" onclick="closeTasksPanel()"></div>
-    <aside class="tasks-drawer" role="dialog" aria-label="Tasks">
+    <aside class="tasks-drawer" role="dialog" aria-label="Work">
       <header class="px-5 pt-5 pb-3 flex items-start justify-between gap-3 border-b border-white/[0.06]">
         <div>
-          <h3 class="font-bold text-lg text-white">Tasks</h3>
-          <p class="text-[12px] text-zinc-400 mt-0.5">Hand Xod a job and walk away. It asks before anything gets sent or paid.</p>
+          <h3 class="font-bold text-lg text-white">Work</h3>
+          <p class="text-[12px] text-zinc-400 mt-0.5">Tell Xod the job and walk away — it works out the how. It asks before anything gets sent or paid.</p>
           <button onclick="closeTasksPanel();openRoutinesPanel()" class="mt-1.5 text-[12px] text-brand-300 hover:text-brand-200 flex items-center gap-1"><i data-lucide="repeat" class="size-3"></i>Routines & goals</button>
         </div>
         <button onclick="closeTasksPanel()" class="p-1 -mr-1 rounded-lg text-zinc-500 hover:text-white hover:bg-surface-700" title="Close">
           <i data-lucide="x" class="size-4"></i>
         </button>
       </header>
-      <form class="px-5 py-3 border-b border-white/[0.06] flex gap-2" onsubmit="event.preventDefault(); createTaskFromPanel();">
-        <input id="newTaskInput" type="text" autocomplete="off" placeholder="e.g. Apply to the Junior Python role on indeed.com"
-          class="flex-1 min-w-0 bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[13px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
-        <button type="submit" class="px-3 py-2 rounded-lg bg-brand-500 text-surface-900 text-[13px] font-semibold hover:bg-brand-400">Hand off</button>
-      </form>
-      <div class="px-5 py-3 border-b border-white/[0.06]">
-        <div class="flex items-baseline justify-between gap-3">
-          <h4 class="text-[13px] font-semibold text-white">Missions</h4>
-          <span class="text-[11px] text-zinc-500">Xod plans the steps, runs them in order, and checks each one on disk</span>
-        </div>
-        <form class="mt-2 flex gap-2" onsubmit="event.preventDefault(); createMissionFromPanel();">
-          <input id="newMissionInput" type="text" autocomplete="off" placeholder="e.g. Sort the Downloads folder into named subfolders"
+      <!-- Phase 1: ONE composer. The user says the job once; Xod decides
+           quick task vs multi-step mission itself (work_router.js), and
+           shows a plain-words plan first only for big or sensitive jobs. -->
+      <form class="px-5 py-3 border-b border-white/[0.06]" onsubmit="event.preventDefault(); submitWorkFromPanel();">
+        <div class="flex gap-2">
+          <input id="workInput" type="text" autocomplete="off" placeholder="e.g. Sort the Downloads folder, then send me the list"
             class="flex-1 min-w-0 bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[13px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
-          <button type="submit" class="px-3 py-2 rounded-lg bg-brand-500 text-surface-900 text-[13px] font-semibold hover:bg-brand-400">Plan &amp; run</button>
-        </form>
-        <label class="mt-2 flex items-center gap-2 text-[12px] text-zinc-400">
-          <input id="missionContinueChk" type="checkbox" class="accent-brand-500"> Keep going if a step fails
-        </label>
-        <div id="missionsList" class="mt-3 space-y-2"></div>
+          <button type="submit" class="px-3 py-2 rounded-lg bg-brand-500 text-surface-900 text-[13px] font-semibold hover:bg-brand-400">Start</button>
+        </div>
+        <div id="workPlanCard" class="hidden mt-3"></div>
+        <details class="mt-2">
+          <summary class="text-[12px] text-zinc-500 cursor-pointer">Details</summary>
+          <label class="mt-2 flex items-center gap-2 text-[12px] text-zinc-400">
+            <input id="missionContinueChk" type="checkbox" checked class="accent-brand-500" onchange="setWorkContinueOnFailure(this.checked)"> Keep going if a step fails (multi-step jobs)
+          </label>
+        </details>
+      </form>
+      <div class="flex-1 overflow-y-auto">
+        <div id="missionsList"></div>
+        <div id="tasksList" class="px-5 py-4 space-y-5"></div>
       </div>
-      <div id="tasksList" class="flex-1 overflow-y-auto px-5 py-4 space-y-5"></div>
     </aside>
   </div>
   <!-- HEALTH PANEL (doctor: services/doctor.py) -->
@@ -143,27 +143,38 @@
       </button>
       <div class="xod-mascot xod-mascot--small" data-mood="idle" title="Hi, I'm Xod"></div>
       <span class="xod-wordmark">Xod</span>
+      <!-- Phase 1: the status line — face plus ONE human sentence,
+           visible from every surface. -->
+      <div class="relative">
+        <button id="xodStatusBtn" onclick="toggleStatusDetail()" class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[13px] text-zinc-100 hover:bg-surface-700 transition-colors" title="How Xod is doing">
+          <span id="xodStatusDot" class="size-2 rounded-full bg-emerald-400"></span>
+          <span id="xodStatusText">All good.</span>
+          <i data-lucide="chevron-down" class="size-3 opacity-60"></i>
+        </button>
+        <div id="xodStatusPanel" class="hidden absolute left-0 top-full mt-1.5 w-80 max-h-[80vh] overflow-y-auto z-50 p-3 rounded-xl bg-surface-850 border border-white/[0.08] shadow-2xl text-[12px]">
+          <p id="xodStatusDetailLine" class="text-zinc-100 text-[13px]">All good.</p>
+          <div class="mt-3 pt-3 border-t border-white/[0.05]">
+            <div class="text-[10px] uppercase tracking-wider text-zinc-500">Brain</div>
+            <div class="flex items-center gap-2 mt-1.5">
+              <span id="headerStatusDot" class="size-2 rounded-full bg-zinc-500 shrink-0"></span>
+              <span id="headerStatusText" class="flex-1 min-w-0 truncate text-zinc-300">Connecting…</span>
+              <button id="modelSwitcherBtn" onclick="toggleModelSwitcher()" class="px-2 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-zinc-200 shrink-0" title="The AI model answering your chats. Click to switch.">Switch…</button>
+            </div>
+            <div id="modelSwitcherPanel" class="hidden mt-2 w-full max-h-[50vh] overflow-y-auto p-2 rounded-xl bg-surface-900 border border-white/[0.08] text-[12px]"></div>
+          </div>
+          <div class="mt-3 pt-3 border-t border-white/[0.05]">
+            <div class="text-[10px] uppercase tracking-wider text-zinc-500">On this computer</div>
+            <button id="localServersBtn" onclick="toggleLocalServers()" class="mt-1.5 flex items-center gap-1.5 whitespace-nowrap px-2 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-zinc-200 transition-colors" title="Model servers on this computer">
+              <i data-lucide="cpu" class="size-3.5" id="localServersIcon"></i>
+              <span id="localServersText">Local: …</span>
+            </button>
+            <div id="localServersPanel" class="hidden mt-2 w-full p-3 rounded-xl bg-surface-900 border border-white/[0.08] text-[12px]"></div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="flex items-center gap-2">
-      <!-- The model in use; click to switch (model_switcher.js) -->
-      <div class="relative hidden sm:block">
-        <button id="modelSwitcherBtn" onclick="toggleModelSwitcher()" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] text-zinc-400 hover:text-white hover:bg-surface-700 transition-colors" title="The AI model answering your chats. Click to switch.">
-          <span id="headerStatusDot" class="size-2 rounded-full bg-zinc-500"></span>
-          <span id="headerStatusText" class="max-w-[220px] truncate">Connecting…</span>
-          <i data-lucide="chevron-down" class="size-3 opacity-60"></i>
-        </button>
-        <div id="modelSwitcherPanel" class="hidden absolute right-0 top-full mt-1.5 w-80 max-h-[70vh] overflow-y-auto z-50 p-2 rounded-xl bg-surface-850 border border-white/[0.08] shadow-2xl text-[12px]"></div>
-      </div>
-
-      <!-- Local model servers: running or not, memory, Stop (services/local_servers.py) -->
-      <div class="relative hidden sm:block">
-        <button id="localServersBtn" onclick="toggleLocalServers()" class="flex items-center gap-1.5 whitespace-nowrap px-2.5 py-1.5 rounded-lg text-[12px] text-zinc-400 hover:text-white hover:bg-surface-700 transition-colors" title="Model servers on this computer">
-          <i data-lucide="cpu" class="size-3.5" id="localServersIcon"></i>
-          <span id="localServersText">Local: …</span>
-        </button>
-        <div id="localServersPanel" class="hidden absolute right-0 top-full mt-1.5 w-80 z-50 p-3 rounded-xl bg-surface-850 border border-white/[0.08] shadow-2xl text-[12px]"></div>
-      </div>
 
       <!-- AI Cockpit -->
       <button onclick="openAutonomousCockpitModal()" class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Watch Xod browse and use your Mac, or take over">
@@ -177,9 +188,9 @@
       </button>
 
       <!-- Task inbox -->
-      <button onclick="openTasksPanel()" class="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Jobs Xod is doing for you">
+      <button onclick="openTasksPanel()" class="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Work: what Xod is doing, and what needs you">
         <i data-lucide="inbox" class="size-3.5"></i>
-        <span>Tasks</span>
+        <span>Work</span>
         <span id="tasksBadge" class="hidden tasks-badge"></span>
       </button>
 
@@ -864,7 +875,7 @@
               <i data-lucide="chevron-down" class="size-3 text-zinc-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none"></i>
             </div>
 
-            <!-- Hand off: run what's typed as a background task -->
+            <!-- Hand off: run what is typed as a job, through the one composer routing (work.js) -->
             <button
               type="button"
               onclick="handOffFromComposer()"
@@ -4425,8 +4436,10 @@
 
   <script src="/static/js/app.js?v=moonlit75"></script>
   <script src="/static/js/sidebar.js?v=moonlit75"></script>
-  <script src="/static/js/tasks.js?v=moonlit75"></script>
-  <script src="/static/js/missions.js?v=moonlit75"></script>
+  <script src="/static/js/work_router.js?v=moonlit77"></script>
+  <script src="/static/js/tasks.js?v=moonlit77"></script>
+  <script src="/static/js/missions.js?v=moonlit77"></script>
+  <script src="/static/js/work.js?v=moonlit77"></script>
   <script src="/static/js/health.js?v=moonlit75"></script>
   <script src="/static/js/whimsy.js?v=moonlit75"></script>
   <script src="/static/js/mascot.js?v=moonlit75"></script>

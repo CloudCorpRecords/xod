@@ -93,12 +93,15 @@
       </div>
       <div class="text-[11px] text-zinc-500 mt-0.5">${p.subtasks ? `${p.done}/${p.subtasks} steps done · ${p.verified} verified · ` : ""}${esc(when)}</div>
     </button>`;
-    if (!m.failure_reason) return row;
+    const needsNote = m.state === "paused"
+      ? `<p class="text-[12px] text-amber-200/80 mt-1">Paused — one of its steps needs you. The step itself is in this section.</p>` : "";
+    if (!m.failure_reason) return needsNote ? `<div>${row}${needsNote}</div>` : row;
     return `<div>
       ${row}
       <p class="text-[12px] text-zinc-300 mt-1">${esc(plainFailureSentence(m.failure_reason))}</p>
       <details class="mt-0.5"><summary class="text-[11px] text-zinc-500 cursor-pointer">Details</summary>
         <div class="text-[11px] text-zinc-400 mt-0.5 whitespace-pre-wrap">${esc(m.failure_reason)}</div></details>
+      ${needsNote}
     </div>`;
   }
 
@@ -115,7 +118,8 @@
         ${s.claimed ? `<details class="mt-1"><summary class="text-[11px] text-zinc-500 cursor-pointer">What the agent reported</summary><div class="text-[12px] text-zinc-300 mt-1 whitespace-pre-wrap">${esc(s.claimed)}</div></details>` : ""}
       </div>`).join("");
     const rep = m.report;
-    const totals = rep ? `<div class="text-[11px] text-zinc-500 mt-2">Report: ${rep.totals.done}/${rep.totals.subtasks} steps done, ${rep.totals.verified} verified on disk, ${rep.totals.failed} failed. Usage: ${esc((rep.usage || {}).status || "")}.</div>` : "";
+    const totals = (rep ? `<div class="text-[11px] text-zinc-500 mt-2">Report: ${rep.totals.done}/${rep.totals.subtasks} steps done, ${rep.totals.verified} verified on disk, ${rep.totals.failed} failed. Usage: ${esc((rep.usage || {}).status || "")}.</div>` : "")
+      + `<div class="text-[11px] text-zinc-500 mt-2">If a step fails: ${m.continue_on_failure ? "Xod keeps going with the next steps." : "Xod stops and tells you."}</div>`;
     return `<div class="flex items-center justify-between gap-2 mt-1">
         <span class="text-[12px] font-semibold text-white">Plan and checks</span>
         <button onclick="selectMission(null)" class="text-[11px] text-zinc-500 hover:text-white">Close</button>
@@ -123,14 +127,29 @@
       <div class="space-y-2 mt-2">${steps || '<div class="text-[12px] text-zinc-500">Planning...</div>'}</div>${totals}`;
   }
 
+  // Phase 1: missions no longer render as their own block above the
+  // feed. Each mission card is published into the Work feed's buckets
+  // (window.__xodMissionBuckets, consumed by tasks.js render), so the
+  // feed reads top to bottom: Needs you, Working, Finished.
   function render() {
+    const buckets = { needs: "", running: "", finished: "", counts: { needs: 0, running: 0, finished: 0 } };
+    for (const m of missions) {
+      const b = (window.WorkRouter && WorkRouter.missionBucket)
+        ? WorkRouter.missionBucket(m.state)
+        : (m.state === "paused" ? "needs" : (m.state === "planning" || m.state === "running") ? "running" : "finished");
+      buckets[b] += missionRow(m);
+      buckets.counts[b] += 1;
+      if (selectedId && detail && detail.id === m.id) buckets[b] += detailHtml(detail);
+    }
+    const sig = JSON.stringify(missions) + "|" + (selectedId || "") + "|" + JSON.stringify(detail);
+    window.__xodMissionBuckets = buckets;
+    window.__xodMissionsSignature = sig;
     const list = $("missionsList");
-    if (!list) return;
-    const html = (missions.length ? missions.map(missionRow).join("") : '<div class="text-[12px] text-zinc-500">No missions yet. Give Xod a bigger job and it will plan the steps itself.</div>')
-      + (selectedId && detail ? detailHtml(detail) : "");
-    if (html === lastRendered) return;
-    lastRendered = html;
-    list.innerHTML = html;
+    if (list) list.innerHTML = missions.length ? "" : '<div class="text-[12px] text-zinc-500 px-5 pt-3">No bigger jobs yet. Give Xod a job above — it plans the steps itself when a job needs them.</div>';
+    if (sig === lastRendered) return;
+    lastRendered = sig;
+    if (window.__xodRenderWorkFeed) window.__xodRenderWorkFeed();
+    if (window.__xodRefreshStatusLine) window.__xodRefreshStatusLine();
   }
 
   // ---------- actions ----------
@@ -141,20 +160,30 @@
     refresh();
   };
 
-  window.createMissionFromPanel = async () => {
-    const input = $("newMissionInput");
-    const goal = (input.value || "").trim();
-    if (!goal) return;
+  async function createMission(goal, continueOnFailure) {
     const res = await api("/api/missions", {
       method: "POST",
-      body: JSON.stringify({ goal, continue_on_failure: !!($("missionContinueChk") || {}).checked }),
+      body: JSON.stringify({ goal, continue_on_failure: !!continueOnFailure }),
     });
     if (res.success) {
-      input.value = "";
       selectedId = res.mission.id;
       lastRendered = "";
       refresh();
+      return res.mission;
     }
+    return null;
+  }
+  window.__xodCreateMission = createMission;
+
+  // Kept for compatibility: the panel's one composer routes through
+  // submitWorkText (work.js) like everything else.
+  window.createMissionFromPanel = async () => {
+    const input = $("workInput") || $("newMissionInput");
+    if (!input) return;
+    const goal = (input.value || "").trim();
+    if (!goal) return;
+    if (window.submitWorkText) { if (await window.submitWorkText(goal)) input.value = ""; return; }
+    if (await createMission(goal, !!($("missionContinueChk") || {}).checked)) input.value = "";
   };
 
   // Refresh with the Tasks drawer: piggyback on its open/close and poll while open.

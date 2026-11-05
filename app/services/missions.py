@@ -920,6 +920,19 @@ async def decompose(goal: str, ask: Callable[[str], Any]) -> Dict[str, Any]:
     raise PlanRejected(problems)
 
 
+async def preview_plan(goal: str) -> Dict[str, Any]:
+    """The validated plan for a goal, as plain step titles, without
+    creating or running a mission (Phase 1: the one composer's plan
+    check). Uses the same decompose() the runner plans with."""
+    goal = (goal or "").strip()
+    if not goal:
+        raise ValueError("Tell Xod the goal first.")
+    plan = await decompose(goal, _default_ask)
+    return {"goal": goal,
+            "steps": [{"title": s["title"], "instruction": s["instruction"]}
+                      for s in plan["subtasks"]]}
+
+
 # --------------------------------------------------------------------- subtask rendering
 def render_request(subtask: Dict[str, Any]) -> str:
     """The task text for one subtask. Declared file effects are spelled out in
