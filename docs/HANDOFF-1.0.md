@@ -6,6 +6,67 @@ orchestrator's own evidence (live runs, tier by tier) is in `ORCHESTRATOR-ACCEPT
 
 **Status: not released.** The version is still 0.9.25, and nothing has been merged to `main`.
 
+**Open draft PRs:**
+- Desktop: CloudCorpRecords/xod#43, `claude/release-next` → `main`.
+- Phone app: CloudCorpRecords/xod-android#2, `claude/scan-on-open` → `main`.
+
+Neither is ready to merge.
+
+---
+
+## 0. Start here (for the AI picking this up)
+
+### Set up
+
+```bash
+git clone https://github.com/CloudCorpRecords/xod.git && cd xod && git checkout claude/release-next
+python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt     # CI uses Python 3.12
+git clone https://github.com/CloudCorpRecords/xod-android.git && cd xod-android && git checkout claude/scan-on-open
+./gradlew test                                                            # 152 tests, 0 failures expected
+```
+
+### Run tests safely
+
+- Give **every** run its own throwaway data folder and port:
+  `XOD_DATA_DIR=$(mktemp -d) .venv/bin/python tests/smoke/run_<name>_test.py`.
+- Never use port 8000 or the installed app's data folder. That is the owner's real Xod.
+- In a fresh data folder Xod picks the **local** model (LM Studio, Gemma 4 12B, 7 GB) when one is running.
+  - On a laptop, that can run it out of memory.
+  - Put a cloud key in the test's data folder to use Terra instead.
+  - Check what's loaded with `lms ps`, and unload with `lms unload --all` afterwards.
+- CI on PR #43 runs the Python checks, the desktop shell and a secret scan. Keep all three green.
+
+### Work order
+
+**Do these first. None of them needs the owner:**
+
+1. **Get CI green on #43.** A stale terminal test was fixed in 5c51a4c. If anything else fails, follow §7: fix the
+   bug and add a regression test. Update a test only when its expectation is stale, and say why in the commit.
+2. **Fix the raw JSON on the phone's Tasks tab.**
+   - `phone_action` messages show up as JSON text instead of a readable card.
+   - Parsing happens in `app/src/main/kotlin/dev/xod/android/PhoneActions.kt`, around line 210.
+   - The list of allowed actions is in `mail/src/main/kotlin/dev/xod/mail/PhoneActionContract.kt` and
+     `docs/phone_actions.json` on the desktop.
+   - Show a readable card, and add a test.
+3. **Rerun the 5 failing suites (§3.1) and compare them with `main`.**
+   - Run `apply` and `operator` on Terra, not the local model.
+   - A failure that also happens on `main` is old. Fix it, or record it.
+4. **Run the 21 skipped suites (§3.1)** on a machine with memory to spare.
+5. **Rerun the full 140-file count on `release-next` itself.** It was last taken on phase5.
+
+**These need the owner to act or approve:**
+
+6. **Register the GitHub OAuth app** (§4.1). The owner does this.
+7. **Install the new phone build on the S25** and run the live family test (§4.2–4.4). It needs the phone in hand.
+8. **Do the release steps** (§6), only when the owner says to release.
+
+**Don't:**
+- Release.
+- Push to `main`.
+- Change Tree's branches.
+- Touch the installed app.
+- Write the owner's first name into files (a pre-commit hook rejects it).
+
 ---
 
 ## 1. Where everything is
