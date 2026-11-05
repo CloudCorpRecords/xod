@@ -43,6 +43,13 @@ and crew_read (deep grading reads over the task queue, the missions store and th
 and snapshot (the app's own view of itself). They read only what the app itself recorded; an
 activity class the app does not persist is never synthesized, and the gaps are named in the
 record that shipped the surface.
+Repo Worker (surface v3): the open-source contribution stack ships in the box
+(services/repo_worker.py, policy in services/repo_worker_policy.py). Eleven
+repo_* tools run the fleet CLIs (Greenlight wave, check, friction, racecheck,
+reprocheck, prosecheck, commitcheck) plus two native gates (the full-CI split
+and the gate pass itself) behind this same manifest and invoke, each answer
+shaped {claimed, verified, evidence}. The open path is approval-shaped and
+dry-run in this phase: repo_open_plan prepares and verifies, and never opens.
 """
 import hmac
 import json
@@ -459,7 +466,7 @@ def _refresh_relay(rec: Dict[str, Any]) -> None:
 
 import asyncio
 
-SURFACE_VERSION = 2
+SURFACE_VERSION = 3
 
 TOOL_SURFACE = [
     {"name": "config_read", "version": 1, "kind": "read",
@@ -517,6 +524,49 @@ TOOL_SURFACE = [
     {"name": "social_read", "version": 1, "kind": "read",
      "description": "The social reply queue (X and LinkedIn): item counts by state and platform, and the oldest awaiting-approval item's age. Counts only; draft text never rides this surface.",
      "args": {}},
+    {"name": "repo_find_work", "version": 1, "kind": "read",
+     "description": "Repo Worker, stages 0 to 2: mine the live Agent Policy Index with Greenlight wave, then gate each candidate fresh (check verdict, racecheck, friction, the repo's own policy read, one open PR per repo). Returns passed, killed and deferred candidates, each with the gate evidence that decided it. An unknown gate defers; it never passes.",
+     "args": {"repos": "candidate repos for the wave (default 6)", "limit": "candidates to gate (default 8)",
+              "min_share": "minimum outsider merge share (optional)", "stars": "star band lo,hi (optional)"}},
+    {"name": "repo_wave", "version": 1, "kind": "read",
+     "description": "Greenlight wave: the build queue from the live Agent Policy Index. Winnable open repos, starter issues x-rayed, behavioral gates and repos where you already have an open PR excluded.",
+     "args": {"repos": "candidate repos (default 6)", "min_share": "minimum outsider merge share (optional)",
+              "stars": "star band lo,hi (optional)", "issues_per_repo": "starter issues per repo (optional)"}},
+    {"name": "repo_check", "version": 1, "kind": "read",
+     "description": "Greenlight's verdict on one issue: GO, RISKY, TAKEN, GATED or STALE, with reasons.",
+     "args": {"issue_url": "the issue URL", "repo": "owner/repo (with issue, instead of issue_url)",
+              "issue": "the issue number (with repo)"}},
+    {"name": "repo_friction", "version": 1, "kind": "read",
+     "description": "Greenlight friction for a repo: how hard an outside PR is to land, 0 to 100 (100 is easiest), with its policy and behavioral gates.",
+     "args": {"repo": "owner/repo", "lite": "true for the policy-gates-only pass (optional)"}},
+    {"name": "repo_racecheck", "version": 1, "kind": "read",
+     "description": "The race check for one issue: open PRs fixing the same problem without ever linking it. CLEAR, SUSPECT or RACE, with the matched PRs and keywords.",
+     "args": {"repo": "owner/repo", "issue": "the issue number"}},
+    {"name": "repo_reprocheck", "version": 1, "kind": "write",
+     "description": "The red-green proof for a fix in a local clone: the repro runs on the base ref and on the head ref; it must fail on the base and pass on the head (reprocheck).",
+     "args": {"repo_dir": "the clone's folder", "base": "the base ref", "head": "the head ref",
+              "cmd": "the repro command (or give runner)", "runner": "pytest | go | auto (optional)",
+              "test_file": "a test file to focus on (optional)", "test_name": "a test name (optional)"}},
+    {"name": "repo_prosecheck", "version": 1, "kind": "read",
+     "description": "The prose gate: lint a draft PR body, commit message or reply with prosecheck. PASS or FAIL with findings; a FAIL blocks the open, and a prosecheck that cannot run reads unknown, which blocks too.",
+     "args": {"kind": "pr-body | commit | comment", "text": "the draft text"}},
+    {"name": "repo_commitcheck", "version": 1, "kind": "read",
+     "description": "Commit history hygiene for a local clone: subject shape, sign-off, convention (commitcheck).",
+     "args": {"repo_dir": "the clone's folder", "target": "what to check (optional)"}},
+    {"name": "repo_ci_gate", "version": 1, "kind": "write",
+     "description": "The full-CI gate (pr_full_ci_gate): run a repo's root checks on the head and on a base worktree, and split every failure into ours, base red, or unknown. It passes only when the split is green or base-red-explained.",
+     "args": {"repo_dir": "the clone's folder", "base_ref": "the base ref (default origin/main)",
+              "commands": "the check commands (optional; detected from the repo when omitted)"}},
+    {"name": "repo_open_plan", "version": 1, "kind": "write",
+     "description": "Repo Worker stages 3 to 5 as a dry run behind the approval model: re-run a candidate's gates fresh, run the prose, commit and CI gates over the prepared work when provided, and return the open plan with its evidence and what blocks it. Phase 1 never pushes and never opens.",
+     "args": {"repo": "owner/repo", "issue": "the issue number", "issue_url": "the issue URL (optional)",
+              "labels": "the issue's labels (optional)", "clone_dir": "the prepared clone (optional)",
+              "pr_body": "the draft PR body (optional)", "commit_messages": "draft commit messages (optional)",
+              "base_ref": "the base ref for the CI gate (optional)", "commands": "CI gate commands (optional)",
+              "budget_remaining": "GitHub core rate-limit remainder, for the budget gate (optional)"}},
+    {"name": "repo_watch", "version": 1, "kind": "read",
+     "description": "Repo Worker stage 6, the read side: the signed-in account's open PRs with their attention state (changes requested, failing checks, conflicts, stale marks), split into needs attention, waiting on maintainer, and quiet.",
+     "args": {"limit": "open PRs to read (default 25, max 50)"}},
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_SURFACE}
@@ -717,6 +767,14 @@ def _tool_social() -> Dict[str, Any]:
     from app.services import social_reply
     return social_reply.queue_summary()
 
+def _tool_repo(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Repo Worker tools (services/repo_worker.py): the contribution stack
+    behind this same surface, each answer shaped {claimed, verified,
+    evidence} by the module itself."""
+    from app.services import repo_worker
+    return repo_worker.run_tool(name, args)
+
+
 
 def _locate_impl(request: str) -> Dict[str, Any]:
     from app.services import locate as locate_mod
@@ -862,6 +920,23 @@ async def invoke(caller_ip: str, headers: Optional[Dict[str, Any]],
         if tool == "social_read":
             out = await asyncio.to_thread(_tool_social)
             return 200, _envelope(tool, "ok", result=out, verified=out)
+        if tool.startswith("repo_"):
+            try:
+                out = await asyncio.to_thread(_tool_repo, tool, args)
+            except ValueError as e:
+                raise HarnessError(400, str(e))
+            verified = out.get("verified") if isinstance(out.get("verified"), dict) else {}
+            if verified.get("state") == "unknown":
+                return 200, _envelope(tool, "error", result=out,
+                                      claimed=out.get("claimed"), verified=verified,
+                                      evidence=out.get("evidence") or [],
+                                      error={"code": "gate_unknown",
+                                             "message": str(verified.get("reason")
+                                                            or "the tool could not establish a result")[:300]})
+            return 200, _envelope(tool, "ok", result=out,
+                                  claimed=out.get("claimed"), verified=verified,
+                                  evidence=out.get("evidence") or [])
+
     except HarnessError:
         raise
     except Exception as e:
