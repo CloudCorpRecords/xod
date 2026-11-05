@@ -1056,6 +1056,13 @@ class PhonePairRequest(BaseModel):
     nickname: Optional[str] = ""
 
 
+@app.post("/api/phones/add-to")
+async def phones_add_to(body: Dict[str, Any]):
+    """Adds a phone paired here to another of your Xods (by name), without scanning a second QR."""
+    from app.services import phone_mcp
+    return await phone_mcp.add_phone_to(str((body or {}).get("machine") or ""), str((body or {}).get("phone") or ""))
+
+
 @app.post("/api/phones/pair")
 async def phones_pair(req: PhonePairRequest):
     """Marks a phone that paired on its own screen as reachable (its keys must already be pinned)."""
@@ -3131,6 +3138,13 @@ async def family_control_device_poll():
     returned here."""
     from app.services import github_device
     return await asyncio.to_thread(github_device.poll)
+
+
+@app.post("/api/family/control/github-client-id")
+async def family_control_github_client_id(body: Dict[str, Any]):
+    """Save Xod's GitHub app Client ID (public) so 'Sign in with GitHub' works here and on your phones."""
+    from app.services import sso_control
+    return await asyncio.to_thread(sso_control.set_github_client_id, str(body.get("client_id") or ""))
 
 
 @app.post("/api/family/control/session")

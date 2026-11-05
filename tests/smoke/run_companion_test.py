@@ -111,11 +111,13 @@ async def main():
                 check(f"{look}: leaves its perch while working", any(x["out"] and x["away"] for x in samples))
                 check(f"{look}: visits the tool", any("tool-pill" in t for t in targets))
                 check(f"{look}: peeks at the browser snapshot", any("rounded-2xl" in t for t in targets))
-                check(f"{look}: waits by the approval, lassoed", any("bg-brand-500" in t for t in targets) and any(x["lasso"] for x in samples))
+                # since v0.9.2 it perches on the approval card's top edge (clear of both buttons) and looks at Approve;
+                # the card is the only thing that carries xp-lasso
+                check(f"{look}: waits by the approval, lassoed", any("xp-lasso" in t for t in targets) and any(x["lasso"] for x in samples))
                 check(f"{look}: writes the answer", "writing" in targets)
                 check(f"{look}: signs the answer", any("xp-signature" in t for t in targets))
                 last = samples[-1]
-                check(f"{look}: goes back to the approval after signing", last["out"] and "bg-brand-500" in last["target"], json.dumps(last))
+                check(f"{look}: goes back to the approval after signing", last["out"] and "xp-lasso" in last["target"], json.dumps(last))
                 await s.js("document.querySelector('[data-mcp=\"decline\"]:not(:disabled)')?.click(); true")
                 await asyncio.sleep(6)
                 last = (await s.js("window.__samples"))[-1]

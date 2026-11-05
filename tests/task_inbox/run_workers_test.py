@@ -80,6 +80,16 @@ async def fake_agent(brief, wid):
         yield {"type": "content", "content": "The file could not be found, so there is no status line."}
         rec["end"] = time.time()
         return
+    if kind in ("refused", "refused_only"):
+        # Live h3: a read-only research worker tried a command; the envelope refused it; nothing ran.
+        yield {"type": "tool_result", "name": "computer_run_command", "data": {"success": False, "error":
+               "computer_run_command is outside this worker's permission envelope (read-only). Nothing was done."}}
+        if kind == "refused":
+            yield {"type": "tool_result", "name": "web_scrape", "data": {"success": True, "url": "https://a.example",
+                                                                          "content": "It is 330 metres tall."}}
+            yield {"type": "content", "content": payload}
+        rec["end"] = time.time()
+        return
     if kind == "tidy":
         yield {"type": "tool_result", "name": "computer_read_file", "data": {"success": True, "content": "status OK"}}
         yield {"type": "content", "content": payload}
@@ -334,7 +344,7 @@ async def w8_resolve_unknowns(q):
 
 
 async def w9_failed_sources(q):
-    print("W9 a worker whose every source failed counts as failed")
+    print("W9 a worker whose every source failed counts as failed; a refused step is not a failed source")
     tag = uuid.uuid4().hex[:4]
     jobs = [f"Source ok {tag}", f"Source broken {tag}"]
     JOB_SCRIPT[jobs[0]] = ("answer", "fine")
@@ -351,6 +361,13 @@ async def w9_failed_sources(q):
     JOB_SCRIPT[j6] = ("fallback", "")
     r4 = await W.coordinate("w9d", "one search", [{"task": j6}])
     check("one search provider failing is covered by another that answered", r4["failures"] == [], json.dumps(r4["failures"])[:200])
+    j7, j8 = f"Refused then read {tag}", f"Refused only {tag}"
+    JOB_SCRIPT[j7] = ("refused", "**Confirmed:** 330 metres, per [A](https://a.example).")
+    JOB_SCRIPT[j8] = ("refused_only", "")
+    r5 = await W.coordinate("w9e", "refusals", [{"task": j7}, {"task": j8}])
+    check("a refused step with a sourced answer read elsewhere: done, the refusal kept as a caveat",
+          [f["task"] for f in r5["failures"]] == [j8] and any("computer_run_command" in c["caveat"] for c in r5.get("caveats", [])),
+          json.dumps({"f": r5["failures"], "c": r5.get("caveats")})[:300])
     j3 = f"Source admits {tag}"
     JOB_SCRIPT[j3] = ("admit", "**Could not read:** The status line, because the file was not found.")
     r2 = await W.coordinate("w9b", "one source", [{"task": j3}])

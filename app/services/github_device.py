@@ -33,8 +33,9 @@ from typing import Any, Callable, Dict, Optional
 DEVICE_CODE_URL = "https://github.com/login/device/code"
 ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
 USER_URL = "https://api.github.com/user"
+EMAILS_URL = "https://api.github.com/user/emails"
 GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
-SCOPE = "read:user"
+SCOPE = "read:user user:email"   # user:email: verified emails, so a family listed by email matches
 TOKEN_ACCOUNT = "github_access_token"
 
 _pending: Dict[str, Any] = {}   # one flow at a time, in memory only
@@ -182,4 +183,18 @@ def verify(token: Optional[str] = None, get_json: Callable = _get_json,
                 "source": "github-device",
                 "message": "The saved GitHub sign-in is no longer valid."}
     return {"state": "signed_in", "account": out["login"], "github_id": out.get("id"),
+            "emails": verified_emails(token, get_json),
             "provider": "github", "method": "device", "source": "github-device"}
+
+
+def verified_emails(token: str, get_json: Callable = _get_json) -> list:
+    """The account's VERIFIED email addresses, as GitHub states them (lowercased). A family listed under an email
+    matches through these. A token from before the user:email scope gets none; that is not an error."""
+    try:
+        out = get_json(EMAILS_URL, {"Authorization": f"Bearer {token}"})
+    except Exception:
+        return []
+    if not isinstance(out, list):
+        return []
+    return [str(e.get("email")).lower() for e in out
+            if isinstance(e, dict) and e.get("verified") is True and e.get("email")]

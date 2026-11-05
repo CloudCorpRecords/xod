@@ -484,7 +484,34 @@ Answer with JSON only:
  "needs_person": true or false, "why": "only when needs_person: what exactly the person must do and why"}}"""
 
 
-def _steps_text(log: List[Dict[str, Any]], limit: int = 5000) -> str:
+_STOP = {"the", "and", "for", "with", "that", "this", "from", "find", "look", "year", "what", "when", "which", "provide",
+         "source", "answer", "report", "including", "official", "first", "about", "into", "your", "their", "have"}
+
+
+def _is_page(res: Any) -> bool:
+    """A page that was read (web_scrape and the like): the answer is in its text, usually near the top."""
+    return isinstance(res, dict) and bool(res.get("content")) and bool(res.get("url")) and not res.get("error")
+
+
+def _page_excerpt(text: str, goal: str, size: int = 900) -> str:
+    """What the checker sees of a page: its opening, then the sentences that bear on the goal. A page's last 500
+    characters are its footer (live, final count h3: four workers' answers were on the pages they read, the checker
+    saw only the footers, and every one was sent back "not proven" until the task failed)."""
+    words = {w for w in re.findall(r"[a-z0-9]{4,}|\d+", goal.lower()) if w not in _STOP}
+    head = text[:300]
+    picked, used = [], len(head)
+    for sent in re.split(r"(?<=[.!?])\s+|\n+", text[300:]):
+        s = sent.strip()
+        if not s or not words or not any(w in s.lower() for w in words):
+            continue
+        if used + len(s) > size:
+            break
+        picked.append(s)
+        used += len(s) + 3
+    return head + ("\n   … " + " … ".join(picked) if picked else ("" if len(text) <= 300 else " …"))
+
+
+def _steps_text(log: List[Dict[str, Any]], limit: int = 5000, goal: str = "") -> str:
     rows = []
     for i, e in enumerate(log, 1):
         what = e["args"].get("command") or e["args"].get("filepath") or e["args"].get("query") or e["args"].get("url") or json.dumps(e["args"], default=str)[:160]
@@ -492,7 +519,8 @@ def _steps_text(log: List[Dict[str, Any]], limit: int = 5000) -> str:
         if e.get("exit") is not None:
             status += f", exit {e['exit']}"
         out = re.sub(r"\s+\n", "\n", e["out"]).strip()
-        rows.append(f"{i}. {e['name']}: {str(what)[:200]} [{status}]\n   {out[-500:] if out else '(no output)'}")
+        shown = _page_excerpt(out, goal) if e.get("page") else out[-500:]
+        rows.append(f"{i}. {e['name']}: {str(what)[:200]} [{status}]\n   {shown if out else '(no output)'}")
     text = "\n".join(rows)
     return text[-limit:]
 
@@ -515,7 +543,7 @@ FINISHED = {
 async def done_check(goal: str, log: List[Dict[str, Any]], final: str, kind: str = "computer") -> Dict[str, Any]:
     if not log:
         return {"done": False, "missing": "Nothing has been run yet. Do the job with the tools.", "needs_person": False}
-    prompt = CHECK.format(finished=FINISHED.get(kind, FINISHED["computer"]), goal=goal, steps=_steps_text(log),
+    prompt = CHECK.format(finished=FINISHED.get(kind, FINISHED["computer"]), goal=goal, steps=_steps_text(log, goal=goal),
                           final=(final or "(none)")[:800])
     try:
         reply = await llm_service.chat_completion(messages=[{"role": "user", "content": prompt}], temperature=0.0,
@@ -713,6 +741,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     checks = 0
     answer, verdict, stopped, left = "", None, "", ""
     nudged_empty = 0
+    draft = ""
     held: Optional[Dict[str, Any]] = None
     subs = 0
     from app.services import usage as usage_log
@@ -773,6 +802,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 answer = content
                 stopped = f"**Not finished yet:** {left or 'it never proved it works'}. Say **continue** and I'll keep going."
                 break
+            if content.strip():
+                draft = content       # the best answer so far: kept if the steps run out before a better one
             yield {"type": "status", "content": f"Not done yet: {left[:120]}"}
             convo.append({"role": "assistant", "content": content})
             convo.append({"role": "user", "content": f"(Note from Xod, not from the person) Not finished: {left} Keep going with the tools."})
@@ -826,7 +857,9 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 yield {"type": "tool_result", "name": name, "id": cid, "summary": _summary(name, res), "data": res}
                 decisive_hits.append((name, res))
             out = _out(res)
-            log.append({"name": name, "args": args, "fp": _fp(name, args), "failed": _failed(res), "out": out[-3000:],
+            page = _is_page(res)
+            log.append({"name": name, "args": args, "fp": _fp(name, args), "failed": _failed(res),
+                        "out": out[:8000] if page else out[-3000:], "page": page,
                         "exit": res.get("exit_code") if isinstance(res, dict) else None, "new": True})
             body = json.dumps(res, default=str) if not isinstance(res, str) else res
             convo.append({"role": "tool", "tool_call_id": cid, "name": name, "content": body[:4000]})
@@ -858,6 +891,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         except Exception:
             pass
 
+    if not answer and draft:
+        answer = draft
     if not answer and log:
         answer = "Here's where it got to:\n" + "\n".join(
             f"- {'✗' if e['failed'] else '✓'} `{str(e['args'].get('command') or e['args'].get('filepath') or e['name'])[:120]}`"

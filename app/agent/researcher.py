@@ -243,8 +243,10 @@ class AgenticResearcher:
             pass
         try:
             from app.services.system_control import system_control_service
-            profile = system_control_service.get_computer_profile()
-            telem = system_control_service.get_system_telemetry()
+            # ps and lsof run here: off the event loop, or every research turn (twelve at once under load) froze the
+            # whole server for up to 1.5 s (live, load test, 2026-11-04: a stall watchdog caught it here).
+            profile, telem = await asyncio.to_thread(
+                lambda: (system_control_service.get_computer_profile(), system_control_service.get_system_telemetry()))
             current_cwd = active_workspace_path or profile.get("current_working_directory") or os.getcwd()
             system_prompt += f"""
 

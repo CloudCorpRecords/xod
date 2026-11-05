@@ -391,6 +391,42 @@ async def call_tool(tool: str, address: str = "", timeout: float = ASK_TIMEOUT, 
     return out
 
 
+# ------------------------------------------------------------------ one phone, the whole family
+
+async def add_phone_to(machine: str, address: str = "", timeout: float = 90.0) -> Dict[str, Any]:
+    """Adds a phone paired here to another of your Xods, with no second scan (2026-11-04: pair with any one
+    computer and you're connected to the whole family). That Xod hands over a one-time pairing offer (same Tailscale
+    account only); it goes to the phone over the pairing it already trusts; the phone pairs, checks the new computer's
+    signed family proof itself (unpairing again if it fails) and keeps this computer as the one in use."""
+    from app.services import xod_network
+    phones = {p["address"]: p for p in paired_phones()}
+    phone = phones.get((address or "").strip().lower()) or (list(phones.values())[0] if len(phones) == 1 else None)
+    if not phone:
+        return {"success": False, "error": "No phone is paired here." if not phones else
+                f"Which phone? Paired: {', '.join(phones)}."}
+    try:
+        offer = await xod_network.phone_offer_from(machine)
+    except xod_network.NetworkError as e:
+        return {"success": False, "error": str(e)}
+    rid = uuid.uuid4().hex
+    _audit({"tool": "add_phone_to", "phone": phone["address"], "args": {"machine": offer.get("machine") or machine}})
+    try:
+        await transport.send(phone["address"], {"join_offer": offer["qr_text"], "request_id": rid,
+                                                "machine": offer.get("machine") or machine})
+    except Exception as e:
+        _audit({"tool": "add_phone_to", "phone": phone["address"], "result": f"refused: {e}"})
+        return {"success": False, "error": str(e)}
+    reply = await transport.wait_reply(phone["address"], rid, timeout)
+    if reply is None:
+        out = {"success": False, "error": "The phone didn't answer in time (it may be asleep or offline). Open the Xod "
+                                          "app on it and try again."}
+    else:
+        out = {"success": bool(reply.get("ok")), "machine": offer.get("machine") or machine,
+               **({"message": reply.get("text")} if reply.get("ok") else {"error": reply.get("text") or "The phone refused."})}
+    _audit({"tool": "add_phone_to", "phone": phone["address"], "result": str(out)[:200]})
+    return out
+
+
 # ------------------------------------------------------------------ approvals from the phone (slice 3)
 
 async def ask_approval(address: str, title: str, detail: str, approve_label: str = "Approve",

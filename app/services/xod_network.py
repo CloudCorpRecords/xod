@@ -20,6 +20,7 @@ it. It runs while you're signed in and the setting xod_findable isn't "off":
   POST /v1/family/inference a borrowed model call from a family member (services/family_inference.py):
                             same account (whois) AND signed with the caller's registry device key;
                             only trusted (signed, approved, unrevoked) members are served
+  POST /v1/phone/pair-offer a pairing offer for your phone, so another of your Xods can add it here (no second scan)
   GET/POST /v1/models       this Xod's model choices, and switching between them (services/remote_models.py)
 A handed task never runs by itself: it becomes an approval card on this computer (in the chat and on the phone), and
 only the person's Approve puts it in the task inbox. Cards are made only for devices signed in to the same account as
@@ -224,6 +225,12 @@ async def send_task(machine: str, request: str) -> Dict[str, Any]:
     me = (await asyncio.to_thread(status)).get("name") or socket.gethostname()
     r = await _call("POST", x["ip"], "/v1/tasks", {"request": request, "from": me})
     return {"machine": x["name"], **r, "message": f"Sent to {x['name']}: it runs once you approve it there (the card is on that computer and your phone)."}
+
+
+async def phone_offer_from(machine: str) -> Dict[str, Any]:
+    """A one-time pairing offer from another of your Xods, for adding your phone to it without a scan."""
+    x = await _target(machine)
+    return {"machine": x["name"], **await _call("POST", x["ip"], "/v1/phone/pair-offer", {})}
 
 
 async def task_status(machine: str, ref: str) -> Dict[str, Any]:
@@ -454,6 +461,18 @@ async def _start_beacon(ip: str) -> None:
             raise HTTPException(403, str(e))
         except ValueError as e:
             raise HTTPException(400, str(e))
+
+    # A pairing offer for your phone, asked by another of your Xods (phone_mcp.add_phone_to): same account only. It is
+    # an introduction, not trust: the phone still checks this computer's signed family proof before the pairing stands.
+    @app.post("/v1/phone/pair-offer")
+    async def phone_pair_offer(request: Request) -> Dict[str, Any]:
+        if not (await asyncio.to_thread(_caller, request.client.host))["same_account"]:
+            raise HTTPException(403, "Only your own devices can add a phone to this Xod.")
+        from app.services import phone_pair
+        o = await asyncio.to_thread(phone_pair.create_offer)
+        if not o.get("success"):
+            raise HTTPException(409, str(o.get("error") or "This Xod can't pair a phone right now."))
+        return {"qr_text": o["qr_text"], "computer": o.get("computer"), "expires_at": o.get("expires_at")}
 
     @app.get("/v1/tasks/{ref}")
     async def handed_status(ref: str, request: Request) -> Dict[str, Any]:

@@ -30,6 +30,8 @@
         <span class="size-2 rounded-full ${x.online ? "bg-emerald-400" : "bg-zinc-600"}"></span>
         <span class="text-white">${esc(x.name)}</span>
         <span class="text-zinc-500 text-[11px]">${esc(x.os)}${x.same_account ? "" : " · shared with you"}${x.online ? "" : " · offline"}</span>
+        ${x.same_account && x.online && (r.phones || []).length ? `<button data-xn="addphone" data-host="${esc(x.host)}" class="${quiet} !px-2 !py-0.5 ml-auto"
+          title="Your phone pairs with ${esc(x.name)} too, without scanning another QR">Add my phone</button>` : ""}
       </li>`).join("");
     return `
       <section class="space-y-3">
@@ -40,6 +42,7 @@
         </div>
         <p class="text-[12px] font-semibold text-zinc-300">Other Xods</p>
         ${rows ? `<ul class="space-y-1.5">${rows}</ul>` : `<p class="text-[12px] text-zinc-500">None yet. Xod looks again every few seconds while this is open.</p>`}
+        <p id="xnPhoneMsg" class="text-[12px] text-zinc-400"></p>
         ${r.others ? `<p class="text-[11px] text-zinc-500">${r.others} other device${r.others === 1 ? "" : "s"} on your tailnet without Xod.</p>` : ""}
         <label class="flex items-start gap-2 text-[12px] text-zinc-300">
           <input type="checkbox" data-xn="findable" ${r.findable ? "checked" : ""} class="mt-0.5">
@@ -85,6 +88,7 @@
     let r;
     try { r = await api("/api/xods"); } catch { body.innerHTML = '<p class="text-[12px] text-red-300">Xod didn\'t answer.</p>'; return; }
     try { r.memory = await api("/api/memory-sync"); } catch { r.memory = null; }
+    try { r.phones = ((await api("/api/phones")).phones || []).filter((p) => p.address !== "iphone-mirroring"); } catch { r.phones = []; }
     if (body.contains(document.activeElement) && document.activeElement.dataset.xn) return;   // don't redraw under a click
     const st = r.status || {};
     body.innerHTML = st.signed_in ? listView(r) : signInView(st);
@@ -115,6 +119,14 @@
     };
     if (a === "memory" && e.type === "change") return mem({ on: el.checked });
     if (e.type !== "click") return;
+    if (a === "addphone") {
+      el.disabled = true; el.textContent = "Adding…";
+      const r = await api("/api/phones/add-to", "POST", { machine: el.dataset.host });
+      await render();
+      const msg = document.getElementById("xnPhoneMsg");
+      if (msg) msg.textContent = r.success ? (r.message || `Your phone is paired with ${r.machine} too.`) : (r.error || "That didn't work.");
+      return;
+    }
     if (a === "mshare") { el.disabled = true; el.textContent = "Asking…"; return mem({ share: el.dataset.host }); }
     if (a === "mstop") return mem({ stop: el.dataset.key });
     if (a === "mremove") return mem({ remove: el.dataset.key });

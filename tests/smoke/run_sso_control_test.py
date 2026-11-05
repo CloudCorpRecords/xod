@@ -293,15 +293,39 @@ def main():
     check("control: recovery block is explicit (bundle applied here: not needed)",
           cs["recovery"]["needed"] is False and cs["recovery"]["applied_version"] >= 1)
 
+    # ------------------------------------------------ one GitHub account, matched by login or VERIFIED email (2026-11-04)
+    from app.services import github_device as gd2, phone_enroll
+    def stub_user_emails(url, headers):
+        if url.endswith("/user/emails"):
+            return [{"email": "Owner@Example.com", "verified": True}, {"email": "fake@example.com", "verified": False}]
+        return {"login": "octo", "id": 1}
+    claim = gd2.verify(token="t", get_json=stub_user_emails)
+    check("email: GitHub's verified emails ride the claim, unverified ones don't",
+          claim["emails"] == ["owner@example.com"], json.dumps(claim))
+    check("email: the device flow asks for user:email", "user:email" in gd2.SCOPE)
+    check("email: a family listed under an email matches a GitHub sign-in with that verified email",
+          sc._account_matches(claim, {"account": "owner@example.com"}))
+    check("email: an unverified email never matches",
+          not sc._account_matches(claim, {"account": "fake@example.com"}))
+    old_token_claim = gd2.verify(token=FAKE_GH_TOKEN, get_json=stub_user)       # token from before user:email: no emails
+    check("email: a token without the email scope still signs in (no emails, not an error)",
+          old_token_claim["state"] == "signed_in" and old_token_claim["emails"] == [])
+
+    # ------------------------------------------------ the GitHub app's client id: saved here, handed to phones
+    check("client id: a malformed id is refused", not sc.set_github_client_id("not ok!")["success"])
+    r = sc.set_github_client_id(" Ov23liTESTclient01 ")
+    check("client id: saved trimmed", r["success"] and sc.github_client_id() == "Ov23liTESTclient01", json.dumps(r))
+    check("client id: a phone learns it from family.state", phone_enroll.state().get("github_client_id") == "Ov23liTESTclient01")
+
     # ------------------------------------------------ static wiring
     main_py = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
     fam_js = (ROOT / "app" / "static" / "js" / "family.js").read_text(encoding="utf-8")
     check("wiring: control + device + service-secret routes exist",
           all(x in main_py for x in ("/api/family/control", "device/begin", "device/poll",
-                                     "control/session", "control/service-secret")))
+                                     "control/session", "control/service-secret", "control/github-client-id")))
     check("wiring: the Family panel renders the control surface + device sign-in",
           "/api/family/control" in fam_js and "device-begin" in fam_js
-          and "Getting to working" in fam_js)
+          and "Getting to working" in fam_js and "client-id-save" in fam_js)
 
     return finish()
 

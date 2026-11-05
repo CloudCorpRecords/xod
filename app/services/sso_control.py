@@ -41,6 +41,7 @@ presence booleans and masked key summaries (secret_store.status)
 — never a token or a key value.
 """
 import json
+import re
 import os
 import time
 import urllib.request
@@ -74,6 +75,19 @@ def rdrive_url() -> str:
 
 def github_client_id() -> str:
     return (os.environ.get("XOD_GITHUB_CLIENT_ID") or _setting("github_client_id", "")).strip()
+
+
+_CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{8,64}$")
+
+
+def set_github_client_id(cid: str) -> Dict[str, Any]:
+    """Save Xod's GitHub app Client ID (public, not a secret) for device sign-in here and on your phones."""
+    cid = (cid or "").strip()
+    if not _CLIENT_ID_RE.match(cid):
+        return {"success": False, "error": "That doesn't look like a GitHub Client ID (letters and digits, like Ov23li…)."}
+    from app.services.storage import set_setting
+    set_setting("github_client_id", cid)
+    return {"success": True, "github_client_id": cid}
 
 
 def _keychain():
@@ -212,6 +226,7 @@ def _account_matches(claim: Dict[str, Any], view: Dict[str, Any]) -> bool:
         want.add(gh.lower())
     have = {(claim.get("account") or "").lower(),
             (claim.get("github_login") or "").lower()}
+    have |= {str(e).lower() for e in (claim.get("emails") or []) if e}   # verified by GitHub (github_device)
     return bool(want & (have - {""}))
 
 

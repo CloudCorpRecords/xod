@@ -141,6 +141,12 @@ def public_plan(task_id: str) -> Dict[str, Any]:
     return out
 
 
+async def ainbox(task_id: str, state: Optional[str] = None) -> List[Dict[str, Any]]:
+    """inbox() off the event loop. Running steps poll it twice a second; opened on the loop, a busy database froze the
+    whole server for 0.6 s at a time (live, load test with 12 workers, 2026-11-04)."""
+    return await asyncio.to_thread(inbox, task_id, state)
+
+
 def inbox(task_id: str, state: Optional[str] = None) -> List[Dict[str, Any]]:
     c = _conn()
     q = "SELECT * FROM steer_inbox WHERE target_id = ?"
@@ -481,7 +487,7 @@ def _step_prompt(task: Dict[str, Any], items: List[Dict[str, Any]], instructions
 async def _apply_inbox(q: Any, task_id: str, task: Dict[str, Any]) -> Optional[str]:
     """Applies every queued steer, oldest first. Returns 'paused' or 'cancelled' when the run
     must stop here, else None."""
-    for s in inbox(task_id, state="queued"):
+    for s in await ainbox(task_id, state="queued"):
         kind, body, sid = s["kind"], s["body"] or "", s["id"]
         items, version, instr = load_plan(task_id)
         if kind == "cancel":
@@ -563,7 +569,7 @@ async def _run_parallel(q: Any, task_id: str, step: Dict[str, Any], instructions
         if run.done():
             break
         q._touch_progress(task_id)
-        if any(s["urgent"] for s in inbox(task_id, state="queued")):
+        if any(s["urgent"] for s in await ainbox(task_id, state="queued")):
             run.cancel()        # the coordinator stops its own workers on the way out
             try:
                 await run
@@ -607,7 +613,7 @@ async def _await_step_jobs(q: Any, task_id: str, since: float) -> Tuple[List[Dic
     while any(j.get("status") == "running" for j in running) and time.time() < deadline:
         await asyncio.sleep(1.0)
         q._touch_progress(task_id)
-        if any(s["urgent"] for s in inbox(task_id, state="queued")):
+        if any(s["urgent"] for s in await ainbox(task_id, state="queued")):
             return jobs, True
     return _step_jobs(task_id, since), False
 
@@ -665,7 +671,7 @@ async def _run_step(q: Any, task_id: str, prompt: str, steps: int) -> Tuple[str,
             await asyncio.wait({run}, timeout=STEER_POLL_SEC)
             if run.done():
                 break
-            if any(s["urgent"] for s in inbox(task_id, state="queued")):
+            if any(s["urgent"] for s in await ainbox(task_id, state="queued")):
                 run.cancel()
                 try:
                     await run
@@ -675,7 +681,7 @@ async def _run_step(q: Any, task_id: str, prompt: str, steps: int) -> Tuple[str,
         report, steps, _payloads = run.result()
         # The stream also stops early on the queue's own cancel flag; a step cut short that
         # way was interrupted, never completed.
-        if task_id in q._cancel_requested or any(s["urgent"] for s in inbox(task_id, state="queued")):
+        if task_id in q._cancel_requested or any(s["urgent"] for s in await ainbox(task_id, state="queued")):
             return report, steps, True
         return report, steps, False
     except asyncio.CancelledError:
@@ -728,6 +734,15 @@ def _self_report_problem(step_text: str, report: str) -> Optional[str]:
         if any(re.search(p, sentence.lower()) for p in _UNVERIFIED_RES):
             return f"its report says: {sentence.strip()[:200]}"
     return None
+
+
+def _overrule_hedge(report: str, observed: List[str]) -> str:
+    """The step's report minus the sentences that hedge on an outcome Xod observed, plus what it observed."""
+    import re
+    kept = [x for x in re.split(r"(?<=[.!?])\s+|\n+", report or "")
+            if x.strip() and not any(re.search(p, x.replace("\u2019", "'").lower()) for p in _UNVERIFIED_RES)]
+    seen = "; ".join(o.strip() for o in observed[:3]) or "every job this step started finished cleanly"
+    return (" ".join(kept).strip() + "\n\n" if kept else "") + f"Checked by Xod: {seen}."
 
 
 def _flag_section(items: List[Dict[str, Any]]) -> str:
@@ -875,8 +890,10 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             own = None if step.get("parallel") else _self_report_problem(step["text"], report)
             if own and jobs and not job_problems:
                 # The agent could not see the end; the orchestrator did: every job it started
-                # for this step finished cleanly. The observation outranks the hedge.
+                # for this step finished cleanly. The observation outranks the hedge, and the result says so
+                # instead of telling the person it couldn't confirm (live L3, count k).
                 own = None
+                report = _overrule_hedge(report, [e for e in job_evidence if "observed" in e])
             problems = problems + job_problems
             if own:
                 problems = problems + [own]

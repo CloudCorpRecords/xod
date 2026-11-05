@@ -757,6 +757,16 @@ class BrowserSandboxService:
         self._msg_id += 1
         return self._msg_id
 
+    @staticmethod
+    async def _devtools(url: str, timeout: float = 2.0, method: Optional[str] = None, data: Optional[bytes] = None) -> str:
+        """One request to Chrome's debug port, off the event loop. A busy Chrome can take seconds to answer, and
+        asked inline that froze the whole server (live, final count h2: 3.27 s with three research tasks running)."""
+        def go() -> str:
+            req = urllib.request.Request(url, data=data, method=method) if (method or data is not None) else url
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read().decode()
+        return await asyncio.to_thread(go)
+
     def _probe_devtools(self, timeout: float) -> str:
         """Asks the debug port once. Returns "ready" (pages listed), "empty"
         (answered, no pages), "refused" (nothing listening) or "slow" (no
@@ -778,7 +788,7 @@ class BrowserSandboxService:
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             await asyncio.sleep(0.25)
-            if self._probe_devtools(0.5) == "ready":
+            if await asyncio.to_thread(self._probe_devtools, 0.5) == "ready":
                 return True
         return False
 
@@ -788,7 +798,7 @@ class BrowserSandboxService:
         # deciding it's gone, because what follows ends it, and with it a half-filled form waiting for the person's OK.
         state = "slow"
         for wait in (1.0, 2.5, 4.0):
-            state = self._probe_devtools(wait)
+            state = await asyncio.to_thread(self._probe_devtools, wait)
             if state == "ready":
                 self.last_used = time.time()
                 return True
@@ -799,7 +809,7 @@ class BrowserSandboxService:
             # instances share this profile and port, so killing on a guess can
             # end the other instance's live browser mid-task. Give a busy
             # Chrome one long final chance before treating it as dead.
-            if self._probe_devtools(10.0) == "ready":
+            if await asyncio.to_thread(self._probe_devtools, 10.0) == "ready":
                 self.last_used = time.time()
                 return True
 
@@ -877,8 +887,7 @@ class BrowserSandboxService:
         raise RuntimeError("Background Chrome failed to start or open remote debugging port.")
 
     async def _get_active_tab_ws_url(self) -> str:
-        with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=2.0) as resp:
-            tabs = json.loads(resp.read().decode())
+        tabs = json.loads(await self._devtools(f"http://127.0.0.1:{DEBUG_PORT}/json", 2.0))
 
         if self.active_tab_id:
             for t in tabs:
@@ -897,12 +906,10 @@ class BrowserSandboxService:
 
         # If no active page found, spawn a fresh blank tab via CDP HTTP API
         try:
-            req = urllib.request.Request(f"http://127.0.0.1:{DEBUG_PORT}/json/new", data=b"", method="PUT")
-            with urllib.request.urlopen(req, timeout=2.0) as resp:
-                new_tab = json.loads(resp.read().decode())
-                if new_tab.get("webSocketDebuggerUrl"):
-                    self.active_tab_id = new_tab.get("id")
-                    return new_tab["webSocketDebuggerUrl"]
+            new_tab = json.loads(await self._devtools(f"http://127.0.0.1:{DEBUG_PORT}/json/new", 2.0, "PUT", b""))
+            if new_tab.get("webSocketDebuggerUrl"):
+                self.active_tab_id = new_tab.get("id")
+                return new_tab["webSocketDebuggerUrl"]
         except Exception:
             pass
 
@@ -3402,8 +3409,7 @@ class BrowserSandboxService:
 
         try:
             if action == "list":
-                with urllib.request.urlopen(endpoint, timeout=2.0) as resp:
-                    tabs = json.loads(resp.read().decode())
+                tabs = json.loads(await self._devtools(endpoint, 2.0))
                 formatted = [
                     {
                         "id": t.get("id"),
@@ -3418,9 +3424,7 @@ class BrowserSandboxService:
 
             elif action == "new":
                 create_url = f"{endpoint}/new?{urllib.parse.quote(url or 'about:blank')}"
-                req = urllib.request.Request(create_url, method="PUT")
-                with urllib.request.urlopen(req, timeout=3.0) as resp:
-                    new_tab = json.loads(resp.read().decode())
+                new_tab = json.loads(await self._devtools(create_url, 3.0, "PUT"))
                 if new_tab.get("id"):
                     self.active_tab_id = new_tab.get("id")
                     self.current_url = url or "about:blank"
@@ -3429,12 +3433,10 @@ class BrowserSandboxService:
 
             elif action == "switch" and target_id:
                 activate_url = f"{endpoint}/activate/{target_id}"
-                with urllib.request.urlopen(activate_url, timeout=2.0) as resp:
-                    res = resp.read().decode()
+                res = await self._devtools(activate_url, 2.0)
                 self.active_tab_id = target_id
                 try:
-                    with urllib.request.urlopen(endpoint, timeout=2.0) as resp:
-                        tabs = json.loads(resp.read().decode())
+                    tabs = json.loads(await self._devtools(endpoint, 2.0))
                     for t in tabs:
                         if t.get("id") == target_id:
                             self.current_url = t.get("url", self.current_url)
@@ -3446,8 +3448,7 @@ class BrowserSandboxService:
 
             elif action == "close" and target_id:
                 close_url = f"{endpoint}/close/{target_id}"
-                with urllib.request.urlopen(close_url, timeout=2.0) as resp:
-                    res = resp.read().decode()
+                res = await self._devtools(close_url, 2.0)
                 if self.active_tab_id == target_id:
                     self.active_tab_id = None
                 return {"success": True, "action": "close", "target_id": target_id, "result": res}

@@ -477,6 +477,14 @@ def control_refused(mail_address: str) -> bool:
     return bool(rec and rec.get("status") == "revoked")
 
 
+def _github_client_id() -> Optional[str]:
+    try:
+        from app.services import sso_control
+        return sso_control.github_client_id() or None
+    except Exception:
+        return None
+
+
 def state(path=None) -> Dict[str, Any]:
     """Everything the Phones panel's family section (and the phone's own
     family screen) renders: the account up top, pending asks with their
@@ -507,6 +515,8 @@ def state(path=None) -> Dict[str, Any]:
             # word for it (EnrollmentGate in the companion).
             "registry": _load_raw(path),
             "provider": provider, "registry_state": view.get("state"),
+            # Xod's GitHub app (public client id) so a phone can "Sign in with GitHub" without one built in.
+            "github_client_id": _github_client_id(),
             "interim_unsigned": bool(view.get("interim_unsigned")),
             "my_device_id": fr.my_device_id() or None,
             "my_trusted": bool(fr.my_device_id() and known.get(fr.my_device_id())),
