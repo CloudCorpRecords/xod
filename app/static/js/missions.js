@@ -62,16 +62,44 @@
     return `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-white/10 text-zinc-400">${esc(s.status)}</span>`;
   };
 
+
+  // Phase 0 (simplicity redesign): a failed mission shows ONE plain sentence;
+  // the full technical failure text stays verbatim under a Details disclosure.
+  // Missions have no retry endpoint, so no button is offered here (tasks do
+  // have one, in tasks.js). Keep internal jargon out of the sentence.
+  const plainFailureSentence = (raw) => {
+    const s = String(raw || "");
+    if (/capability contract|declared capability|dispatched|contract equips/i.test(s))
+      return "Stopped. A tool Xod needed was missing from the plan.";
+    if (/not installed|no module named|command not found|ENOENT|no such file or directory/i.test(s))
+      return "Stopped. A tool Xod needed isn't installed on this computer.";
+    if (/timed out|timeout|deadline/i.test(s))
+      return "Stopped. It took too long.";
+    if (/usage limit|rate limit|quota|out of usage/i.test(s))
+      return "Stopped. Xod hit a usage limit.";
+    if (/permission|not allowed|denied/i.test(s))
+      return "Stopped. Xod wasn't allowed to do one of the steps.";
+    if (/network|connection|offline|unreachable/i.test(s))
+      return "Stopped. Xod couldn't reach something it needed.";
+    return "Stopped. Xod could not confirm the cause.";
+  };
+
   function missionRow(m) {
     const p = m.progress || { subtasks: 0, done: 0, verified: 0 };
     const when = ago(m.finished_at || m.updated_at || m.created_at);
-    return `<button onclick="selectMission('${m.id}')" class="w-full text-left bg-surface-900 border ${selectedId === m.id ? "border-brand-500" : "border-surface-700"} rounded-lg px-3 py-2 hover:border-brand-500">
+    const row = `<button onclick="selectMission('${m.id}')" class="w-full text-left bg-surface-900 border ${selectedId === m.id ? "border-brand-500" : "border-surface-700"} rounded-lg px-3 py-2 hover:border-brand-500">
       <div class="flex items-center justify-between gap-2">
         <span class="text-[13px] text-white font-medium truncate">${esc(m.goal)}</span>${stateChip(m.state)}
       </div>
       <div class="text-[11px] text-zinc-500 mt-0.5">${p.subtasks ? `${p.done}/${p.subtasks} steps done · ${p.verified} verified · ` : ""}${esc(when)}</div>
-      ${m.failure_reason ? `<div class="text-[11px] text-red-300 mt-0.5">${esc(m.failure_reason)}</div>` : ""}
     </button>`;
+    if (!m.failure_reason) return row;
+    return `<div>
+      ${row}
+      <p class="text-[12px] text-zinc-300 mt-1">${esc(plainFailureSentence(m.failure_reason))}</p>
+      <details class="mt-0.5"><summary class="text-[11px] text-zinc-500 cursor-pointer">Details</summary>
+        <div class="text-[11px] text-zinc-400 mt-0.5 whitespace-pre-wrap">${esc(m.failure_reason)}</div></details>
+    </div>`;
   }
 
   function detailHtml(m) {

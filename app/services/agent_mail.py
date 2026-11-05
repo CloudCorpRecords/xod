@@ -155,10 +155,10 @@ def status() -> Dict[str, Any]:
     if ident:
         out["safety_number"] = mc.safety_number(ident.sign_pub, ident.box_pub)
     with _db() as c:
-        out["unread"] = c.execute("""SELECT COUNT(*) FROM mail_messages m LEFT JOIN mail_contacts k ON k.address=m.peer
-            WHERE m.direction='in' AND m.read=0 AND m.status!='blocked' AND COALESCE(k.trust,'unknown')!='unknown'""").fetchone()[0]
-        out["requests"] = c.execute("""SELECT COUNT(DISTINCT m.peer) FROM mail_messages m LEFT JOIN mail_contacts k ON k.address=m.peer
-            WHERE m.direction='in' AND COALESCE(k.trust,'unknown')='unknown' AND m.status!='blocked'""").fetchone()[0]
+        out["unread"] = c.execute(f"""SELECT COUNT(*) FROM mail_messages m LEFT JOIN mail_contacts k ON k.address=m.peer
+            WHERE m.direction='in' AND m.read=0 AND m.status!='blocked' AND COALESCE(k.trust,'unknown')!='unknown' AND {_NOISE_SQL}""").fetchone()[0]
+        out["requests"] = c.execute(f"""SELECT COUNT(DISTINCT m.peer) FROM mail_messages m LEFT JOIN mail_contacts k ON k.address=m.peer
+            WHERE m.direction='in' AND COALESCE(k.trust,'unknown')='unknown' AND m.status!='blocked' AND {_NOISE_SQL}""").fetchone()[0]
         out["drafts"] = c.execute("SELECT COUNT(*) FROM mail_messages WHERE status='draft'").fetchone()[0]
         out["held"] = c.execute("SELECT COUNT(*) FROM mail_messages WHERE status='held'").fetchone()[0]
         out["outbox"] = c.execute("SELECT COUNT(*) FROM mail_outbox").fetchone()[0]
@@ -607,6 +607,33 @@ async def _receive(ident: mc.Identity, my_address: str, envelope: Dict[str, Any]
             "status": status, "trust": trust, "kind": kind}
 
 
+
+# ---------------------------------------------------------------- display filtering (Phase 0, simplicity redesign)
+
+def is_ping_or_test(peer: str = "", subject: str = "", text: str = "") -> bool:
+    """Heartbeat/test traffic, not mail: a device "hello" probe (subject "hello" is the
+    convention _receive uses to update the phone's last-seen/capabilities via
+    phone_mcp.record_hello), a bare hello/ping with no subject, or a message from a
+    takeover-check-* test agent. These messages are still stored, still update device
+    status, and are still returned by thread()/message(); they are only kept out of
+    the visible inbox/requests lists and their counts (threads() and status())."""
+    local = (peer or "").split("@")[0].strip().lower()
+    if local.startswith("takeover-check-"):
+        return True
+    subj = (subject or "").strip().lower()
+    if subj == "hello":
+        return True
+    if not subj and (text or "").strip().lower() in ("hello", "hello.", "ping"):
+        return True
+    return False
+
+
+# SQL twin of the subject/text half of is_ping_or_test (peer check is a LIKE on the
+# address, which starts with the local part). Keep the two in sync.
+_NOISE_SQL = """LOWER(TRIM(COALESCE(m.subject,''))) != 'hello'
+    AND m.peer NOT LIKE 'takeover-check-%'
+    AND NOT (COALESCE(m.subject,'') = '' AND LOWER(TRIM(COALESCE(m.text,''))) IN ('hello','hello.','ping'))"""
+
 # ---------------------------------------------------------------- reading
 
 def threads(box: str = "inbox") -> List[Dict[str, Any]]:
@@ -627,10 +654,21 @@ def threads(box: str = "inbox") -> List[Dict[str, Any]]:
             GROUP BY m.thread ORDER BY last_at DESC LIMIT 200""").fetchall()
         out = []
         for r in rows:
-            last = c.execute("SELECT * FROM mail_messages WHERE thread=? AND status IN ('new','sent','failed') ORDER BY created_at DESC LIMIT 1",
-                             (r["thread"],)).fetchone()
+            msgs = c.execute("SELECT * FROM mail_messages WHERE thread=? AND status IN ('new','sent','failed') ORDER BY created_at DESC",
+                             (r["thread"],)).fetchall()
+            # Phase 0: heartbeat/test pings never reach the visible list (they are
+            # stored, and already updated device status when they arrived). A thread
+            # with nothing but pings disappears; in a mixed thread they are skipped
+            # for the preview and the unread count.
+            visible = [m for m in msgs if not is_ping_or_test(m["peer"], m["subject"], m["text"])]
+            if msgs and not visible:
+                continue
+            last = visible[0] if visible else msgs[0]
             peers = {p for (p,) in c.execute("SELECT DISTINCT peer FROM mail_messages WHERE thread=?", (r["thread"],))}
-            out.append({**dict(r), "last": _row(last), "peers": sorted(peers)})
+            peers = {p for p in peers if not p.split("@")[0].lower().startswith("takeover-check-")} or peers
+            unread = sum(1 for m in visible if m["direction"] == "in" and not m["read"])
+            out.append({**dict(r), "last_at": last["created_at"], "count": len(visible) or len(msgs),
+                        "unread": unread, "last": _row(last), "peers": sorted(peers)})
         return out
 
 

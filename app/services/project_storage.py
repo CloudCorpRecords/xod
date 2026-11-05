@@ -13,6 +13,36 @@ logger = logging.getLogger("project_storage")
 
 PROJECTS_DIR = DATA_DIR / "projects"
 
+# ---------------------------------------------------------------- scratch / playground classification
+# Phase 0 of the simplicity redesign: real projects and test work never mix in the sidebar.
+# A project is scratch when its stored metadata says so — an "origin" marker written at
+# creation time (create_project(origin=...)) or a scratch/test tag. Projects created before
+# the marker existed carry neither, so a small, conservative name check below catches the
+# known proving-run debris ("Proof file", "File creation unavailable", "Word Frequency
+# Tests", ...). Classification only decides which sidebar bucket renders the project;
+# nothing is deleted or moved on disk, and a user can rename a project out of it.
+SCRATCH_ORIGINS = {"scratch", "test", "proving", "eval", "smoke"}
+SCRATCH_TAGS = {"scratch", "test", "proving", "eval", "smoke-test"}
+
+_SCRATCH_NAME_RES = [
+    re.compile(r"^proof([\s_-]|$)"),                    # Proof file, Proof File Saver/Writer, proof-…
+    re.compile(r"([\s_-]proof)$"),                      # Update proof
+    re.compile(r"file creation unavailable"),
+    re.compile(r"word frequency tests?\b"),
+    re.compile(r"^(scratch|proving|smoke)([\s_-]|$)"),
+    re.compile(r"([\s_-](test|tests|scratch))$"),
+]
+
+
+def is_scratch_project(name: str = "", tags=None, origin: str = "") -> bool:
+    """True when a project is machine-made test/proving work, not the user's real work."""
+    if (origin or "").strip().lower() in SCRATCH_ORIGINS:
+        return True
+    if {str(t).strip().lower() for t in (tags or [])} & SCRATCH_TAGS:
+        return True
+    n = (name or "").strip().lower()
+    return any(rx.search(n) for rx in _SCRATCH_NAME_RES)
+
 def format_relative_time(timestamp: float) -> str:
     """Formats unix timestamp into concise relative time like '4h', '10d', '12m'."""
     if not timestamp:
@@ -132,6 +162,7 @@ class ProjectStorageService:
                 "color": p["color"],
                 "icon": p["icon"],
                 "tags": p["tags"],
+                "origin": "user",
                 "created_at": now - (idx * 86400 * 2),
                 "updated_at": now - (idx * 3600 * 4)
             }
@@ -193,6 +224,7 @@ class ProjectStorageService:
             color = meta.get("color") or "#6366f1"
             icon = meta.get("icon") or "folder"
             tags = meta.get("tags") or []
+            origin = meta.get("origin") or "user"
             created_at = meta.get("created_at") or p_path.stat().st_ctime
             updated_at = meta.get("updated_at") or p_path.stat().st_mtime
 
@@ -225,6 +257,8 @@ class ProjectStorageService:
                 "color": color,
                 "icon": icon,
                 "tags": tags,
+                "origin": origin,
+                "scratch": is_scratch_project(name, tags, origin),
                 "path": str(p_path),
                 "is_linked": False,
                 "created_at": created_at,
@@ -276,6 +310,7 @@ class ProjectStorageService:
                 desc = meta.get("description") or row["description"] or f"Linked computer folder at {l_path}."
                 color = meta.get("color") or row["color"] or "#10b981"
                 icon = meta.get("icon") or row["icon"] or "folder"
+                origin = meta.get("origin") or "user"
 
                 # Inspect files in linked folder
                 files_list = []
@@ -323,6 +358,8 @@ class ProjectStorageService:
                     "color": color,
                     "icon": icon,
                     "tags": parsed_tags,
+                    "origin": origin,
+                    "scratch": is_scratch_project(name, parsed_tags, origin),
                     "path": str(l_path),
                     "is_linked": True,
                     "created_at": row["created_at"],
@@ -369,7 +406,7 @@ class ProjectStorageService:
                 return p
         return None
 
-    def create_project(self, name: str, slug: Optional[str] = None, description: str = "", color: str = "#6366f1", icon: str = "folder", tags: Optional[List[str]] = None, custom_path: Optional[str] = None) -> Dict[str, Any]:
+    def create_project(self, name: str, slug: Optional[str] = None, description: str = "", color: str = "#6366f1", icon: str = "folder", tags: Optional[List[str]] = None, custom_path: Optional[str] = None, origin: str = "user") -> Dict[str, Any]:
         """Creates a physical project folder on the computer's hard drive."""
         clean_name = name.strip()
         if not slug:
@@ -402,6 +439,7 @@ class ProjectStorageService:
                 "color": color or "#6366f1",
                 "icon": icon or "folder",
                 "tags": tags or ["custom-computer-folder"],
+                "origin": origin or "user",
                 "path": str(p_dir),
                 "is_linked": True,
                 "created_at": now,
@@ -442,6 +480,7 @@ class ProjectStorageService:
                 "color": color or "#6366f1",
                 "icon": icon or "folder",
                 "tags": tags or ["local-workspace"],
+                "origin": origin or "user",
                 "path": str(p_dir),
                 "is_linked": False,
                 "created_at": now,

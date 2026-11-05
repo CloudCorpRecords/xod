@@ -3713,6 +3713,7 @@ class CreateProjectRequest(BaseModel):
     icon: Optional[str] = "folder"
     tags: Optional[List[str]] = None
     custom_path: Optional[str] = None
+    origin: Optional[str] = None          # "user" for real work; scratch/test/proving for Playground projects
 
 @app.get("/api/projects")
 async def list_projects_endpoint():
@@ -3730,7 +3731,8 @@ async def create_project_endpoint(req: CreateProjectRequest):
         color=req.color or "#6366f1",
         icon=req.icon or "folder",
         tags=req.tags,
-        custom_path=req.custom_path
+        custom_path=req.custom_path,
+        origin=req.origin or "user"
     )
 
 class SaveFileRequest(BaseModel):

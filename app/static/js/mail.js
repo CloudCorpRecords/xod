@@ -15,6 +15,60 @@
   const quiet = `${btn} font-medium text-zinc-300 hover:text-white hover:bg-surface-700`;
   const field = "w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none focus:border-brand-500";
 
+
+  // Phase 0 (simplicity redesign): senders show friendly names, never raw
+  // tailnet addresses. Sources, in order: the nickname saved on the contact,
+  // the family registry's name for that machine, then plain rules for the
+  // user's own devices (MacBook Pro, Razer, Your iPhone, Your phone), then
+  // the name part of the address on its own. The raw address stays available
+  // as a hover title and in the Contacts view, where it is the detail.
+  let contactNames = {};
+  let familyNames = {};
+  const humanDeviceName = (name) => {
+    const slug = String(name || "").toLowerCase();
+    if (/macbook/.test(slug)) return "MacBook Pro";
+    if (/rene-home-main|razer|blade/.test(slug)) return "Razer";
+    if (/iphone/.test(slug)) return "Your iPhone";
+    if (/pocophone|s25|android|phone/.test(slug)) return "Your phone";
+    return String(name || "").replace(/[-_]+/g, " ").trim();
+  };
+  function friendlySender(address) {
+    const raw = String(address ?? "");
+    const addr = raw.trim().toLowerCase();
+    if (!addr) return raw;
+    if (contactNames[addr]) return contactNames[addr];
+    const [local = "", domainRaw = ""] = addr.split("@");
+    const host = domainRaw.split(":")[0];
+    const hostLabel = host.split(".")[0];
+    if (familyNames[host]) return humanDeviceName(familyNames[host]);
+    if (familyNames[hostLabel]) return humanDeviceName(familyNames[hostLabel]);
+    if (/macbook/.test(hostLabel)) return "MacBook Pro";
+    if (/rene-home-main|razer|blade/.test(hostLabel)) return "Razer";
+    if (/iphone/.test(hostLabel) || local === "iphone") return "Your iPhone";
+    if (local === "phone" || /pocophone|s25|android/.test(hostLabel)) return "Your phone";
+    if (local.startsWith("takeover-check-")) return "A test agent";
+    if (local) return local.replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    return raw;
+  }
+  const friendlyList = (addrs) => String(addrs ?? "").split(",").map((a) => friendlySender(a.trim())).join(", ");
+  async function loadNameMaps() {
+    try {
+      const { contacts } = await api("/api/mail/contacts");
+      contactNames = {};
+      for (const c of contacts || []) if (c.nickname) contactNames[String(c.address).toLowerCase()] = c.nickname;
+    } catch (e) {}
+    try {
+      const fam = await api("/api/family");
+      familyNames = {};
+      for (const m of fam.members || fam.devices || []) {
+        if (!m || !m.name) continue;
+        const ep = String(m.endpoint || "").replace(/^https?:\/\//, "").split("/")[0];
+        if (ep) familyNames[ep.toLowerCase()] = m.name;
+        familyNames[String(m.name).toLowerCase()] = m.name;
+      }
+    } catch (e) {}
+  }
+
   let view = { box: "inbox", thread: null, compose: null };
   let st = null;
 
@@ -63,9 +117,10 @@
     return `
       <div class="task-card space-y-1.5">
         <div class="flex items-center justify-between gap-2">
-          <p class="text-[13px] text-white font-mono truncate" title="Your agent address">${esc(st.address)}</p>
+          <p class="text-[13px] text-white truncate" title="Your agent address">${esc(friendlySender(st.address))}</p>
           <button data-ml="copy" class="${quiet} px-2 py-1">Copy</button>
         </div>
+        <p class="text-[11px] text-zinc-500 font-mono truncate" title="Your full agent address, for sharing">${esc(st.address)}</p>
         <details><summary class="text-[11px] text-zinc-500 cursor-pointer">Safety number</summary>
           <p class="text-[11px] text-zinc-400 mt-1">Compare this with someone (in person or on a call) to be sure your messages reach the real you.</p>
           <p class="font-mono text-[12px] text-zinc-200 mt-1">${esc(st.safety_number)}</p></details>
@@ -90,7 +145,7 @@
     return `
       <div class="task-card space-y-2">
         <p class="task-title">${c.thread ? "Reply" : "New message"}</p>
-        ${c.thread ? `<p class="text-[12px] text-zinc-400">To ${esc(c.to)}</p>` : `<input id="mlTo" class="${field}" placeholder="Agent addresses, comma-separated (dana@post.example.com)" value="${esc(c.to || "")}" spellcheck="false">`}
+        ${c.thread ? `<p class="text-[12px] text-zinc-400">To <span title="${esc(c.to)}">${esc(friendlyList(c.to))}</span></p>` : `<input id="mlTo" class="${field}" placeholder="Agent addresses, comma-separated (dana@post.example.com)" value="${esc(c.to || "")}" spellcheck="false">`}
         ${c.thread ? "" : `<input id="mlSubject" class="${field}" placeholder="Subject (optional)">`}
         <textarea id="mlText" rows="5" class="${field}" placeholder="Write your message…"></textarea>
         ${c.thread ? "" : `<label class="text-[12px] text-zinc-400 flex items-center gap-2"><input id="mlTask" type="checkbox" class="accent-amber-400"> Ask their agent to do this as a task (they approve it first)</label>`}
@@ -105,11 +160,11 @@
       if (!contacts.length) return `<p class="text-[12px] text-zinc-500">No contacts yet. Anyone you write to, or accept from Requests, shows up here.</p>`;
       return contacts.map((c) => `
         <div class="task-card space-y-1.5" data-ml-contact="${esc(c.address)}">
-          <div class="flex items-center justify-between gap-2"><p class="text-[13px] text-white font-mono truncate">${esc(c.nickname || c.address)}</p>
+          <div class="flex items-center justify-between gap-2"><p class="text-[13px] text-white truncate" title="${esc(c.address)}">${esc(c.nickname || friendlySender(c.address))}</p>
             <select data-ml="trust" class="bg-surface-900 border border-surface-700 rounded-lg px-2 py-1 text-[11px] text-white">
               ${[["known", "Contact"], ["mine", "My own agent"], ["unknown", "Not a contact"], ["blocked", "Blocked"]].map(([v, l]) => `<option value="${v}" ${c.trust === v ? "selected" : ""}>${l}</option>`).join("")}
             </select></div>
-          ${c.nickname ? `<p class="text-[11px] text-zinc-500 font-mono">${esc(c.address)}</p>` : ""}
+          <p class="text-[11px] text-zinc-500 font-mono">${esc(c.address)}</p>
           <p class="text-[11px] text-zinc-500">Safety number <span class="font-mono text-zinc-300">${esc(c.safety)}</span>${c.verified ? ` <span class="text-emerald-300">· checked</span>` : ""}</p>
           ${(c.trust === "known" || c.trust === "mine") ? `<label class="text-[11px] text-zinc-400 flex items-center gap-2"><input type="checkbox" data-ml="autoreply" ${c.auto_reply ? "checked" : ""} class="accent-brand-400"> Auto-reply to their messages</label>` : ""}
           <div class="flex gap-2">${c.verified ? "" : `<button data-ml="verify" class="${quiet} px-2 py-1">I compared it with them</button>`}
@@ -121,7 +176,7 @@
       if (!threads.length) return `<p class="text-[12px] text-zinc-500">Nothing waiting. When Xod writes to another agent for you, it waits here for your OK.</p>`;
       return threads.map((d) => `
         <div class="task-card space-y-2" data-ml-draft="${esc(d.id)}">
-          <p class="text-[12px] text-zinc-400">To <span class="font-mono text-zinc-200">${esc((d.recipients || [d.peer]).join(", "))}</span>${d.kind === "task_request" ? ` · <span class="text-brand-300">asks them to do a task</span>` : ""} · ${d.origin === "task" ? "the result of a task" : "written by Xod"}</p>
+          <p class="text-[12px] text-zinc-400">To <span class="text-zinc-200" title="${esc((d.recipients || [d.peer]).join(", "))}">${esc((d.recipients || [d.peer]).map((a) => friendlySender(a)).join(", "))}</span>${d.kind === "task_request" ? ` · <span class="text-brand-300">asks them to do a task</span>` : ""} · ${d.origin === "task" ? "the result of a task" : "written by Xod"}</p>
           ${d.subject ? `<p class="text-[13px] text-white">${esc(d.subject)}</p>` : ""}
           <textarea data-ml-draft-text rows="5" class="${field} text-[12px]">${esc(d.text)}</textarea>
           <div class="flex gap-2"><button data-ml="approve" class="${primary}">Approve and send</button><button data-ml="discard" class="${quiet}">Discard</button></div>
@@ -131,7 +186,7 @@
       return threads.map((m) => `
         <div class="task-card space-y-1.5 border-amber-500/30" data-ml-held="${esc(m.peer)}">
           <p class="text-[12px] text-amber-300">${esc(m.problem)}</p>
-          <p class="text-[12px] text-zinc-400">Claims to be from <span class="font-mono">${esc(m.peer)}</span> · ${esc(when(m.created_at))}</p>
+          <p class="text-[12px] text-zinc-400">Claims to be from <span title="${esc(m.peer)}">${esc(friendlySender(m.peer))}</span> · ${esc(when(m.created_at))}</p>
           <p class="text-[12px] text-zinc-300 whitespace-pre-wrap">${esc((m.text || "").slice(0, 400))}</p>
           ${/keys changed/i.test(m.problem || "") ? `<button data-ml="accept-keys" class="${quiet} px-2 py-1">I checked their new safety number: trust it</button>` : ""}
         </div>`).join("") || `<p class="text-[12px] text-zinc-500">Nothing held.</p>`;
@@ -145,7 +200,7 @@
       return `
         <button data-ml-thread="${esc(t.thread)}" class="w-full text-left task-card space-y-1 hover:border-white/20">
           <div class="flex items-center justify-between gap-2">
-            <p class="text-[13px] ${t.unread ? "text-white font-semibold" : "text-zinc-200"} truncate font-mono">${esc(who)}</p>
+            <p class="text-[13px] ${t.unread ? "text-white font-semibold" : "text-zinc-200"} truncate" title="${esc(who)}">${esc(who.split(", ").map((a) => friendlySender(a)).join(", "))}</p>
             <span class="text-[11px] text-zinc-500 shrink-0">${esc(when(t.last_at))}</span></div>
           <p class="text-[12px] text-zinc-400 truncate">${m.kind === "task_request" ? `<span class="text-brand-300">Task request · </span>` : ""}${esc(m.subject || m.text)}</p>
         </button>`;
@@ -159,12 +214,12 @@
     const isRequest = view.box === "requests";
     return `
       <button data-ml="back" class="text-[12px] text-zinc-400 hover:text-white">← Back</button>
-      <p class="text-[13px] text-white font-mono">${esc(peer)}</p>
+      <p class="text-[13px] text-white" title="${esc(peer)}">${esc(friendlyList(peer))}</p>
       ${isRequest ? `<div class="task-card space-y-2 border-amber-500/30"><p class="text-[12px] text-zinc-300">This agent isn't in your contacts. Accept to reply and see their future messages in your Inbox.</p>
         <div class="flex gap-2"><button data-ml="accept" data-peer="${esc(peer)}" class="${primary}">Accept</button><button data-ml="block" data-peer="${esc(peer)}" class="${quiet}">Block</button></div></div>` : ""}
       <div class="space-y-2">${messages.filter((m) => m.status !== "draft").map((m) => `
         <div class="rounded-xl px-3 py-2 ${m.direction === "out" ? "bg-brand-500/10 border border-brand-500/20 ml-6" : "bg-surface-900 border border-white/[0.06] mr-6"}">
-          <p class="text-[11px] text-zinc-500">${m.direction === "out" ? "You" : esc(m.peer)} · ${esc(when(m.created_at))}${m.direction === "in" && m.verified ? ` · <span class="text-emerald-300" title="Signed with their key and opened only by yours">verified</span>` : ""}${m.status === "failed" ? ` · <span class="text-red-300">not sent: ${esc(m.problem || "")}</span>` : ""}</p>
+          <p class="text-[11px] text-zinc-500">${m.direction === "out" ? "You" : `<span title="${esc(m.peer)}">${esc(friendlySender(m.peer))}</span>`} · ${esc(when(m.created_at))}${m.direction === "in" && m.verified ? ` · <span class="text-emerald-300" title="Signed with their key and opened only by yours">verified</span>` : ""}${m.status === "failed" ? ` · <span class="text-red-300">not sent: ${esc(m.problem || "")}</span>` : ""}</p>
           ${m.subject ? `<p class="text-[13px] text-white mt-0.5">${esc(m.subject)}</p>` : ""}
           <p class="text-[13px] text-zinc-200 whitespace-pre-wrap mt-0.5">${esc(m.text)}</p>
           ${m.kind === "task_request" && m.direction === "in" && !isRequest ? `<div class="mt-2 flex items-center gap-2">${m.task_id ? `<span class="text-[12px] text-zinc-400">Running as a task (see Tasks). The result comes back as a reply for your OK.</span>`
@@ -180,6 +235,7 @@
     if (!body) return;
     await refreshBadge();
     if (!st.set_up) { body.innerHTML = setupView(); wireSetup(); return; }
+    await loadNameMaps();
     let main;
     if (view.compose) main = composeView(view.compose);
     else if (view.thread) main = await threadView(view.thread);

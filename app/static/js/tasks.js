@@ -185,7 +185,52 @@
     </article>`;
   }
 
+
+  // Phase 0 (simplicity redesign): a failure headline is ONE plain sentence.
+  // The full technical text is never rewritten or dropped; it lives verbatim
+  // under the card's Details disclosure. Keep jargon ("capability contract",
+  // "dispatch", tool lists) out of the sentence: map what we recognise, and
+  // fall back to a calm generic line rather than quoting the raw error.
+  function plainFailureSentence(task) {
+    const raw = `${task.result || ""} ${task.now || ""}`;
+    if (/capability contract|declared capability|dispatched|contract equips/i.test(raw))
+      return "A tool Xod needed was missing from the plan.";
+    if (/not installed|no module named|command not found|ENOENT|no such file or directory/i.test(raw))
+      return "A tool Xod needed isn't installed on this computer.";
+    if (/timed out|timeout|deadline/i.test(raw))
+      return "It took too long, so Xod stopped.";
+    if (/usage limit|rate limit|quota|out of usage/i.test(raw))
+      return "Xod hit a usage limit and had to stop.";
+    if (/permission|not allowed|denied/i.test(raw))
+      return "Xod wasn't allowed to do one of the steps.";
+    if (/network|connection|offline|unreachable/i.test(raw))
+      return "Xod couldn't reach something it needed.";
+    return "Xod couldn't finish this one.";
+  }
+
+  function failedCard(t) {
+    return `<article class="task-card is-failed">
+      <div class="flex items-center justify-between gap-3">
+        <span class="task-title truncate">${esc(t.title)}</span>
+        <span class="task-state">Didn't finish · ${ago(t.finished_at || t.updated_at)}</span>
+      </div>
+      <p class="text-[13px] text-zinc-200 mt-1.5">${esc(plainFailureSentence(t))}</p>
+      <details class="mt-2" data-id="${t.id}">
+        <summary class="text-[12px] text-zinc-400 cursor-pointer">Details</summary>
+        <div class="mt-2 space-y-3">
+          ${t.result ? `<div class="task-md prose-custom text-[13px]">${md(t.result)}</div>` : ""}
+          ${(t.history || []).length ? `<details><summary class="text-[12px] text-zinc-400 cursor-pointer">How it went (${t.history.length} notes)</summary>${progressList(t, 40)}</details>` : ""}
+        </div>
+      </details>
+      <div class="flex flex-wrap gap-2 mt-3">
+        <button class="task-btn task-btn-primary" onclick="taskAction('${t.id}','retry')">Try again</button>
+        <button class="task-btn task-btn-quiet" onclick="taskAction('${t.id}','delete')">Remove</button>
+      </div>
+    </article>`;
+  }
+
   function finishedCard(t) {
+    if (t.status === "failed") return failedCard(t);
     const label = t.status === "done" ? "Done" : t.status === "failed" ? "Didn't finish" : "Cancelled";
     return `<details class="task-card is-${t.status}" data-id="${t.id}">
       <summary class="flex items-center justify-between gap-3 cursor-pointer">
