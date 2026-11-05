@@ -124,6 +124,26 @@ Every one has a regression test built from the model's real words where there we
 - **Tests:** headless suite 14/14 ×3, browser idle 13/13, Electron mode tests 5/5, live L1–L3 on a lightweight
   server 20/20.
 
+## Task sync with Tree: the five hooks (update note, 2026-11-04 09:41 PT)
+
+I read the note: NOTE-FOR-CLAUDE-TASK-SYNC-2026-11-04.md, also appended to the spec. No sync protocol, registry
+service or Tree integration was built, and Xod runs fully on its own. One hook cost almost nothing and was added
+(3). The others are reported as they stand.
+
+| Hook | State | What is there, and what is missing |
+|---|---|---|
+| 1. Namespaced ownership | Partly | Every owner and holder is a free string, never an enum: `task:<id>`, `worker:<id>` and `chat:<session>` in resource claims, the steer inbox and worker parents, plus `xod-task-<id>` in browser-ops. A `tree` holder fits as-is. Missing: the ids are not prefixed with the device (`xod:<device>/…`), so they are unique only within one Xod. Adding the prefix is a one-function change at the boundary. I left it out because it rewrites every claim row and test fixture, with no gain until a second agent exists. |
+| 2. Claims with leases | Yes, for resources | `resource_claims` has holder_id, requested_at, granted_at, heartbeat_at, expires_at (TTL) and states queued, granted, released, expired and abandoned, with any string as holder. browser-ops' registry has owner, heartbeat and done. Missing: picking up a task is not a claim. The pool moves a task from queued to working with no claimed_by or lease, and a dead runner is caught by the stall watchdog, not by lease expiry. For sync, task pickup should become a claim on `task:<id>` in the same registry, which supports it today. |
+| 3. Stable identity | Yes (added) | Task ids are random and permanent (`task-` plus 10 hex characters). New: a nullable `external_ref` on tasks, set by `POST /api/orchestrator/tasks`, found with `task_queue.by_external_ref`, and carried in the `task.created` event (tests/task_inbox/run_task_identity_test.py, 7/7). The ids are not UUIDs; with hook 1's device prefix they are unique across agents. |
+| 4. Verified done, structured | Partly | Below the task level, verification is structured. Every side-effecting action records an outcome (CONFIRMED, FAILED, UNKNOWN or UNVERIFIED) with evidence in `tool_outcomes`. Each plan step stores its status with evidence and problems in `plan_json`. Deliveries are verified at the destination. Missing: the task itself has one status, `done`, with no separate "verified" state beside it. A sync would read verification from the steps. |
+| 5. Structured transitions | Partly | The append-only event log records `task.created`, `task.ack`, `task.status` (every status change), `task.step`, `task.stalled`, `steer.*`, `resource.requested/granted/released/expired`, `worker.spawned/result/stalled` and `delivery.*`. Missing as named events: task claimed, a per-task heartbeat (only `last_progress_at` is updated), task verified, and task released. |
+
+What would make a later sync harder than it needs to be:
+- **The event log is a per-device file.** Each Xod keeps its own JSONL with its own sequence numbers, so there is no shared ordering or global event id. A sync would need to stamp events with the device and an id.
+- **Some event payloads are truncated**, for example the request in `task.created` is cut to 300 characters. A replay has to read the task row for the full text.
+- **There are two multi-step systems.** Missions ("Plan & run") and orchestrated tasks are separate sources of truth. A sync would have to cover both, or missions should be folded into tasks first.
+- **Task pickup is a status flip, not a lease** (hook 2). Two agents could both start the same task until pickup becomes a claim.
+
 ## Reproduce
 
 ```
