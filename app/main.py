@@ -3104,6 +3104,13 @@ async def family_control_device_poll():
     return await asyncio.to_thread(github_device.poll)
 
 
+@app.post("/api/family/control/github-client-id")
+async def family_control_github_client_id(body: Dict[str, Any]):
+    """Save Xod's GitHub app Client ID (public) so 'Sign in with GitHub' works here and on your phones."""
+    from app.services import sso_control
+    return await asyncio.to_thread(sso_control.set_github_client_id, str(body.get("client_id") or ""))
+
+
 @app.post("/api/family/control/session")
 async def family_control_session(body: Dict[str, Any]):
     """The rdrive session handoff slot: software hands Xod a session

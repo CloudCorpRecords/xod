@@ -6,7 +6,7 @@
 (() => {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const api = async (url) => (await fetch(url)).json();
-  const post = async (url) => (await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).json();
+  const post = async (url, body = {}) => (await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
   let poll = null;
   let devPoll = null;
   let devFlow = null;   // {user_code, verification_uri, state, message, account} while a device sign-in runs
@@ -81,6 +81,7 @@
           <p class="text-[12px] text-zinc-400">This device: ${reg.my_device_id ? esc(reg.my_device_id) : "no device id yet"} · ${reg.my_trusted ? "verified family member" : reg.revoked ? "removed from the family" : "not a verified member yet"}${a.github_configured === false ? " · GitHub web sign-in isn't switched on on your rdrive (device sign-in still works)" : ""}</p>
           ${g.allowed ? `<p class="text-[12px] text-emerald-300">Control is live: both checks pass — verified family member and a proven GitHub sign-in for this account.</p>`
             : `<p class="text-[12px] font-semibold text-amber-300">Control is paused until these pass:</p><ul class="text-[12px] text-zinc-400 list-disc pl-5 space-y-1">${reasons}</ul>`}
+          ${a.device_flow_configured === false ? `<div class="flex flex-wrap items-center gap-1.5"><p class="text-[12px] text-zinc-400 w-full">GitHub sign-in needs Xod's GitHub app: at github.com/settings/applications/new make one, tick <b>Enable Device Flow</b>, then paste its Client ID here (it isn't a secret).</p><input id="ssoClientId" placeholder="Client ID" class="px-2 py-1 rounded-lg bg-surface-800 text-zinc-100 text-[12px] font-mono"><button data-sso-action="client-id-save" class="px-2.5 py-1 rounded-lg bg-surface-700 text-zinc-100 text-[12px]">Save</button></div>` : ""}
           ${a.session_state !== "signed_in" || a.provider !== "github" ? `<button data-sso-action="device-begin" class="px-2.5 py-1 rounded-lg bg-surface-700 text-zinc-100 text-[12px]">Sign in with GitHub (device code)</button>` : ""}
           ${c.recovery && c.recovery.needed ? `<p class="text-[12px] text-amber-300">${esc(c.recovery.message)}</p><button data-sso-action="vault-apply" class="px-2.5 py-1 rounded-lg bg-surface-700 text-zinc-100 text-[12px]">Apply the family vault</button>` : ""}
         </div>
@@ -149,6 +150,15 @@
     try { r = await api("/api/family"); } catch (e) { /* honest empty render below */ }
     try { c = await api("/api/family/control"); } catch (e) { /* control header just omits */ }
     el.innerHTML = controlView(c) + body(r);
+  }
+
+  async function saveClientId() {
+    const box = document.getElementById("ssoClientId");
+    let out;
+    try { out = await post("/api/family/control/github-client-id", { client_id: (box && box.value || "").trim() }); }
+    catch (e) { out = { success: false, error: "Couldn't save it." }; }
+    devFlow = out.success ? { state: "saved", message: "Saved. Sign in with GitHub now." } : { state: "failed", message: out.error };
+    render();
   }
 
   async function deviceBegin() {
@@ -233,6 +243,7 @@
         if (!btn) return;
         const action = btn.getAttribute("data-sso-action");
         if (action === "device-begin") deviceBegin();
+        if (action === "client-id-save") saveClientId();
         if (action === "vault-apply") { try { await post("/api/family/vault/apply"); } catch (err) { /* render shows the new truth */ } render(); }
         if (action === "open-phones") { window.closeFamilyPanel(); if (window.openPhonePanel) window.openPhonePanel(); }
       });
