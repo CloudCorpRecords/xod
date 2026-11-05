@@ -674,6 +674,95 @@ class TaskQueue:
                        payload={"title": title, "request": request[:300]})
         return made
 
+    # ------------------------------------------------ self-maintenance cards (Phase 5)
+    # Silent self-maintenance (services/self_maintenance.py) reports through
+    # the Work feed: a success is an ordinary Finished result card and an
+    # unrecovered fault is one Needs-you card. These rows are written
+    # directly - they are records of work Xod already did on itself, so the
+    # worker is never kicked and nothing is executed. origin="self" is a
+    # real (non-scratch) origin: these cards belong in the feed, unlike
+    # scratch/proving runs.
+
+    def record_finished(self, title: str, result: str, origin: str = "self") -> Dict[str, Any]:
+        """A job that is already done: a Finished result card, written as an
+        outcome (the title IS the outcome sentence), never a step log."""
+        task_id = f"task-{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        c = _conn()
+        c.execute(
+            "INSERT INTO tasks (id, created_at, updated_at, finished_at, title, request, status,"
+            " result, now, history, last_progress_at, origin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, now, now, now, title, title, "done", result, "Done",
+             json.dumps([{"at": now, "text": "Finished"}]), now, origin or "self"),
+        )
+        c.commit()
+        c.close()
+        return self.get(task_id)
+
+    def record_waiting_maintenance(self, key: str, title: str, detail: str = "",
+                                   fix: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """One Needs-you card for an unrecovered self-maintenance fault,
+        deduped by key: if a card for this fault is already waiting, it is
+        returned unchanged (with _created False) instead of stacking."""
+        c = _conn()
+        rows = c.execute("SELECT id, waiting_detail FROM tasks WHERE status = 'waiting'"
+                         " AND waiting_kind = 'maintenance'").fetchall()
+        c.close()
+        for r in rows:
+            try:
+                wd = json.loads(r["waiting_detail"] or "{}")
+            except Exception:
+                wd = {}
+            if wd.get("key") == key:
+                t = self.get(r["id"])
+                if t:
+                    t["_created"] = False
+                return t
+        task_id = f"task-{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        wd = {"key": key, "message": title, "detail": detail, "fix": fix}
+        c = _conn()
+        c.execute(
+            "INSERT INTO tasks (id, created_at, updated_at, title, request, status,"
+            " waiting_kind, waiting_detail, now, history, last_progress_at, origin)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, now, now, title, title, "waiting", "maintenance", json.dumps(wd),
+             title, json.dumps([{"at": now, "text": "Needs you"}]), now, "self"),
+        )
+        c.commit()
+        c.close()
+        t = self.get(task_id)
+        if t:
+            t["_created"] = True
+        return t
+
+    def resolve_waiting_maintenance(self, key: str, result: str) -> bool:
+        """Completes the waiting maintenance card for `key` (the fault
+        healed, or its Fix it worked). Returns True when a card was waiting."""
+        c = _conn()
+        rows = c.execute("SELECT id, waiting_detail FROM tasks WHERE status = 'waiting'"
+                         " AND waiting_kind = 'maintenance'").fetchall()
+        found = None
+        for r in rows:
+            try:
+                wd = json.loads(r["waiting_detail"] or "{}")
+            except Exception:
+                wd = {}
+            if wd.get("key") == key:
+                found = r["id"]
+                break
+        c.close()
+        if not found:
+            return False
+        now = time.time()
+        c = _conn()
+        c.execute("UPDATE tasks SET status = 'done', result = ?, waiting_kind = NULL,"
+                  " waiting_detail = NULL, now = 'Done', updated_at = ?, finished_at = ? WHERE id = ?",
+                  (result, now, now, found))
+        c.commit()
+        c.close()
+        return True
+
     def approve(self, task_id: str) -> Dict[str, Any]:
         t = self.get(task_id)
         if not t or t["status"] != "waiting" or t.get("waiting_kind") != "approval":

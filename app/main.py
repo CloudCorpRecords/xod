@@ -696,6 +696,8 @@ async def _start_task_worker():
     from app.services.doctor import doctor
     task_queue.start()
     doctor.start()
+    from app.services import self_maintenance
+    self_maintenance.start()              # Phase 5: silent self-repair + automatic-update bookkeeping
     from app.services import missions
     missions.start()
     from app.services import activity, routines
@@ -1191,6 +1193,20 @@ async def update_settings(req: UpdateSettings):
     from app.services import updates
     updates.set_enabled(req.enabled)
     return {"success": True, "enabled": updates.enabled()}
+
+
+class UpdatePolicy(BaseModel):
+    policy: str
+
+
+@app.post("/api/update/policy")
+async def update_policy(req: UpdatePolicy):
+    """Phase 5: the update policy in plain words - "automatic" (default:
+    Xod checks and installs on its own, no prompt) or "off"."""
+    from app.services import updates
+    mode = updates.set_policy(req.policy)
+    return {"success": True, "policy": mode, "enabled": updates.enabled(),
+            "automatic": updates.auto_enabled()}
 
 
 # ---- What Xod knows about you (services/user_memory.py) ------------------------------------------------
@@ -1734,6 +1750,19 @@ async def doctor_fix(req: DoctorFixRequest):
     from app.services.doctor import doctor
     res = await doctor.fix(req.fix)
     return {**res, "report": await doctor.check()}
+
+
+class MaintenanceFixRequest(BaseModel):
+    task_id: str
+
+
+@app.post("/api/maintenance/fix")
+async def maintenance_fix(req: MaintenanceFixRequest):
+    """Phase 5: the Fix it button on a self-maintenance Needs-you card.
+    Runs the manual path the card names (an existing doctor fix or the
+    Phase 3 post-office repair) and completes the card on success."""
+    from app.services import self_maintenance
+    return await self_maintenance.run_manual_fix(req.task_id)
 
 
 async def _counted(gen):

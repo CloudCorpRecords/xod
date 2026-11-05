@@ -364,9 +364,21 @@
         </section>
         <section>
           <p class="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold">Updates</p>
-          <p class="text-[12px] text-zinc-500 mt-1">Updates install automatically; Xod reports them in Work when one lands.</p>
+          <!-- Phase 5: one plain line, no action needed. The policy switch and
+               Check now live one layer down, in the details below. -->
+          <p id="updatesPolicyLine" class="text-[13px] text-zinc-200 mt-1">Automatic</p>
           <!-- Xod's version and updates (js/updates.js); moved here from the sidebar footer in Phase 2 -->
           <div id="xodVersion" class="xv mt-2"></div>
+          <details class="mt-2">
+            <summary class="text-[12px] text-zinc-400 cursor-pointer">Update settings</summary>
+            <div class="mt-2 space-y-2">
+              <label class="flex items-center gap-2 text-[12.5px] text-zinc-300">
+                <input type="checkbox" id="autoUpdateToggle" checked onchange="setUpdatePolicy(this.checked)">
+                Automatic updates <span class="text-zinc-500">Xod checks and installs on its own.</span>
+              </label>
+              <button class="task-btn" onclick="if(window.XodUpdates) XodUpdates.check()">Check now</button>
+            </div>
+          </details>
         </section>
         <section>
           <details id="settingsAdvanced">

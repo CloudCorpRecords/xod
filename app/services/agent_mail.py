@@ -797,7 +797,12 @@ def _notify(title: str, text: str) -> None:
 # become "paused", which is the one case the surface reports ("Messages are
 # paused." + a Fix it button that calls repair_home_post()).
 HOME_RECOVERY_MAX = 3
-_home_recovery: Dict[str, Any] = {"attempts": 0, "paused": False, "last_error": None}
+_home_recovery: Dict[str, Any] = {"attempts": 0, "paused": False, "last_error": None,
+                                  # Phase 5: True once the post office has been seen up in
+                                  # this process, so a later silent restart counts as a
+                                  # repair to report ("Xod fixed its messages on its
+                                  # own."), not as the ordinary first start at boot.
+                                  "seen_running": False}
 
 
 async def ensure_home_post() -> Dict[str, Any]:
@@ -808,7 +813,7 @@ async def ensure_home_post() -> Dict[str, Any]:
         return {"state": "not_home"}
     from app.services import home_post
     if home_post.running():
-        _home_recovery.update(attempts=0, paused=False, last_error=None)
+        _home_recovery.update(attempts=0, paused=False, last_error=None, seen_running=True)
         return {"state": "running"}
     if _home_recovery["paused"]:
         return {"state": "paused", "error": _home_recovery["last_error"]}
@@ -817,7 +822,22 @@ async def ensure_home_post() -> Dict[str, Any]:
     if r.get("success"):
         logger.info("Agent Mail: this computer's post office is running again "
                     f"(recovery attempt {_home_recovery['attempts']}).")
-        _home_recovery.update(attempts=0, paused=False, last_error=None)
+        was_repair = bool(_home_recovery.get("seen_running"))
+        attempts_used = _home_recovery["attempts"]
+        _home_recovery.update(attempts=0, paused=False, last_error=None, seen_running=True)
+        if was_repair:
+            # Phase 5: a silent self-repair is reported as an outcome, in
+            # Work's Finished bucket and History - never as a prompt.
+            try:
+                from app.services import self_maintenance
+                self_maintenance.resolve_needs_you("health:messages",
+                                                   "Xod fixed its messages on its own.")
+                self_maintenance.record_outcome(
+                    "Xod fixed its messages on its own.",
+                    f"The post office stopped and Xod restarted it itself "
+                    f"(recovery attempt {attempts_used}); nobody was asked.")
+            except Exception:
+                pass
         return {"state": "running"}
     _home_recovery["last_error"] = r.get("error")
     if _home_recovery["attempts"] >= HOME_RECOVERY_MAX:

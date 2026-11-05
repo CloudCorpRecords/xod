@@ -147,6 +147,15 @@
           onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendTaskAnswer('${t.id}')}"></textarea>`;
       actions = `<button class="task-btn task-btn-primary" onclick="sendTaskAnswer('${t.id}')">Send answer</button>
         <button class="task-btn task-btn-quiet" onclick="taskAction('${t.id}','cancel')">Cancel</button>`;
+    } else if (t.waiting_kind === "maintenance") {
+      // Phase 5: a self-maintenance fault Xod already tried to repair
+      // itself. One calm sentence; the technical record sits in Details;
+      // Fix it exists only where a manual path exists.
+      body = `<p class="text-[13px] text-zinc-200">${esc(d.message || t.title)}</p>
+        ${d.detail ? `<details class="mt-1"><summary class="text-[12px] text-zinc-500 cursor-pointer">Details</summary><p class="text-[12px] text-zinc-400 mt-1">${esc(d.detail)}</p></details>` : ""}`;
+      actions = `
+        ${d.fix ? `<button class="task-btn task-btn-primary" onclick="fixMaintenance('${t.id}')">Fix it</button>` : ""}
+        <button class="task-btn task-btn-quiet" onclick="taskAction('${t.id}','delete')">Remove</button>`;
     } else {
       body = `<p class="text-[13px] text-zinc-200">The site is showing a verification check I won't try to get around.</p>`;
       actions = `<button class="task-btn task-btn-primary" onclick="showTaskPage('${t.id}')">Open the page</button>
@@ -295,6 +304,13 @@
       ? await api(`/api/tasks/${id}`, { method: "DELETE" })
       : await api(`/api/tasks/${id}/${action}`, { method: "POST" });
     if (res && res.success === false && res.error) alert(res.error);
+    refresh();
+  };
+
+  // Phase 5: the Fix it button on a self-maintenance Needs-you card.
+  window.fixMaintenance = async (id) => {
+    const res = await api("/api/maintenance/fix", { method: "POST", body: JSON.stringify({ task_id: id }) });
+    if (res && res.ok === false && res.detail) alert(res.detail);
     refresh();
   };
 

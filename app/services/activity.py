@@ -263,6 +263,21 @@ def recent(limit: int = 200, since: Optional[float] = None) -> List[Dict[str, An
              "undone_at": r["undone_at"], "note": r["note"]} for r in rows]
 
 
+def record(title: str, detail: str = "", ok: bool = True, origin: str = "self-maintenance",
+           tool: str = "self_maintenance") -> str:
+    """Writes one outcome entry directly (Phase 5): self-maintenance that
+    happened outside a tool call still belongs in History, as an outcome
+    ("Xod updated itself last night.") with the technical record in
+    `detail`. Not undoable - there is nothing to undo about Xod fixing
+    itself. Returns the entry id."""
+    eid = uuid.uuid4().hex[:12]
+    with _conn() as c:
+        c.execute("INSERT INTO activity VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                  (eid, time.time(), origin, tool, title, detail, int(ok),
+                   json.dumps([]), 0, None, "" if ok else "Needs you."))
+    return eid
+
+
 def entries_for_origin(origin: str, since: float = 0, limit: int = 500) -> List[Dict[str, Any]]:
     """Full entries for one origin, oldest first, with the recorded file ops parsed.
     recent() does not expose the ops; the task queue's completion check needs them

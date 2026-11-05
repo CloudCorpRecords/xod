@@ -15,6 +15,14 @@
 //
 // Automatic checks are off when "Tell me about new versions" is off, with XOD_NO_UPDATE_CHECK=1, or from
 // source; pressing "Check now" always checks.
+//
+// Phase 5 (simplicity redesign): the update policy defaults to AUTOMATIC
+// (services/updates.py). A newer version downloads in the background and
+// installs on quit - the swap below - without ever prompting; the outcome
+// is reported as a result card in Work when Xod next starts
+// (services/self_maintenance.py note_update_if_changed). Only when the user
+// turned automatic updates off does anything ask (the menu check's
+// Update/Later dialog, the page's Update button).
 const { app, dialog, shell } = require("electron");
 const { spawn, spawnSync } = require("child_process");
 const crypto = require("crypto");
@@ -61,11 +69,14 @@ function canReplace(bundle) {
   try { fs.accessSync(path.dirname(bundle), fs.constants.W_OK); fs.accessSync(bundle, fs.constants.W_OK); return true; } catch (e) { return false; }
 }
 
+let autoPolicy = true;   // Phase 5: automatic unless /api/update says the user turned it off
+
 async function enabled(appUrl) {
   if (process.env.XOD_NO_UPDATE_CHECK) return false;
   try {
     const r = await fetch(`${appUrl}/api/update`, { signal: AbortSignal.timeout(5000) });
     const j = await r.json();
+    autoPolicy = j.automatic !== false;
     return j.enabled !== false;
   } catch (e) {
     return true;
@@ -278,6 +289,11 @@ function start(getWin, getAppUrl) {
       const { response } = await show({ type: "info", buttons: ["Download", "Later"], defaultId: 0, cancelId: 1, message: `Xod ${st.latest} is out`, detail: st.error });
       if (response === 0) shell.openExternal(st.page);
       return;
+    }
+    if (autoPolicy) {
+      // Automatic: no decision to ask for. It downloads in the background
+      // and installs when Xod quits; Work reports the outcome afterwards.
+      return show({ type: "info", message: `Xod ${st.latest} is out`, detail: `You have ${S.current}. Automatic updates are on, so it installs itself when Xod quits — nothing to do.` });
     }
     const { response } = await show({ type: "info", buttons: ["Update", "Later"], defaultId: 0, cancelId: 1, message: `Xod ${st.latest} is out`,
       detail: `You have ${S.current}. Update downloads it, checks it and restarts Xod. Your chats, projects and settings stay as they are.` });
