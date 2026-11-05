@@ -30,6 +30,26 @@ member under a different key (impersonation), and every intake is
 audit-logged with the key fingerprint, so a foreign or canary key
 showing up in an advertisement is visible in the log.
 
+Local presence (Rene's rule, 2026-11-05): "if device is on Bluetooth
+or same wifi and it sees it on the list in xod it can just approve
+it." When the transport that carried an advertisement can evidence
+that the device is HERE — the request arrived from this computer's
+own local network, classified by services/local_presence.py from the
+observed source address, never from anything the advertisement
+claims — intake runs the owner's approval itself once the
+advertisement has passed the full gate above and pended. The gate
+does not move: signatures, family/account binding and the signed
+GitHub sign-in assertion are all still required, a prior owner
+denial is never overridden, and an ask with no presence evidence
+(the Agent Mail channel, a tailnet or off-LAN source) pends for the
+tap exactly as before. Bluetooth is not an evidence channel: the
+desktop's BLE surface observes only an anonymous service UUID and a
+user-set name with rotating addresses, nothing that binds a
+sighting to a signed advertisement (see local_presence.py). Every
+auto-approval is audit-logged with the evidence and the registry
+state before/after, and the rule is the owner's setting
+(auto_approve_enabled, default on).
+
 Secrets: private keys live only in the OS keystore (this device,
 services/keychain.py through family_registry.device_identity) and in
 the phone's Keystore-wrapped vault. This module stores and moves
@@ -100,6 +120,83 @@ def _audit(kind: str, device_id: str, public_key: str) -> None:
         pass  # the audit line is evidence, never a reason to fail the flow
 
 
+# ------------------------------------------------- local-presence rule
+
+AUTO_SETTING_KEY = "phone_enroll_auto_approve_local"
+
+
+def auto_approve_enabled() -> bool:
+    """Rene's local-presence rule is the default (2026-11-05); this
+    setting is the owner's override, stored like every other switch
+    (services/storage, the auto_model pattern)."""
+    try:
+        from app.services.storage import get_setting
+        return get_setting(AUTO_SETTING_KEY, "1") == "1"
+    except Exception:
+        return True
+
+
+def set_auto_approve_enabled(on: bool) -> bool:
+    from app.services.storage import set_setting
+    set_setting(AUTO_SETTING_KEY, "1" if on else "0")
+    return auto_approve_enabled()
+
+
+def _registry_snapshot(view: Dict[str, Any], device_id: str) -> Dict[str, Any]:
+    rec = next((d for d in view.get("devices") or [] if d["id"] == device_id), None)
+    return {"members": len(view.get("devices") or []),
+            "device_status": (rec or {}).get("status"),
+            "device_trusted": fr.trusted_member(view, device_id) is not None}
+
+
+def _try_auto_approve(device_id: str, record: Dict[str, Any],
+                      presence: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The owner's tap, taken by the rule: the advertisement has
+    already passed the full pairing gate and pended, and the
+    transport evidenced local presence. Runs approve() itself — the
+    same signing authority, the same read-back — then audit-logs the
+    evidence and the registry state before/after. Returns the
+    enrolled result, or None to leave the ask pending (rule off, or
+    this device cannot sign approvals; never a failure of intake)."""
+    if not auto_approve_enabled():
+        return None
+    before = _registry_snapshot(fr.load_registry(), device_id)
+    r = approve(device_id)
+    pub = record.get("public_key") or ""
+    if not r.get("ok"):
+        try:
+            from app.services import event_log
+            event_log.emit("family.auto_approve_unavailable", actor="phone_enroll",
+                           ids={"device": device_id, "key": _fingerprint(pub),
+                                "evidence": presence.get("kind")},
+                           payload={"reason": r.get("error") or "", "presence": presence})
+        except Exception:
+            pass
+        return None
+    after = _registry_snapshot(fr.load_registry(), device_id)
+    entry = {"device_id": device_id, "name": record.get("name"),
+             "at": _now_iso(), "evidence": presence.get("kind"),
+             "source": presence.get("source"), "detail": presence.get("detail"),
+             "before": before, "after": after}
+    with _lock:
+        st = _load()
+        log = st.get("auto_approvals") or []
+        log.append(entry)
+        st["auto_approvals"] = log[-50:]
+        _save(st)
+    try:
+        from app.services import event_log
+        event_log.emit("family.auto_approved", actor="phone_enroll",
+                       ids={"device": device_id, "key": _fingerprint(pub),
+                            "evidence": presence.get("kind")},
+                       payload={"presence": presence, "before": before, "after": after})
+    except Exception:
+        pass
+    return {"ok": True, "state": "enrolled", "device_id": device_id,
+            "auto_approved": True, "presence": presence,
+            "control_paired": r.get("control_paired"), "member": r.get("member")}
+
+
 # ---------------------------------------------------------------- registry IO
 
 def _raw_path(path=None) -> Path:
@@ -167,9 +264,14 @@ def _my_authority(view: Dict[str, Any]):
 
 # ---------------------------------------------------------------- intake
 
-def intake(advertisement: Dict[str, Any], mail_sender: Optional[str] = None) -> Dict[str, Any]:
+def intake(advertisement: Dict[str, Any], mail_sender: Optional[str] = None,
+           presence: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Take a phone's signed advertisement and pend it for the owner's tap.
-    Returns {ok, state, problems}; never raises on bad input."""
+    `presence` is local-presence evidence observed by the TRANSPORT
+    (services/local_presence.py), never a claim inside the
+    advertisement: with it, and the full gate passed, Rene's rule
+    (2026-11-05) approves the ask without the tap. Returns
+    {ok, state, problems}; never raises on bad input."""
     problems: List[str] = []
     adv = advertisement if isinstance(advertisement, dict) else {}
     if adv.get("kind") != ADVERTISE_KIND:
@@ -274,7 +376,8 @@ def intake(advertisement: Dict[str, Any], mail_sender: Optional[str] = None) -> 
                     "problems": ["a different key is already waiting under this device id"]}
         pend[rid] = {"record": record, "record_active": active, "account": account,
                      "provider": adv.get("provider"), "family": family,
-                     "mail_address": mail, "issued_at": issued, "received_at": now}
+                     "mail_address": mail, "issued_at": issued, "received_at": now,
+                     "presence": presence}
         st["pending"] = pend
         if mail:
             links = st.get("links") or {}
@@ -282,7 +385,14 @@ def intake(advertisement: Dict[str, Any], mail_sender: Optional[str] = None) -> 
             st["links"] = links
         _save(st)
     _audit("family.advertise", rid, pub)
-    return {"ok": True, "state": "pending", "device_id": rid, "safety": safety_for(record)}
+    result: Dict[str, Any] = {"ok": True, "state": "pending", "device_id": rid,
+                              "safety": safety_for(record)}
+    if presence:
+        result["presence"] = presence
+        auto = _try_auto_approve(rid, record, presence)
+        if auto is not None:
+            return auto
+    return result
 
 
 def pending() -> List[Dict[str, Any]]:
@@ -293,7 +403,8 @@ def pending() -> List[Dict[str, Any]]:
         out.append({"record": rec, "safety": safety_for(rec),
                     "mail_address": e.get("mail_address") or "",
                     "provider": e.get("provider"), "account": e.get("account"),
-                    "issued_at": e.get("issued_at"), "received_at": e.get("received_at")})
+                    "issued_at": e.get("issued_at"), "received_at": e.get("received_at"),
+                    "presence": e.get("presence")})
     return out
 
 
@@ -301,7 +412,9 @@ def pending() -> List[Dict[str, Any]]:
 
 def approve(device_id: str, path=None) -> Dict[str, Any]:
     """The owner's one tap: file the phone's own active record and sign
-    the member digest over the new set. Read back before claiming it."""
+    the member digest over the new set. Read back before claiming it.
+    Rene's local-presence rule takes this same tap through
+    _try_auto_approve; there is no second, weaker approval path."""
     view = fr.load_registry(path)
     _observe_trust(view)
     existing = next((d for d in view.get("devices") or [] if d["id"] == device_id), None)
@@ -520,4 +633,8 @@ def state(path=None) -> Dict[str, Any]:
             "interim_unsigned": bool(view.get("interim_unsigned")),
             "my_device_id": fr.my_device_id() or None,
             "my_trusted": bool(fr.my_device_id() and known.get(fr.my_device_id())),
+            # Rene's local-presence rule (2026-11-05): its on/off state and the
+            # audit trail of approvals it took, newest first, for the panel.
+            "auto_approve_local": auto_approve_enabled(),
+            "auto_approvals": list(reversed((st.get("auto_approvals") or [])[-10:])),
             "pending": pend, "members": members, "joining": join_candidates(path)}

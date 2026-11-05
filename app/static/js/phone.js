@@ -74,6 +74,7 @@
         <p class="task-title">${esc((p.record || {}).name || (p.record || {}).id || "A phone")} wants to join your family</p>
         <p class="text-[12px] text-zinc-400">${esc((p.record || {}).platform || "")} \u00b7 signed in as ${esc(p.account || fam.account)}. Compare the safety number with the phone's screen, then approve:
           <span class="font-mono text-white">${esc(p.safety || "")}</span></p>
+        ${p.presence ? `<p class="text-[12px] text-emerald-300">${p.presence.kind === "loopback" ? "This ask came from this computer itself." : "Xod can see this device on this Wi-Fi, here now."}</p>` : ""}
         <div class="flex gap-2">
           <button data-enroll-approve="${esc((p.record || {}).id || "")}" class="${primary}">Approve</button>
           <button data-enroll-deny="${esc((p.record || {}).id || "")}" class="${quiet}">Deny</button>
@@ -82,13 +83,20 @@
     const members = (fam.members || []).map((m) => `
       <p class="text-[12px] text-zinc-300">${esc(m.name)} <span class="text-zinc-500">${esc(m.platform)} \u00b7 ${esc(m.status)}</span>${m.status === "active" && m.id !== fam.my_device_id ? ` <button data-enroll-revoke="${esc(m.id)}" class="${quiet} text-red-300">Revoke</button>` : ""}</p>`).join("");
     const joining = (fam.joining || []).length ? `<p class="text-[12px] text-amber-300">${(fam.joining || []).length} device(s) are waiting for a family approval \u2014 an enrolled phone can approve them from its Family screen.</p>` : "";
+    const autoRule = fam.auto_approve_local === false
+      ? `<p class="text-[12px] text-zinc-500">Auto-approve is off: every join ask waits for your tap, even from a device on this Wi-Fi.</p>`
+      : `<p class="text-[12px] text-zinc-500">Your rule: a device Xod can see on this Wi-Fi is approved automatically, no tap needed. Asks that arrive any other way still wait for you.</p>`;
+    const autoLog = (fam.auto_approvals || []).map((a) => `
+          <p class="text-[12px] text-zinc-300">Auto-approved ${esc(a.name || a.device_id || "a device")} <span class="text-zinc-500">${a.evidence === "loopback" ? "on this computer" : "seen on this Wi-Fi"} \u00b7 ${esc(a.at || "")}</span></p>`).join("");
     return `
       <section class="space-y-3">
         <div class="task-card space-y-2">
           <p class="task-title">Your family</p>
           <p class="text-[12px] text-zinc-400">Signed in as <span class="text-white">${esc(fam.account)}</span>${prov}. Devices signed in with the same account join here with one tap \u2014 no pairing code to hunt for. Each device keeps its own key, an enrolled phone can approve new devices, and you can revoke any one of them here.</p>
+          ${autoRule}
           ${joining}
           ${members}
+          ${autoLog}
         </div>
         ${pend}
       </section>`;

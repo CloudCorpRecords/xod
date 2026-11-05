@@ -401,7 +401,9 @@ MAX_SCREEN_REPLY = 150_000
 
 def _family_advertise(args: Dict[str, Any]) -> Dict[str, Any]:
     """The phone's signed join ask (services/phone_enroll.py). Submission is
-    not trust: it pends for the owner's tap, or for a family.approve."""
+    not trust: it pends for the owner's tap, or for a family.approve.
+    The mail channel evidences no local presence, so Rene's
+    local-presence auto-approve rule never fires on this path."""
     from app.services import phone_enroll
     r = phone_enroll.intake(args.get("advertisement") or {}, mail_sender=args.get("_sender"))
     if not r.get("ok"):
