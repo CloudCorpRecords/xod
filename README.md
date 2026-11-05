@@ -268,6 +268,14 @@ Xod is open to contributors of every level, including first-timers.
 - 💬 **Questions, ideas, or a routine you made?** Share it in [Discussions](https://github.com/CloudCorpRecords/xod/discussions).
 - 🐛 **Something broke?** [Open an issue](https://github.com/CloudCorpRecords/xod/issues/new/choose). Please follow the [Code of Conduct](.github/CODE_OF_CONDUCT.md).
 
+## Support Xod
+
+Xod is free and open source, and it stays that way. If it is useful to you, you can help keep it moving:
+
+- ❤️ **Sponsor monthly** on [GitHub Sponsors](https://github.com/sponsors/CloudCorpRecords).
+- ☕ **Give once, pay what you want** through [Stripe](https://donate.stripe.com/3cI3cw2A68eU8sagt7dZ600).
+- 👕 **Pick up merch** from the [official shop](https://rene-turcios-shop.fourthwall.com).
+
 ## License
 
 [MIT](LICENSE). Xod stands on a lot of great open-source work; the Mac app includes the notices for everything it bundles (`THIRD_PARTY_LICENSES.txt`, made by `scripts/third_party_licenses.py`).
