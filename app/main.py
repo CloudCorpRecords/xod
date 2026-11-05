@@ -1028,6 +1028,13 @@ class PhonePairRequest(BaseModel):
     nickname: Optional[str] = ""
 
 
+@app.post("/api/phones/add-to")
+async def phones_add_to(body: Dict[str, Any]):
+    """Adds a phone paired here to another of your Xods (by name), without scanning a second QR."""
+    from app.services import phone_mcp
+    return await phone_mcp.add_phone_to(str((body or {}).get("machine") or ""), str((body or {}).get("phone") or ""))
+
+
 @app.post("/api/phones/pair")
 async def phones_pair(req: PhonePairRequest):
     """Marks a phone that paired on its own screen as reachable (its keys must already be pinned)."""

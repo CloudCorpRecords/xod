@@ -7,6 +7,8 @@ Your Xods (services/xod_network.py, /api/xods, the xod_machines tool), with a st
     a Xod that's offline later
   - a task from another of your Xods only becomes an approval card; Approve puts it in the task inbox, Decline drops it
   - another account's device is refused, and a made-up grant does nothing
+  - your phone is added to another of your Xods with no second scan: only your own account's Xod hands over an offer,
+    it reaches the phone over its pairing, and the phone's own answer (its family check) is the result
   - not findable: the beacon stops
   .venv/bin/python tests/smoke/run_xod_network_test.py
 """
@@ -140,6 +142,42 @@ async def main():
     who.write_text(json.dumps({"Node": {"ComputedName": "intruder"}, "UserProfile": {"ID": 2}}))
     st = await tools.execute_tool("xod_machines", {"action": "task_status", "machine": "laptop", "ref": ref})
     check("another account can't read it", st.get("success") is False, str(st))
+
+    print("N7 adding your phone to another of your Xods, no second scan")
+    from app.services import phone_mcp, phone_pair
+    offer = {"v": 1, "kind": "xod-phone-pair", "computer": "laptop@laptop:8790", "code": "c0de"}
+    phone_pair.create_offer = lambda: {"success": True, "qr_text": json.dumps(offer), "computer": offer["computer"],
+                                       "expires_at": 9e9}
+    phone_mcp.paired_phones = lambda: [{"address": "my-phone@desk:8790"}]
+
+    class Phone:
+        sent, answer = [], {"ok": True, "text": "Added to laptop."}
+
+        async def send(self, address, payload):
+            Phone.sent.append((address, payload))
+            return payload["request_id"]
+
+        async def wait_reply(self, address, rid, timeout):
+            return None if Phone.answer is None else {"request_id": rid, **Phone.answer}
+    phone_mcp.transport = Phone()
+    who.write_text(json.dumps({"Node": {"ComputedName": "intruder"}, "UserProfile": {"ID": 2}}))
+    r = await phone_mcp.add_phone_to("laptop")
+    check("another account's Xod won't hand over an offer", r["success"] is False and "own devices" in r["error"], str(r))
+    check("…and nothing went to the phone", Phone.sent == [], str(Phone.sent))
+    who.write_text(json.dumps({"Node": {"ComputedName": "laptop"}, "UserProfile": {"ID": 1}}))
+    r = await phone_mcp.add_phone_to("laptop")
+    check("your own Xod's offer goes to the phone over its pairing", len(Phone.sent) == 1
+          and Phone.sent[0][0] == "my-phone@desk:8790" and json.loads(Phone.sent[0][1]["join_offer"]) == offer, str(Phone.sent))
+    check("the phone's answer is the result", r["success"] is True and r["message"] == "Added to laptop.", str(r))
+    Phone.answer = {"ok": False, "text": "That computer isn't in your family."}
+    r = await phone_mcp.add_phone_to("laptop")
+    check("a phone that refuses (failed family check) is reported", r["success"] is False and "family" in r["error"], str(r))
+    Phone.answer = None
+    r = await phone_mcp.add_phone_to("laptop", timeout=0.1)
+    check("a phone that doesn't answer is reported, not assumed", r["success"] is False and "didn't answer" in r["error"], str(r))
+    phone_mcp.paired_phones = lambda: []
+    r = await phone_mcp.add_phone_to("laptop")
+    check("no paired phone: nothing to add", r["success"] is False and "No phone" in r["error"], str(r))
 
     print("N6 not findable")
     set_setting(xn.FINDABLE_SETTING, "off")
