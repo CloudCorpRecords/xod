@@ -7,6 +7,7 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const api = async (url) => (await fetch(url)).json();
   const post = async (url) => (await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).json();
+  const send = async (url, method, body) => (await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })).json();
   let poll = null;
   let devPoll = null;
   let devFlow = null;   // {user_code, verification_uri, state, message, account} while a device sign-in runs
@@ -104,6 +105,68 @@
       </section>`;
   }
 
+  // Phase 3 (simplicity redesign): connection requests surface as cards in
+  // Family, in plain words - who is asking (friendly name + where), what it
+  // can do and what it cannot do - with Allow / Block. Raw payloads and
+  // addresses stay under each card's Details. The same calm paused line as
+  // Messages appears here when the post office could not heal itself.
+  const MW = window.MailWords || null;
+  const famFriendly = (address) => {
+    const addr = String(address || "").toLowerCase();
+    const [local = "", domainRaw = ""] = addr.split("@");
+    const label = domainRaw.split(":")[0].split(".")[0];
+    let device = "";
+    if (/macbook/.test(label)) device = "MacBook Pro";
+    else if (/rene-home-main|razer|blade/.test(label)) device = "Razer";
+    else if (/iphone/.test(label)) device = "Your iPhone";
+    else if (/pocophone|s25|android|phone/.test(label)) device = "Your phone";
+    let name;
+    if (local.startsWith("takeover-check-")) name = "A test agent";
+    else if (local === "phone") name = "Your phone";
+    else if (local === "iphone") name = "Your iPhone";
+    else name = local ? local.replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : addr;
+    if (!device || name === device) return name;
+    const place = device.startsWith("Your ") ? `your ${device.slice(5)}` : `your ${device}`;
+    return name.toLowerCase() === device.toLowerCase() ? name : `${name} on ${place}`;
+  };
+
+  function pausedLine(mailStatus) {
+    const home = mailStatus && mailStatus.home;
+    if (!(mailStatus && mailStatus.self_hosted && home && !home.running && home.paused)) return "";
+    return `
+      <div class="task-card flex items-center gap-2 flex-wrap">
+        <p class="text-[12px] text-zinc-200 flex-1">Messages are paused.</p>
+        <button data-family-fix="post" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 hover:bg-brand-400 text-[12px] font-semibold">Fix it</button>
+      </div>`;
+  }
+
+  function requestsSection(reqThreads) {
+    if (!MW || !reqThreads || !reqThreads.length) return "";
+    const groups = MW.groupThreadsBySender(reqThreads, "");
+    if (!groups.length) return "";
+    const cards = groups.map((g) => {
+      const peer = g.key;
+      const caps = MW.capabilitySet(MW.parseMachinePayload(g.last && g.last.text));
+      const preview = MW.plainPreview(g.last && g.last.text, g.last && g.last.subject);
+      return `
+      <div class="task-card space-y-2" data-family-request="${esc(peer)}">
+        <p class="text-[13px] text-white">${esc(famFriendly(peer))} wants to connect.</p>
+        ${caps ? `${MW.canSentence(caps) ? `<p class="text-[12px] text-zinc-300">${esc(MW.canSentence(caps))}</p>` : ""}${MW.cannotSentence(caps) ? `<p class="text-[12px] text-zinc-300">${esc(MW.cannotSentence(caps))}</p>` : ""}`
+          : `<p class="text-[12px] text-zinc-300">${esc(preview)}</p>`}
+        <div class="flex gap-2">
+          <button data-family-request-action="allow" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 hover:bg-brand-400 text-[12px] font-semibold">Allow</button>
+          <button data-family-request-action="block" class="px-3 py-1.5 rounded-lg font-medium text-zinc-300 hover:text-white hover:bg-surface-700 text-[12px]">Block</button>
+        </div>
+        <details><summary class="text-[11px] text-zinc-500 cursor-pointer">Details</summary><p class="text-[11px] text-zinc-500 font-mono mt-1">${esc(peer)}</p></details>
+      </div>`;
+    }).join("");
+    return `
+      <section class="space-y-2">
+        <p class="text-[12px] font-semibold text-zinc-300">Requests waiting</p>
+        ${cards}
+      </section>`;
+  }
+
   function body(r) {
     if (!r || r.state === undefined) return `<p class="text-[12px] text-zinc-400">Could not load the family registry.</p>`;
     if (r.state === "missing") {
@@ -149,10 +212,12 @@
   async function render() {
     const el = document.getElementById("familyBody");
     if (!el) return;
-    let r = null, c = null;
+    let r = null, c = null, mailStatus = null, reqThreads = [];
     try { r = await api("/api/family"); } catch (e) { /* honest empty render below */ }
     try { c = await api("/api/family/control"); } catch (e) { /* control header just omits */ }
-    el.innerHTML = controlView(c) + body(r);
+    try { mailStatus = await api("/api/mail/status"); } catch (e) { /* Messages health line just omits */ }
+    try { const t = await api("/api/mail/threads?box=requests"); reqThreads = t.threads || []; } catch (e) { /* request cards just omit */ }
+    el.innerHTML = pausedLine(mailStatus) + controlView(c) + requestsSection(reqThreads) + body(r);
   }
 
   async function deviceBegin() {
@@ -250,6 +315,23 @@
         } catch (e) { stateEl.textContent = "Could not send — Xod's backend did not answer."; }
       });
       root.addEventListener("click", async (e) => {
+        const fix = e.target.closest("[data-family-fix]");
+        if (fix) {
+          fix.disabled = true; fix.textContent = "Fixing…";
+          try { await post("/api/mail/home/repair"); } catch (err) { /* render shows the new truth */ }
+          render();
+          return;
+        }
+        const reqBtn = e.target.closest("[data-family-request-action]");
+        if (reqBtn) {
+          const card = reqBtn.closest("[data-family-request]");
+          const peer = card && card.getAttribute("data-family-request");
+          if (peer) {
+            try { await send(`/api/mail/contacts/${encodeURIComponent(peer)}`, "PATCH", { trust: reqBtn.getAttribute("data-family-request-action") === "allow" ? "known" : "blocked" }); } catch (err) { /* render shows the new truth */ }
+          }
+          render();
+          return;
+        }
         const btn = e.target.closest("[data-sso-action]");
         if (!btn) return;
         const action = btn.getAttribute("data-sso-action");

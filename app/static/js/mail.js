@@ -51,6 +51,52 @@
     return raw;
   }
   const friendlyList = (addrs) => String(addrs ?? "").split(",").map((a) => friendlySender(a.trim())).join(", ");
+
+  // Phase 3 (simplicity redesign): plain words for machines. MailWords
+  // (mail_words.js) knows machine payloads from human words and turns a
+  // capability set into sentences; if it failed to load, Messages falls
+  // back to the Phase 0/2 rendering rather than breaking.
+  const MW = window.MailWords || null;
+  // The device an address lives on, in friendly words ("MacBook Pro",
+  // "Razer", "Your iPhone"), from the address's host part - or "" when
+  // the host isn't one of the user's own devices (a shared post office).
+  function deviceFromAddress(address) {
+    const host = (String(address ?? "").split("@")[1] || "").split(":")[0];
+    const label = host.split(".")[0];
+    if (familyNames[host]) return humanDeviceName(familyNames[host]);
+    if (familyNames[label]) return humanDeviceName(familyNames[label]);
+    if (/macbook/.test(label)) return "MacBook Pro";
+    if (/rene-home-main|razer|blade/.test(label)) return "Razer";
+    if (/iphone/.test(label)) return "Your iPhone";
+    if (/pocophone|s25|android|phone/.test(label)) return "Your phone";
+    return "";
+  }
+  // "A test agent on your MacBook Pro" - who is asking, in plain words:
+  // the agent's own name (from the address's name part or its contact
+  // nickname), plus where it lives when that's one of your devices.
+  function requesterIntro(address) {
+    const peer = String(address ?? "").split(",")[0].trim().toLowerCase();
+    const local = peer.split("@")[0];
+    let name;
+    if (contactNames[peer]) name = contactNames[peer];
+    else if (local.startsWith("takeover-check-")) name = "A test agent";
+    else if (local) name = local.replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    else name = friendlySender(peer);
+    const device = deviceFromAddress(peer);
+    if (!device || name === device) return name;
+    const place = device.startsWith("Your ") ? `your ${device.slice(5)}` : `your ${device}`;
+    return name.toLowerCase() === device.toLowerCase() ? name : `${name} on ${place}`;
+  }
+  // The first capability set any message in the thread carries (a hello
+  // payload), or null when the agent never shared one.
+  function threadCapabilities(messages) {
+    if (!MW) return null;
+    for (const m of messages || []) {
+      const caps = MW.capabilitySet(MW.parseMachinePayload(m.text));
+      if (caps) return caps;
+    }
+    return null;
+  }
   async function loadNameMaps() {
     try {
       const { contacts } = await api("/api/mail/contacts");
@@ -69,7 +115,7 @@
     } catch (e) {}
   }
 
-  let view = { box: "inbox", thread: null, compose: null };
+  let view = { box: "inbox", thread: null, compose: null, sender: null };
   let st = null;
 
   // ---------------------------------------------------------------- header badge
@@ -113,22 +159,32 @@
       </section>`;
   }
 
+  // Phase 3: the header is calm. The post office heals itself, so a stopped
+  // one shows NOTHING while Xod restarts it; only a genuinely failed
+  // recovery earns one line - "Messages are paused." - plus a Fix it
+  // button. Addresses, ports and error text live under Details, and the
+  // safety number no longer lives here at all: it belongs to the pairing
+  // moment, on both devices, not to an idle surface.
   function headerCard() {
+    const home = st.home;
+    const paused = Boolean(st.self_hosted && home && !home.running && home.paused);
+    const detailBits = [
+      `<p class="text-[11px] text-zinc-500 font-mono mt-1" title="Your full agent address, for sharing">${esc(st.address)}</p>`,
+      st.self_hosted && home ? `<p class="text-[11px] text-zinc-500 mt-1">Post office: ${esc(home.domain || "")} · port ${esc(home.port)}</p>` : "",
+      home && home.last_error ? `<p class="text-[11px] text-zinc-500 mt-1">${esc(home.last_error)}</p>` : "",
+      st.last_error ? `<p class="text-[11px] text-zinc-500 mt-1">${esc(st.last_error)}</p>` : "",
+    ].join("");
     return `
       <div class="task-card space-y-1.5">
         <div class="flex items-center justify-between gap-2">
           <p class="text-[13px] text-white truncate" title="Your agent address">${esc(friendlySender(st.address))}</p>
           <button data-ml="copy" class="${quiet} px-2 py-1">Copy</button>
         </div>
-        <p class="text-[11px] text-zinc-500 font-mono truncate" title="Your full agent address, for sharing">${esc(st.address)}</p>
-        <details><summary class="text-[11px] text-zinc-500 cursor-pointer">Safety number</summary>
-          <p class="text-[11px] text-zinc-400 mt-1">Compare this with someone (in person or on a call) to be sure your messages reach the real you.</p>
-          <p class="font-mono text-[12px] text-zinc-200 mt-1">${esc(st.safety_number)}</p></details>
-        ${st.last_error ? `<p class="text-[11px] text-amber-300">${esc(st.last_error)}</p>` : `<p class="text-[11px] text-zinc-500">Checked ${esc(when(st.last_check)) || "never"} · checks every 30 seconds</p>`}
-        ${st.self_hosted ? `<p class="text-[11px] ${st.home && st.home.running ? "text-emerald-300" : "text-amber-300"}">${st.home && st.home.running
-          ? `Hosted on this computer (port ${esc(st.home.port)}): ${/\.ts\.net/.test(st.address) ? "reachable on your Tailscale network" : "reachable on this network"} while it's on.`
-          : "This computer's post office isn't running. Restart Xod, or check that nothing else uses its port."}</p>` : ""}
+        ${paused ? `<div class="flex items-center gap-2 flex-wrap"><p class="text-[12px] text-zinc-200">Messages are paused.</p><button data-ml="fix-post" class="${primary} py-1">Fix it</button></div>` : ""}
+        ${st.self_hosted && home && home.running ? `<p class="text-[11px] text-emerald-300">Hosted on this computer: ${/\.ts\.net/.test(st.address) ? "reachable on your Tailscale network" : "reachable on this network"} while it's on.</p>` : ""}
+        ${!paused && st.last_error ? `<p class="text-[11px] text-zinc-500">Messages couldn't be checked just now. Xod keeps trying.</p>` : `<p class="text-[11px] text-zinc-500">Checked ${esc(when(st.last_check)) || "never"} · checks every 30 seconds</p>`}
         ${st.outbox ? `<p class="text-[11px] text-zinc-400">${st.outbox} waiting in your outbox (the other side wasn't reachable): Xod keeps trying. <button data-ml="retry" class="underline">Try now</button></p>` : ""}
+        <details><summary class="text-[11px] text-zinc-500 cursor-pointer">Details</summary>${detailBits}</details>
       </div>`;
   }
 
@@ -164,8 +220,10 @@
             <select data-ml="trust" class="bg-surface-900 border border-surface-700 rounded-lg px-2 py-1 text-[11px] text-white">
               ${[["known", "Contact"], ["mine", "My own agent"], ["unknown", "Not a contact"], ["blocked", "Blocked"]].map(([v, l]) => `<option value="${v}" ${c.trust === v ? "selected" : ""}>${l}</option>`).join("")}
             </select></div>
-          <p class="text-[11px] text-zinc-500 font-mono">${esc(c.address)}</p>
-          <p class="text-[11px] text-zinc-500">Safety number <span class="font-mono text-zinc-300">${esc(c.safety)}</span>${c.verified ? ` <span class="text-emerald-300">· checked</span>` : ""}</p>
+          ${c.verified ? `<p class="text-[11px] text-emerald-300">Safety number checked with them</p>` : ""}
+          <details><summary class="text-[11px] text-zinc-500 cursor-pointer">Details</summary>
+            <p class="text-[11px] text-zinc-500 font-mono mt-1">${esc(c.address)}</p>
+            <p class="text-[11px] text-zinc-500 mt-1">Safety number <span class="font-mono text-zinc-300">${esc(c.safety)}</span></p></details>
           ${(c.trust === "known" || c.trust === "mine") ? `<label class="text-[11px] text-zinc-400 flex items-center gap-2"><input type="checkbox" data-ml="autoreply" ${c.auto_reply ? "checked" : ""} class="accent-brand-400"> Auto-reply to their messages</label>` : ""}
           <div class="flex gap-2">${c.verified ? "" : `<button data-ml="verify" class="${quiet} px-2 py-1">I compared it with them</button>`}
             <button data-ml="message" class="${quiet} px-2 py-1">Message</button></div>
@@ -194,15 +252,46 @@
     if (!threads.length) {
       return `<p class="text-[12px] text-zinc-500">${view.box === "requests" ? "No requests. Messages from agents who aren't your contacts land here first." : "No messages yet. Share your address with someone, or write to an agent."}</p>`;
     }
-    return threads.map((t) => {
+    // Phase 3: the inbox groups by sender. One row per agent - friendly
+    // name, the latest real message, and a count - so a pile of threads
+    // from the same machine reads as one conversation. A group with a
+    // single thread opens it directly; a group with several opens the
+    // sender's thread list first. Previews never show raw machine JSON.
+    const threadRow = (t) => {
       const m = t.last;
       const who = t.peers.filter((p) => p !== st.address).join(", ") || m.peer;
+      const preview = MW ? MW.plainPreview(m.text, m.subject) : (m.subject || m.text);
       return `
         <button data-ml-thread="${esc(t.thread)}" class="w-full text-left task-card space-y-1 hover:border-white/20">
           <div class="flex items-center justify-between gap-2">
             <p class="text-[13px] ${t.unread ? "text-white font-semibold" : "text-zinc-200"} truncate" title="${esc(who)}">${esc(who.split(", ").map((a) => friendlySender(a)).join(", "))}</p>
             <span class="text-[11px] text-zinc-500 shrink-0">${esc(when(t.last_at))}</span></div>
-          <p class="text-[12px] text-zinc-400 truncate">${m.kind === "task_request" ? `<span class="text-brand-300">Task request · </span>` : ""}${esc(m.subject || m.text)}</p>
+          <p class="text-[12px] text-zinc-400 truncate">${m.kind === "task_request" ? `<span class="text-brand-300">Task request · </span>` : ""}${esc(preview)}</p>
+        </button>`;
+    };
+    if (!MW) return threads.map(threadRow).join("");
+    const groups = MW.groupThreadsBySender(threads, st.address);
+    if (view.sender) {
+      const g = groups.find((x) => x.key === view.sender);
+      if (g && g.threads.length > 1) {
+        const name = g.peers.map((a) => friendlySender(a)).join(", ");
+        return `<button data-ml="all-senders" class="text-[12px] text-zinc-400 hover:text-white">← All senders</button>
+          <p class="text-[13px] text-white">${esc(name)}</p>` + g.threads.map(threadRow).join("");
+      }
+      view.sender = null;
+    }
+    return groups.map((g) => {
+      if (g.threads.length === 1) return threadRow(g.threads[0]);
+      const m = g.last;
+      const name = g.peers.map((a) => friendlySender(a)).join(", ");
+      const preview = MW.plainPreview(m.text, m.subject);
+      return `
+        <button data-ml-sender="${esc(g.key)}" class="w-full text-left task-card space-y-1 hover:border-white/20">
+          <div class="flex items-center justify-between gap-2">
+            <p class="text-[13px] ${g.unread ? "text-white font-semibold" : "text-zinc-200"} truncate">${esc(name)}</p>
+            <span class="text-[11px] text-zinc-500 shrink-0">${esc(when(g.last_at))}</span></div>
+          <p class="text-[12px] text-zinc-400 truncate">${esc(preview)}</p>
+          <p class="text-[11px] text-zinc-500">${g.count} message${g.count === 1 ? "" : "s"} · ${g.threads.length} conversations</p>
         </button>`;
     }).join("");
   }
@@ -212,16 +301,38 @@
     const lastIn = [...messages].reverse().find((m) => m.direction === "in");
     const peer = lastIn ? lastIn.peer : (messages[0]?.recipients || [messages[0]?.peer]).join(", ");
     const isRequest = view.box === "requests";
+    // Phase 3: a connection request reads in plain words - who is asking
+    // (friendly name + where), what it can do and what it cannot do, from
+    // the capability set it shared. The raw payload never renders on the
+    // surface; it lives under the card's Details.
+    const caps = isRequest ? threadCapabilities(messages) : null;
+    const helloMsg = isRequest && MW ? messages.find((m) => MW.parseMachinePayload(m.text)) : null;
+    const requestCard = isRequest ? `
+      <div class="task-card space-y-2" data-ml-request>
+        <p class="text-[13px] text-white">${esc(requesterIntro(peer))} wants to connect.</p>
+        ${caps ? `${MW.canSentence(caps) ? `<p class="text-[12px] text-zinc-300">${esc(MW.canSentence(caps))}</p>` : ""}${MW.cannotSentence(caps) ? `<p class="text-[12px] text-zinc-300">${esc(MW.cannotSentence(caps))}</p>` : ""}`
+          : `<p class="text-[12px] text-zinc-300">It can: send you messages.</p><p class="text-[12px] text-zinc-300">It cannot: do anything else unless you allow it.</p>`}
+        <div class="flex gap-2"><button data-ml="accept" data-peer="${esc(peer)}" class="${primary}">Allow</button><button data-ml="block" data-peer="${esc(peer)}" class="${quiet}">Block</button></div>
+        ${helloMsg ? `<details><summary class="text-[11px] text-zinc-500 cursor-pointer">Details</summary><p class="font-mono text-[11px] text-zinc-500 whitespace-pre-wrap mt-1">${esc(helloMsg.text)}</p></details>` : ""}
+      </div>` : "";
+    // A message whose text is a machine payload renders as one plain line;
+    // the raw payload sits under its own Details, never on the surface.
+    const messageBody = (m) => {
+      const payload = MW ? MW.parseMachinePayload(m.text) : null;
+      if (!payload) return `${m.subject ? `<p class="text-[13px] text-white mt-0.5">${esc(m.subject)}</p>` : ""}
+          <p class="text-[13px] text-zinc-200 whitespace-pre-wrap mt-0.5">${esc(m.text)}</p>`;
+      const line = MW.capabilitySet(payload) ? "Shared what it can do." : "An automatic message between agents.";
+      return `<p class="text-[12px] text-zinc-400 mt-0.5">${line}</p>
+          <details><summary class="text-[11px] text-zinc-500 cursor-pointer">Details</summary><p class="font-mono text-[11px] text-zinc-500 whitespace-pre-wrap mt-1">${esc(m.text)}</p></details>`;
+    };
     return `
       <button data-ml="back" class="text-[12px] text-zinc-400 hover:text-white">← Back</button>
       <p class="text-[13px] text-white" title="${esc(peer)}">${esc(friendlyList(peer))}</p>
-      ${isRequest ? `<div class="task-card space-y-2 border-amber-500/30"><p class="text-[12px] text-zinc-300">This agent isn't in your contacts. Accept to reply and see their future messages in your Inbox.</p>
-        <div class="flex gap-2"><button data-ml="accept" data-peer="${esc(peer)}" class="${primary}">Accept</button><button data-ml="block" data-peer="${esc(peer)}" class="${quiet}">Block</button></div></div>` : ""}
+      ${requestCard}
       <div class="space-y-2">${messages.filter((m) => m.status !== "draft").map((m) => `
         <div class="rounded-xl px-3 py-2 ${m.direction === "out" ? "bg-brand-500/10 border border-brand-500/20 ml-6" : "bg-surface-900 border border-white/[0.06] mr-6"}">
           <p class="text-[11px] text-zinc-500">${m.direction === "out" ? "You" : `<span title="${esc(m.peer)}">${esc(friendlySender(m.peer))}</span>`} · ${esc(when(m.created_at))}${m.direction === "in" && m.verified ? ` · <span class="text-emerald-300" title="Signed with their key and opened only by yours">verified</span>` : ""}${m.status === "failed" ? ` · <span class="text-red-300">not sent: ${esc(m.problem || "")}</span>` : ""}</p>
-          ${m.subject ? `<p class="text-[13px] text-white mt-0.5">${esc(m.subject)}</p>` : ""}
-          <p class="text-[13px] text-zinc-200 whitespace-pre-wrap mt-0.5">${esc(m.text)}</p>
+          ${messageBody(m)}
           ${m.kind === "task_request" && m.direction === "in" && !isRequest ? `<div class="mt-2 flex items-center gap-2">${m.task_id ? `<span class="text-[12px] text-zinc-400">Running as a task (see Tasks). The result comes back as a reply for your OK.</span>`
             : `<button data-ml="run" data-id="${esc(m.id)}" class="${primary} py-1 whitespace-nowrap shrink-0">Run this task</button><span class="text-[11px] text-zinc-500">It still asks before sending, paying or deleting anything.</span>`}</div>` : ""}
         </div>`).join("")}</div>
@@ -267,10 +378,11 @@
   }
 
   async function onClick(e) {
-    const el = e.target.closest("[data-ml],[data-ml-box],[data-ml-thread],[data-close-mail]");
+    const el = e.target.closest("[data-ml],[data-ml-box],[data-ml-thread],[data-ml-sender],[data-close-mail]");
     if (!el) return;
     if (el.matches("[data-close-mail]")) return window.closeMailPanel();
     if (el.dataset.mlBox) { view = { box: el.dataset.mlBox }; return render(); }
+    if (el.dataset.mlSender) { view.sender = el.dataset.mlSender; return render(); }
     if (el.dataset.mlThread) { view.thread = el.dataset.mlThread; return render(); }
     const a = el.dataset.ml;
     if (a === "trust" && e.type === "change") {
@@ -296,6 +408,13 @@
       return render();
     }
     if (a === "copy") { await navigator.clipboard.writeText(st.address); return showToast("Address copied"); }
+    if (a === "fix-post") {
+      el.disabled = true; el.textContent = "Fixing…";
+      const r = await api("/api/mail/home/repair", "POST", {});
+      showToast(r.success ? "Messages are back" : "Still paused — Xod will keep trying");
+      return render();
+    }
+    if (a === "all-senders") { view.sender = null; return render(); }
     if (a === "retry") { const r = await api("/api/mail/outbox/retry", "POST", {}); showToast(r.sent ? `Delivered ${r.sent}` : "Still not reachable; Xod keeps trying"); return render(); }
     if (a === "compose") { view.compose = {}; return render(); }
     if (a === "message") { view = { box: "inbox", compose: { to: el.closest("[data-ml-contact]").dataset.mlContact } }; return render(); }
@@ -366,8 +485,8 @@
         <div class="tasks-scrim" data-close-mail></div>
         <aside class="tasks-drawer" role="dialog" aria-label="Agent Mail">
           <header class="px-5 pt-5 pb-3 flex items-start justify-between gap-3 border-b border-white/[0.06]">
-            <div><h3 class="font-bold text-lg text-white">Agent Mail</h3>
-              <p class="text-[12px] text-zinc-400 mt-0.5">Encrypted messages between AI agents. Nothing is sent or run without your OK.</p></div>
+            <div><h3 class="font-bold text-lg text-white">Messages</h3>
+              <p class="text-[12px] text-zinc-400 mt-0.5">Encrypted messages between your machines and agents. Nothing is sent or run without your OK.</p></div>
             <button data-close-mail class="p-1 -mr-1 rounded-lg text-zinc-500 hover:text-white hover:bg-surface-700" title="Close"><i data-lucide="x" class="size-4"></i></button>
           </header>
           <div id="mailBody" class="flex-1 overflow-y-auto px-5 py-4 space-y-4"></div>

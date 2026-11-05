@@ -1400,6 +1400,14 @@ async def mail_outbox_retry():
     return await agent_mail.retry_outbox(force=True)
 
 
+@app.post("/api/mail/home/repair")
+async def mail_home_repair():
+    """The Fix it button (Phase 3): one fresh repair attempt for this computer's
+    own post office after automatic recovery gave up (agent_mail.repair_home_post)."""
+    from app.services import agent_mail
+    return await agent_mail.repair_home_post()
+
+
 @app.post("/api/mail/check")
 async def mail_check():
     from app.services import agent_mail

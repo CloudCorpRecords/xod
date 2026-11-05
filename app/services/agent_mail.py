@@ -164,7 +164,19 @@ def status() -> Dict[str, Any]:
         out["outbox"] = c.execute("SELECT COUNT(*) FROM mail_outbox").fetchone()[0]
     from app.services import home_post
     out["self_hosted"] = bool(cfg.get("home"))
-    out["home"] = {"running": home_post.running(), "domain": home_post.domain(), "port": home_post.PORT} if cfg.get("home") else None
+    if cfg.get("home"):
+        running = home_post.running()
+        out["home"] = {"running": running, "domain": home_post.domain(), "port": home_post.PORT,
+                       # Phase 3 (simplicity redesign): the post office heals itself (see
+                       # ensure_home_post). The surface reads only these two calm states:
+                       # "recovering" (Xod is fixing it, show nothing) and "paused"
+                       # (recovery gave up; show one line + Fix it). Port and error text
+                       # stay in the payload for the Details disclosure, never the headline.
+                       "recovering": bool(not running and _home_recovery["attempts"] and not _home_recovery["paused"]),
+                       "paused": bool(not running and _home_recovery["paused"]),
+                       "last_error": _home_recovery["last_error"]}
+    else:
+        out["home"] = None
     return out
 
 
@@ -776,6 +788,67 @@ def _notify(title: str, text: str) -> None:
         pass
 
 
+# ---------------------------------------------------------------- self-healing post office (Phase 3)
+
+# This Xod's own post office (services/home_post.py) is started by the mail loop.
+# If it dies (crash, port conflict at boot, a killed server task), Xod restarts it
+# itself: the user is never told to restart anything or check a port. Only when
+# recovery has genuinely failed HOME_RECOVERY_MAX times in a row does the state
+# become "paused", which is the one case the surface reports ("Messages are
+# paused." + a Fix it button that calls repair_home_post()).
+HOME_RECOVERY_MAX = 3
+_home_recovery: Dict[str, Any] = {"attempts": 0, "paused": False, "last_error": None}
+
+
+async def ensure_home_post() -> Dict[str, Any]:
+    """Makes sure this computer's own post office is running, restarting it if not.
+    Returns a small state dict: not_home / running / recovering / paused."""
+    cfg = _config()
+    if not cfg.get("home") or not cfg.get("address"):
+        return {"state": "not_home"}
+    from app.services import home_post
+    if home_post.running():
+        _home_recovery.update(attempts=0, paused=False, last_error=None)
+        return {"state": "running"}
+    if _home_recovery["paused"]:
+        return {"state": "paused", "error": _home_recovery["last_error"]}
+    _home_recovery["attempts"] += 1
+    r = await home_post.start(cfg["home"]["domain"])
+    if r.get("success"):
+        logger.info("Agent Mail: this computer's post office is running again "
+                    f"(recovery attempt {_home_recovery['attempts']}).")
+        _home_recovery.update(attempts=0, paused=False, last_error=None)
+        return {"state": "running"}
+    _home_recovery["last_error"] = r.get("error")
+    if _home_recovery["attempts"] >= HOME_RECOVERY_MAX:
+        _home_recovery["paused"] = True
+        logger.warning(f"Agent Mail: the post office could not be restarted after "
+                       f"{_home_recovery['attempts']} attempts: {r.get('error')}")
+        return {"state": "paused", "error": r.get("error")}
+    logger.warning(f"Agent Mail: post office restart attempt {_home_recovery['attempts']} "
+                   f"failed: {r.get('error')}")
+    return {"state": "recovering", "attempts": _home_recovery["attempts"], "error": r.get("error")}
+
+
+async def repair_home_post() -> Dict[str, Any]:
+    """The Fix it button: a fresh, full repair attempt. Clears the paused state,
+    stops any half-dead server, and starts the post office again."""
+    cfg = _config()
+    if not cfg.get("home"):
+        return {"success": False, "error": "This Xod uses a shared post office, so there is nothing to repair here."}
+    from app.services import home_post
+    _home_recovery.update(attempts=0, paused=False, last_error=None)
+    if not home_post.running():
+        try:
+            await home_post.stop()      # clear a half-dead server before starting fresh
+        except Exception:
+            pass
+    r = await ensure_home_post()
+    if r["state"] == "running":
+        return {"success": True, "state": "running"}
+    return {"success": False, "state": r["state"], "error": r.get("error") or _home_recovery["last_error"]}
+
+
 # ---------------------------------------------------------------- background
 
 _task: Optional[asyncio.Task] = None
@@ -797,14 +870,12 @@ def wake() -> None:
 
 
 async def _loop() -> None:
-    cfg = _config()
-    if cfg.get("home") and cfg.get("address"):     # this Xod hosts its own post office: open it again
-        from app.services import home_post
-        r = await home_post.start(cfg["home"]["domain"])
-        if not r.get("success"):
-            logger.warning(f"Agent Mail: this computer's post office didn't start: {r.get('error')}")
     while True:
         try:
+            # Phase 3: the post office heals itself. Every cycle first makes sure
+            # this computer's own post office is up (restarting it silently when
+            # it isn't); only a genuinely failed recovery becomes "paused".
+            await ensure_home_post()
             if status()["set_up"]:
                 await check()
                 await retry_outbox()
