@@ -145,7 +145,7 @@
     if (!line) return;
     try {
       const [counts, ms] = await Promise.all([api("/api/tasks/counts"), api("/api/missions")]);
-      const missions = Array.isArray(ms.missions) ? ms.missions : [];
+      const missions = (Array.isArray(ms.missions) ? ms.missions : []).filter((m) => !m.scratch);
       const needs = (counts.waiting || 0) + missions.filter((m) => m.state === "paused").length;
       const working = (counts.working || 0) + (counts.queued || 0)
         + missions.filter((m) => m.state === "planning" || m.state === "running").length;

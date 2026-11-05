@@ -133,7 +133,12 @@
   // feed reads top to bottom: Needs you, Working, Finished.
   function render() {
     const buckets = { needs: "", running: "", finished: "", counts: { needs: 0, running: 0, finished: 0 } };
+    // Phase 2: scratch/proving missions (origin stamp, services/missions.py)
+    // are filtered out of the Work feed into the Playground
+    // (Settings - Advanced), the same way Phase 0 treats projects.
+    window.__xodScratchMissionCount = missions.filter((m) => m.scratch).length;
     for (const m of missions) {
+      if (m.scratch) continue;
       const b = (window.WorkRouter && WorkRouter.missionBucket)
         ? WorkRouter.missionBucket(m.state)
         : (m.state === "paused" ? "needs" : (m.state === "planning" || m.state === "running") ? "running" : "finished");
@@ -145,7 +150,7 @@
     window.__xodMissionBuckets = buckets;
     window.__xodMissionsSignature = sig;
     const list = $("missionsList");
-    if (list) list.innerHTML = missions.length ? "" : '<div class="text-[12px] text-zinc-500 px-5 pt-3">No bigger jobs yet. Give Xod a job above — it plans the steps itself when a job needs them.</div>';
+    if (list) list.innerHTML = missions.some((m) => !m.scratch) ? "" : '<div class="text-[12px] text-zinc-500 px-5 pt-3">No bigger jobs yet. Give Xod a job above — it plans the steps itself when a job needs them.</div>';
     if (sig === lastRendered) return;
     lastRendered = sig;
     if (window.__xodRenderWorkFeed) window.__xodRenderWorkFeed();

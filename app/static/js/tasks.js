@@ -101,10 +101,15 @@
     // (missions.js), so "Needs you" approvals are pinned at the very top
     // of the whole feed, then running jobs, then finished results.
     const mb = window.__xodMissionBuckets || { needs: "", running: "", finished: "", counts: { needs: 0, running: 0, finished: 0 } };
+    // Phase 2: scratch/proving jobs (origin stamp, services/task_queue.py)
+    // never appear in the Work feed; they live in the Playground
+    // (Settings - Advanced). Display-only; nothing is deleted.
+    const real = tasks.filter((t) => !t.scratch);
+    window.__xodScratchTaskCount = tasks.length - real.length;
     const groups = [
-      ["Needs you", tasks.filter((t) => t.status === "waiting"), waitingCard, mb.needs, mb.counts.needs],
-      ["Working", tasks.filter((t) => ["working", "queued"].includes(t.status)), (t) => (t.status === "queued" ? queuedCard(t) : workingCard(t)), mb.running, mb.counts.running],
-      ["Finished", tasks.filter((t) => ["done", "failed", "cancelled"].includes(t.status)), finishedCard, mb.finished, mb.counts.finished],
+      ["Needs you", real.filter((t) => t.status === "waiting"), waitingCard, mb.needs, mb.counts.needs],
+      ["Working", real.filter((t) => ["working", "queued"].includes(t.status)), (t) => (t.status === "queued" ? queuedCard(t) : workingCard(t)), mb.running, mb.counts.running],
+      ["Finished", real.filter((t) => ["done", "failed", "cancelled"].includes(t.status)), finishedCard, mb.finished, mb.counts.finished],
     ];
     const html = groups.filter(([, items, , extra]) => items.length || extra).map(([name, items, card, extra, extraCount]) => `
       <section>

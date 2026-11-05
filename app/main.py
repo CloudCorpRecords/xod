@@ -479,6 +479,7 @@ async def secrets_list():
 # --------------------------------------------------------------
 class NewTaskRequest(BaseModel):
     request: str
+    origin: Optional[str] = None          # "user" for real work; scratch/test/proving for Playground jobs
 
 
 class TaskAnswerRequest(BaseModel):
@@ -502,7 +503,7 @@ async def task_counts():
 async def create_task(req: NewTaskRequest):
     from app.services.task_queue import task_queue
     try:
-        return {"success": True, "task": task_queue.create(req.request)}
+        return {"success": True, "task": task_queue.create(req.request, origin=req.origin or "user")}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -564,13 +565,14 @@ async def show_task_page(task_id: str):
 class NewMissionRequest(BaseModel):
     goal: str
     continue_on_failure: bool = False
+    origin: Optional[str] = None          # "user" for real work; scratch/test/proving for Playground jobs
 
 
 @app.post("/api/missions")
 async def create_mission(req: NewMissionRequest):
     from app.services import missions
     try:
-        return {"success": True, "mission": missions.create_mission(req.goal, req.continue_on_failure)}
+        return {"success": True, "mission": missions.create_mission(req.goal, req.continue_on_failure, origin=req.origin or "user")}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

@@ -95,7 +95,23 @@ SHOTS_DIR = DATA_DIR / "tasks"
 
 LIVE_FIELDS = ("id", "title", "request", "status", "waiting_kind", "waiting_detail", "result", "now",
                "created_at", "updated_at", "finished_at", "steps", "has_screenshot", "history",
-               "last_progress_at", "stalled", "stalled_reason")
+               "last_progress_at", "stalled", "stalled_reason", "origin", "scratch")
+
+
+# ------------------------------------------------------- scratch / playground classification
+# Phase 2 of the simplicity redesign: tasks carry the same origin marker
+# Phase 0 added for projects (create(..., origin=...)). A job is scratch
+# when its origin marker says so, or - for jobs created before the marker
+# existed - when its title matches the same conservative legacy-debris
+# name check Phase 0 uses for projects (project_storage.is_scratch_project).
+# Classification is display-only: scratch jobs are filtered out of the
+# Work feed into the Playground (Settings, Advanced); nothing is deleted.
+def is_scratch_job(title: str = "", origin: str = "") -> bool:
+    try:
+        from app.services.project_storage import is_scratch_project
+        return is_scratch_project(title or "", [], origin or "user")
+    except Exception:
+        return (origin or "").strip().lower() in {"scratch", "test", "proving", "eval", "smoke"}
 
 # Cancel and watchdog timing. A first cancel is graceful (the run stops after
 # its current step); if the task is still working CANCEL_GRACE_SEC later, or
@@ -160,6 +176,8 @@ def _init() -> None:
         c.execute("ALTER TABLE tasks ADD COLUMN stalled INTEGER DEFAULT 0")
     if "stalled_reason" not in cols:
         c.execute("ALTER TABLE tasks ADD COLUMN stalled_reason TEXT")
+    if "origin" not in cols:
+        c.execute("ALTER TABLE tasks ADD COLUMN origin TEXT DEFAULT 'user'")
     c.commit()
     c.close()
 
@@ -168,6 +186,8 @@ def _row(r: sqlite3.Row) -> Dict[str, Any]:
     d = dict(r)
     if "stalled" in d:
         d["stalled"] = bool(d["stalled"])
+    d["origin"] = d.get("origin") or "user"
+    d["scratch"] = is_scratch_job(d.get("title") or "", d["origin"])
     for k in ("next_action", "waiting_detail", "mission_json", "pending_json", "history", "evidence_json"):
         if d.get(k):
             try:
@@ -625,12 +645,14 @@ class TaskQueue:
 
     def counts(self) -> Dict[str, int]:
         c = _conn()
-        rows = c.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").fetchall()
+        rows = c.execute("SELECT status, COUNT(*) AS n FROM tasks "
+                         "WHERE COALESCE(LOWER(origin), 'user') NOT IN ('scratch', 'test', 'proving', 'eval', 'smoke') "
+                         "GROUP BY status").fetchall()
         c.close()
         return {r["status"]: r["n"] for r in rows}
 
     # ------------------------------------------------------------------ user actions
-    def create(self, request: str, title: Optional[str] = None) -> Dict[str, Any]:
+    def create(self, request: str, title: Optional[str] = None, origin: str = "user") -> Dict[str, Any]:
         request = (request or "").strip()
         if not request:
             raise ValueError("Tell Xod what to do.")
@@ -639,9 +661,9 @@ class TaskQueue:
         title = title or (request if len(request) <= 70 else request[:67].rsplit(" ", 1)[0] + "…")
         c = _conn()
         c.execute(
-            "INSERT INTO tasks (id, created_at, updated_at, title, request, status, next_action, history, last_progress_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO tasks (id, created_at, updated_at, title, request, status, next_action, history, last_progress_at, origin) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (task_id, now, now, title, request, "queued", json.dumps({"type": "start"}),
-             json.dumps([{"at": now, "text": "Added to your tasks"}]), now),
+             json.dumps([{"at": now, "text": "Added to your tasks"}]), now, origin or "user"),
         )
         c.commit()
         c.close()

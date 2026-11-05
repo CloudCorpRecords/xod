@@ -544,13 +544,31 @@ def _conn() -> sqlite3.Connection:
         c.execute("ALTER TABLE mission_subtasks ADD COLUMN contract TEXT DEFAULT '{}'")
     if "input_delivery" not in cols:
         c.execute("ALTER TABLE mission_subtasks ADD COLUMN input_delivery TEXT DEFAULT '[]'")
+    # Origin marker (simplicity redesign Phase 2): the same stamp Phase 0
+    # added for projects, so proving-run missions can be filtered out of
+    # the Work feed into the Playground. Display-only; nothing is deleted.
+    mcols = [r[1] for r in c.execute("PRAGMA table_info(missions)").fetchall()]
+    if "origin" not in mcols:
+        c.execute("ALTER TABLE missions ADD COLUMN origin TEXT DEFAULT 'user'")
     c.commit()
     return c
+
+
+def is_scratch_mission(goal: str = "", origin: str = "") -> bool:
+    """True for test/proving missions: origin marker, or the conservative
+    legacy name check Phase 0 uses for projects applied to the goal text."""
+    try:
+        from app.services.task_queue import is_scratch_job
+        return is_scratch_job(goal or "", origin or "user")
+    except Exception:
+        return (origin or "").strip().lower() in {"scratch", "test", "proving", "eval", "smoke"}
 
 
 def _mission_row(r: sqlite3.Row) -> Dict[str, Any]:
     d = dict(r)
     d["continue_on_failure"] = bool(d.get("continue_on_failure"))
+    d["origin"] = d.get("origin") or "user"
+    d["scratch"] = is_scratch_mission(d.get("goal") or "", d["origin"])
     for k in ("plan_json", "report_json"):
         if d.get(k):
             try:
@@ -1571,7 +1589,8 @@ class MissionRunner:
                                         + outcome["evidence"][0])
                 return True
             task = self.queue.create(request,
-                                     title=f"{sub['title']} (mission step {sub['idx'] + 1})")
+                                     title=f"{sub['title']} (mission step {sub['idx'] + 1})",
+                                     origin=(get_mission(mission_id) or {}).get("origin") or "user")
             _save_subtask(sub["id"], task_id=task["id"], status="queued",
                           started_at=time.time(), input_delivery=delivery)
             sub = {**sub, "task_id": task["id"]}
@@ -1786,15 +1805,15 @@ def build_report(mission: Dict[str, Any]) -> Dict[str, Any]:
 runner = MissionRunner()
 
 
-def create_mission(goal: str, continue_on_failure: bool = False) -> Dict[str, Any]:
+def create_mission(goal: str, continue_on_failure: bool = False, origin: str = "user") -> Dict[str, Any]:
     goal = (goal or "").strip()
     if not goal:
         raise ValueError("Tell Xod the goal first.")
     mid = f"mission-{uuid.uuid4().hex[:10]}"
     now = time.time()
     c = _conn()
-    c.execute("INSERT INTO missions (id, goal, state, continue_on_failure, created_at, updated_at) "
-              "VALUES (?,?,?,?,?,?)", (mid, goal, "planning", 1 if continue_on_failure else 0, now, now))
+    c.execute("INSERT INTO missions (id, goal, state, continue_on_failure, created_at, updated_at, origin) "
+              "VALUES (?,?,?,?,?,?,?)", (mid, goal, "planning", 1 if continue_on_failure else 0, now, now, origin or "user"))
     c.commit()
     c.close()
     from app.services import event_log

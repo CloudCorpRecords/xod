@@ -18,6 +18,9 @@
     return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
   };
 
+  // Phase 2: a family member is a device card - friendly name, ONE
+  // status line, what it can do in plain words. Endpoints and other
+  // plumbing stay off the card (they live in pairing/details flows).
   function memberRow(m) {
     const caps = (m.capabilities || []).map((c) =>
       `<span class="px-1.5 py-0.5 rounded-md bg-surface-700 text-zinc-300 text-[11px]">${esc(c)}</span>`).join("");
@@ -29,7 +32,8 @@
           <span class="text-zinc-500 text-[11px]">${esc(m.platform)}</span>
           ${m.verified ? `<span class="px-1.5 py-0.5 rounded-md bg-emerald-900 text-emerald-300 text-[11px]">signature verified</span>` : `<span class="px-1.5 py-0.5 rounded-md bg-surface-700 text-zinc-400 text-[11px]">unsigned</span>`}
         </div>
-        <p class="text-[12px] text-zinc-400">${m.endpoint ? `Tailnet <span class="font-mono text-zinc-200">${esc(m.endpoint)}</span> · ` : ""}last seen ${ago(m.last_seen)}</p>
+        <p class="text-[12px] text-zinc-400">${esc(m.name)} - last seen ${ago(m.last_seen)}</p>
+        ${m.endpoint ? `<details><summary class="text-[11px] text-zinc-500 cursor-pointer">Details</summary><p class="text-[11px] text-zinc-500 font-mono mt-0.5">${esc(m.endpoint)}</p></details>` : ""}
         ${caps ? `<div class="flex flex-wrap gap-1">${caps}</div>` : `<p class="text-[12px] text-zinc-500">No capabilities listed.</p>`}
         ${m.note ? `<p class="text-[12px] text-zinc-500">${esc(m.note)}</p>` : ""}
       </li>`;
@@ -189,7 +193,15 @@
             <button data-close-family class="p-1 -mr-1 rounded-lg text-zinc-500 hover:text-white hover:bg-surface-700" title="Close"><i data-lucide="x" class="size-4"></i></button>
           </header>
           <div class="px-5 py-4 border-b border-white/[0.06] space-y-2">
-            <p class="text-[12px] font-semibold text-zinc-300">Message Tree</p>
+            <button data-family-action="messages" class="surface-row" style="background:rgba(255,255,255,0.03)">
+              <span class="flex-1 min-w-0"><span class="block text-zinc-100 text-[13px] font-semibold">Messages</span><span class="block text-[12px] text-zinc-500">Messages between your machines and agents (Agent Mail), real messages only.</span></span>
+              <span class="text-zinc-500 text-[12px]">Open</span>
+            </button>
+            <div class="flex gap-2">
+              <button data-family-action="xods" class="flex-1 px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px]">Your Xods</button>
+              <button data-family-action="phone" class="flex-1 px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px]">Your phone</button>
+            </div>
+            <p class="text-[12px] font-semibold text-zinc-300 pt-1">Message Tree</p>
             <p class="text-[12px] text-zinc-500">Send a note straight to Tree, your Muse agent — it lands in the family inbox and Tree picks it up from there. No relaying it yourself.</p>
             <textarea id="treeText" rows="3" class="task-answer w-full" placeholder="What should Tree know?"></textarea>
             <div class="flex items-center gap-2">
@@ -206,6 +218,15 @@
         </aside>`;
       document.body.appendChild(root);
       root.addEventListener("click", (e) => { if (e.target.closest("[data-close-family]")) window.closeFamilyPanel(); });
+      root.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-family-action]");
+        if (!b) return;
+        const a = b.getAttribute("data-family-action");
+        window.closeFamilyPanel();
+        if (a === "messages" && window.openMailPanel) window.openMailPanel();
+        if (a === "xods" && window.openXodsPanel) window.openXodsPanel();
+        if (a === "phone" && window.openPhonePanel) window.openPhonePanel();
+      });
       root.querySelector("#treeSend").addEventListener("click", async () => {
         const textEl = root.querySelector("#treeText");
         const stateEl = root.querySelector("#treeState");
