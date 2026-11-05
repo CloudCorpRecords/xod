@@ -550,6 +550,11 @@ async def a15_waits_for_step_jobs(q):
     check("hedged 'still running' report, job observed to finish: step completed on its first attempt",
           t["status"] == "done" and items[0]["attempts"] == 1, f"{t['status']} {json.dumps(items[0])[:300]}")
     check("the evidence names the observed job end", any("observed: job" in e for e in items[0]["evidence"]), str(items[0]["evidence"]))
+    # Live L3 (count k, 2026-11-04): the step was rightly completed on the observed job end, but its result still told the
+    # person "I can't confirm". The overruled hedge is not shown as the outcome; what Xod observed is.
+    res = items[0].get("result") or ""
+    check("the result drops the overruled hedge and states what Xod observed",
+          not re.search(r"can.t (tell|verify|confirm|check)", res.lower()) and "observed" in res.lower(), res[:300])
     check("the job ran exactly once", len(JOBS_STARTED) - n0 == 1 and log.read_text().split() == ["one"])
     twice = O._job_problems([{"name": "Step 8", "command": "echo x >> f", "cwd": "/t", "status": "completed", "exit_code": 0},
                              {"name": "Append step8", "command": "echo x >> f", "cwd": "/t", "status": "completed", "exit_code": 0}])

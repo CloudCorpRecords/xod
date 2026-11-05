@@ -736,6 +736,15 @@ def _self_report_problem(step_text: str, report: str) -> Optional[str]:
     return None
 
 
+def _overrule_hedge(report: str, observed: List[str]) -> str:
+    """The step's report minus the sentences that hedge on an outcome Xod observed, plus what it observed."""
+    import re
+    kept = [x for x in re.split(r"(?<=[.!?])\s+|\n+", report or "")
+            if x.strip() and not any(re.search(p, x.replace("\u2019", "'").lower()) for p in _UNVERIFIED_RES)]
+    seen = "; ".join(o.strip() for o in observed[:3]) or "every job this step started finished cleanly"
+    return (" ".join(kept).strip() + "\n\n" if kept else "") + f"Checked by Xod: {seen}."
+
+
 def _flag_section(items: List[Dict[str, Any]]) -> str:
     seen, lines = set(), []
     for i in items:
@@ -881,8 +890,10 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             own = None if step.get("parallel") else _self_report_problem(step["text"], report)
             if own and jobs and not job_problems:
                 # The agent could not see the end; the orchestrator did: every job it started
-                # for this step finished cleanly. The observation outranks the hedge.
+                # for this step finished cleanly. The observation outranks the hedge, and the result says so
+                # instead of telling the person it couldn't confirm (live L3, count k).
                 own = None
+                report = _overrule_hedge(report, [e for e in job_evidence if "observed" in e])
             problems = problems + job_problems
             if own:
                 problems = problems + [own]
