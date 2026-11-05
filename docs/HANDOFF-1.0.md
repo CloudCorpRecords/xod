@@ -124,6 +124,9 @@ gpt-6.1-terra). Tiers 0–8 all passed 3/3 consecutive live passes of all 69 che
   It still has to reach the lassoed card and return there after signing (fe990ae).
 - `tests/features/run_connectors_test.py`: the Mac connector has had 28 tools since 956e9fc, and sending a message
   or unlocking always asks. The check names the exact list (1a52cc8).
+- `tests/smoke/run_cli_test.py`: since fee43d4 (headless), `xod task` goes through `/api/orchestrator/tasks` and
+  prints "Acknowledged …". The test's stand-in server still served the old `/api/tasks` route, so CI failed on
+  PR #43. The stand-in now serves the orchestrator route, and the approval and result checks are unchanged.
 
 ---
 

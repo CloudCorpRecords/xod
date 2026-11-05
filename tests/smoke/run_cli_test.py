@@ -185,11 +185,12 @@ class FakeXod(Base):
             rec = State.pending.pop(m.group(2), None)
             (State.approved if m.group(1) == "approve" else State.declined).append(m.group(2))
             return self.send({"success": bool(rec), "content": "note created"} if m.group(1) == "approve" else {"success": bool(rec)})
-        if p == "/api/tasks":
+        if p == "/api/orchestrator/tasks":     # `xod task` goes through the orchestrator (fee43d4): an ack first
             State.task = {"id": "task-1", "title": body["request"], "request": body["request"], "status": "queued",
                           "history": [{"text": "Added to your tasks"}]}
             State.task_polls = 0
-            return self.send({"success": True, "task": State.task})
+            return self.send({"success": True, "ack": {"type": "ack", "task_id": "task-1", "scope": body["request"],
+                                                       "status": "queued"}})
         if p == "/api/tasks/task-1/approve":
             State.task_approved = True
             return self.send({"success": True})
@@ -234,7 +235,7 @@ code, out = xod("--url", FAKE, "approvals")
 check("…and then nothing is waiting", "Nothing is waiting for your OK." in out, out)
 
 code, out = xod("--url", FAKE, "task", "book a table for two at 8", stdin="y\n", timeout=60)
-check("a task is added and followed", "Added task: book a table for two at 8" in out and "Opening the booking page" in out, out)
+check("a task is added and followed", "Acknowledged task-1: book a table for two at 8" in out and "Opening the booking page" in out, out)
 check("its Submit is asked as y/N and approved", State.task_approved and "wants to press “Book now” on Tables Inc." in out, out)
 check("…and it ends with the result", code == 0 and "Done." in out and "Booked a table for two at 8." in out, out)
 
