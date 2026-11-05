@@ -69,9 +69,36 @@ Do not modify `tree/lightweight-modes` or `tree/family-link-f0`. Reading them is
 - **Family linking by the phone, with Tree.** The vision is that one phone paired with two computers vouches them
   into one family. Coordinate with Tree's `tree/family-link-f0` before building more of it.
 
+## Full test count on phase5 (2026-11-04, about commit 1a52cc8)
+
+Every `tests/*/run_*.py` file (140) was run, each with its own throwaway `XOD_DATA_DIR`. No live acceptance suites
+were part of this count.
+
+- **113 pass.** Two stale tests were updated along the way, and both now pass:
+  - The companion has waited on the approval card, not the button, since v0.9.2 (fe990ae).
+  - The Mac connector has 28 tools, and sending or unlocking always asks (1a52cc8).
+- **5 fail, none known to come from this branch:**
+  - `brain/run_missions_two_instance_test.py` needs an old-code checkout at `../xod-fix5-pre`
+    (`XOD_FIX5_OLD_ROOT`), which isn't on this Mac.
+  - `features/run_apply_test.py` and `features/run_operator_test.py` ran on the local Gemma and failed on model
+    behaviour while memory was tight. Not yet compared against `main`.
+  - `media/run_media_test.py` and `media/run_swap_test.py` failed because LM Studio returned "Compute error"
+    under memory pressure.
+- **22 were not run:**
+  - 13 local-model suites in `smoke`, skipped on purpose to spare the laptop's memory:
+    - `inner_life`, `life`, `local_servers`, `local_models`, `memory`, `platform_smoke`, `provider_boot_guard`
+    - `recall`, `smoke`, `remote_models`, `provider_promotion`, `tools_reasoning_effort`, `windows_tools`
+  - `browser_missions/run_suite.py`, `self_heal/run_heal_test.py` and `self_edit/run_self_edit_test.py`, which
+    also use the local model.
+  - Five measurement rigs or benchmarks in `locate` and `perf`, which have no pass or fail.
+
+**Caution:** in a fresh data folder Xod's default model is the local one, so some model-driven suites used
+Gemma even though they never mention it. `task_inbox/run_task_test.py`, for example, passed on Gemma. To run
+these on Terra, put the API key in the test's data folder.
+
 ## Release steps still open
 
-1. Take a fresh full test count on phase5 HEAD (see the section below).
+1. Rerun the 5 failures and the 21 skipped suites on a machine with memory to spare, or on Terra.
 2. Merge phase5 into `claude/headless-mode`, then into the release branch.
 3. Write the CHANGELOG entry, then run `scripts/check_release.py` and `scripts/release.py`.
 4. Push the Android branch and open its PR.
