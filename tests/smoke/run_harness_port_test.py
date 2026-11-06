@@ -240,8 +240,11 @@ async def main():
     check("the manifest lists the curated surface, each tool versioned and kinded",
           names == ["config_read", "family_read", "usage_read", "locate", "task_submit", "task_status",
                     "crew_start", "crew_status", "browser_open", "browser_state",
-                    "timeline", "task_read", "mission_read", "crew_read", "snapshot", "social_read"]
-          and man["version"] == 2
+                    "timeline", "task_read", "mission_read", "crew_read", "snapshot", "social_read",
+                    "repo_find_work", "repo_wave", "repo_check", "repo_friction", "repo_racecheck",
+                    "repo_reprocheck", "repo_prosecheck", "repo_commitcheck", "repo_ci_gate",
+                    "repo_open_plan", "repo_watch"]
+          and man["version"] == 3
           and all(t["version"] == 1 and t["kind"] in ("read", "write") for t in man["tools"]), str(names))
     check("an unknown tool is a machine-readable 404",
           await aerr_status(lambda: harness.invoke(IP, HDRS, {"tool": "nope", "args": {}})) == 404)
