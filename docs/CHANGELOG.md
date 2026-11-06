@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.0.0
+
+**One big launch: the release candidate, the Repo Worker, Simplicity, and a phone health tool**
+- Xod 1.0.0 is the 0.9.25 release candidate (PR #43) with three folds landed for this release: the Repo Worker, the finished desktop Simplicity redesign, and a phone health tool ported from the Poco healer. The candidate itself brought pairing auto-approve for local presence, on top of the family SSO control train from 0.9.25.
+- The Android app landed its own merges the same morning: scan-on-open and the Simplicity phone shell (Home, Results, Family) are both in xod-android main at versionCode 3, versionName 0.3.0, and watch talk arrived with the phone shell branch.
+
+**The Repo Worker ships supervised, with real opening still off**
+- The Repo Worker runs the fleet's own pull request tools (Greenlight, prosecheck, reprocheck, commitcheck, cidiff, shipcheck, prwatch) behind the campaign gates, so a pull request opens only when every gate passes.
+- It ships with allow_real_open still False in its policy: it cannot open a real pull request. prosecheck is built and in daily use but is not yet published to npm, so until it resolves, the prose gate reads unknown, and unknown means no open. That is the rule working, stated plainly.
+- Its acceptance suite passes 49 of 49 on the shipped tree.
+
+**Simplicity is the desktop face**
+- The Simplicity redesign (Phases 0 to 5) is now the shipped interface: a three-bucket feed (Needs you, Working, Finished), the Family surfaces rebuilt around request cards, and self-maintenance cards that route fixes through repairs that already exist.
+- All five phase suites pass at their recorded baselines on the shipped tree: 28, 31, 46, 37, and 41 checks.
+
+**A phone health tool inside Xod**
+- The Poco healer's probe parsing, health classification, and ladder decisions now live in Xod as a phone health service: a probe snapshot goes in, a health class and the next ladder step come out, with the healer's radio caps and its never-action guard (no forget network, no DNS change, no install, no wipe, no root) carried over.
+- It decides only; a caller that owns a transport executes the step. Its suite passes 40 of 40 on the shipped tree.
+
+**What 1.0.0 claims, and what it does not**
+- The orchestrator is reliable through Tier 6, on the acceptance evidence recorded for the candidate, and no more is claimed. Tier 5 was proven only at the spec's small scale, Tier 7 only compressed into minutes rather than a real week, and Tier 8 proves the mechanics only, with no real multi-device run yet.
+- Family and phone features are suite-tested only. The merged Android build passed its full Gradle suite (129 tests, 0 failures) on 2026-11-06, but the first live family test on a real phone has not run: the test phone was unreachable from every fleet machine on release morning, and a correctly signed install package is staged so the install and the live test complete in minutes when it rejoins.
+- Phone control is not claimed. The phone remote posting benchmark re-run is still owed, and it is the gate for any phone control claim.
+- GitHub sign-in ships as device flow code with the Family panel as its control surface, and it is pending the GitHub OAuth app registration: sign-in cannot complete for real until the app is registered and its public client ID is saved in the panel.
+
+**Checked before it shipped**
+- The full battery on the release candidate head (144 suites) passed 100, with 44 failures, every one pre-existing on main or environmental, and zero introduced by the candidate. The pairing acceptance suite passes 29 of 29.
+- The fold guards on the merged tree pass at baselines: Repo Worker 49 of 49, the five Simplicity phases, phone health 40 of 40, and pairing auto-approve 29 of 29.
+- The release privacy scan follows the same practice as 0.9.24 and 0.9.25: the owner name was dropped from comments and fixtures across the tree. Two exact public identifiers are allowlisted in the scan instead: the author's public shop URL, linked in the README on purpose, and the public npm scope of the fleet's published tools, named in the Repo Worker pins. No secret was involved in either.
+- Continuous integration on the candidate: the desktop shell checks passed. The Python checks were cancelled by an external macOS runner problem (runners never assigned), not by a failing test; that re-run is still owed.
+
+**Known issues carried into 1.0.0, named plainly**
+- Windows copies still update manually: the NSIS self-update wedge named since 0.9.20 is unchanged, so download the setup and run it with Xod fully closed rather than using self-update. Mac self-update is unaffected.
+- Every build still re-asks for its Accessibility switch once after an update, because builds are ad-hoc signed, so a new build is a new identity to macOS.
+- The live family test and the phone remote posting benchmark re-run are outstanding, as stated above.
+- prosecheck is not yet on npm, so the Repo Worker's prose gate reads unknown and real opening stays off, as stated above.
 ## 0.9.25
 
 **A saved provider wins at startup, on every boot path**
