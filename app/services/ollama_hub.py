@@ -90,24 +90,33 @@ async def _running() -> Optional[str]:
 
 _install: Dict[str, Any] = {"status": "idle", "error": None, "percent": 0}
 
+_start_lock: Optional[asyncio.Lock] = None
+
 
 async def start_ollama() -> Dict[str, Any]:
-    """Starts an installed Ollama (its tray app on Windows, which keeps the server running) and waits for it."""
-    if await _running():
-        return {"success": True}
-    exe = _exe()
-    if not exe:
-        return {"success": False, "error": "Ollama isn't installed."}
-    app = Path(exe).with_name("ollama app.exe")
-    cmd = [str(app)] if WINDOWS and app.is_file() else [exe, "serve"]
-    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if WINDOWS else 0
-    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags,
-                     start_new_session=not WINDOWS)
-    for _ in range(40):
-        await asyncio.sleep(0.5)
-        if await _running():
+    """Starts an installed Ollama (its tray app on Windows, which keeps the server running) and waits for it.
+    One start at a time, and never a second server: callers can pile up (the autoconnect pass, the
+    Setup button, the doctor's fix), and each one used to be able to launch its own copy before the
+    first answered — the duplicates then fought over Ollama's port (11434) and the machine."""
+    global _start_lock
+    if _start_lock is None:
+        _start_lock = asyncio.Lock()
+    async with _start_lock:
+        if await _running():     # already answering on its port: use that one, start nothing
             return {"success": True}
-    return {"success": False, "error": "Ollama didn't start. Try opening it from the Start menu."}
+        exe = _exe()
+        if not exe:
+            return {"success": False, "error": "Ollama isn't installed."}
+        app = Path(exe).with_name("ollama app.exe")
+        cmd = [str(app)] if WINDOWS and app.is_file() else [exe, "serve"]
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if WINDOWS else 0
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags,
+                         start_new_session=not WINDOWS)
+        for _ in range(40):
+            await asyncio.sleep(0.5)
+            if await _running():
+                return {"success": True}
+        return {"success": False, "error": "Ollama didn't start. Try opening it from the Start menu."}
 
 
 def _signed_by_ollama(path: Path) -> bool:

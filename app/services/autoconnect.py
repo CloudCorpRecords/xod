@@ -12,8 +12,16 @@ and then fixes what it safely can:
   - the chosen server is installed but not running: start it (at most once every RESTART_EVERY seconds)
   - a crashed Ollama left its model processes behind, holding GPU memory: end them
   - an API key saved and the model still Xod's own pick: use the key (no local model needed)
-  - no model chosen yet (a new install), or the one Xod chose for itself stopped working: connect to the best
-    model it can find. A model the person picked is never replaced; if it stops working Xod says what else there is.
+  - a model the person picked is never replaced; if it stops working Xod says what else there is.
+
+Local models are opt-in for a new install (2026-11-06, a new user's report): while no provider
+has ever been saved on this computer, this pass does not connect to a local model, does not start
+a local server, and does not fetch models; it only says what it found and how to pick it. Starting
+Ollama unasked on a loaded 16 GB Windows machine, then loading a chat model plus the embedding and
+vision models this pass fetches, spawned runner after runner (llama-server.exe) and left the
+machine thrashing — for a person who never asked for a local model at all. A computer whose saved
+settings already choose a local model — the person's own pick, or one Xod made under the old
+behaviour — keeps the behaviour above in full: what is already chosen is not un-chosen.
 
 What it did and what it noticed go to events() (the page shows them as notices) and the log.
 """
@@ -304,8 +312,14 @@ async def check() -> Dict[str, Any]:
             added = []
         problem = await _usable(provider, model, servers + added)
 
+        # Local is opt-in on a new install: only a provider somebody saved counts as chosen.
+        # A fresh install's runtime provider is just the class default (LM Studio), not a choice,
+        # so its server is not started for it. A saved local choice — the person's own pick, or one
+        # Xod made under the old behaviour — keeps being started as before.
+        picked = bool(get_setting("llm_provider", ""))
+
         # The chosen server is installed but not running: start it.
-        if problem and "isn't running" in problem:
+        if problem and "isn't running" in problem and picked:
             started = False
             if provider == "ollama" and _apps.get("ollama") and _may_try("ollama"):
                 started = (await ollama_hub.start_ollama()).get("success", False)
@@ -322,11 +336,19 @@ async def check() -> Dict[str, Any]:
         mine = never_chosen or setup_wizard.chosen_by() == "auto"
         if problem or never_chosen:
             best = next((r for r in ranked if r["tools"] is not False and r["fits"]), ranked[0] if ranked else None)
-            if best and mine and (best["provider"], best["model"]) != (provider, model):
+            if never_chosen:
+                # A new install: a local model may be sitting right there, but local is opt-in —
+                # say what was found and how to pick it; don't connect, start or load anything.
+                if best:
+                    notes.append(f"{best['server']} has {best['model']} on this computer. Xod won't use a local model "
+                                 "until you pick one in Tools → Setup & AI model.")
+                elif problem and provider in ("ollama", "lm_studio", "local"):
+                    notes.append(f"{problem}, and no other model was found on this computer. Open Tools → Setup & AI model to get one.")
+            elif best and mine and (best["provider"], best["model"]) != (provider, model):
+                # A saved local choice of Xod's own making stopped working: revise it, as before.
                 res = setup_wizard.choose(best["provider"], best["model"], best["base_url"], how="auto")
                 if res.get("success"):
-                    # On a new install the "problem" is only the built-in default (LM Studio) not being there: not news.
-                    _event("connected", f"Connected to {best['server']}: {best['model']}." + (f" ({problem}.)" if problem and not never_chosen else ""))
+                    _event("connected", f"Connected to {best['server']}: {best['model']}." + (f" ({problem}.)" if problem else ""))
                     problem = None
             elif problem and not mine:
                 alt = f" {best['server']} has {best['model']} ready: pick it in Tools → Setup & AI model." if best else ""
@@ -336,8 +358,10 @@ async def check() -> Dict[str, Any]:
                 notes.append(f"{problem}, and no other model was found on this computer. Open Tools → Setup & AI model to get one.")
 
         # Searching memory by meaning needs a small embedding model (services/embeddings.py). With Ollama as the model
-        # app and none anywhere, fetch it once (274 MB), and say so.
-        if provider == "ollama" and not problem and os.environ.get("XOD_AUTOCONNECT", "").lower() != "off" \
+        # app and none anywhere, fetch it once (274 MB), and say so. Only when a provider has
+        # actually been saved (picked): fetching a model is loading local in, and on a new install
+        # local is opt-in (see the header).
+        if provider == "ollama" and picked and not problem and os.environ.get("XOD_AUTOCONNECT", "").lower() != "off" \
                 and not _last_try.get("embeddings") and any(s["provider"] == "ollama" for s in servers):
             _last_try["embeddings"] = time.time()
             try:
@@ -352,7 +376,8 @@ async def check() -> Dict[str, Any]:
 
         # Eyes (services/vision.py): the chat model can't see and there's no vision model: fetch a small one, once,
         # if the disk has room for it with plenty to spare. Otherwise say how to get one.
-        if provider == "ollama" and not problem and os.environ.get("XOD_AUTOCONNECT", "").lower() != "off" \
+        # Only when a provider has been saved, same opt-in as the embedding fetch above.
+        if provider == "ollama" and picked and not problem and os.environ.get("XOD_AUTOCONNECT", "").lower() != "off" \
                 and not _last_try.get("vision") and any(s["provider"] == "ollama" for s in servers):
             _last_try["vision"] = time.time()
             try:
