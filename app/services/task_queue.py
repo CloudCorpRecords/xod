@@ -1256,6 +1256,23 @@ class TaskQueue:
         except Exception:
             pass
 
+    def _framed_request(self, task: Dict[str, Any]) -> str:
+        """A queued task's request with the framing a chat turn gets for free:
+        this is work on the person's computer, plus the capability grounding
+        rules (services/capability_manifest.py). A bare request left the agent
+        free to finish with "I couldn't run commands; I'll need an environment
+        with shell execution enabled" on a backend that has shell execution -
+        the framing and the rules are what make that claim checkable against
+        the live registry before it is written."""
+        head = ("[Queued task: you are running on the person's computer with your full tool set, "
+                "not answering in chat. Work the request to a verified finish.]\n")
+        try:
+            from app.services import capability_manifest
+            rules = capability_manifest.grounding_rules()
+        except Exception:
+            rules = ""
+        return head + (rules + "\n\n" if rules else "") + (task.get("request") or "")
+
     async def _stream(self, task_id: str, message: str, steps: int):
         """Runs the agent for one stretch of a task; returns (report_text, steps, decisive_payloads).
         Raises whatever the stream raises; the caller finishes the task as crashed."""
@@ -1425,7 +1442,7 @@ class TaskQueue:
             sb.pending_submit = {**task["pending_json"], "created_at": time.time()}
 
         if action["type"] == "start":
-            message = task["request"]
+            message = self._framed_request(task)
         elif action["type"] == "approve":
             message = "go ahead"
         else:
@@ -1453,7 +1470,7 @@ class TaskQueue:
             if problems:
                 self._update(task_id, note="The first attempt did not check out; running it again",
                              now="Checking the result before finishing")
-                retry_msg = (f"{task['request']}\n\n(You already attempted this once and reported finishing, "
+                retry_msg = (f"{self._framed_request(task)}\n\n(You already attempted this once and reported finishing, "
                              f"but checking found: {'; '.join(problems)}. Do it now for real, using your "
                              "file tools, then confirm briefly.)")
                 try:

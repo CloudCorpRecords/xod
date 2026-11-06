@@ -84,6 +84,12 @@ _DO_RE = re.compile(r"\b(?:make|create|write|build|set ?up|code|generate|fix|deb
 _GATHER_RE = re.compile(r"\b(?:go (?:through|thru|thur)|visit|read|click (?:through|around)|dig (?:into|through|deeper)|look through|"
                         r"open up|check out)\b[^.?!]{0,50}?\b(?:websites?|web ?pages?|sites|pages|links|articles|sources|them|each one|"
                         r"all of them)\b", re.I)
+# "Set me up for <service> from <url>": follow a service's own setup instructions on this
+# computer. That is a computer job (readiness probe first, run its commands, verify), not
+# web reading: left to the research loop, this exact request fetched the page and then
+# reported it could not run commands (Cloudflare setup test, 2026-11-06).
+_SETUP_RE = re.compile(r"\bset\s+(?:me\s+)?up\b", re.I)
+_URL_RE = re.compile(r"https?://", re.I)
 _QUESTION_RE = re.compile(r"^\s*(?:how|what|why|when|where|which|who|is|are|does|do i|should i|can i|could i)\b", re.I)
 # The last answer offered to do something ("Want me to try that?") and the person says yes: do it, don't ask again.
 _OFFER_RE = re.compile(r"(?:want me to|shall i|should i|would you like me to|i can|i could|happy to)\s+([^?\n]{4,220})\?\s*$", re.I)
@@ -144,6 +150,8 @@ def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
     if builder.wants_build(q):
         return None
     if _DO_RE.search(q):
+        return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
+    if _SETUP_RE.search(q) and _URL_RE.search(q):
         return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
     if _GATHER_RE.search(q):
         return {"goal": q, "kind": "web", "resume": "", "extra": ""}
@@ -736,6 +744,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     try:   # what this Xod has and does not have, checked just now (services/capability_manifest.py)
         from app.services import capability_manifest
         system += "\n\n" + capability_manifest.summary_text()
+        system += "\n\n" + capability_manifest.grounding_rules()
     except Exception:
         pass
     if spoken:
