@@ -20,6 +20,15 @@ Repo Worker (services/repo_worker.py) behind the harness surface (surface v3):
   - the full-CI gate over a real tiny git repo: ours, base_red, and pass
   - the open plan is a dry run even when every gate passes: it says what
     would happen, what blocks it, and that nothing was pushed or opened
+  - the approval-gated real open: a persisted plan opens only with a
+    recorded approval for that exact plan, fresh gates, and the approved
+    head, verified by read-back; no approval, a decline, or the policy
+    kill switch each refuse, and an opened plan never opens twice
+  - the claim flow: a required claim is posted once and verified by
+    read-back, an existing claim is reported not duplicated, a repo with
+    no claim requirement is left alone, and a refused post reads blocked
+  - babysit reply drafts: a prose PASS stores a local draft that is never
+    posted; a FAIL or an unknown prose gate stores nothing
   - watch with no GitHub sign-in reads unknown and names why; with faked
     API answers it classifies attention (changes requested needs attention)
 The CLI runner and the GitHub seams are faked at the module seams, the way
@@ -104,6 +113,10 @@ def fake_run_cli(argv, timeout=None, cwd=None, input_text=None):
         return 0, json.dumps({"verdict": "PASS"}), ""
     if "commitcheck" in joined:
         return 0, json.dumps({"ok": True, "problems": []}), ""
+    if "claimcheck" in joined:
+        return 0, json.dumps({"issue": "acme/widgets#12", "number": 12, "title": "t",
+                              "claims": [], "strongest": None,
+                              "summary": "no claims on this issue"}), ""
     if "greenlight" in joined:
         if "wave" in argv:
             return 0, json.dumps(WAVE), ""
@@ -140,10 +153,12 @@ async def main():
     names = [t["name"] for t in man["tools"]]
     repo_names = [n for n in names if n.startswith("repo_")]
     check("the manifest is surface v3", man["version"] == 3, str(man.get("version")))
-    check("the eleven repo tools are listed, versioned and kinded",
+    check("the fifteen repo tools are listed, versioned and kinded",
           repo_names == ["repo_find_work", "repo_wave", "repo_check", "repo_friction",
                          "repo_racecheck", "repo_reprocheck", "repo_prosecheck",
-                         "repo_commitcheck", "repo_ci_gate", "repo_open_plan", "repo_watch"]
+                         "repo_commitcheck", "repo_ci_gate", "repo_claimcheck",
+                         "repo_claim", "repo_open_plan", "repo_open_execute",
+                         "repo_watch", "repo_draft_reply"]
           and all(t["version"] == 1 and t["kind"] in ("read", "write")
                   for t in man["tools"] if t["name"].startswith("repo_")), str(repo_names))
 
@@ -428,6 +443,205 @@ async def main():
           and [p["number"] for p in wv["waiting_on_maintainer"]] == [32], str(wv)[:300])
     repo_worker._github_token, repo_worker._github_identity, repo_worker._http_get_json = (
         real_token, real_ident, real_http)
+
+    print("R12 the approval-gated real open")
+    saved_seams = (repo_worker._github_token, repo_worker._github_identity,
+                   repo_worker._http_get_json, repo_worker._http_post_json,
+                   repo_worker._run_cli)
+    repo_worker._github_token = lambda: "fake-token"
+    repo_worker._github_identity = lambda: {"login": "cloudcorp"}
+    oclone = TMP / "openclone"
+    oclone.mkdir()
+    git(oclone, "init", "-q")
+    (oclone / "widget.py").write_text("VALUE = 1\n", encoding="utf-8")
+    git(oclone, "add", "-A")
+    git(oclone, "commit", "-qm", "base")
+    git(oclone, "checkout", "-qb", "fix-widget")
+    (oclone / "widget.py").write_text("VALUE = 2\n", encoding="utf-8")
+    git(oclone, "commit", "-qam", "fix: the widget frobnicator")
+    head_sha = subprocess.run(["git", "-C", str(oclone), "rev-parse", "HEAD"],
+                              capture_output=True, text=True).stdout.strip()
+    PUSHES = []
+    POSTS = []
+
+    def exec_run_cli(argv, timeout=None, cwd=None, input_text=None):
+        if argv and argv[0] == "git" and "push" in argv:
+            PUSHES.append(list(argv))
+            return 0, "", ""
+        return fake_run_cli(argv, timeout=timeout, cwd=cwd, input_text=input_text)
+
+    def exec_http_get(url, token):
+        if "rate_limit" in url:
+            return {"resources": {"core": {"remaining": 5000}}}
+        if url.endswith("/repos/acme/widgets"):
+            return {"default_branch": "main"}
+        if url.endswith("/pulls/77"):
+            return {"number": 77, "html_url": "https://github.com/acme/widgets/pull/77",
+                    "state": "open", "head": {"sha": head_sha, "ref": "fix-widget"},
+                    "base": {"ref": "main"}}
+        raise AssertionError(f"unfaked url {url}")
+
+    def exec_http_post(url, token, payload):
+        POSTS.append((url, payload))
+        if url.endswith("/pulls"):
+            return 201, {"number": 77,
+                         "html_url": "https://github.com/acme/widgets/pull/77",
+                         "state": "open"}
+        raise AssertionError(f"unfaked url {url}")
+
+    repo_worker._run_cli = exec_run_cli
+    repo_worker._http_get_json = exec_http_get
+    repo_worker._http_post_json = exec_http_post
+    ok_cmd = f'"{sys.executable}" -c "import sys; sys.exit(0)"'
+    plan_args = {"repo": "acme/widgets", "issue": 12,
+                 "pr_body": "Fixes #12. Short and plain.",
+                 "commit_messages": ["fix: the widget frobnicator"],
+                 "clone_dir": str(oclone), "base_ref": "HEAD~1",
+                 "commands": [ok_cmd], "title": "Fix the widget frobnicator",
+                 "budget_remaining": 5000, "persist": True}
+    plan = repo_worker.open_plan(plan_args)
+    pv = plan["verified"]
+    plan_id = pv.get("plan_id")
+    check("a persisted plan carries a plan id and the clone head it recorded",
+          bool(plan_id) and pv.get("head_sha") == head_sha
+          and pv.get("branch") == "fix-widget"
+          and pv["state"] == "dry_run" and pv["would_open"] is True, str(pv)[:300])
+    ex = repo_worker.open_execute({"plan_id": plan_id})
+    check("execute without an approval refuses and touches nothing",
+          ex["verified"].get("state") == "refused" and not PUSHES and not POSTS,
+          str(ex["verified"])[:300])
+    rec = repo_worker.record_approval(plan_id, "approved",
+                                      decided_by="rene", via="test")
+    check("the approval is recorded on the exact plan",
+          rec["verified"].get("state") == "approved", str(rec["verified"])[:200])
+    ex = repo_worker.open_execute({"plan_id": plan_id})
+    ev2 = ex["verified"]
+    check("an approved plan opens for real, verified by read-back",
+          ev2.get("state") == "opened" and ev2.get("number") == 77
+          and ev2.get("head_sha") == head_sha and len(PUSHES) == 1
+          and len(POSTS) == 1 and POSTS[0][1].get("head") == "cloudcorp:fix-widget"
+          and POSTS[0][1].get("base") == "main", str(ev2)[:300])
+    ex = repo_worker.open_execute({"plan_id": plan_id})
+    check("executing an opened plan opens nothing twice",
+          ex["verified"].get("state") == "opened" and len(POSTS) == 1,
+          str(ex["verified"])[:200])
+    plan2 = repo_worker.open_plan(plan_args)["verified"]
+    repo_worker.record_approval(plan2["plan_id"], "declined",
+                                decided_by="rene", via="test")
+    ex = repo_worker.open_execute({"plan_id": plan2["plan_id"]})
+    check("a declined plan never opens",
+          ex["verified"].get("state") == "refused" and len(POSTS) == 1,
+          str(ex["verified"])[:200])
+    plan3 = repo_worker.open_plan(plan_args)["verified"]
+    repo_worker.record_approval(plan3["plan_id"], "approved",
+                                decided_by="rene", via="test")
+    saved_flag = repo_worker.POLICY["open"]["allow_real_open"]
+    repo_worker.POLICY["open"]["allow_real_open"] = False
+    ex = repo_worker.open_execute({"plan_id": plan3["plan_id"]})
+    repo_worker.POLICY["open"]["allow_real_open"] = saved_flag
+    check("the policy kill switch refuses even an approved plan",
+          ex["verified"].get("state") == "refused" and len(POSTS) == 1,
+          str(ex["verified"])[:200])
+    saved_widgets = CHECKS["acme/widgets"]
+    CHECKS["acme/widgets"] = {"verdict": "GO", "reasons": [
+        "starter issue, tests exist, no competing work",
+        "Please write the PR description in your own words; AI may help with code."]}
+    plan4 = repo_worker.open_plan(plan_args)["verified"]
+    repo_worker.record_approval(plan4["plan_id"], "approved",
+                                decided_by="rene", via="test")
+    posts_before = len(POSTS)
+    ex = repo_worker.open_execute({"plan_id": plan4["plan_id"]})
+    check("a human-written-prose rule blocks the open until the approval "
+          "records a person wrote the body",
+          ex["verified"].get("state") == "blocked"
+          and len(POSTS) == posts_before, str(ex["verified"])[:300])
+    repo_worker.record_approval(plan4["plan_id"], "approved",
+                                decided_by="rene", via="test", human_prose=True)
+    ex = repo_worker.open_execute({"plan_id": plan4["plan_id"]})
+    check("with human prose confirmed on the approval, the same plan opens",
+          ex["verified"].get("state") == "opened"
+          and len(POSTS) == posts_before + 1, str(ex["verified"])[:300])
+    CHECKS["acme/widgets"] = saved_widgets
+    (repo_worker._github_token, repo_worker._github_identity,
+     repo_worker._http_get_json, repo_worker._http_post_json,
+     repo_worker._run_cli) = saved_seams
+
+    print("R13 the claim flow")
+    repo_worker._github_token = lambda: "fake-token"
+    repo_worker._github_identity = lambda: {"login": "cloudcorp"}
+    COMMENTS = {"12": [], "13": []}
+    CLAIM_POSTS = []
+    CLAIM_MODE = {"blocked": False}
+
+    def claim_http_get(url, token):
+        for num in ("12", "13"):
+            if f"/issues/{num}/comments" in url:
+                return list(COMMENTS[num])
+        raise AssertionError(f"unfaked url {url}")
+
+    def claim_http_post(url, token, payload):
+        CLAIM_POSTS.append((url, payload))
+        if CLAIM_MODE["blocked"]:
+            return 403, {"message": "Forbidden"}
+        num = "12" if "/issues/12/comments" in url else "13"
+        comment = {"id": 900 + len(CLAIM_POSTS),
+                   "html_url": f"https://github.com/acme/widgets/issues/{num}#issuecomment-900",
+                   "user": {"login": "cloudcorp"}, "body": payload["body"],
+                   "created_at": "2026-11-06T00:00:00Z"}
+        COMMENTS[num].append(comment)
+        return 201, comment
+
+    repo_worker._http_get_json = claim_http_get
+    repo_worker._http_post_json = claim_http_post
+    c = repo_worker.claim({"repo": "acme/widgets", "issue": 12,
+                           "requires_claim": True})
+    check("a required claim is posted and verified by read-back",
+          c["verified"].get("state") == "claimed"
+          and (c["verified"].get("own_claim") or {}).get("comment_id") is not None
+          and len(CLAIM_POSTS) == 1, str(c["verified"])[:300])
+    c = repo_worker.claim({"repo": "acme/widgets", "issue": 12,
+                           "requires_claim": True})
+    check("an existing claim is reported, not posted twice",
+          c["verified"].get("state") == "claimed" and len(CLAIM_POSTS) == 1,
+          str(c["verified"])[:200])
+    c = repo_worker.claim({"repo": "acme/widgets", "issue": 12})
+    check("with no claim requirement in the gate evidence, nothing is posted",
+          c["verified"].get("state") == "not_required" and len(CLAIM_POSTS) == 1,
+          str(c["verified"])[:300])
+    CLAIM_MODE["blocked"] = True
+    c = repo_worker.claim({"repo": "acme/widgets", "issue": 13,
+                           "requires_claim": True})
+    check("a refused claim post reads blocked with the status named",
+          c["verified"].get("state") == "blocked"
+          and c["verified"].get("http_status") == 403, str(c["verified"])[:300])
+    CLAIM_MODE["blocked"] = False
+
+    print("R14 babysit reply drafts")
+    d = repo_worker.draft_reply(
+        {"repo": "acme/widgets", "number": 31,
+         "text": "Thanks for the review. I will push the fix today.",
+         "in_reply_to": "changes requested on the frobnicate path"})
+    check("a passing reply is drafted locally, never posted",
+          d["verified"].get("state") == "drafted"
+          and d["verified"].get("posted") is False, str(d["verified"])[:300])
+    before = repo_worker.draft_reply({"list": True})["verified"]["drafts"]
+    d2 = repo_worker.draft_reply({"repo": "acme/widgets", "number": 31,
+                                  "text": "word " * 200})
+    after = repo_worker.draft_reply({"list": True})["verified"]["drafts"]
+    check("a prose FAIL drafts nothing",
+          d2["verified"].get("state") == "not_stored"
+          and len(after) == len(before) == 1, str(d2["verified"])[:200])
+    FAIL_PROSE_SPAWN["on"] = True
+    d3 = repo_worker.draft_reply({"repo": "acme/widgets", "number": 31,
+                                  "text": "short"})
+    FAIL_PROSE_SPAWN["on"] = False
+    after = repo_worker.draft_reply({"list": True})["verified"]["drafts"]
+    check("an unknown prose gate drafts nothing either",
+          d3["verified"].get("state") == "unknown" and len(after) == 1,
+          str(d3["verified"])[:200])
+    (repo_worker._github_token, repo_worker._github_identity,
+     repo_worker._http_get_json, repo_worker._http_post_json) = (
+        saved_seams[0], saved_seams[1], saved_seams[2], saved_seams[3])
 
 
 if __name__ == "__main__":

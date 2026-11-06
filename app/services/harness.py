@@ -44,12 +44,14 @@ and snapshot (the app's own view of itself). They read only what the app itself 
 activity class the app does not persist is never synthesized, and the gaps are named in the
 record that shipped the surface.
 Repo Worker (surface v3): the open-source contribution stack ships in the box
-(services/repo_worker.py, policy in services/repo_worker_policy.py). Eleven
+(services/repo_worker.py, policy in services/repo_worker_policy.py). Fifteen
 repo_* tools run the fleet CLIs (Greenlight wave, check, friction, racecheck,
-reprocheck, prosecheck, commitcheck) plus two native gates (the full-CI split
-and the gate pass itself) behind this same manifest and invoke, each answer
-shaped {claimed, verified, evidence}. The open path is approval-shaped and
-dry-run in this phase: repo_open_plan prepares and verifies, and never opens.
+reprocheck, prosecheck, commitcheck, claimcheck) plus two native gates (the
+full-CI split and the gate pass itself) behind this same manifest and invoke,
+each answer shaped {claimed, verified, evidence}. The open path is
+approval-locked: repo_open_plan prepares and verifies in dry-run, a person
+approves the stored plan, and repo_open_execute is the only path that opens,
+for that exact plan, with the gates re-run fresh and read-back verification.
 """
 import hmac
 import json
@@ -558,17 +560,37 @@ TOOL_SURFACE = [
      "description": "The full-CI gate (pr_full_ci_gate): run a repo's root checks on the head and on a base worktree, and split every failure into ours, base red, or unknown. It passes only when the split is green or base-red-explained.",
      "args": {"repo_dir": "the clone's folder", "base_ref": "the base ref (default origin/main)",
               "commands": "the check commands (optional; detected from the repo when omitted)"}},
+    {"name": "repo_claimcheck", "version": 1, "kind": "read",
+     "description": "Claim state for one issue (claimcheck): who has claimed it, how long ago, and whether a PR already exists for the strongest claim.",
+     "args": {"issue_url": "the issue URL", "repo": "owner/repo (with issue, instead of issue_url)",
+              "issue": "the issue number (with repo)"}},
+    {"name": "repo_claim", "version": 1, "kind": "write",
+     "description": "Repo Worker stage 3: claim an issue where the repo requires it, and only there. Reads the claim state first; a claim already on the issue by this account is reported, a repo that does not require one is left alone, and a missing required claim is posted as a short prose-checked comment and verified by read-back. A closed comment channel reads blocked, never routed around.",
+     "args": {"repo": "owner/repo", "issue": "the issue number",
+              "requires_claim": "true or false when the caller already read the requirement (optional; read from the gate evidence when omitted)",
+              "text": "the claim comment (optional; the policy template is used otherwise)",
+              "plan": "a one-line plan to append to the claim (optional)"}},
     {"name": "repo_open_plan", "version": 1, "kind": "write",
-     "description": "Repo Worker stages 3 to 5 as a dry run behind the approval model: re-run a candidate's gates fresh, run the prose, commit and CI gates over the prepared work when provided, and return the open plan with its evidence and what blocks it. Phase 1 never pushes and never opens.",
+     "description": "Repo Worker stages 3 to 5 as a dry run behind the approval model: re-run a candidate's gates fresh, run the prose, commit and CI gates over the prepared work when provided, and return the open plan with its evidence and what blocks it. The plan itself never pushes and never opens; with persist it is stored under a plan id for a person's approval.",
      "args": {"repo": "owner/repo", "issue": "the issue number", "issue_url": "the issue URL (optional)",
               "labels": "the issue's labels (optional)", "clone_dir": "the prepared clone (optional)",
               "pr_body": "the draft PR body (optional)", "commit_messages": "draft commit messages (optional)",
+              "title": "the PR title (optional)", "base_branch": "the PR base branch (optional; the repo default branch is read at execute time otherwise)",
               "base_ref": "the base ref for the CI gate (optional)", "commands": "CI gate commands (optional)",
               "budget_remaining": "GitHub core rate-limit remainder, for the budget gate (optional)",
+              "persist": "store the plan under a plan id so a person can approve this exact plan (optional)",
               "clearings": "recorded firsthand-evidence clearings for this candidate: [{gate (greenlight|racecheck), evidence, source, recorded_by, recorded_at}] (optional)"}},
+    {"name": "repo_open_execute", "version": 1, "kind": "write",
+     "description": "The one real Repo Worker open. Runs only for a stored plan a person approved (repo_open_plan with persist, then the approval flow): re-runs the gates fresh with a live budget read, confirms the clone still sits on the approved branch and head, pushes the branch (never force), opens the PR, and verifies it by read-back. Refuses, by name, without the policy switch, the approval, or fresh passing gates.",
+     "args": {"plan_id": "the stored plan id from repo_open_plan with persist",
+              "title": "override the PR title (optional)"}},
     {"name": "repo_watch", "version": 1, "kind": "read",
      "description": "Repo Worker stage 6, the read side: the signed-in account's open PRs with their attention state (changes requested, failing checks, conflicts, stale marks), split into needs attention, waiting on maintainer, and quiet.",
      "args": {"limit": "open PRs to read (default 25, max 50)"}},
+    {"name": "repo_draft_reply", "version": 1, "kind": "write",
+     "description": "Repo Worker stage 6, the write side: draft a reply to a maintainer on one of the account's PRs. The text must PASS the prose gate as a comment; a passing draft is stored locally on this Xod, verified by read-back, and never posted by Repo Worker. With list, returns the stored drafts.",
+     "args": {"repo": "owner/repo", "number": "the PR number", "text": "the draft reply",
+              "in_reply_to": "what the reply answers (optional)", "list": "return the stored drafts instead (optional)"}},
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_SURFACE}

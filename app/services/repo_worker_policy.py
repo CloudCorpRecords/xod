@@ -137,12 +137,20 @@ POLICY = {
     # ------------------------------------------------------------------
     # The open. Opening a PR in someone else's repo is an outward act, so
     # it sits behind the family approval model: the plan is prepared, the
-    # gates are re-run fresh, and a person's approval (or a standing lane
-    # the person configured) is what turns a plan into an open.
-    # Phase 1 ships with real opens OFF: repo_open_plan prepares and
-    # verifies everything and then stops, in dry-run, every time.
+    # gates are re-run fresh, and a person's approval is what turns a
+    # plan into an open.
+    # Phase 2: real opens are enabled (allow_real_open True) but ONLY
+    # behind that approval flow. repo_open_plan still only prepares and
+    # verifies, in dry-run, every time. repo_open_execute is the one path
+    # that opens, and it runs only when ALL of these hold: this flag is
+    # True, a person approved this exact stored plan (requires_approval),
+    # the gates re-run fresh at execute time still pass, and the clone's
+    # head is still the head the plan recorded. An approval for one plan
+    # never authorizes another plan. Setting allow_real_open False in
+    # your copy is the hard off switch: no real open then, approval or
+    # not. There is no unattended open path in any configuration.
     "open": {
-        "allow_real_open": False,
+        "allow_real_open": True,
         "requires_approval": True,
         "verify_by_readback": True,   # never trust a creation response alone
         "force_push": False,          # never, on any branch, ever
@@ -158,6 +166,22 @@ POLICY = {
     },
 
     # ------------------------------------------------------------------
+    # The claim (Stage 3). Some repos make a contributor claim an issue
+    # before working it. Where the repo requires it and the comment
+    # channel is open, Repo Worker claims with a short plain comment and
+    # verifies the claim by read-back before any build starts. Where the
+    # channel is closed (no sign-in stored, or the account cannot
+    # comment), the claim is reported as blocked with the evidence, never
+    # routed around through another account or channel, and only repos
+    # that do not require a claim are worked. A claim is never posted to
+    # a repo that does not ask for one.
+    "claim": {
+        "claim_only_where_required": True,
+        "verify_by_readback": True,
+        "text_template": "I would like to work on this issue.",
+    },
+
+    # ------------------------------------------------------------------
     # The fleet CLIs the wrappers run (phase 1: wrap, do not rewrite).
     # Versions are floors, resolved through npx at run time. prosecheck
     # is the one gap: built, in daily use, but not yet published to npm,
@@ -168,6 +192,7 @@ POLICY = {
         "greenlight": "@reneturcios/greenlight@0.26.0",
         "reprocheck": "@reneturcios/reprocheck@0.2.0",
         "commitcheck": "@reneturcios/commitcheck@0.1.0",
+        "claimcheck": "@reneturcios/claimcheck@0.1.4",
         "cidiff": "@reneturcios/cidiff@0.1.2",
         "shipcheck": "@reneturcios/shipcheck@0.2.0",
         "prwatch": "@reneturcios/prwatch@0.2.0",

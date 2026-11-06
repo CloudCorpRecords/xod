@@ -11,8 +11,18 @@ one policy file; the gates come from the maintainer profile's Stages 0 to 6).
   repo_reprocheck, repo_prosecheck, repo_commitcheck     the toolkit gates
   repo_ci_gate                                           the full-CI gate
   repo_find_work                                         Stages 0 to 2
+  repo_claimcheck, repo_claim                            Stage 3, the claim
   repo_open_plan                                         Stages 3 to 5, dry-run
-  repo_watch                                             Stage 6/7, read side
+  repo_open_execute                                      the approved real open
+  repo_watch, repo_draft_reply                           Stage 6, read + drafts
+
+Phase 2: the open path is live but approval-locked. repo_open_plan still
+only prepares and verifies, in dry-run, every time. A person approves one
+stored plan through the approval flow (record_approval, fed by the app's
+approval surface and logged in the agent approval record), and
+repo_open_execute is the only path that pushes and opens, only for that
+plan, only after re-running the gates fresh, and it verifies the opened
+PR by read-back. Babysit replies are drafted locally and never posted.
 
 Honesty rules, inherited from the harness: what a CLI said is claimed; what
 this module's own checks established is verified; the two are never merged.
@@ -27,9 +37,12 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.paths import DATA_DIR
 from app.services.repo_worker_policy import POLICY
 
 _CLI = POLICY["cli"]
@@ -86,6 +99,28 @@ def _http_get_json(url: str, token: str) -> Dict[str, Any]:
                                 "Accept": "application/vnd.github+json"})
     r.raise_for_status()
     return r.json()
+
+
+def _http_post_json(url: str, token: str, payload: Dict[str, Any]) -> Tuple[int, Any]:
+    """POST JSON to the GitHub API. Returns (status, parsed body); an HTTP
+    error status comes back as data, never raised, so a caller can name a
+    403 (a closed channel) exactly instead of catching it blind."""
+    import httpx
+    try:
+        with httpx.Client(timeout=30) as c:
+            r = c.post(url, headers={"Authorization": f"Bearer {token}",
+                                     "Accept": "application/vnd.github+json"},
+                       json=payload)
+    except Exception as e:
+        return -1, {"error": f"{type(e).__name__}: {e}"}
+    try:
+        return r.status_code, r.json()
+    except ValueError:
+        return r.status_code, {"raw": (r.text or "")[:300]}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ------------------------------------------------------------------ shape
@@ -395,6 +430,25 @@ def commitcheck(args: Dict[str, Any]) -> Dict[str, Any]:
     data = res["data"]
     res["claimed"] = {"report": data}
     res["verified"] = {"state": "ok", "report": data}
+    return res
+
+
+def claimcheck_issue(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Claim state for one issue (claimcheck): who has claimed it, how
+    long ago, and whether a PR already exists for the strongest claim."""
+    url = _issue_url(args)
+    res = _cli_json("claimcheck issue",
+                    ["npx", "-y", _pkg("claimcheck"), "issue", url, "--json"])
+    if res["verified"].get("state") != "ok":
+        return res
+    data = res["data"] if isinstance(res["data"], dict) else {}
+    claims = data.get("claims") or []
+    strongest = data.get("strongest") or (claims[0] if claims else None)
+    res["claimed"] = {"summary": data.get("summary"), "claims": claims}
+    res["verified"] = {"state": "ok", "summary": data.get("summary"),
+                       "claims": claims, "strongest": strongest}
+    res["evidence"] = res["evidence"] + [
+        f"claimcheck on {url}: {data.get('summary') or 'no summary'}"]
     return res
 
 
@@ -925,8 +979,10 @@ def open_plan(args: Dict[str, Any]) -> Dict[str, Any]:
     """Stages 3 to 5 behind the approval model, exercised in dry-run only:
     re-run the gates fresh, run the prose, commit, and CI gates against the
     prepared work when it is provided, and return the plan with its
-    evidence. Phase 1 policy (repo_worker_policy.open.allow_real_open) is
-    False, so this never pushes and never opens, whatever the gates say."""
+    evidence. The plan itself never pushes and never opens. With
+    args["persist"] the plan is stored under a plan id so a person can
+    approve that exact plan through the approval flow; repo_open_execute
+    is the only path that turns an approved stored plan into a real open."""
     _need(args, "repo", "issue")
     repo, issue = str(args["repo"]), args["issue"]
     url = _issue_url(args)
@@ -986,6 +1042,19 @@ def open_plan(args: Dict[str, Any]) -> Dict[str, Any]:
                 f"the full CI gate reads {cig['verified'].get('state')}, not pass")
 
     would_open = gate["verdict"] == "pass" and not blocked_by
+    clone_branch = clone_head = None
+    if args.get("clone_dir"):
+        code_b, out_b, _ = _run_cli(["git", "-C", str(args["clone_dir"]),
+                                     "branch", "--show-current"])
+        code_h, out_h, _ = _run_cli(["git", "-C", str(args["clone_dir"]),
+                                     "rev-parse", "HEAD"])
+        if code_b == 0 and out_b.strip():
+            clone_branch = out_b.strip()
+        if code_h == 0 and out_h.strip():
+            clone_head = out_h.strip()
+        evidence.append(
+            f"prepared clone: branch {clone_branch or 'unread'}, head "
+            f"{(clone_head or 'unread')[:12]}")
     steps = [
         "fresh clone of the repo, smallest fix in the repo's own style",
         "repo tests run; new tests red on unfixed code when practical",
@@ -995,14 +1064,331 @@ def open_plan(args: Dict[str, Any]) -> Dict[str, Any]:
         "push the branch (never force), open the PR, verify it by read-back",
     ]
     evidence.append(
-        "phase 1 policy: repo_worker_policy.open.allow_real_open is False; "
-        "this plan is a dry run. Nothing was pushed and no PR was opened.")
+        "open policy: a real open runs only through repo_open_execute, "
+        "behind a recorded approval for the exact stored plan; this plan "
+        "call is a dry run. Nothing was pushed and no PR was opened.")
     verified = {"state": "dry_run", "would_open": would_open,
                 "blocked_by": blocked_by, "gates": gate_results,
                 "clearings": gate.get("clearings") or [],
                 "requires_approval": bool(POLICY["open"]["requires_approval"]),
                 "requires_human_prose": bool(gate["flags"].get("requires_human_prose"))}
+    if clone_branch or clone_head:
+        verified["branch"] = clone_branch
+        verified["head_sha"] = clone_head
+    if args.get("persist"):
+        plan_id = "rw-" + uuid.uuid4().hex[:12]
+        record = {
+            "id": plan_id, "created_at": _now_iso(), "state": "awaiting_approval",
+            "repo": repo, "issue": issue, "issue_url": url,
+            "labels": args.get("labels") or [],
+            "title": str(args.get("title") or ""),
+            "pr_body": str(args.get("pr_body") or ""),
+            "commit_messages": [str(m) for m in args.get("commit_messages") or []],
+            "clone_dir": str(args.get("clone_dir") or ""),
+            "base_ref": str(args.get("base_ref") or ""),
+            "base_branch": str(args.get("base_branch") or ""),
+            "commands": [str(c) for c in args.get("commands") or []],
+            "branch": clone_branch, "head_sha": clone_head,
+            "would_open": would_open, "blocked_by": list(blocked_by),
+            "approval": None, "open_result": None}
+        _save_plan(record)
+        verified["plan_id"] = plan_id
+        verified["plan_state"] = "awaiting_approval"
+        try:
+            from app.services import agent_log
+            agent_log.approval_opened(
+                f"repo-plan-{plan_id}", "repo_open", "xod",
+                f"Open a PR in {repo} for issue #{issue}",
+                f"plan {plan_id}: would_open {would_open}; "
+                f"blocked_by {blocked_by}")
+        except Exception:
+            pass
+        evidence.append(
+            f"plan stored for approval as {plan_id}; nothing opens until a "
+            "person approves this exact plan and repo_open_execute runs it")
     return _shaped({"plan_for": f"{repo}#{issue}", "steps": steps}, verified, evidence)
+
+
+# ------------------------------------------------------------------ stored plans and the approval flow
+
+def _store_dir() -> Path:
+    d = DATA_DIR / "repo_worker"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _plan_path(plan_id: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "", str(plan_id or ""))
+    return _store_dir() / "plans" / f"{safe}.json"
+
+
+def _save_plan(plan: Dict[str, Any]) -> None:
+    path = _plan_path(str(plan.get("id") or ""))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(plan, indent=1), encoding="utf-8")
+
+
+def _load_plan(plan_id: str) -> Optional[Dict[str, Any]]:
+    path = _plan_path(plan_id)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def record_approval(plan_id: str, decision: str, decided_by: str = "",
+                    via: str = "", human_prose: bool = False) -> Dict[str, Any]:
+    """The person-side half of the approval flow: record a person's
+    decision on one stored open plan. The app's approval surface calls
+    this (the decision is also written into the agent approval record);
+    the worker never calls it for itself, so an agent cannot approve its
+    own plan. An approval covers this exact plan only: its repo, issue,
+    PR body, and recorded head. human_prose records the approver's
+    confirmation that a person wrote the PR body, which is what a repo's
+    human-written-prose rule asks for; an approval alone does not
+    confirm authorship."""
+    plan = _load_plan(plan_id)
+    if plan is None:
+        return _unknown("repo plan approval",
+                        f"no stored plan with id {plan_id!r}", [])
+    d = str(decision or "").strip().lower()
+    if d in ("approved", "approve", "allowed", "allow"):
+        d = "approved"
+    elif d in ("declined", "decline", "denied", "deny"):
+        d = "declined"
+    else:
+        raise ValueError("decision must be approved or declined")
+    if plan.get("state") == "opened":
+        return _shaped({"plan_id": plan_id},
+                       {"state": "opened", "note": "the plan already opened; "
+                        "a later decision changes nothing"},
+                       [f"plan {plan_id} already opened"])
+    plan["approval"] = {"decision": d,
+                        "decided_by": str(decided_by or ""),
+                        "decided_at": _now_iso(), "via": str(via or ""),
+                        "human_prose": bool(human_prose)}
+    plan["state"] = "approved" if d == "approved" else "declined"
+    _save_plan(plan)
+    try:
+        from app.services import agent_log
+        agent_log.approval_decided(f"repo-plan-{plan_id}",
+                                   "allowed" if d == "approved" else "declined")
+    except Exception:
+        pass
+    return _shaped({"plan_id": plan_id, "decision": d},
+                   {"state": plan["state"], "approval": plan["approval"]},
+                   [f"approval recorded for plan {plan_id}: {d} "
+                    f"by {decided_by or 'an unnamed approver'}"])
+
+
+def open_execute(args: Dict[str, Any]) -> Dict[str, Any]:
+    """The one real open. Runs only for a stored plan a person approved,
+    and only when every lock holds: the policy kill switch is on
+    (open.allow_real_open), the plan carries a recorded approval, the
+    gates re-run fresh right now still pass with a live budget read, and
+    the prepared clone still sits on the branch and head the plan
+    recorded. It pushes the branch (never force), opens the PR through
+    the API, and verifies the result by read-back: the stored plan, not
+    the creation response, is what gets trusted. Any step that fails
+    stops the open and names where, including the partial state where
+    the branch pushed but the PR did not open."""
+    _need(args, "plan_id")
+    plan_id = str(args["plan_id"])
+    plan = _load_plan(plan_id)
+    if plan is None:
+        return _unknown("repo open execute",
+                        f"no stored plan with id {plan_id!r}; run repo_open_plan "
+                        "with persist first", [])
+    evidence = [f"plan {plan_id} for {plan.get('repo')}#{plan.get('issue')}, "
+                f"stored {plan.get('created_at')}"]
+    if plan.get("state") == "opened" and plan.get("open_result"):
+        return _shaped({"plan_id": plan_id, "already_opened": True},
+                       {"state": "opened", **plan["open_result"]},
+                       evidence + ["this plan already opened; the stored "
+                                   "read-back is returned and nothing was "
+                                   "opened a second time"])
+    if not POLICY["open"].get("allow_real_open"):
+        return _shaped(None, {"state": "refused",
+                              "reason": "repo_worker_policy.open.allow_real_open "
+                                        "is False on this copy; real opens are "
+                                        "hard-disabled here"},
+                       evidence + ["refused: the policy kill switch is off"])
+    approval = plan.get("approval") or {}
+    if POLICY["open"].get("requires_approval") and approval.get("decision") != "approved":
+        return _shaped(None, {"state": "refused",
+                              "reason": "no recorded approval for this exact "
+                                        "plan; an unapproved plan stays a dry run"},
+                       evidence + ["refused: no approval record on this plan"])
+    evidence.append(f"approval on record: {approval.get('decision')} by "
+                    f"{approval.get('decided_by') or 'an unnamed approver'} "
+                    f"at {approval.get('decided_at')}")
+    token = _github_token()
+    ident = _github_identity()
+    login = str(ident.get("login") or "")
+    if not token or not login:
+        return _unknown("repo open execute",
+                        "no verified GitHub sign-in is stored on this Xod", evidence)
+    repo = str(plan.get("repo") or "")
+    issue = plan.get("issue")
+    # Fresh gates, right now, with a live budget read: the approval was
+    # for the plan's evidence, and the world may have moved since.
+    budget: Optional[int] = None
+    try:
+        rl = _http_get_json("https://api.github.com/rate_limit", token)
+        budget = int(((rl.get("resources") or {}).get("core") or {}).get("remaining"))
+    except Exception as e:
+        evidence.append(f"budget read failed ({type(e).__name__}); the budget "
+                        "gate will read unknown and block")
+    fresh = open_plan({"repo": repo, "issue": issue,
+                       "issue_url": plan.get("issue_url") or "",
+                       "labels": plan.get("labels") or [],
+                       "pr_body": plan.get("pr_body") or "",
+                       "commit_messages": plan.get("commit_messages") or [],
+                       "clone_dir": plan.get("clone_dir") or "",
+                       "base_ref": plan.get("base_ref") or "",
+                       "commands": plan.get("commands") or [],
+                       "budget_remaining": budget})
+    evidence += [f"fresh gate re-run: {e}" for e in fresh["evidence"]]
+    if not fresh["verified"].get("would_open"):
+        plan["state"] = "approved"
+        plan["last_execute_block"] = {"at": _now_iso(),
+                                      "blocked_by": fresh["verified"].get("blocked_by")}
+        _save_plan(plan)
+        return _shaped({"plan_id": plan_id},
+                       {"state": "blocked",
+                        "blocked_by": fresh["verified"].get("blocked_by")},
+                       evidence + ["the fresh gates no longer pass, so nothing "
+                                   "was pushed and no PR was opened; the "
+                                   "approval stays on record for a fixed plan"])
+    if fresh["verified"].get("requires_human_prose") \
+            and not approval.get("human_prose"):
+        plan["last_execute_block"] = {
+            "at": _now_iso(),
+            "blocked_by": ["the repo requires human-written PR prose and the "
+                           "approval on record does not confirm a person "
+                           "wrote this PR body"]}
+        _save_plan(plan)
+        return _shaped({"plan_id": plan_id},
+                       {"state": "blocked",
+                        "blocked_by": plan["last_execute_block"]["blocked_by"]},
+                       evidence + ["the repo's human-written-prose rule blocks "
+                                   "this open: an approval confirms intent, "
+                                   "not authorship, so the approval must "
+                                   "record that a person wrote the body"])
+    clone_dir = str(plan.get("clone_dir") or "")
+    if not clone_dir:
+        return _shaped({"plan_id": plan_id},
+                       {"state": "blocked",
+                        "blocked_by": ["the plan recorded no prepared clone"]},
+                       evidence)
+    code_b, out_b, _ = _run_cli(["git", "-C", clone_dir, "branch", "--show-current"])
+    code_h, out_h, _ = _run_cli(["git", "-C", clone_dir, "rev-parse", "HEAD"])
+    branch_now = out_b.strip() if code_b == 0 else ""
+    head_now = out_h.strip() if code_h == 0 else ""
+    if not branch_now or not head_now:
+        return _shaped({"plan_id": plan_id},
+                       {"state": "blocked",
+                        "blocked_by": ["the prepared clone's branch or head "
+                                        "could not be read"]},
+                       evidence)
+    if plan.get("branch") and branch_now != plan["branch"]:
+        return _shaped({"plan_id": plan_id},
+                       {"state": "blocked",
+                        "blocked_by": [f"the clone is on branch {branch_now}, "
+                                        f"not the plan's {plan['branch']}"]},
+                       evidence + ["refused: what was approved is not what "
+                                   "would be pushed"])
+    if plan.get("head_sha") and head_now != plan["head_sha"]:
+        return _shaped({"plan_id": plan_id},
+                       {"state": "blocked",
+                        "blocked_by": ["the clone's head moved since the plan "
+                                        "was approved"]},
+                       evidence + ["refused: the approved head is "
+                                   f"{plan['head_sha'][:12]}, the clone is at "
+                                   f"{head_now[:12]}; re-plan and re-approve"])
+    base_branch = str(plan.get("base_branch") or "")
+    if not base_branch:
+        try:
+            repo_info = _http_get_json(f"https://api.github.com/repos/{repo}", token)
+            base_branch = str(repo_info.get("default_branch") or "")
+        except Exception as e:
+            return _unknown("repo open execute",
+                            f"the repo's default branch could not be read "
+                            f"({type(e).__name__})", evidence)
+    if not base_branch:
+        return _unknown("repo open execute",
+                        "the repo's default branch read back empty", evidence)
+    code, out, err = _run_cli(["git", "-C", clone_dir, "push", "origin", branch_now])
+    if code != 0:
+        plan["state"] = "push_failed"
+        plan["last_execute_block"] = {"at": _now_iso(),
+                                      "blocked_by": [f"git push exited {code}"]}
+        _save_plan(plan)
+        return _shaped({"plan_id": plan_id},
+                       {"state": "push_failed",
+                        "reason": (err or out or "").strip()[-300:]},
+                       evidence + [f"git push of {branch_now} failed with exit "
+                                   f"{code}; nothing was opened"])
+    evidence.append(f"pushed branch {branch_now} at {head_now[:12]} to origin "
+                    "(no force, per policy)")
+    title = (str(args.get("title") or "") or str(plan.get("title") or "")
+             or next((ln.strip() for ln in str(plan.get("pr_body") or "").splitlines()
+                      if ln.strip()), "") or f"Fix #{issue}")
+    status, data = _http_post_json(
+        f"https://api.github.com/repos/{repo}/pulls", token,
+        {"title": title, "head": f"{login}:{branch_now}", "base": base_branch,
+         "body": str(plan.get("pr_body") or "")})
+    if status != 201 or not isinstance(data, dict) or not data.get("number"):
+        plan["state"] = "pushed_unopened"
+        plan["last_execute_block"] = {
+            "at": _now_iso(),
+            "blocked_by": [f"PR creation answered HTTP {status}"]}
+        _save_plan(plan)
+        return _shaped({"plan_id": plan_id, "branch": branch_now},
+                       {"state": "pushed_unopened", "http_status": status,
+                        "reason": str((data or {}).get("message")
+                                      or (data or {}).get("error") or data)[:300]},
+                       evidence + [f"the branch {branch_now} is pushed, but PR "
+                                   "creation did not succeed; the open is "
+                                   "recoverable from the pushed branch and "
+                                   "was not retried blind"])
+    number = int(data["number"])
+    evidence.append(f"PR creation answered 201: #{number} "
+                    f"({data.get('html_url')})")
+    # Read-back: the creation response is a claim; the GET is the proof.
+    try:
+        pr = _http_get_json(f"https://api.github.com/repos/{repo}/pulls/{number}",
+                            token)
+    except Exception as e:
+        plan["state"] = "opened_unverified"
+        plan["open_result"] = {"number": number, "url": data.get("html_url")}
+        _save_plan(plan)
+        return _shaped({"plan_id": plan_id},
+                       {"state": "opened_unverified", "number": number,
+                        "url": data.get("html_url")},
+                       evidence + [f"the PR was created but its read-back "
+                                   f"failed ({type(e).__name__}); the open is "
+                                   "claimed, not verified"])
+    readback = {"number": number, "url": pr.get("html_url"),
+                "pr_state": pr.get("state"),
+                "head_sha": ((pr.get("head") or {}).get("sha")) or "",
+                "head_ref": ((pr.get("head") or {}).get("ref")) or "",
+                "base_ref": ((pr.get("base") or {}).get("ref")) or ""}
+    ok = (readback["pr_state"] == "open" and readback["head_sha"] == head_now
+          and readback["base_ref"] == base_branch)
+    plan["open_result"] = readback
+    plan["state"] = "opened" if ok else "opened_unverified"
+    _save_plan(plan)
+    evidence.append(
+        f"read-back: PR state {readback['pr_state']}, head "
+        f"{readback['head_sha'][:12]}, base {readback['base_ref']} "
+        f"({'matches' if ok else 'DOES NOT MATCH'} the pushed head and base)")
+    return _shaped({"plan_id": plan_id, "created": {"number": number,
+                                                    "url": data.get("html_url")}},
+                   {"state": plan["state"], **readback}, evidence)
 
 
 # ------------------------------------------------------------------ watch (Stages 6 and 7, read side)
@@ -1083,6 +1469,231 @@ def watch(args: Dict[str, Any]) -> Dict[str, Any]:
     return _shaped({"open_prs": len(prs)}, verified, evidence)
 
 
+# ------------------------------------------------------------------ the claim (Stage 3)
+
+_CLAIM_PHRASES = re.compile(
+    r"(i would like to (work on|take|handle) this|i'?d like to (work on|take) "
+    r"this|i'?ll take this|i will take this|i'?m working on this|i am working "
+    r"on this|working on this one|claiming this)", re.I)
+
+
+def _own_claim(comments: Any, login: str) -> Optional[Dict[str, Any]]:
+    """The signed-in account's own claim comment on an issue, if one is
+    there: author match plus a claim phrase, the claimcheck standard."""
+    if not isinstance(comments, list):
+        return None
+    for c in comments:
+        if not isinstance(c, dict):
+            continue
+        who = str(((c.get("user") or {}).get("login")) or "")
+        body = str(c.get("body") or "")
+        if who.lower() == login.lower() and _CLAIM_PHRASES.search(body):
+            return {"comment_id": c.get("id"), "url": c.get("html_url"),
+                    "created_at": c.get("created_at"),
+                    "excerpt": body.strip()[:160]}
+    return None
+
+
+def _issue_comments(repo: str, issue: Any, token: str) -> Any:
+    return _http_get_json(
+        f"https://api.github.com/repos/{repo}/issues/{issue}/comments"
+        f"?per_page=100", token)
+
+
+def claim(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Stage 3: claim an issue where the repo requires it, and only there.
+    Reads the claim state first (claimcheck plus the issue's own comments):
+    a repo that does not require a claim is left alone, a claim already on
+    the issue by this account is reported as claimed, and only a missing
+    required claim is posted, as a short plain comment that must pass the
+    prose gate, then verified by read-back. A closed comment channel (the
+    API refusing the post) is reported as blocked with the status named;
+    it is never routed around."""
+    _need(args, "repo", "issue")
+    repo, issue = str(args["repo"]), args["issue"]
+    token = _github_token()
+    ident = _github_identity()
+    login = str(ident.get("login") or "")
+    if not token or not login:
+        return _unknown("repo claim",
+                        "no verified GitHub sign-in is stored on this Xod", [])
+    evidence = [f"identity verified as {login}"]
+    try:
+        comments = _issue_comments(repo, issue, token)
+    except Exception as e:
+        return _unknown("repo claim",
+                        f"the issue's comments could not be read "
+                        f"({type(e).__name__})", evidence)
+    own = _own_claim(comments, login)
+    cc = claimcheck_issue({"repo": repo, "issue": issue})
+    evidence += cc["evidence"]
+    others = None
+    if cc["verified"].get("state") == "ok":
+        strongest = cc["verified"].get("strongest") or {}
+        if strongest and str(strongest.get("author") or "").lower() != login.lower():
+            others = {"author": strongest.get("author"),
+                      "bucket": strongest.get("bucket"),
+                      "age_days": strongest.get("ageDays")}
+    requires = args.get("requires_claim")
+    if requires is None:
+        chk = greenlight_check({"repo": repo, "issue": issue})
+        fric = greenlight_friction({"repo": repo, "lite": True})
+        evidence += chk["evidence"] + fric["evidence"]
+        if chk["verified"].get("state") != "ok" \
+                and fric["verified"].get("state") != "ok":
+            return _unknown("repo claim",
+                            "the claim requirement could not be read: the "
+                            "check and friction reads both failed, so whether "
+                            "this repo requires a claim is unknown", evidence)
+        texts = [str(r) for r in (chk["verified"].get("reasons") or [])]
+        texts += [json.dumps(g) for g in (fric["verified"].get("gates") or [])]
+        hits = [t for t in texts if "claim" in t.lower()]
+        requires = bool(hits)
+        evidence.append("claim requirement read from the gate evidence: "
+                        + (hits[0][:200] if hits else
+                           "no claim requirement found in the check or friction evidence"))
+    if not requires:
+        return _shaped({"repo": repo, "issue": issue},
+                       {"state": "not_required", "own_claim": own,
+                        "other_claim": others},
+                       evidence + ["the repo does not require a claim for this "
+                                   "issue; nothing was posted"])
+    if own:
+        return _shaped({"repo": repo, "issue": issue},
+                       {"state": "claimed", "own_claim": own,
+                        "other_claim": others},
+                       evidence + ["this account's claim is already on the "
+                                   "issue; nothing new was posted"])
+    text = str(args.get("text") or "").strip()
+    if not text:
+        text = str(POLICY["claim"]["text_template"])
+        plan_line = str(args.get("plan") or "").strip()
+        if plan_line:
+            text = f"{text} Plan: {plan_line}"
+    prose = prosecheck({"kind": "comment", "text": text})
+    evidence += prose["evidence"]
+    if prose["verified"].get("state") != "ok":
+        return _shaped({"repo": repo, "issue": issue},
+                       {"state": "unknown", "own_claim": None,
+                        "reason": "the claim text could not be prose-checked, "
+                                  "and an unchecked claim is not posted"},
+                       evidence)
+    if prose["verified"].get("verdict") != "PASS":
+        return _shaped({"repo": repo, "issue": issue},
+                       {"state": "blocked", "own_claim": None,
+                        "reason": "the claim text did not PASS the prose gate"},
+                       evidence)
+    status, data = _http_post_json(
+        f"https://api.github.com/repos/{repo}/issues/{issue}/comments",
+        token, {"body": text})
+    if status != 201:
+        msg = ""
+        if isinstance(data, dict):
+            msg = str(data.get("message") or data.get("error") or "")
+        return _shaped({"repo": repo, "issue": issue},
+                       {"state": "blocked", "http_status": status,
+                        "own_claim": None,
+                        "reason": f"the claim post was refused (HTTP {status})"
+                                  + (f": {msg}" if msg else "")},
+                       evidence + ["the comment channel is closed for this "
+                                   "account on this issue; the claim was not "
+                                   "posted and was not routed around"])
+    evidence.append(f"claim posted (HTTP 201, comment "
+                    f"{(data or {}).get('id') if isinstance(data, dict) else '?'})")
+    try:
+        comments2 = _issue_comments(repo, issue, token)
+    except Exception as e:
+        return _shaped({"repo": repo, "issue": issue},
+                       {"state": "posted_unverified", "own_claim": None},
+                       evidence + [f"the claim posted but its read-back failed "
+                                   f"({type(e).__name__}); the claim is "
+                                   "claimed, not verified"])
+    own2 = _own_claim(comments2, login)
+    if own2:
+        return _shaped({"repo": repo, "issue": issue},
+                       {"state": "claimed", "own_claim": own2,
+                        "other_claim": others},
+                       evidence + ["read-back confirms this account's claim "
+                                   "comment is on the issue"])
+    return _shaped({"repo": repo, "issue": issue},
+                   {"state": "posted_unverified", "own_claim": None},
+                   evidence + ["the claim posted but no matching claim comment "
+                               "by this account reads back; the claim is "
+                               "claimed, not verified"])
+
+
+# ------------------------------------------------------------------ babysit reply drafts (Stage 6)
+
+def _drafts_path() -> Path:
+    return _store_dir() / "reply_drafts.json"
+
+
+def _load_drafts() -> List[Dict[str, Any]]:
+    path = _drafts_path()
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _save_drafts(drafts: List[Dict[str, Any]]) -> None:
+    _drafts_path().write_text(json.dumps(drafts, indent=1), encoding="utf-8")
+
+
+def draft_reply(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Stage 6's write side, drafting only: a reply to a maintainer is
+    composed by the caller, must PASS the prose gate as a comment (the
+    policy's reply limits), and is then stored in this Xod's local draft
+    store, verified by read-back. Repo Worker never posts a reply: the
+    draft waits in the store for the campaign's posting step, and a FAIL
+    or an unknown prose gate stores nothing. With args["list"], returns
+    the stored drafts instead."""
+    if args.get("list"):
+        drafts = _load_drafts()
+        return _shaped({"drafts": len(drafts)},
+                       {"state": "ok", "drafts": drafts},
+                       [f"{len(drafts)} drafted reply(ies) in the local store; "
+                        "none of them has been posted"])
+    _need(args, "repo", "number", "text")
+    repo, number = str(args["repo"]), int(args["number"])
+    prose = prosecheck({"kind": "comment", "text": str(args["text"])})
+    evidence = list(prose["evidence"])
+    if prose["verified"].get("state") != "ok":
+        return _shaped({"repo": repo, "number": number},
+                       {"state": "unknown", "stored": False,
+                        "reason": "the reply could not be prose-checked, and "
+                                  "an unchecked reply is not drafted"},
+                       evidence)
+    if prose["verified"].get("verdict") != "PASS":
+        return _shaped({"repo": repo, "number": number},
+                       {"state": "not_stored", "stored": False,
+                        "findings": (prose.get("data") or {}),
+                        "reason": "prosecheck FAIL: rewrite the reply shorter "
+                                  "and plainer, then draft again; a FAIL is "
+                                  "never waived"},
+                       evidence)
+    draft = {"id": "rwd-" + uuid.uuid4().hex[:12],
+             "repo": repo, "number": number,
+             "text": str(args["text"]),
+             "in_reply_to": str(args.get("in_reply_to") or ""),
+             "created_at": _now_iso(), "prose": "PASS",
+             "status": "drafted_not_posted"}
+    drafts = _load_drafts()
+    drafts.append(draft)
+    _save_drafts(drafts)
+    found = any(d.get("id") == draft["id"] for d in _load_drafts())
+    confirm = "confirmed by read-back" if found else "NOT confirmed by read-back"
+    return _shaped({"repo": repo, "number": number, "draft_id": draft["id"]},
+                   {"state": "drafted" if found else "store_unverified",
+                    "draft_id": draft["id"], "posted": False},
+                   evidence + [f"draft {draft['id']} stored locally and "
+                               f"{confirm}; Repo Worker drafts replies, "
+                               "it never posts them"])
+
+
 # ------------------------------------------------------------------ dispatch
 
 TOOLS = {
@@ -1093,10 +1704,14 @@ TOOLS = {
     "repo_reprocheck": reprocheck,
     "repo_prosecheck": prosecheck,
     "repo_commitcheck": commitcheck,
+    "repo_claimcheck": claimcheck_issue,
     "repo_ci_gate": ci_gate,
     "repo_find_work": find_work,
     "repo_open_plan": open_plan,
+    "repo_open_execute": open_execute,
+    "repo_claim": claim,
     "repo_watch": watch,
+    "repo_draft_reply": draft_reply,
 }
 
 
