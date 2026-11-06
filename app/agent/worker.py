@@ -694,6 +694,18 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             tools = [t for t in tools if t["function"]["name"] != "web_search"]
     except Exception:
         pass
+    # The keyed API search tools ride along when their provider has a key saved here
+    # (services/capability_manifest.py). These fixed name sets used to leave you_search and
+    # tavily_search out entirely, so a job could never use a search key the owner had saved.
+    if kind in ("computer", "web"):
+        try:
+            from app.services import capability_manifest
+            have = {t["function"]["name"] for t in tools}
+            for name in capability_manifest.keyed_search_tool_names():
+                if name not in have:
+                    tools = tools + [t for t in TOOL_DEFINITIONS if t["function"]["name"] == name]
+        except Exception:
+            pass
     # The team (services/team.py): with more than one brain (or a teammate agent), pieces can be handed off.
     team_note = ""
     try:
@@ -721,6 +733,11 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                                shell=(SHELL_WIN + "\n" + platform_info.SHELL_NOTE) if WIN else SHELL_MAC) + team_note
     if ready["notes"] and kind == "computer":
         system += "\nKeep in mind: " + "; ".join(ready["notes"]) + "."
+    try:   # what this Xod has and does not have, checked just now (services/capability_manifest.py)
+        from app.services import capability_manifest
+        system += "\n\n" + capability_manifest.summary_text()
+    except Exception:
+        pass
     if spoken:
         system += "\nYour final reply will be read aloud: two short sentences."
     convo: List[Dict[str, Any]] = [{"role": "system", "content": system}]
