@@ -85,7 +85,7 @@ class WedgeQueue:
         self.retry_calls = []
         self.retry_result = {"success": True} if retry_result is None else retry_result
 
-    def create(self, request, title=None):
+    def create(self, request, title=None, origin=None):
         tid = f"task-fake{len(self.created) + 1}"
         self.created.append({"request": request, "title": title})
         self.tasks[tid] = {"behavior": self.behaviors[len(self.created) - 1], "gets": 0}

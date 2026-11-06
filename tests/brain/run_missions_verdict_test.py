@@ -70,7 +70,7 @@ class FakeQueue:
         self.created = []
         self.tasks = {}
 
-    def create(self, request, title=None):
+    def create(self, request, title=None, origin=None):
         tid = f"task-fake{len(self.created) + 1}"
         self.created.append({"request": request, "title": title})
         idx = len(self.created) - 1

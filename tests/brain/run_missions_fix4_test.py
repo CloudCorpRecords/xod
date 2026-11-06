@@ -119,7 +119,7 @@ class FakeQueue:
         self.created = []
         self.tasks = {}
 
-    def create(self, request, title=None):
+    def create(self, request, title=None, origin=None):
         tid = f"task-fake{len(self.created) + 1}"
         self.created.append({"request": request, "title": title})
         self.tasks[tid] = {"behavior": self.behaviors[len(self.created) - 1], "gets": 0}
@@ -150,7 +150,7 @@ class GateQueue:
         self.tasks = {}
         self._gate = TQ.TaskQueue.__new__(TQ.TaskQueue)
 
-    def create(self, request, title=None):
+    def create(self, request, title=None, origin=None):
         tid = f"task-gate{len(self.created) + 1}"
         self.created.append({"request": request, "title": title})
         idx = len(self.created) - 1

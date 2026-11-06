@@ -273,7 +273,7 @@ class SharedGateQueue:
     def _conn(self):
         return sqlite3.connect(str(self._db), timeout=15)
 
-    def create(self, request, title=None):
+    def create(self, request, title=None, origin=None):
         tid = "task-hx" + uuid.uuid4().hex[:8]
         offered = offered_names(request)
         write_offered = any(n in offered for n in WRITE_TOOLS)
