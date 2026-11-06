@@ -72,9 +72,13 @@
     const pend = (fam.pending || []).map((p) => `
       <div class="task-card space-y-1.5">
         <p class="task-title">${esc((p.record || {}).name || (p.record || {}).id || "A phone")} wants to join your family</p>
-        <p class="text-[12px] text-zinc-400">${esc((p.record || {}).platform || "")} \u00b7 signed in as ${esc(p.account || fam.account)}. Compare the safety number with the phone's screen, then approve:
-          <span class="font-mono text-white">${esc(p.safety || "")}</span></p>
+        <p class="text-[12px] text-zinc-400">${esc((p.record || {}).platform || "")} · signed in as ${esc(p.account || fam.account)}.</p>
         ${p.presence ? `<p class="text-[12px] text-emerald-300">${p.presence.kind === "loopback" ? "This ask came from this computer itself." : "Xod can see this device on this Wi-Fi, here now."}</p>` : ""}
+        <details class="text-[12px] text-zinc-400">
+          <summary class="cursor-pointer text-zinc-300">Details</summary>
+          <p class="mt-1">Compare the safety number with the phone's screen, then approve:
+            <span class="font-mono text-white">${esc(p.safety || "")}</span></p>
+        </details>
         <div class="flex gap-2">
           <button data-enroll-approve="${esc((p.record || {}).id || "")}" class="${primary}">Approve</button>
           <button data-enroll-deny="${esc((p.record || {}).id || "")}" class="${quiet}">Deny</button>

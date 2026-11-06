@@ -18,8 +18,10 @@
     return `<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-surface-700 text-zinc-400">${esc(label)}</span>`;
   }
 
-  async function render() {
-    const body = document.getElementById("activityBody");
+  let lastInto = null;
+  async function render(into) {
+    if (into) lastInto = into;
+    const body = into || lastInto || document.getElementById("activityBody");
     if (!body) return;
     const { items } = await (await fetch("/api/activity?limit=300")).json();
     if (!items.length) {
@@ -59,6 +61,17 @@
     showToast(r.ok ? `Undone: ${r.detail}` : r.detail);
     render();
   }
+
+  // Phase 2: Activity is Work's History tab. The same rendering (with
+  // undo) can target the Work drawer's history view; the standalone
+  // panel below remains for deep links and the old openers.
+  window.__xodRenderActivityInto = (el) => render(el);
+  window.__xodUndoActivity = (id) => undo(id);
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest || !e.target.closest("#workHistoryBody")) return;
+    const b = e.target.closest("[data-undo]");
+    if (b) undo(b.dataset.undo);
+  });
 
   window.openActivityPanel = () => {
     let root = document.getElementById("activityPanel");

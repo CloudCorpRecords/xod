@@ -95,7 +95,23 @@ SHOTS_DIR = DATA_DIR / "tasks"
 
 LIVE_FIELDS = ("id", "title", "request", "status", "waiting_kind", "waiting_detail", "result", "now",
                "created_at", "updated_at", "finished_at", "steps", "has_screenshot", "history",
-               "last_progress_at", "stalled", "stalled_reason", "mode", "plan_version", "plan_json")
+               "last_progress_at", "stalled", "stalled_reason", "mode", "plan_version", "plan_json", "origin", "scratch")
+
+
+# ------------------------------------------------------- scratch / playground classification
+# Phase 2 of the simplicity redesign: tasks carry the same origin marker
+# Phase 0 added for projects (create(..., origin=...)). A job is scratch
+# when its origin marker says so, or - for jobs created before the marker
+# existed - when its title matches the same conservative legacy-debris
+# name check Phase 0 uses for projects (project_storage.is_scratch_project).
+# Classification is display-only: scratch jobs are filtered out of the
+# Work feed into the Playground (Settings, Advanced); nothing is deleted.
+def is_scratch_job(title: str = "", origin: str = "") -> bool:
+    try:
+        from app.services.project_storage import is_scratch_project
+        return is_scratch_project(title or "", [], origin or "user")
+    except Exception:
+        return (origin or "").strip().lower() in {"scratch", "test", "proving", "eval", "smoke"}
 
 # Cancel and watchdog timing. A first cancel is graceful (the run stops after
 # its current step); if the task is still working CANCEL_GRACE_SEC later, or
@@ -181,6 +197,8 @@ def _init() -> None:
     if "external_ref" not in cols:         # another agent's id for this same task (a later Xod and Tree sync matches on it)
         c.execute("ALTER TABLE tasks ADD COLUMN external_ref TEXT")
         c.execute("CREATE INDEX IF NOT EXISTS tasks_external_ref ON tasks(external_ref)")
+    if "origin" not in cols:
+        c.execute("ALTER TABLE tasks ADD COLUMN origin TEXT DEFAULT 'user'")
     c.commit()
     c.close()
 
@@ -189,6 +207,8 @@ def _row(r: sqlite3.Row) -> Dict[str, Any]:
     d = dict(r)
     if "stalled" in d:
         d["stalled"] = bool(d["stalled"])
+    d["origin"] = d.get("origin") or "user"
+    d["scratch"] = is_scratch_job(d.get("title") or "", d["origin"])
     for k in ("next_action", "waiting_detail", "mission_json", "pending_json", "history", "evidence_json", "plan_json"):
         if d.get(k):
             try:
@@ -646,13 +666,15 @@ class TaskQueue:
 
     def counts(self) -> Dict[str, int]:
         c = _conn()
-        rows = c.execute("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status").fetchall()
+        rows = c.execute("SELECT status, COUNT(*) AS n FROM tasks "
+                         "WHERE COALESCE(LOWER(origin), 'user') NOT IN ('scratch', 'test', 'proving', 'eval', 'smoke') "
+                         "GROUP BY status").fetchall()
         c.close()
         return {r["status"]: r["n"] for r in rows}
 
     # ------------------------------------------------------------------ user actions
     def create(self, request: str, title: Optional[str] = None, mode: Optional[str] = None,
-               external_ref: Optional[str] = None) -> Dict[str, Any]:
+               external_ref: Optional[str] = None, origin: str = "user") -> Dict[str, Any]:
         request = (request or "").strip()
         if not request:
             raise ValueError("Tell Xod what to do.")
@@ -662,10 +684,11 @@ class TaskQueue:
         c = _conn()
         c.execute(
             "INSERT INTO tasks (id, created_at, updated_at, title, request, status, next_action, history, last_progress_at, mode, "
-            "external_ref) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "external_ref, origin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (task_id, now, now, title, request, "queued", json.dumps({"type": "start"}),
              json.dumps([{"at": now, "text": "Acknowledged; added to your tasks" if mode == "stepwise" else "Added to your tasks",
-                          "kind": "ack" if mode == "stepwise" else None}]), now, mode, (external_ref or "").strip()[:200] or None),
+                          "kind": "ack" if mode == "stepwise" else None}]), now, mode, (external_ref or "").strip()[:200] or None,
+             origin or "user"),
         )
         c.commit()
         c.close()
@@ -683,6 +706,95 @@ class TaskQueue:
         r = c.execute("SELECT id FROM tasks WHERE external_ref = ? ORDER BY created_at DESC LIMIT 1", ((ref or "").strip(),)).fetchone()
         c.close()
         return self.get(r["id"]) if r else None
+
+    # ------------------------------------------------ self-maintenance cards (Phase 5)
+    # Silent self-maintenance (services/self_maintenance.py) reports through
+    # the Work feed: a success is an ordinary Finished result card and an
+    # unrecovered fault is one Needs-you card. These rows are written
+    # directly - they are records of work Xod already did on itself, so the
+    # worker is never kicked and nothing is executed. origin="self" is a
+    # real (non-scratch) origin: these cards belong in the feed, unlike
+    # scratch/proving runs.
+
+    def record_finished(self, title: str, result: str, origin: str = "self") -> Dict[str, Any]:
+        """A job that is already done: a Finished result card, written as an
+        outcome (the title IS the outcome sentence), never a step log."""
+        task_id = f"task-{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        c = _conn()
+        c.execute(
+            "INSERT INTO tasks (id, created_at, updated_at, finished_at, title, request, status,"
+            " result, now, history, last_progress_at, origin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, now, now, now, title, title, "done", result, "Done",
+             json.dumps([{"at": now, "text": "Finished"}]), now, origin or "self"),
+        )
+        c.commit()
+        c.close()
+        return self.get(task_id)
+
+    def record_waiting_maintenance(self, key: str, title: str, detail: str = "",
+                                   fix: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """One Needs-you card for an unrecovered self-maintenance fault,
+        deduped by key: if a card for this fault is already waiting, it is
+        returned unchanged (with _created False) instead of stacking."""
+        c = _conn()
+        rows = c.execute("SELECT id, waiting_detail FROM tasks WHERE status = 'waiting'"
+                         " AND waiting_kind = 'maintenance'").fetchall()
+        c.close()
+        for r in rows:
+            try:
+                wd = json.loads(r["waiting_detail"] or "{}")
+            except Exception:
+                wd = {}
+            if wd.get("key") == key:
+                t = self.get(r["id"])
+                if t:
+                    t["_created"] = False
+                return t
+        task_id = f"task-{uuid.uuid4().hex[:10]}"
+        now = time.time()
+        wd = {"key": key, "message": title, "detail": detail, "fix": fix}
+        c = _conn()
+        c.execute(
+            "INSERT INTO tasks (id, created_at, updated_at, title, request, status,"
+            " waiting_kind, waiting_detail, now, history, last_progress_at, origin)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, now, now, title, title, "waiting", "maintenance", json.dumps(wd),
+             title, json.dumps([{"at": now, "text": "Needs you"}]), now, "self"),
+        )
+        c.commit()
+        c.close()
+        t = self.get(task_id)
+        if t:
+            t["_created"] = True
+        return t
+
+    def resolve_waiting_maintenance(self, key: str, result: str) -> bool:
+        """Completes the waiting maintenance card for `key` (the fault
+        healed, or its Fix it worked). Returns True when a card was waiting."""
+        c = _conn()
+        rows = c.execute("SELECT id, waiting_detail FROM tasks WHERE status = 'waiting'"
+                         " AND waiting_kind = 'maintenance'").fetchall()
+        found = None
+        for r in rows:
+            try:
+                wd = json.loads(r["waiting_detail"] or "{}")
+            except Exception:
+                wd = {}
+            if wd.get("key") == key:
+                found = r["id"]
+                break
+        c.close()
+        if not found:
+            return False
+        now = time.time()
+        c = _conn()
+        c.execute("UPDATE tasks SET status = 'done', result = ?, waiting_kind = NULL,"
+                  " waiting_detail = NULL, now = 'Done', updated_at = ?, finished_at = ? WHERE id = ?",
+                  (result, now, now, found))
+        c.commit()
+        c.close()
+        return True
 
     def approve(self, task_id: str) -> Dict[str, Any]:
         t = self.get(task_id)

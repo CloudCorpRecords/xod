@@ -7,6 +7,7 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const api = async (url) => (await fetch(url)).json();
   const post = async (url, body = {}) => (await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+  const send = async (url, method, body) => (await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) })).json();
   let poll = null;
   let devPoll = null;
   let devFlow = null;   // {user_code, verification_uri, state, message, account} while a device sign-in runs
@@ -18,6 +19,9 @@
     return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
   };
 
+  // Phase 2: a family member is a device card - friendly name, ONE
+  // status line, what it can do in plain words. Endpoints and other
+  // plumbing stay off the card (they live in pairing/details flows).
   function memberRow(m) {
     const caps = (m.capabilities || []).map((c) =>
       `<span class="px-1.5 py-0.5 rounded-md bg-surface-700 text-zinc-300 text-[11px]">${esc(c)}</span>`).join("");
@@ -29,7 +33,8 @@
           <span class="text-zinc-500 text-[11px]">${esc(m.platform)}</span>
           ${m.verified ? `<span class="px-1.5 py-0.5 rounded-md bg-emerald-900 text-emerald-300 text-[11px]">signature verified</span>` : `<span class="px-1.5 py-0.5 rounded-md bg-surface-700 text-zinc-400 text-[11px]">unsigned</span>`}
         </div>
-        <p class="text-[12px] text-zinc-400">${m.endpoint ? `Tailnet <span class="font-mono text-zinc-200">${esc(m.endpoint)}</span> · ` : ""}last seen ${ago(m.last_seen)}</p>
+        <p class="text-[12px] text-zinc-400">${esc(m.name)} - last seen ${ago(m.last_seen)}</p>
+        ${m.endpoint ? `<details><summary class="text-[11px] text-zinc-500 cursor-pointer">Details</summary><p class="text-[11px] text-zinc-500 font-mono mt-0.5">${esc(m.endpoint)}</p></details>` : ""}
         ${caps ? `<div class="flex flex-wrap gap-1">${caps}</div>` : `<p class="text-[12px] text-zinc-500">No capabilities listed.</p>`}
         ${m.note ? `<p class="text-[12px] text-zinc-500">${esc(m.note)}</p>` : ""}
       </li>`;
@@ -101,6 +106,68 @@
       </section>`;
   }
 
+  // Phase 3 (simplicity redesign): connection requests surface as cards in
+  // Family, in plain words - who is asking (friendly name + where), what it
+  // can do and what it cannot do - with Allow / Block. Raw payloads and
+  // addresses stay under each card's Details. The same calm paused line as
+  // Messages appears here when the post office could not heal itself.
+  const MW = window.MailWords || null;
+  const famFriendly = (address) => {
+    const addr = String(address || "").toLowerCase();
+    const [local = "", domainRaw = ""] = addr.split("@");
+    const label = domainRaw.split(":")[0].split(".")[0];
+    let device = "";
+    if (/macbook/.test(label)) device = "MacBook Pro";
+    else if (/rene-home-main|razer|blade/.test(label)) device = "Razer";
+    else if (/iphone/.test(label)) device = "Your iPhone";
+    else if (/pocophone|s25|android|phone/.test(label)) device = "Your phone";
+    let name;
+    if (local.startsWith("takeover-check-")) name = "A test agent";
+    else if (local === "phone") name = "Your phone";
+    else if (local === "iphone") name = "Your iPhone";
+    else name = local ? local.replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()) : addr;
+    if (!device || name === device) return name;
+    const place = device.startsWith("Your ") ? `your ${device.slice(5)}` : `your ${device}`;
+    return name.toLowerCase() === device.toLowerCase() ? name : `${name} on ${place}`;
+  };
+
+  function pausedLine(mailStatus) {
+    const home = mailStatus && mailStatus.home;
+    if (!(mailStatus && mailStatus.self_hosted && home && !home.running && home.paused)) return "";
+    return `
+      <div class="task-card flex items-center gap-2 flex-wrap">
+        <p class="text-[12px] text-zinc-200 flex-1">Messages are paused.</p>
+        <button data-family-fix="post" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 hover:bg-brand-400 text-[12px] font-semibold">Fix it</button>
+      </div>`;
+  }
+
+  function requestsSection(reqThreads) {
+    if (!MW || !reqThreads || !reqThreads.length) return "";
+    const groups = MW.groupThreadsBySender(reqThreads, "");
+    if (!groups.length) return "";
+    const cards = groups.map((g) => {
+      const peer = g.key;
+      const caps = MW.capabilitySet(MW.parseMachinePayload(g.last && g.last.text));
+      const preview = MW.plainPreview(g.last && g.last.text, g.last && g.last.subject);
+      return `
+      <div class="task-card space-y-2" data-family-request="${esc(peer)}">
+        <p class="text-[13px] text-white">${esc(famFriendly(peer))} wants to connect.</p>
+        ${caps ? `${MW.canSentence(caps) ? `<p class="text-[12px] text-zinc-300">${esc(MW.canSentence(caps))}</p>` : ""}${MW.cannotSentence(caps) ? `<p class="text-[12px] text-zinc-300">${esc(MW.cannotSentence(caps))}</p>` : ""}`
+          : `<p class="text-[12px] text-zinc-300">${esc(preview)}</p>`}
+        <div class="flex gap-2">
+          <button data-family-request-action="allow" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 hover:bg-brand-400 text-[12px] font-semibold">Allow</button>
+          <button data-family-request-action="block" class="px-3 py-1.5 rounded-lg font-medium text-zinc-300 hover:text-white hover:bg-surface-700 text-[12px]">Block</button>
+        </div>
+        <details><summary class="text-[11px] text-zinc-500 cursor-pointer">Details</summary><p class="text-[11px] text-zinc-500 font-mono mt-1">${esc(peer)}</p></details>
+      </div>`;
+    }).join("");
+    return `
+      <section class="space-y-2">
+        <p class="text-[12px] font-semibold text-zinc-300">Requests waiting</p>
+        ${cards}
+      </section>`;
+  }
+
   function body(r) {
     if (!r || r.state === undefined) return `<p class="text-[12px] text-zinc-400">Could not load the family registry.</p>`;
     if (r.state === "missing") {
@@ -146,10 +213,12 @@
   async function render() {
     const el = document.getElementById("familyBody");
     if (!el) return;
-    let r = null, c = null;
+    let r = null, c = null, mailStatus = null, reqThreads = [];
     try { r = await api("/api/family"); } catch (e) { /* honest empty render below */ }
     try { c = await api("/api/family/control"); } catch (e) { /* control header just omits */ }
-    el.innerHTML = controlView(c) + body(r);
+    try { mailStatus = await api("/api/mail/status"); } catch (e) { /* Messages health line just omits */ }
+    try { const t = await api("/api/mail/threads?box=requests"); reqThreads = t.threads || []; } catch (e) { /* request cards just omit */ }
+    el.innerHTML = pausedLine(mailStatus) + controlView(c) + requestsSection(reqThreads) + body(r);
   }
 
   async function saveClientId() {
@@ -199,7 +268,15 @@
             <button data-close-family class="p-1 -mr-1 rounded-lg text-zinc-500 hover:text-white hover:bg-surface-700" title="Close"><i data-lucide="x" class="size-4"></i></button>
           </header>
           <div class="px-5 py-4 border-b border-white/[0.06] space-y-2">
-            <p class="text-[12px] font-semibold text-zinc-300">Message Tree</p>
+            <button data-family-action="messages" class="surface-row" style="background:rgba(255,255,255,0.03)">
+              <span class="flex-1 min-w-0"><span class="block text-zinc-100 text-[13px] font-semibold">Messages</span><span class="block text-[12px] text-zinc-500">Messages between your machines and agents (Agent Mail), real messages only.</span></span>
+              <span class="text-zinc-500 text-[12px]">Open</span>
+            </button>
+            <div class="flex gap-2">
+              <button data-family-action="xods" class="flex-1 px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px]">Your Xods</button>
+              <button data-family-action="phone" class="flex-1 px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px]">Your phone</button>
+            </div>
+            <p class="text-[12px] font-semibold text-zinc-300 pt-1">Message Tree</p>
             <p class="text-[12px] text-zinc-500">Send a note straight to Tree, your Muse agent — it lands in the family inbox and Tree picks it up from there. No relaying it yourself.</p>
             <textarea id="treeText" rows="3" class="task-answer w-full" placeholder="What should Tree know?"></textarea>
             <div class="flex items-center gap-2">
@@ -216,6 +293,15 @@
         </aside>`;
       document.body.appendChild(root);
       root.addEventListener("click", (e) => { if (e.target.closest("[data-close-family]")) window.closeFamilyPanel(); });
+      root.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-family-action]");
+        if (!b) return;
+        const a = b.getAttribute("data-family-action");
+        window.closeFamilyPanel();
+        if (a === "messages" && window.openMailPanel) window.openMailPanel();
+        if (a === "xods" && window.openXodsPanel) window.openXodsPanel();
+        if (a === "phone" && window.openPhonePanel) window.openPhonePanel();
+      });
       root.querySelector("#treeSend").addEventListener("click", async () => {
         const textEl = root.querySelector("#treeText");
         const stateEl = root.querySelector("#treeState");
@@ -239,6 +325,23 @@
         } catch (e) { stateEl.textContent = "Could not send — Xod's backend did not answer."; }
       });
       root.addEventListener("click", async (e) => {
+        const fix = e.target.closest("[data-family-fix]");
+        if (fix) {
+          fix.disabled = true; fix.textContent = "Fixing…";
+          try { await post("/api/mail/home/repair"); } catch (err) { /* render shows the new truth */ }
+          render();
+          return;
+        }
+        const reqBtn = e.target.closest("[data-family-request-action]");
+        if (reqBtn) {
+          const card = reqBtn.closest("[data-family-request]");
+          const peer = card && card.getAttribute("data-family-request");
+          if (peer) {
+            try { await send(`/api/mail/contacts/${encodeURIComponent(peer)}`, "PATCH", { trust: reqBtn.getAttribute("data-family-request-action") === "allow" ? "known" : "blocked" }); } catch (err) { /* render shows the new truth */ }
+          }
+          render();
+          return;
+        }
         const btn = e.target.closest("[data-sso-action]");
         if (!btn) return;
         const action = btn.getAttribute("data-sso-action");

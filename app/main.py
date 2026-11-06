@@ -480,6 +480,7 @@ async def secrets_list():
 class NewTaskRequest(BaseModel):
     request: str
     external_ref: Optional[str] = None     # another agent's id for this task, kept for matching (a later Xod-Tree sync)
+    origin: Optional[str] = None          # "user" for real work; scratch/test/proving for Playground jobs
 
 
 class TaskAnswerRequest(BaseModel):
@@ -510,7 +511,7 @@ async def task_counts():
 async def create_task(req: NewTaskRequest):
     from app.services.task_queue import task_queue
     try:
-        return {"success": True, "task": task_queue.create(req.request)}
+        return {"success": True, "task": task_queue.create(req.request, origin=req.origin or "user")}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -711,15 +712,34 @@ async def show_task_page(task_id: str):
 class NewMissionRequest(BaseModel):
     goal: str
     continue_on_failure: bool = False
+    origin: Optional[str] = None          # "user" for real work; scratch/test/proving for Playground jobs
 
 
 @app.post("/api/missions")
 async def create_mission(req: NewMissionRequest):
     from app.services import missions
     try:
-        return {"success": True, "mission": missions.create_mission(req.goal, req.continue_on_failure)}
+        return {"success": True, "mission": missions.create_mission(req.goal, req.continue_on_failure, origin=req.origin or "user")}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class MissionPlanRequest(BaseModel):
+    goal: str
+
+
+@app.post("/api/missions/plan")
+async def preview_mission_plan(req: MissionPlanRequest):
+    """The plan for a goal, as plain step titles, without starting
+    anything (Phase 1: the one composer shows this before a big or
+    sensitive job runs)."""
+    from app.services import missions
+    try:
+        return {"success": True, **await missions.preview_plan(req.goal)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except missions.PlanRejected as e:
+        return {"success": False, "error": "Xod couldn't plan that one yet.", "problems": e.problems}
 
 
 @app.get("/api/missions")
@@ -826,6 +846,8 @@ async def _start_task_worker():
     _workers.mark_orphans_interrupted()     # a worker the last process was running is not running now
     _workers.start_watchdog()               # flags quiet workers stalled with their true last activity
     doctor.start()
+    from app.services import self_maintenance
+    self_maintenance.start()              # Phase 5: silent self-repair + automatic-update bookkeeping
     from app.services import missions
     missions.start()
     from app.services import activity, routines
@@ -1354,6 +1376,20 @@ async def update_settings(req: UpdateSettings):
     return {"success": True, "enabled": updates.enabled()}
 
 
+class UpdatePolicy(BaseModel):
+    policy: str
+
+
+@app.post("/api/update/policy")
+async def update_policy(req: UpdatePolicy):
+    """Phase 5: the update policy in plain words - "automatic" (default:
+    Xod checks and installs on its own, no prompt) or "off"."""
+    from app.services import updates
+    mode = updates.set_policy(req.policy)
+    return {"success": True, "policy": mode, "enabled": updates.enabled(),
+            "automatic": updates.auto_enabled()}
+
+
 # ---- What Xod knows about you (services/user_memory.py) ------------------------------------------------
 class AboutFact(BaseModel):
     text: str
@@ -1559,6 +1595,14 @@ async def mail_outbox():
 async def mail_outbox_retry():
     from app.services import agent_mail
     return await agent_mail.retry_outbox(force=True)
+
+
+@app.post("/api/mail/home/repair")
+async def mail_home_repair():
+    """The Fix it button (Phase 3): one fresh repair attempt for this computer's
+    own post office after automatic recovery gave up (agent_mail.repair_home_post)."""
+    from app.services import agent_mail
+    return await agent_mail.repair_home_post()
 
 
 @app.post("/api/mail/check")
@@ -1897,6 +1941,19 @@ async def doctor_fix(req: DoctorFixRequest):
     from app.services.doctor import doctor
     res = await doctor.fix(req.fix)
     return {**res, "report": await doctor.check()}
+
+
+class MaintenanceFixRequest(BaseModel):
+    task_id: str
+
+
+@app.post("/api/maintenance/fix")
+async def maintenance_fix(req: MaintenanceFixRequest):
+    """Phase 5: the Fix it button on a self-maintenance Needs-you card.
+    Runs the manual path the card names (an existing doctor fix or the
+    Phase 3 post-office repair) and completes the card on success."""
+    from app.services import self_maintenance
+    return await self_maintenance.run_manual_fix(req.task_id)
 
 
 async def _counted(gen):
@@ -3922,6 +3979,7 @@ class CreateProjectRequest(BaseModel):
     icon: Optional[str] = "folder"
     tags: Optional[List[str]] = None
     custom_path: Optional[str] = None
+    origin: Optional[str] = None          # "user" for real work; scratch/test/proving for Playground projects
 
 @app.get("/api/projects")
 async def list_projects_endpoint():
@@ -3939,7 +3997,8 @@ async def create_project_endpoint(req: CreateProjectRequest):
         color=req.color or "#6366f1",
         icon=req.icon or "folder",
         tags=req.tags,
-        custom_path=req.custom_path
+        custom_path=req.custom_path,
+        origin=req.origin or "user"
     )
 
 class SaveFileRequest(BaseModel):

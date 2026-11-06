@@ -155,16 +155,28 @@ def status() -> Dict[str, Any]:
     if ident:
         out["safety_number"] = mc.safety_number(ident.sign_pub, ident.box_pub)
     with _db() as c:
-        out["unread"] = c.execute("""SELECT COUNT(*) FROM mail_messages m LEFT JOIN mail_contacts k ON k.address=m.peer
-            WHERE m.direction='in' AND m.read=0 AND m.status!='blocked' AND COALESCE(k.trust,'unknown')!='unknown'""").fetchone()[0]
-        out["requests"] = c.execute("""SELECT COUNT(DISTINCT m.peer) FROM mail_messages m LEFT JOIN mail_contacts k ON k.address=m.peer
-            WHERE m.direction='in' AND COALESCE(k.trust,'unknown')='unknown' AND m.status!='blocked'""").fetchone()[0]
+        out["unread"] = c.execute(f"""SELECT COUNT(*) FROM mail_messages m LEFT JOIN mail_contacts k ON k.address=m.peer
+            WHERE m.direction='in' AND m.read=0 AND m.status!='blocked' AND COALESCE(k.trust,'unknown')!='unknown' AND {_NOISE_SQL}""").fetchone()[0]
+        out["requests"] = c.execute(f"""SELECT COUNT(DISTINCT m.peer) FROM mail_messages m LEFT JOIN mail_contacts k ON k.address=m.peer
+            WHERE m.direction='in' AND COALESCE(k.trust,'unknown')='unknown' AND m.status!='blocked' AND {_NOISE_SQL}""").fetchone()[0]
         out["drafts"] = c.execute("SELECT COUNT(*) FROM mail_messages WHERE status='draft'").fetchone()[0]
         out["held"] = c.execute("SELECT COUNT(*) FROM mail_messages WHERE status='held'").fetchone()[0]
         out["outbox"] = c.execute("SELECT COUNT(*) FROM mail_outbox").fetchone()[0]
     from app.services import home_post
     out["self_hosted"] = bool(cfg.get("home"))
-    out["home"] = {"running": home_post.running(), "domain": home_post.domain(), "port": home_post.PORT} if cfg.get("home") else None
+    if cfg.get("home"):
+        running = home_post.running()
+        out["home"] = {"running": running, "domain": home_post.domain(), "port": home_post.PORT,
+                       # Phase 3 (simplicity redesign): the post office heals itself (see
+                       # ensure_home_post). The surface reads only these two calm states:
+                       # "recovering" (Xod is fixing it, show nothing) and "paused"
+                       # (recovery gave up; show one line + Fix it). Port and error text
+                       # stay in the payload for the Details disclosure, never the headline.
+                       "recovering": bool(not running and _home_recovery["attempts"] and not _home_recovery["paused"]),
+                       "paused": bool(not running and _home_recovery["paused"]),
+                       "last_error": _home_recovery["last_error"]}
+    else:
+        out["home"] = None
     return out
 
 
@@ -607,6 +619,33 @@ async def _receive(ident: mc.Identity, my_address: str, envelope: Dict[str, Any]
             "status": status, "trust": trust, "kind": kind}
 
 
+
+# ---------------------------------------------------------------- display filtering (Phase 0, simplicity redesign)
+
+def is_ping_or_test(peer: str = "", subject: str = "", text: str = "") -> bool:
+    """Heartbeat/test traffic, not mail: a device "hello" probe (subject "hello" is the
+    convention _receive uses to update the phone's last-seen/capabilities via
+    phone_mcp.record_hello), a bare hello/ping with no subject, or a message from a
+    takeover-check-* test agent. These messages are still stored, still update device
+    status, and are still returned by thread()/message(); they are only kept out of
+    the visible inbox/requests lists and their counts (threads() and status())."""
+    local = (peer or "").split("@")[0].strip().lower()
+    if local.startswith("takeover-check-"):
+        return True
+    subj = (subject or "").strip().lower()
+    if subj == "hello":
+        return True
+    if not subj and (text or "").strip().lower() in ("hello", "hello.", "ping"):
+        return True
+    return False
+
+
+# SQL twin of the subject/text half of is_ping_or_test (peer check is a LIKE on the
+# address, which starts with the local part). Keep the two in sync.
+_NOISE_SQL = """LOWER(TRIM(COALESCE(m.subject,''))) != 'hello'
+    AND m.peer NOT LIKE 'takeover-check-%'
+    AND NOT (COALESCE(m.subject,'') = '' AND LOWER(TRIM(COALESCE(m.text,''))) IN ('hello','hello.','ping'))"""
+
 # ---------------------------------------------------------------- reading
 
 def threads(box: str = "inbox") -> List[Dict[str, Any]]:
@@ -627,10 +666,21 @@ def threads(box: str = "inbox") -> List[Dict[str, Any]]:
             GROUP BY m.thread ORDER BY last_at DESC LIMIT 200""").fetchall()
         out = []
         for r in rows:
-            last = c.execute("SELECT * FROM mail_messages WHERE thread=? AND status IN ('new','sent','failed') ORDER BY created_at DESC LIMIT 1",
-                             (r["thread"],)).fetchone()
+            msgs = c.execute("SELECT * FROM mail_messages WHERE thread=? AND status IN ('new','sent','failed') ORDER BY created_at DESC",
+                             (r["thread"],)).fetchall()
+            # Phase 0: heartbeat/test pings never reach the visible list (they are
+            # stored, and already updated device status when they arrived). A thread
+            # with nothing but pings disappears; in a mixed thread they are skipped
+            # for the preview and the unread count.
+            visible = [m for m in msgs if not is_ping_or_test(m["peer"], m["subject"], m["text"])]
+            if msgs and not visible:
+                continue
+            last = visible[0] if visible else msgs[0]
             peers = {p for (p,) in c.execute("SELECT DISTINCT peer FROM mail_messages WHERE thread=?", (r["thread"],))}
-            out.append({**dict(r), "last": _row(last), "peers": sorted(peers)})
+            peers = {p for p in peers if not p.split("@")[0].lower().startswith("takeover-check-")} or peers
+            unread = sum(1 for m in visible if m["direction"] == "in" and not m["read"])
+            out.append({**dict(r), "last_at": last["created_at"], "count": len(visible) or len(msgs),
+                        "unread": unread, "last": _row(last), "peers": sorted(peers)})
         return out
 
 
@@ -738,6 +788,87 @@ def _notify(title: str, text: str) -> None:
         pass
 
 
+# ---------------------------------------------------------------- self-healing post office (Phase 3)
+
+# This Xod's own post office (services/home_post.py) is started by the mail loop.
+# If it dies (crash, port conflict at boot, a killed server task), Xod restarts it
+# itself: the user is never told to restart anything or check a port. Only when
+# recovery has genuinely failed HOME_RECOVERY_MAX times in a row does the state
+# become "paused", which is the one case the surface reports ("Messages are
+# paused." + a Fix it button that calls repair_home_post()).
+HOME_RECOVERY_MAX = 3
+_home_recovery: Dict[str, Any] = {"attempts": 0, "paused": False, "last_error": None,
+                                  # Phase 5: True once the post office has been seen up in
+                                  # this process, so a later silent restart counts as a
+                                  # repair to report ("Xod fixed its messages on its
+                                  # own."), not as the ordinary first start at boot.
+                                  "seen_running": False}
+
+
+async def ensure_home_post() -> Dict[str, Any]:
+    """Makes sure this computer's own post office is running, restarting it if not.
+    Returns a small state dict: not_home / running / recovering / paused."""
+    cfg = _config()
+    if not cfg.get("home") or not cfg.get("address"):
+        return {"state": "not_home"}
+    from app.services import home_post
+    if home_post.running():
+        _home_recovery.update(attempts=0, paused=False, last_error=None, seen_running=True)
+        return {"state": "running"}
+    if _home_recovery["paused"]:
+        return {"state": "paused", "error": _home_recovery["last_error"]}
+    _home_recovery["attempts"] += 1
+    r = await home_post.start(cfg["home"]["domain"])
+    if r.get("success"):
+        logger.info("Agent Mail: this computer's post office is running again "
+                    f"(recovery attempt {_home_recovery['attempts']}).")
+        was_repair = bool(_home_recovery.get("seen_running"))
+        attempts_used = _home_recovery["attempts"]
+        _home_recovery.update(attempts=0, paused=False, last_error=None, seen_running=True)
+        if was_repair:
+            # Phase 5: a silent self-repair is reported as an outcome, in
+            # Work's Finished bucket and History - never as a prompt.
+            try:
+                from app.services import self_maintenance
+                self_maintenance.resolve_needs_you("health:messages",
+                                                   "Xod fixed its messages on its own.")
+                self_maintenance.record_outcome(
+                    "Xod fixed its messages on its own.",
+                    f"The post office stopped and Xod restarted it itself "
+                    f"(recovery attempt {attempts_used}); nobody was asked.")
+            except Exception:
+                pass
+        return {"state": "running"}
+    _home_recovery["last_error"] = r.get("error")
+    if _home_recovery["attempts"] >= HOME_RECOVERY_MAX:
+        _home_recovery["paused"] = True
+        logger.warning(f"Agent Mail: the post office could not be restarted after "
+                       f"{_home_recovery['attempts']} attempts: {r.get('error')}")
+        return {"state": "paused", "error": r.get("error")}
+    logger.warning(f"Agent Mail: post office restart attempt {_home_recovery['attempts']} "
+                   f"failed: {r.get('error')}")
+    return {"state": "recovering", "attempts": _home_recovery["attempts"], "error": r.get("error")}
+
+
+async def repair_home_post() -> Dict[str, Any]:
+    """The Fix it button: a fresh, full repair attempt. Clears the paused state,
+    stops any half-dead server, and starts the post office again."""
+    cfg = _config()
+    if not cfg.get("home"):
+        return {"success": False, "error": "This Xod uses a shared post office, so there is nothing to repair here."}
+    from app.services import home_post
+    _home_recovery.update(attempts=0, paused=False, last_error=None)
+    if not home_post.running():
+        try:
+            await home_post.stop()      # clear a half-dead server before starting fresh
+        except Exception:
+            pass
+    r = await ensure_home_post()
+    if r["state"] == "running":
+        return {"success": True, "state": "running"}
+    return {"success": False, "state": r["state"], "error": r.get("error") or _home_recovery["last_error"]}
+
+
 # ---------------------------------------------------------------- background
 
 _task: Optional[asyncio.Task] = None
@@ -759,14 +890,12 @@ def wake() -> None:
 
 
 async def _loop() -> None:
-    cfg = _config()
-    if cfg.get("home") and cfg.get("address"):     # this Xod hosts its own post office: open it again
-        from app.services import home_post
-        r = await home_post.start(cfg["home"]["domain"])
-        if not r.get("success"):
-            logger.warning(f"Agent Mail: this computer's post office didn't start: {r.get('error')}")
     while True:
         try:
+            # Phase 3: the post office heals itself. Every cycle first makes sure
+            # this computer's own post office is up (restarting it silently when
+            # it isn't); only a genuinely failed recovery becomes "paused".
+            await ensure_home_post()
             if status()["set_up"]:
                 await check()
                 await retry_outbox()

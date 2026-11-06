@@ -75,63 +75,97 @@ function chatRowHtml(s, fromSlug) {
     </div>`;
 }
 
+
+// Phase 0 (simplicity redesign): scratch/proving projects live in one collapsed
+// Playground bucket, never mixed into the real project list. The server marks them
+// (project.scratch, from the origin marker/tags stored in project.json); the name
+// check here only catches older projects that predate that marker. Nothing is
+// deleted or moved: the bucket renders the same rows, just apart and collapsed.
+const SCRATCH_NAME_RES = [/^proof([\s_-]|$)/, /([\s_-]proof)$/, /file creation unavailable/, /word frequency tests?\b/, /^(scratch|proving|smoke)([\s_-]|$)/, /([\s_-](test|tests|scratch))$/];
+function isScratchProject(p) {
+  if (!p) return false;
+  if (p.scratch) return true;
+  if (["scratch", "test", "proving", "eval", "smoke"].includes(String(p.origin || "").toLowerCase())) return true;
+  if ((p.tags || []).some(tag => ["scratch", "test", "proving", "eval", "smoke-test"].includes(String(tag).toLowerCase()))) return true;
+  const n = String(p.name || p.slug || "").trim().toLowerCase();
+  return SCRATCH_NAME_RES.some(rx => rx.test(n));
+}
+let playgroundOpen = !!sidebarLoad("xod.sidebar.playgroundOpen", false);
+
+function projectRowHtml(p, filtering) {
+  const sessions = (p.sessions || []).filter(s => sidebarMatches(s.title) || sidebarMatches(p.name));
+  const files = (p.files || []).filter(f => sidebarMatches(f.filename) || sidebarMatches(p.name));
+  if (filtering && !sidebarMatches(p.name) && !sessions.length && !files.length) return "";
+  const open = expandedProjectFolders.has(p.slug) || (filtering && (sessions.length || files.length));
+  const isScoped = activeWorkingScope && (activeWorkingScope.slug === p.slug || activeWorkingScope.path === p.path);
+  const count = (p.sessions || []).length + (p.files || []).length + (p.apps || []).length;
+  const icon = (!p.icon || p.icon === "folder") ? (open ? "folder-open" : "folder") : p.icon;
+  return `
+    <div class="sb-project" data-drop="project" data-slug="${escapeHtml(p.slug)}">
+      <div class="sb-row sb-project-row ${isScoped ? "is-scoped" : ""}" data-action="toggle-project" data-slug="${escapeHtml(p.slug)}" title="${escapeHtml(p.description || "")}">
+        <i data-lucide="${open ? "chevron-down" : "chevron-right"}" class="size-3 text-zinc-500 shrink-0"></i>
+        <i data-lucide="${icon}" class="size-3.5 shrink-0" style="color:${isScoped ? "#10b981" : (p.color || "#a1a1aa")}"></i>
+        <span class="sb-title">${escapeHtml(p.name || p.slug)}</span>
+        ${isScoped ? `<span class="sb-pill">In focus</span>` : ""}
+        <button class="sb-more" data-action="scope-project" title="${isScoped ? "Stop focusing on this project" : "Focus Xod on this project (new chats go here)"}"><i data-lucide="crosshair" class="size-3"></i></button>
+        ${count ? `<span class="sb-count">${count}</span>` : ""}
+      </div>
+      ${open ? `
+        <div class="sb-children">
+          ${(p.apps || []).map(a => `
+            <div class="sb-row sb-app" data-action="open-app" data-path="${escapeHtml(a.path)}" title="Open ${escapeHtml(a.title)} in the preview">
+              <i data-lucide="play" class="size-3 shrink-0 text-brand-400"></i>
+              <span class="sb-title">${escapeHtml(a.title)}</span>
+            </div>`).join("")}
+          ${sessions.map(s => chatRowHtml(s, p.slug)).join("")}
+          ${files.map(f => `
+            <div class="sb-row sb-file" draggable="true" data-kind="file" data-slug="${escapeHtml(p.slug)}"
+                 data-subfolder="${escapeHtml(f.subfolder)}" data-filename="${escapeHtml(f.filename)}" title="${escapeHtml(f.filename)} · ${escapeHtml(f.size_formatted || "")}">
+              <i data-lucide="file-text" class="size-3 shrink-0 text-amber-400/80"></i>
+              <span class="sb-title">${escapeHtml(f.filename)}</span>
+            </div>`).join("")}
+          ${!sessions.length && !files.length && !(p.apps || []).length ? `<div class="sb-empty">Empty — drag chats or files here</div>` : ""}
+        </div>` : ""}
+    </div>`;
+}
+
 function renderProjectsSidebar() {
   const container = document.getElementById("projectsTreeContainer");
   if (!container) return;
   const filtering = !!sidebarProjectFilter.trim();
   let html = "";
 
-  // ---- Projects
+  // ---- Projects (real work only; scratch/proving work goes to Playground below)
   const projCollapsed = collapsedSidebarSections.has("projects") && !filtering;
-  let projHtml = "";
-  let shownProjects = 0;
-  for (const p of localProjects) {
-    const sessions = (p.sessions || []).filter(s => sidebarMatches(s.title) || sidebarMatches(p.name));
-    const files = (p.files || []).filter(f => sidebarMatches(f.filename) || sidebarMatches(p.name));
-    if (filtering && !sidebarMatches(p.name) && !sessions.length && !files.length) continue;
-    shownProjects++;
-    const open = expandedProjectFolders.has(p.slug) || (filtering && (sessions.length || files.length));
-    const isScoped = activeWorkingScope && (activeWorkingScope.slug === p.slug || activeWorkingScope.path === p.path);
-    const count = (p.sessions || []).length + (p.files || []).length + (p.apps || []).length;
-    const icon = (!p.icon || p.icon === "folder") ? (open ? "folder-open" : "folder") : p.icon;
-    projHtml += `
-      <div class="sb-project" data-drop="project" data-slug="${escapeHtml(p.slug)}">
-        <div class="sb-row sb-project-row ${isScoped ? "is-scoped" : ""}" data-action="toggle-project" data-slug="${escapeHtml(p.slug)}" title="${escapeHtml(p.description || "")}">
-          <i data-lucide="${open ? "chevron-down" : "chevron-right"}" class="size-3 text-zinc-500 shrink-0"></i>
-          <i data-lucide="${icon}" class="size-3.5 shrink-0" style="color:${isScoped ? "#10b981" : (p.color || "#a1a1aa")}"></i>
-          <span class="sb-title">${escapeHtml(p.name || p.slug)}</span>
-          ${isScoped ? `<span class="sb-pill">In focus</span>` : ""}
-          <button class="sb-more" data-action="scope-project" title="${isScoped ? "Stop focusing on this project" : "Focus Xod on this project (new chats go here)"}"><i data-lucide="crosshair" class="size-3"></i></button>
-          ${count ? `<span class="sb-count">${count}</span>` : ""}
-        </div>
-        ${open ? `
-          <div class="sb-children">
-            ${(p.apps || []).map(a => `
-              <div class="sb-row sb-app" data-action="open-app" data-path="${escapeHtml(a.path)}" title="Open ${escapeHtml(a.title)} in the preview">
-                <i data-lucide="play" class="size-3 shrink-0 text-brand-400"></i>
-                <span class="sb-title">${escapeHtml(a.title)}</span>
-              </div>`).join("")}
-            ${sessions.map(s => chatRowHtml(s, p.slug)).join("")}
-            ${files.map(f => `
-              <div class="sb-row sb-file" draggable="true" data-kind="file" data-slug="${escapeHtml(p.slug)}"
-                   data-subfolder="${escapeHtml(f.subfolder)}" data-filename="${escapeHtml(f.filename)}" title="${escapeHtml(f.filename)} · ${escapeHtml(f.size_formatted || "")}">
-                <i data-lucide="file-text" class="size-3 shrink-0 text-amber-400/80"></i>
-                <span class="sb-title">${escapeHtml(f.filename)}</span>
-              </div>`).join("")}
-            ${!sessions.length && !files.length && !(p.apps || []).length ? `<div class="sb-empty">Empty — drag chats or files here</div>` : ""}
-          </div>` : ""}
-      </div>`;
-  }
+  const realProjects = localProjects.filter(p => !isScratchProject(p));
+  const scratchProjects = localProjects.filter(p => isScratchProject(p));
+  const projHtml = realProjects.map(p => projectRowHtml(p, filtering)).join("");
   html += `
     <div class="sb-section">
       <button class="sb-section-head" data-action="toggle-section" data-section="projects">
         <i data-lucide="${projCollapsed ? "chevron-right" : "chevron-down"}" class="size-3"></i>
-        <span>Projects</span><span class="sb-count">${localProjects.length}</span>
+        <span>Projects</span><span class="sb-count">${realProjects.length}</span>
         <span class="flex-1"></span>
         <span class="sb-head-btn" data-action="new-project" title="New project"><i data-lucide="plus" class="size-3.5"></i></span>
       </button>
       ${projCollapsed ? "" : (projHtml || `<div class="sb-empty">${filtering ? "No matching projects" : "No projects yet"}</div>`)}
     </div>`;
+
+  // ---- Playground: scratch and proving projects, one collapsed bucket, contents intact
+  if (scratchProjects.length) {
+    const pgOpen = playgroundOpen || filtering;
+    const pgHtml = scratchProjects.map(p => projectRowHtml(p, filtering)).join("");
+    if (!filtering || pgHtml) {
+      html += `
+    <div class="sb-section">
+      <button class="sb-section-head" data-action="toggle-playground" title="Scratch and test projects Xod made while proving things. Nothing here is deleted; it just stays out of your real work.">
+        <i data-lucide="${pgOpen ? "chevron-down" : "chevron-right"}" class="size-3"></i>
+        <span>Playground</span><span class="sb-count">${scratchProjects.length}</span>
+      </button>
+      ${pgOpen ? (pgHtml || `<div class="sb-empty">No matching projects</div>`) : ""}
+    </div>`;
+    }
+  }
 
   // ---- Loose chats, grouped by date
   const chats = unfiledChats.filter(c => sidebarMatches(c.title));
@@ -318,6 +352,12 @@ function initSidebarEvents() {
       }
       if (a === "scope-project") { e.stopPropagation(); toggleProjectScope(act.closest(".sb-project").dataset.slug); return; }
       if (a === "new-project") { e.stopPropagation(); openCreateProjectModal(); return; }
+      if (a === "toggle-playground") {
+        playgroundOpen = !playgroundOpen;
+        try { localStorage.setItem("xod.sidebar.playgroundOpen", JSON.stringify(playgroundOpen)); } catch (e) {}
+        renderProjectsSidebar();
+        return;
+      }
       if (a === "toggle-section") {
         const s = act.dataset.section;
         collapsedSidebarSections.has(s) ? collapsedSidebarSections.delete(s) : collapsedSidebarSections.add(s);
