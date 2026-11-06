@@ -5,8 +5,10 @@ services/capabilities.py answers "can the model see / call tools / browse" for t
 models panel. This module is the wider inventory the chat and mission sessions
 answer from: which providers have a key saved (presence only, never a value),
 which search provider actually serves, every registered tool grouped by kind,
-the family members and paired phones with their online state, and the family
-vault state.
+the family members and paired phones with their online state, the family
+vault state, and the family's shared rules that scope to this Xod
+(services/family_rules.py: one rulebook the owner sets once, followed by
+both of his agents).
 
 It is built from the live sources, not from a hand-kept list, so a key saved in
 Settings or a tool registered in app/agent/tools.py shows up here by itself:
@@ -174,12 +176,14 @@ def search_state(providers: Optional[List[Dict[str, Any]]] = None) -> Dict[str, 
 
 
 def build_manifest() -> Dict[str, Any]:
+    from app.services import family_rules
     providers = provider_states()
     return {"providers": providers,
             "search": search_state(providers),
             "tools": tool_catalog(),
             "devices": device_states(),
             "vault": vault_state(),
+            "family_rules": family_rules.manifest_section(),
             "generated_at": time.time()}
 
 
@@ -238,6 +242,13 @@ def summary_text(manifest: Optional[Dict[str, Any]] = None) -> str:
         "you have, from this list only, never from a guess or from general knowledge about AI assistants. "
         "If something is not in this list, say it is not set up on this computer instead of claiming or denying it.",
     ]
+    from app.services import family_rules
+    section = m.get("family_rules")
+    if section is None:
+        section = family_rules.manifest_section()
+    block = family_rules.summary_block(section)
+    if block:
+        lines.insert(len(lines) - 1, block)
     return "\n".join(lines)
 
 
