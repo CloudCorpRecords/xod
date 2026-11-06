@@ -28,7 +28,7 @@
 **Checked before it shipped**
 - The full battery on the release candidate head (144 suites) passed 100, with 44 failures, every one pre-existing on main or environmental, and zero introduced by the candidate. The pairing acceptance suite passes 29 of 29.
 - The fold guards on the merged tree pass at baselines: Repo Worker 49 of 49, the five Simplicity phases, phone health 40 of 40, and pairing auto-approve 29 of 29.
-- The release privacy scan follows the same practice as 0.9.24 and 0.9.25: the owner name was dropped from comments and fixtures across the tree. Two exact public identifiers are allowlisted in the scan instead: the author's public shop URL, linked in the README on purpose, and the public npm scope of the fleet's published tools, named in the Repo Worker pins. No secret was involved in either.
+- The release privacy scan follows the same practice as 0.9.24 and 0.9.25: the owner name was dropped from comments and fixtures across the tree. Two exact public identifiers are allowlisted in the scan instead: the author's public shop URL, linked in the README on purpose, and the public npm scope of the fleet's published tools, named in the Repo Worker pins. No secret was involved in either. A gitleaks hit on a pairing test vector (a fake device's public keys and a signature, with no private material) is ignored by its exact fingerprint for the same reason.
 - Continuous integration on the candidate: the desktop shell checks passed. The Python checks were cancelled by an external macOS runner problem (runners never assigned), not by a failing test; that re-run is still owed.
 
 **Known issues carried into 1.0.0, named plainly**
