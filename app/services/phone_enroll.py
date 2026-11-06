@@ -365,7 +365,11 @@ def intake(advertisement: Dict[str, Any], mail_sender: Optional[str] = None,
     with _lock:
         st = _load()
         denied = st.get("denied") or {}
-        if fp in denied and issued <= float(denied[fp].get("issued_at") or 0):
+        # A denial binds this key: a replay of the denied ask is refused,
+        # and presence evidence never reopens a denied key. A newer ask
+        # without presence evidence falls through and re-pends, so the
+        # owner decides again (the enroll suite pins that path).
+        if fp in denied and (issued <= float(denied[fp].get("issued_at") or 0) or presence):
             return {"ok": False, "state": "denied",
                     "problems": ["the owner denied this phone's last ask; ask again "
                                  "from the phone to re-pend it"]}
