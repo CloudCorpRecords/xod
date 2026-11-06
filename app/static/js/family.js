@@ -106,6 +106,46 @@
       </section>`;
   }
 
+  // One-Click Muse Connect (services/muse_connect.py): one button
+  // makes a signed offer carrying the capability manifest summary;
+  // the card shows the link, the paste-able block and the visual
+  // code, then the live state of every connected Muse, each with
+  // a revoke button. All the words a downloader needs are on this
+  // card; the machinery stays under it.
+  let museOffer = null;   // the freshest offer view from a click this session
+
+  function museConnectSection(mc) {
+    const conns = (mc && mc.connections) || [];
+    const connRows = conns.map((c) => `
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="size-2 rounded-full ${c.state === "live" ? "bg-emerald-400" : c.state === "revoked" ? "bg-zinc-600" : "bg-amber-400"}"></span>
+        <span class="text-[12px] text-zinc-200 flex-1">Connected to ${esc((c.muse && c.muse.name) || "a Muse")}${c.state === "live" ? ". Rules are shared." : c.state === "accepted" ? " - finishing the first hello." : c.state === "revoked" ? " - connection ended." : ""}</span>
+        ${c.state !== "revoked" ? `<button data-muse-revoke="${esc(c.offer_id)}" class="px-2.5 py-1 rounded-lg bg-surface-700 text-zinc-100 text-[12px]">Revoke</button>` : ""}
+      </div>`).join("");
+    const waiting = ((mc && mc.offers) || []).filter((o) => o.state === "offered");
+    const offerView = museOffer ? `
+      <p class="text-[12px] text-zinc-300">Paste this to your Muse. Check the code matches on both screens:</p>
+      <p class="font-mono text-lg text-white tracking-widest">${esc(museOffer.code)}</p>
+      <input readonly value="${esc(museOffer.link)}" class="w-full px-2 py-1 rounded-lg bg-surface-800 text-zinc-300 text-[11px] font-mono" onclick="this.select()">
+      <textarea readonly rows="4" class="task-answer w-full font-mono text-[11px]" onclick="this.select()">${esc(museOffer.text_block)}</textarea>
+      <div class="flex gap-2">
+        <button data-muse-copy="link" class="px-2.5 py-1 rounded-lg bg-surface-700 text-zinc-100 text-[12px]">Copy link</button>
+        <button data-muse-copy="block" class="px-2.5 py-1 rounded-lg bg-surface-700 text-zinc-100 text-[12px]">Copy block</button>
+      </div>
+      <p class="text-[12px] text-zinc-500">${esc(museOffer.summary)}</p>` : "";
+    return `
+      <section class="space-y-3">
+        <div class="task-card space-y-2">
+          <p class="task-title">Connect to Muse</p>
+          <p class="text-[12px] text-zinc-400">Let your Muse send this Xod tasks and read back the receipts. Your approvals still apply.</p>
+          ${connRows}
+          ${waiting.length && !museOffer ? `<p class="text-[12px] text-zinc-400">Waiting for your Muse to accept. The offer also sits in the family inbox for a Muse that watches it.</p>` : ""}
+          ${offerView}
+          <button data-muse-action="offer" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 hover:bg-brand-400 text-[12px] font-semibold">Connect to Muse</button>
+        </div>
+      </section>`;
+  }
+
   // Phase 3 (simplicity redesign): connection requests surface as cards in
   // Family, in plain words - who is asking (friendly name + where), what it
   // can do and what it cannot do - with Allow / Block. Raw payloads and
@@ -213,12 +253,13 @@
   async function render() {
     const el = document.getElementById("familyBody");
     if (!el) return;
-    let r = null, c = null, mailStatus = null, reqThreads = [];
+    let r = null, c = null, mailStatus = null, reqThreads = [], mc = null;
     try { r = await api("/api/family"); } catch (e) { /* honest empty render below */ }
     try { c = await api("/api/family/control"); } catch (e) { /* control header just omits */ }
     try { mailStatus = await api("/api/mail/status"); } catch (e) { /* Messages health line just omits */ }
     try { const t = await api("/api/mail/threads?box=requests"); reqThreads = t.threads || []; } catch (e) { /* request cards just omit */ }
-    el.innerHTML = pausedLine(mailStatus) + controlView(c) + requestsSection(reqThreads) + body(r);
+    try { mc = await api("/api/muse-connect"); } catch (e) { /* connect card just omits */ }
+    el.innerHTML = pausedLine(mailStatus) + controlView(c) + museConnectSection(mc) + requestsSection(reqThreads) + body(r);
   }
 
   async function saveClientId() {
@@ -349,6 +390,36 @@
         if (action === "client-id-save") saveClientId();
         if (action === "vault-apply") { try { await post("/api/family/vault/apply"); } catch (err) { /* render shows the new truth */ } render(); }
         if (action === "open-phones") { window.closeFamilyPanel(); if (window.openPhonePanel) window.openPhonePanel(); }
+      });
+      root.addEventListener("click", async (e) => {
+        const copyBtn = e.target.closest("[data-muse-copy]");
+        if (copyBtn && museOffer) {
+          const text = copyBtn.getAttribute("data-muse-copy") === "link" ? museOffer.link : museOffer.text_block;
+          try { await navigator.clipboard.writeText(text); copyBtn.textContent = "Copied"; setTimeout(() => { copyBtn.textContent = copyBtn.getAttribute("data-muse-copy") === "link" ? "Copy link" : "Copy block"; }, 1500); } catch (err) { /* the field above is selectable by hand */ }
+          return;
+        }
+        const revBtn = e.target.closest("[data-muse-revoke]");
+        if (revBtn) {
+          try { await post("/api/muse-connect/revoke", { offer_id: revBtn.getAttribute("data-muse-revoke") }); } catch (err) { /* render shows the new truth */ }
+          render();
+          return;
+        }
+        const btn = e.target.closest("[data-muse-action]");
+        if (!btn) return;
+        btn.disabled = true; btn.textContent = "Making your offer...";
+        try {
+          const out = await post("/api/muse-connect/offer");
+          if (out && out.offer) {
+            const code = out.offer.code || "";
+            museOffer = {
+              link: out.link || "",
+              text_block: out.text_block || "",
+              code: code.length === 8 ? `${code.slice(0, 4)} ${code.slice(4)}` : code,
+              summary: (out.offer.manifest && out.offer.manifest.summary) || "",
+            };
+          }
+        } catch (err) { /* render shows the new truth */ }
+        render();
       });
       if (window.lucide) lucide.createIcons();
     }
