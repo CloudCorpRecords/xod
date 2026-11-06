@@ -34,19 +34,26 @@ POLICY = {
     # that. There is no partial pass and no benefit of the doubt.
     "gates": {
         # Gate 1: Greenlight's verdict on the named issue.
-        #   GO passes. GATED and STALE kill. TAKEN kills.
-        #   RISKY kills too, unless it rests only on flagged PRs and every
-        #   flagged PR has been inspected at file level and proven not to
-        #   touch the code the issue names, with that proof logged as
-        #   evidence (the evidence-clearing rule, Rene 2026-11-01). A flag
-        #   resting on anything else (a real assignment, a closed-by link)
-        #   cannot be cleared this way.
+        #   GO passes. TAKEN kills: an open PR already does the work, and
+        #   that is a fact, not a judgment a clearing can move (Gate 4
+        #   kills on the open PR too).
+        #   RISKY, STALE, and an on-paper GATED are judgment calls, and
+        #   they clear the way the hand-run waves clear them: with a
+        #   recorded firsthand-evidence clearing passed into the gate (a
+        #   maintainer invitation thread behind a STALE, a full firsthand
+        #   read of the repo's AI policy behind a GATED, a file-level
+        #   inspection of flagged PRs behind a RISKY), naming the
+        #   evidence, its source, who recorded it, and when. Without that
+        #   record, RISKY defers and STALE and GATED kill. Empty or
+        #   placeholder evidence is not a record and clears nothing.
         "greenlight_verdicts_pass": ["GO"],
         "greenlight_verdicts_kill": ["TAKEN", "GATED", "STALE"],
-        "greenlight_verdicts_clearable": ["RISKY", "TAKEN"],
+        "greenlight_verdicts_clearable": ["RISKY", "STALE", "GATED"],
         # Gate 2: a fresh racecheck, run immediately before any build.
-        #   CLEAR passes. RACE kills. SUSPECT kills unless every matched
-        #   PR is inspected and proven unrelated, with the proof logged.
+        #   CLEAR passes. RACE kills, and never clears: a clearing record
+        #   cannot move it. SUSPECT kills unless every matched PR is
+        #   inspected and proven unrelated, with the proof logged as a
+        #   clearing record the same way as Gate 1.
         "racecheck_pass": ["CLEAR"],
         "racecheck_clearable": ["SUSPECT"],
         # Gate 3: the repo's own AI and contributing policy, read directly

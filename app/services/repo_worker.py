@@ -340,8 +340,12 @@ def _prosecheck_argv() -> Optional[List[str]]:
 
 
 def prosecheck(args: Dict[str, Any]) -> Dict[str, Any]:
-    """The prose gate: PR bodies, commit messages, replies. Exit 0 is PASS,
-    1 is FAIL, anything else is unknown, and unknown blocks like a FAIL."""
+    """The prose gate: PR bodies, commit messages, replies. Exit 0 is PASS.
+    Exit 1 is a FAIL only when the tool actually ran and answered with a
+    verdict document; a run that could not obtain or execute the tool (an
+    npx fetch failure against an unpublished package, a missing CLI file)
+    also exits 1, and that reads unknown with the tool error named, never
+    FAIL. Unknown blocks like a FAIL."""
     kind = str(args.get("kind") or "").strip()
     if kind not in _PROSE_KINDS:
         raise ValueError(f"kind must be one of: {', '.join(sorted(_PROSE_KINDS))}")
@@ -357,10 +361,21 @@ def prosecheck(args: Dict[str, Any]) -> Dict[str, Any]:
                        evidence + ["prosecheck: PASS"], data=_parse_json(out))
     if code == 1:
         data = _parse_json(out)
-        findings = data if data is not None else (out or err).strip()[-300:]
-        return _shaped({"verdict": "FAIL", "findings": findings},
-                       {"state": "ok", "verdict": "FAIL"},
-                       evidence + ["prosecheck: FAIL"], data=data)
+        if isinstance(data, dict) and (str(data.get("verdict") or "").upper() == "FAIL"
+                                       or data.get("findings")):
+            # The tool ran and scored the text: this is a genuine FAIL.
+            return _shaped({"verdict": "FAIL", "findings": data},
+                           {"state": "ok", "verdict": "FAIL"},
+                           evidence + ["prosecheck: FAIL"], data=data)
+        # Exit 1 with no verdict document means the tool never ran: npm
+        # answering 404 for an unpublished package, node failing to find
+        # the CLI, a loader error. An unobtained tool is an unknown gate,
+        # and the tool's own error is the named reason.
+        tail = (err or out or "").strip()[-300:]
+        return _unknown("prosecheck",
+                        "prosecheck did not run, so the text was not scored"
+                        + (f": {tail}" if tail else ""),
+                        evidence)
     tail = (err or out or "").strip()[-300:]
     return _unknown("prosecheck",
                     f"prosecheck could not run (exit {code})" + (f": {tail}" if tail else ""),
@@ -527,6 +542,98 @@ def scan_policy(texts: List[str], labels: Optional[List[str]] = None) -> Dict[st
     return {"bans": bans, "prose_rules": prose_rules}
 
 
+# ------------------------------------------------------------------ evidence clearing
+# A clearing is a person's recorded firsthand proof that a gate's on-paper
+# verdict does not hold for this candidate: a maintainer invitation thread
+# behind a STALE, a full firsthand read of the AI policy behind a GATED, a
+# file-level inspection of every matched PR behind a SUSPECT. It is how
+# the hand-run waves clear those verdicts, and find_work and open_plan
+# accept the same records so the built-in worker can too. A record names
+# its gate, the evidence text, its source, who recorded it, and when.
+# Empty or placeholder evidence is not a record: it clears nothing.
+# racecheck RACE is never clearable here, exactly as in the hand waves.
+
+_CLEARING_GATES = ("greenlight", "racecheck")
+_CLEARING_PLACEHOLDERS = {"", "n/a", "na", "none", "tbd", "todo", "unknown",
+                          "placeholder", "cleared", "ok", "yes", "see notes",
+                          "see above", "-", "--", "..."}
+
+
+def _clearing_record(raw: Any) -> Optional[Dict[str, Any]]:
+    """One clearing record, normalized, or None when it carries no usable
+    evidence (not a dict, an unnamed gate, or empty or placeholder text)."""
+    if not isinstance(raw, dict):
+        return None
+    gate = str(raw.get("gate") or "").strip().lower()
+    text = str(raw.get("evidence") or "").strip()
+    squashed = re.sub(r"[^a-z0-9 ]+", "", text.lower()).strip()
+    if gate not in _CLEARING_GATES:
+        return None
+    if len(text) < 10 or squashed in _CLEARING_PLACEHOLDERS:
+        return None
+    return {"gate": gate, "evidence": text,
+            "source": str(raw.get("source") or "").strip(),
+            "recorded_by": str(raw.get("recorded_by") or "").strip(),
+            "recorded_at": str(raw.get("recorded_at") or "").strip()}
+
+
+def _normalize_clearings(clearings: Optional[List[Dict[str, Any]]],
+                         legacy_cleared: bool = False,
+                         legacy_evidence: Optional[List[str]] = None
+                         ) -> Dict[str, List[Dict[str, Any]]]:
+    """All usable clearing records, grouped by gate. The legacy inputs
+    (evidence_cleared plus clearing_evidence, the phase 1 shape) become
+    records for both gates, so callers written against them keep working."""
+    by_gate: Dict[str, List[Dict[str, Any]]] = {g: [] for g in _CLEARING_GATES}
+    for raw in clearings or []:
+        rec = _clearing_record(raw)
+        if rec:
+            by_gate[rec["gate"]].append(rec)
+    if legacy_cleared:
+        for text in legacy_evidence or []:
+            for gate in _CLEARING_GATES:
+                rec = _clearing_record(
+                    {"gate": gate, "evidence": text,
+                     "source": "clearing evidence recorded by the caller"})
+                if rec:
+                    by_gate[gate].append(rec)
+    return by_gate
+
+
+def _clearings_for(clearings: Optional[List[Dict[str, Any]]], repo: str,
+                   issue: Any, require_target: bool) -> List[Dict[str, Any]]:
+    """The clearing records that belong to one candidate. A record that
+    names a repo or an issue must match this candidate; find_work also
+    requires the target to be named, since one run gates many candidates."""
+    out: List[Dict[str, Any]] = []
+    for raw in clearings or []:
+        if not isinstance(raw, dict):
+            continue
+        r = str(raw.get("repo") or "").strip()
+        i = raw.get("issue")
+        if require_target and (not r or i is None):
+            continue
+        if r and r.lower() != (repo or "").lower():
+            continue
+        if i is not None and str(i) != str(issue):
+            continue
+        out.append(raw)
+    return out
+
+
+def _cleared_evidence(gate: str, verdict: str,
+                      records: List[Dict[str, Any]]) -> str:
+    parts = []
+    for r in records:
+        src = r["source"] or "an unnamed source"
+        who = r["recorded_by"] or "an unnamed recorder"
+        when = r["recorded_at"] or "an unrecorded time"
+        parts.append(f"{r['evidence']} (source: {src}; "
+                     f"recorded by {who} at {when})")
+    return (f"{gate} verdict {verdict} cleared with recorded evidence: "
+            + "; ".join(parts))
+
+
 # ------------------------------------------------------------------ the gate pass
 
 def evaluate_candidate(*, repo: str, labels: Optional[List[str]] = None,
@@ -541,11 +648,16 @@ def evaluate_candidate(*, repo: str, labels: Optional[List[str]] = None,
                        clearing_evidence: Optional[List[str]] = None,
                        budget_remaining: Optional[int] = None,
                        for_open: bool = False,
-                       policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                       policy: Optional[Dict[str, Any]] = None,
+                       clearings: Optional[List[Dict[str, Any]]] = None
+                       ) -> Dict[str, Any]:
     """The maintainer profile's gate pass, as one pure function. Verdicts
     are pass, kill, or defer; reasons and evidence say which gate decided.
     A gate nobody ran is passed in as None and reads as unknown: a defer,
-    never a pass. That is the whole rule."""
+    never a pass. That is the whole rule. Clearable verdicts (a Greenlight
+    RISKY, STALE, or on-paper GATED; a racecheck SUSPECT) pass only with a
+    usable clearing record for that gate; the result's "clearings" list
+    logs every record with its original verdict and how it landed."""
     policy = policy or POLICY
     gates_policy = policy["gates"]
     reasons: List[str] = []
@@ -553,6 +665,8 @@ def evaluate_candidate(*, repo: str, labels: Optional[List[str]] = None,
     gate_states: Dict[str, Dict[str, Any]] = {}
     flags: Dict[str, Any] = {}
     outcome = {"kill": False, "defer": False}
+    records = _normalize_clearings(clearings, evidence_cleared, clearing_evidence)
+    clearing_applied = {"greenlight": False, "racecheck": False}
 
     def kill(gate: str, reason: str, ev: Optional[str] = None) -> None:
         outcome["kill"] = True
@@ -597,27 +711,38 @@ def evaluate_candidate(*, repo: str, labels: Optional[List[str]] = None,
         defer("greenlight", "Greenlight's verdict was not read (unknown gate)")
     elif check_verdict.upper() in gates_policy["greenlight_verdicts_pass"]:
         ok("greenlight", f"Greenlight verdict {check_verdict}")
-    elif (check_verdict.upper() in clearable and evidence_cleared
-          and clearing_evidence):
-        ok("greenlight",
-           f"Greenlight verdict {check_verdict}, evidence-cleared: every flagged PR "
-           "inspected and proven unrelated",
-           "; ".join(clearing_evidence))
+    elif check_verdict.upper() in clearable and records["greenlight"]:
+        clearing_applied["greenlight"] = True
+        gate_states["greenlight"] = {
+            "state": "pass",
+            "detail": f"Greenlight verdict {check_verdict}, cleared with "
+                      "recorded firsthand evidence",
+            "cleared_from": check_verdict.upper()}
+        evidence.append(_cleared_evidence("greenlight", check_verdict.upper(),
+                                          records["greenlight"]))
     elif check_verdict.upper() == "RISKY":
         defer("greenlight",
               "Greenlight verdict RISKY and not evidence-cleared; a risky candidate defers")
     else:
         kill("greenlight", f"Greenlight verdict {check_verdict}")
 
-    # Gate 2: the fresh racecheck.
+    # Gate 2: the fresh racecheck. RACE is never clearable: the branches
+    # below consult clearing records only for a clearable verdict, so a
+    # record offered against a RACE changes nothing and is logged refused.
     if race_verdict is None:
         defer("racecheck", "racecheck was not run (unknown gate)")
     elif race_verdict.upper() in gates_policy["racecheck_pass"]:
         ok("racecheck", "racecheck CLEAR")
     elif (race_verdict.upper() in gates_policy["racecheck_clearable"]
-          and evidence_cleared and clearing_evidence):
-        ok("racecheck", "racecheck SUSPECT, evidence-cleared per matched PR",
-           "; ".join(clearing_evidence))
+          and records["racecheck"]):
+        clearing_applied["racecheck"] = True
+        gate_states["racecheck"] = {
+            "state": "pass",
+            "detail": f"racecheck {race_verdict}, cleared with recorded "
+                      "evidence: every matched PR inspected and proven unrelated",
+            "cleared_from": race_verdict.upper()}
+        evidence.append(_cleared_evidence("racecheck", race_verdict.upper(),
+                                          records["racecheck"]))
     elif race_verdict.upper() == "SUSPECT":
         kill("racecheck", "racecheck SUSPECT and not evidence-cleared")
     else:
@@ -664,9 +789,26 @@ def evaluate_candidate(*, repo: str, labels: Optional[List[str]] = None,
         else:
             ok("budget", f"core remaining {budget_remaining} >= {floor}")
 
+    # The clearing log: every usable record, the verdict it was offered
+    # against, whether it was applied, and the gate's resulting state. A
+    # record against a verdict that needed no clearing, or one that can
+    # never clear (a racecheck RACE), is logged with applied False.
+    clearing_log: List[Dict[str, Any]] = []
+    for gate_name, original in (("greenlight", check_verdict),
+                                ("racecheck", race_verdict)):
+        for rec in records[gate_name]:
+            clearing_log.append({
+                "gate": gate_name,
+                "original_verdict": str(original).upper() if original else None,
+                "evidence": rec["evidence"], "source": rec["source"],
+                "recorded_by": rec["recorded_by"],
+                "recorded_at": rec["recorded_at"],
+                "applied": clearing_applied[gate_name],
+                "result": gate_states.get(gate_name, {}).get("state")})
+
     verdict = "kill" if outcome["kill"] else ("defer" if outcome["defer"] else "pass")
     return {"verdict": verdict, "reasons": reasons, "evidence": evidence,
-            "gates": gate_states, "flags": flags}
+            "gates": gate_states, "flags": flags, "clearings": clearing_log}
 
 
 # ------------------------------------------------------------------ find work (Stages 0 to 2)
@@ -701,7 +843,10 @@ def find_work(args: Dict[str, Any]) -> Dict[str, Any]:
     """Stages 0 to 2: discover from the live index, then gate every
     candidate with fresh tool evidence. Returns only shaped verdicts:
     passed candidates carry their gate evidence; kills and defers carry
-    the gate that decided and why."""
+    the gate that decided and why. args["clearings"] may carry recorded
+    evidence clearings, one record per candidate and gate (repo, issue,
+    gate, evidence, source, recorded_by, recorded_at); each candidate's
+    entry logs the records that were applied to it."""
     limit = int(args.get("limit") or 8)
     wave = greenlight_wave(args)
     if wave["verified"].get("state") != "ok":
@@ -728,13 +873,22 @@ def find_work(args: Dict[str, Any]) -> Dict[str, Any]:
         entry: Dict[str, Any] = {"repo": repo, "issue": cand["issue"],
                                  "issue_url": cand["issue_url"],
                                  "title": cand["title"], "labels": cand["labels"]}
+        cand_clearings = _clearings_for(args.get("clearings"), repo,
+                                         cand["issue"], require_target=True)
+        entry["clearings_supplied"] = len(cand_clearings)
         chk = greenlight_check({"issue_url": cand["issue_url"]})
         check_verdict = (chk["verified"].get("verdict")
                          if chk["verified"].get("state") == "ok" else None)
         entry["check"] = chk["claimed"] or chk["verified"]
         evidence += chk["evidence"]
         race_verdict = None
-        if check_verdict not in ("GATED", "STALE"):
+        # A GATED or STALE check normally ends the candidate here, so the
+        # race gate is honestly recorded as not run. A usable greenlight
+        # clearing record reopens the candidate, and then the race gate
+        # runs fresh like any other candidate's.
+        gl_cleared = any(rec and rec["gate"] == "greenlight"
+                         for rec in (_clearing_record(r) for r in cand_clearings))
+        if check_verdict not in ("GATED", "STALE") or gl_cleared:
             race = racecheck({"repo": repo, "issue": cand["issue"]})
             race_verdict = (race["verified"].get("verdict")
                             if race["verified"].get("state") == "ok" else None)
@@ -751,8 +905,10 @@ def find_work(args: Dict[str, Any]) -> Dict[str, Any]:
             repo=repo, labels=cand["labels"], check_verdict=check_verdict,
             race_verdict=race_verdict, policy_texts=policy_texts,
             already_open_in_repo=(repo.lower() in own_repos
-                                  or bool(cand["already_open_pr"])))
+                                  or bool(cand["already_open_pr"])),
+            clearings=cand_clearings)
         entry["gate"] = gate
+        entry["clearings"] = gate.get("clearings") or []
         evidence += [f"{repo}#{cand['issue']}: {e}" for e in gate["evidence"]]
         {"pass": passed, "kill": killed, "defer": deferred}[gate["verdict"]].append(entry)
     verified = {"state": "ok", "considered": considered,
@@ -780,12 +936,15 @@ def open_plan(args: Dict[str, Any]) -> Dict[str, Any]:
     race = racecheck({"repo": repo, "issue": issue})
     race_verdict = (race["verified"].get("verdict")
                     if race["verified"].get("state") == "ok" else None)
+    plan_clearings = _clearings_for(args.get("clearings"), repo, issue,
+                                    require_target=False)
     gate = evaluate_candidate(
         repo=repo, labels=args.get("labels") or [], check_verdict=check_verdict,
         race_verdict=race_verdict,
         policy_texts=[json.dumps(chk.get("data") or {})],
         already_open_in_repo=bool(args.get("already_open_in_repo")),
-        budget_remaining=args.get("budget_remaining"), for_open=True)
+        budget_remaining=args.get("budget_remaining"), for_open=True,
+        clearings=plan_clearings)
     evidence: List[str] = chk["evidence"] + race["evidence"] + gate["evidence"]
     blocked_by = [r for r in gate["reasons"]]
     gate_results: Dict[str, Any] = {"candidate": gate}
@@ -840,6 +999,7 @@ def open_plan(args: Dict[str, Any]) -> Dict[str, Any]:
         "this plan is a dry run. Nothing was pushed and no PR was opened.")
     verified = {"state": "dry_run", "would_open": would_open,
                 "blocked_by": blocked_by, "gates": gate_results,
+                "clearings": gate.get("clearings") or [],
                 "requires_approval": bool(POLICY["open"]["requires_approval"]),
                 "requires_human_prose": bool(gate["flags"].get("requires_human_prose"))}
     return _shaped({"plan_for": f"{repo}#{issue}", "steps": steps}, verified, evidence)
