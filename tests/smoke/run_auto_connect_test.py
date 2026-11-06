@@ -129,6 +129,23 @@ check("store-layout install merges where it lives, no stray classic file",
       res["ok"] and not (TMP / "store-layout" / "classic.json").exists()
       and "xod" in json.loads(store_cfg.read_text())["mcpServers"])
 
+# --- windows Claude-Data layout (the Razer's real one) -----------------------
+WINHOME = TMP / "winhome"
+wcfg = (WINHOME / "AppData" / "Local" / "Claude-Data"
+        / "claude_pzs8sxrjxfjjc" / "claude_desktop_config.json")
+wcfg.parent.mkdir(parents=True)
+wcfg.write_text("{}", encoding="utf-8")
+(wcfg.parent / "Default" / "Network").mkdir(parents=True)
+(wcfg.parent / "Default" / "Network" / "Cookies").write_bytes(
+    b"...\x00sessionKey\x00filler...")
+wdet = ac.detect_one("claude-desktop", WINHOME, "Windows")
+check("windows Claude-Data layout detected installed and signed in",
+      wdet["installed"] and wdet["signed_in"], json.dumps(wdet))
+wres = ac.merge_config(wdet, ENTRY)
+check("windows merge lands in the Claude-Data config, no classic file made",
+      wres["ok"] and "xod" in json.loads(wcfg.read_text())["mcpServers"]
+      and not (WINHOME / "AppData" / "Roaming" / "Claude").exists())
+
 # --- sweep 1: signed-in desktop only --------------------------------------
 out = ac.run_sweep()
 states = {a["id"]: a["state"] for a in out["assistants"]}

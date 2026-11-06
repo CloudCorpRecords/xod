@@ -138,27 +138,52 @@ def _key_in_text(path: Path, key: str) -> bool:
 
 def _claude_desktop_paths(home: Path, system: str) -> Tuple[Path, List[Path]]:
     """(config path, extra install-evidence paths) for Claude
-    Desktop. Windows carries both the classic per-user install and
-    the Store package layout the Razer uses."""
+    Desktop. Windows carries three layouts: the classic per-user
+    install, the Store package's virtualized Roaming, and the
+    current Store build's real data home at
+    AppData/Local/Claude-Data/<package family>/ (the layout the
+    Razer actually uses, found by live proof 2026-11-06)."""
     if system == "Darwin":
         base = home / "Library" / "Application Support" / "Claude"
         return base / "claude_desktop_config.json", [Path("/Applications/Claude.app")]
     if system == "Windows":
         store = (home / "AppData" / "Local" / "Packages"
                  / "Claude_pzs8sxrjxfjjc" / "LocalCache" / "Roaming" / "Claude")
+        extras = [store / "claude_desktop_config.json"]
+        data_root = home / "AppData" / "Local" / "Claude-Data"
+        try:
+            extras += sorted(data_root.glob("*/claude_desktop_config.json"))
+        except OSError:
+            pass
         classic = home / "AppData" / "Roaming" / "Claude"
-        return classic / "claude_desktop_config.json", [store / "claude_desktop_config.json"]
+        return classic / "claude_desktop_config.json", extras
     base = home / ".config" / "Claude"
     return base / "claude_desktop_config.json", []
 
 
 def _cookie_signed_in(config_path: Path, extra_paths: List[Path]) -> bool:
     """Claude's sign-in signal: a sessionKey cookie NAME in the
-    app's own cookie store, beside whichever config layout exists."""
+    app's own cookie store, beside whichever config layout exists.
+    The Claude-Data layout nests its Chromium stores a few levels
+    under the config's folder, so that folder is walked (names
+    only, depth-bounded)."""
     for cfg in [config_path] + list(extra_paths):
         for store in (cfg.parent / "Cookies", cfg.parent / "Network" / "Cookies"):
             if _marker_in_file(store, b"sessionKey"):
                 return True
+        if "Claude-Data" in cfg.parts:
+            base = cfg.parent
+            depth0 = len(base.parts)
+            try:
+                for dirpath, dirnames, filenames in os.walk(base):
+                    if len(Path(dirpath).parts) - depth0 > 3:
+                        dirnames[:] = []
+                        continue
+                    if "Cookies" in filenames and _marker_in_file(
+                            Path(dirpath) / "Cookies", b"sessionKey"):
+                        return True
+            except OSError:
+                pass
     return False
 
 
@@ -169,7 +194,9 @@ def detect_one(assistant_id: str, home: Path, system: str) -> Dict[str, Any]:
     if assistant_id == "claude-desktop":
         config, extra = _claude_desktop_paths(home, system)
         installed = (config.parent.is_dir() or config.is_file()
-                     or any(p.exists() for p in extra))
+                     or any(p.exists() for p in extra)
+                     or (system == "Windows"
+                         and (home / "AppData" / "Local" / "Claude-Data").is_dir()))
         return {"id": assistant_id, "name": "Claude Desktop",
                 "kind": "json", "config_path": str(config),
                 "extra_config_paths": [str(p) for p in extra],
