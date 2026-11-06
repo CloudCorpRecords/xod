@@ -11,8 +11,9 @@ no GPU, Ollama or download is needed. Checks:
   - the chosen model missing, Ollama not running, Ollama dying mid-answer: a clear message, and Xod keeps working
   - Ollama coming back: chats work again without restarting Xod
   - this computer, whatever it is: GPUs from NVIDIA, AMD, Intel and Apple read right (from their tools' output)
-  - Xod plugging itself in: a new install connects to the best model it finds (Ollama, or another local server
-    like llama.cpp), replaces a model it chose itself when that one goes, and never replaces the person's choice
+  - Xod plugging itself in: a new install finds the model servers on this computer but does not connect
+    itself to one (local is opt-in: it says what it found and how to pick it); once the person picks a
+    model, chats go to it, and the person's choice is never replaced
 
   python tests/smoke/run_local_models_test.py
   python tests/smoke/run_local_models_test.py --real     also against the real Ollama on this computer: downloads two
@@ -441,17 +442,23 @@ def autoconnect_tests(py):
         names = {x["name"] for x in s.get("servers", [])}
         check("a new install finds the model servers on this computer (Ollama and llama.cpp)", {"Ollama", "llama.cpp"} <= names, body[:400])
         cur = s.get("current", {})
-        check("…and connects itself to the best model (one that calls tools and fits)",
-              cur.get("provider") == "ollama" and cur.get("model") == "stand-in:7b" and cur.get("chosen_by") == "auto", str(cur))
-        check("…saying so", any(e["kind"] == "connected" and "stand-in:7b" in e["message"] for e in s.get("events", [])), str(s.get("events")))
-        shown, _ = chat(xod.base, "Say hello.")
-        check("…and chats work straight away", "stand-in Ollama" in shown, shown[:300])
+        check("…but doesn't connect itself to one (local is opt-in on a new install)",
+              cur.get("model") not in ("stand-in:7b", "gemma-local.gguf")
+              and not any(e["kind"] == "connected" for e in s.get("events", [])), str(cur))
+        check("…saying a local model is there to pick",
+              any("won't use a local model" in n for n in s.get("notes", [])), str(s.get("notes")))
 
-        # The model Xod chose goes away: it picks the next best one by itself.
+        # The person picks the Ollama model: chats go to it from then on.
+        st, body = http("POST", xod.base + "/api/setup/choose", {"provider": "ollama", "model": "stand-in:7b"})
+        shown, _ = chat(xod.base, "Say hello.")
+        check("the person picks the Ollama model and chats work straight away", "stand-in Ollama" in shown, f"{body} {shown[:300]}")
+
+        # The model the person picked goes away: Xod says so, but doesn't swap it (the self-revise
+        # for Xod's own picks is covered in run_local_engine_optin_test.py, N6).
         http("DELETE", f"http://127.0.0.1:{ollama.port}/api/delete", {"model": "stand-in:7b"})
         s = json.loads(http("POST", xod.base + "/api/autoconnect/check", timeout=60)[1])
-        check("when the model Xod chose is deleted, it switches to the next best by itself",
-              s["current"]["model"] == "thinker:4b" and s["current"]["chosen_by"] == "auto", str(s["current"]))
+        check("when the model the person picked is deleted, it isn't swapped",
+              s["current"]["model"] == "stand-in:7b" and s["current"]["chosen_by"] == "you", str(s["current"]))
 
         # The person picks the other server's model: theirs from now on.
         st, body = http("POST", xod.base + "/api/setup/choose", {"provider": "local", "model": "gemma-local.gguf", "base_url": f"http://127.0.0.1:{other.port}/v1"})
