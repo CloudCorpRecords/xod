@@ -3320,6 +3320,39 @@ class TreeMessageRequest(BaseModel):
     text: str
 
 
+@app.get("/api/muse-connect")
+async def muse_connect_status():
+    """One-Click Muse Connect (services/muse_connect.py): the offers
+    this Xod has made and the Muses connected to it, with states
+    folded in from the family tree-inbox (a hello advances a
+    connection to live and is receipted by the read itself)."""
+    from app.services import muse_connect
+    out = await asyncio.to_thread(muse_connect.status)
+    return {"success": True, **out}
+
+
+@app.post("/api/muse-connect/offer")
+async def muse_connect_offer():
+    """The one click: build and sign a fresh connection offer,
+    carrying the capability manifest summary, and return its link,
+    paste-able text block and visual code."""
+    from app.services import muse_connect
+    out = await asyncio.to_thread(muse_connect.create_offer)
+    return {"success": True, **out}
+
+
+@app.post("/api/muse-connect/revoke")
+async def muse_connect_revoke(body: Dict[str, Any]):
+    """End one connection from this side: the stored state flips at
+    once and a revocation note lands in the tree-inbox so the Muse
+    closes its side too."""
+    from app.services import muse_connect
+    offer_id = (body or {}).get("offer_id") or ""
+    if not offer_id:
+        return {"success": False, "error": "offer_id is required."}
+    return await asyncio.to_thread(muse_connect.revoke, offer_id)
+
+
 @app.post("/api/tree/message")
 async def tree_message(req: TreeMessageRequest):
     """Xod -> Tree bridge (services/tree_inbox.py): drop a message for Tree
