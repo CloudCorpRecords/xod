@@ -118,7 +118,7 @@
     const label = domainRaw.split(":")[0].split(".")[0];
     let device = "";
     if (/macbook/.test(label)) device = "MacBook Pro";
-    else if (/rene-home-main|razer|blade/.test(label)) device = "Razer";
+    else if (/home-main|razer|blade/.test(label)) device = "Razer";
     else if (/iphone/.test(label)) device = "Your iPhone";
     else if (/pocophone|s25|android|phone/.test(label)) device = "Your phone";
     let name;

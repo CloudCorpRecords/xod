@@ -1,5 +1,5 @@
 """
-Local-presence evidence for pairing auto-approve (Rene's rule,
+Local-presence evidence for pairing auto-approve (the owner's rule,
 2026-11-05): "if device is on Bluetooth or same wifi and it sees it
 on the list in xod it can just approve it."
 

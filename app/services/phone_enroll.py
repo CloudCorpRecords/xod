@@ -30,7 +30,7 @@ member under a different key (impersonation), and every intake is
 audit-logged with the key fingerprint, so a foreign or canary key
 showing up in an advertisement is visible in the log.
 
-Local presence (Rene's rule, 2026-11-05): "if device is on Bluetooth
+Local presence (the owner's rule, 2026-11-05): "if device is on Bluetooth
 or same wifi and it sees it on the list in xod it can just approve
 it." When the transport that carried an advertisement can evidence
 that the device is HERE — the request arrived from this computer's
@@ -126,7 +126,7 @@ AUTO_SETTING_KEY = "phone_enroll_auto_approve_local"
 
 
 def auto_approve_enabled() -> bool:
-    """Rene's local-presence rule is the default (2026-11-05); this
+    """The owner's local-presence rule is the default (2026-11-05); this
     setting is the owner's override, stored like every other switch
     (services/storage, the auto_model pattern)."""
     try:
@@ -269,7 +269,7 @@ def intake(advertisement: Dict[str, Any], mail_sender: Optional[str] = None,
     """Take a phone's signed advertisement and pend it for the owner's tap.
     `presence` is local-presence evidence observed by the TRANSPORT
     (services/local_presence.py), never a claim inside the
-    advertisement: with it, and the full gate passed, Rene's rule
+    advertisement: with it, and the full gate passed, the owner's rule
     (2026-11-05) approves the ask without the tap. Returns
     {ok, state, problems}; never raises on bad input."""
     problems: List[str] = []
@@ -413,7 +413,7 @@ def pending() -> List[Dict[str, Any]]:
 def approve(device_id: str, path=None) -> Dict[str, Any]:
     """The owner's one tap: file the phone's own active record and sign
     the member digest over the new set. Read back before claiming it.
-    Rene's local-presence rule takes this same tap through
+    The owner's local-presence rule takes this same tap through
     _try_auto_approve; there is no second, weaker approval path."""
     view = fr.load_registry(path)
     _observe_trust(view)
@@ -633,7 +633,7 @@ def state(path=None) -> Dict[str, Any]:
             "interim_unsigned": bool(view.get("interim_unsigned")),
             "my_device_id": fr.my_device_id() or None,
             "my_trusted": bool(fr.my_device_id() and known.get(fr.my_device_id())),
-            # Rene's local-presence rule (2026-11-05): its on/off state and the
+            # The owner's local-presence rule (2026-11-05): its on/off state and the
             # audit trail of approvals it took, newest first, for the panel.
             "auto_approve_local": auto_approve_enabled(),
             "auto_approvals": list(reversed((st.get("auto_approvals") or [])[-10:])),

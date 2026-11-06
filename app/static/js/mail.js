@@ -27,7 +27,7 @@
   const humanDeviceName = (name) => {
     const slug = String(name || "").toLowerCase();
     if (/macbook/.test(slug)) return "MacBook Pro";
-    if (/rene-home-main|razer|blade/.test(slug)) return "Razer";
+    if (/home-main|razer|blade/.test(slug)) return "Razer";
     if (/iphone/.test(slug)) return "Your iPhone";
     if (/pocophone|s25|android|phone/.test(slug)) return "Your phone";
     return String(name || "").replace(/[-_]+/g, " ").trim();
@@ -43,7 +43,7 @@
     if (familyNames[host]) return humanDeviceName(familyNames[host]);
     if (familyNames[hostLabel]) return humanDeviceName(familyNames[hostLabel]);
     if (/macbook/.test(hostLabel)) return "MacBook Pro";
-    if (/rene-home-main|razer|blade/.test(hostLabel)) return "Razer";
+    if (/home-main|razer|blade/.test(hostLabel)) return "Razer";
     if (/iphone/.test(hostLabel) || local === "iphone") return "Your iPhone";
     if (local === "phone" || /pocophone|s25|android/.test(hostLabel)) return "Your phone";
     if (local.startsWith("takeover-check-")) return "A test agent";
@@ -66,7 +66,7 @@
     if (familyNames[host]) return humanDeviceName(familyNames[host]);
     if (familyNames[label]) return humanDeviceName(familyNames[label]);
     if (/macbook/.test(label)) return "MacBook Pro";
-    if (/rene-home-main|razer|blade/.test(label)) return "Razer";
+    if (/home-main|razer|blade/.test(label)) return "Razer";
     if (/iphone/.test(label)) return "Your iPhone";
     if (/pocophone|s25|android|phone/.test(label)) return "Your phone";
     return "";

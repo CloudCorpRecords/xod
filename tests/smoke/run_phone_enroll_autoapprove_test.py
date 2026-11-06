@@ -1,5 +1,5 @@
 """
-Pairing auto-approve for local presence (Rene's rule, 2026-11-05;
+Pairing auto-approve for local presence (the owner's rule, 2026-11-05;
 services/phone_enroll.py + services/local_presence.py, HTTP endpoint
 /api/phone/enroll/advertise).
 
@@ -137,7 +137,7 @@ def main():
 
     # ------------------------------------------------------------ the happy path
     seed_founder_registry()
-    check("rule: auto-approve defaults ON (Rene's standing order)",
+    check("rule: auto-approve defaults ON (the owner's standing order)",
           pe.auto_approve_enabled() is True and pe.state()["auto_approve_local"] is True)
 
     auto_phone = fresh_identity(0, 32)

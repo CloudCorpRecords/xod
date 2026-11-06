@@ -48,6 +48,11 @@ PLACEHOLDER = re.compile(r"(x{6,}|X{6,}|(.)\2{9,}|your|example|placeholder|dummy
 
 SERVICE_ACCOUNTS = {"runner", "root", "admin", "administrator", "user", "ubuntu", "ec2-user", "vagrant", "docker", "jenkins", "buildkite", "circleci"}
 NAME_OK = re.compile(r"(?!)")   # files allowed to carry your name: none
+# Exact public identifiers that legitimately contain a name fragment, scrubbed
+# before the name check: the author's own public shop URL (linked in the README
+# on purpose) and the public npm scope of the fleet's published tools (the repo
+# worker pins). Only these exact strings are scrubbed; any other name hit fails.
+PUBLIC_NAME_STRINGS = ["rene-turcios-shop.fourthwall.com", "@reneturcios/"]
 SKIP_CONTENT = re.compile(r"\.(png|jpe?g|gif|ico|icns|woff2?|ttf|otf|webp|mp4|mp3|wav|pdf|lock)$|package-lock\.json$")
 
 
@@ -108,10 +113,13 @@ def main() -> int:
             line = text.count("\n", 0, text.index(hit)) + 1
             problems.append(f"{f}:{line}: contains your home folder path")
         if not NAME_OK.search(f):
+            name_text = text
+            for public in PUBLIC_NAME_STRINGS:
+                name_text = name_text.replace(public, "")
             for rx in name_res:
-                m = rx.search(text)
+                m = rx.search(name_text)
                 if m:
-                    problems.append(f"{f}:{text.count(chr(10), 0, m.start()) + 1}: contains your name or username ({m.group(0)})")
+                    problems.append(f"{f}:{name_text.count(chr(10), 0, m.start()) + 1}: contains your name or username ({m.group(0)})")
                     break
     # One version everywhere: the app's own (app/version.py) and the installer's (electron/package.json).
     try:

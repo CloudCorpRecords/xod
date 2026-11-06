@@ -67,8 +67,8 @@ def main():
     print("H1 the post office heals itself (stubbed home_post)")
     from app.services import agent_mail, home_post
 
-    agent_mail._save_config({"name": "rene", "domain": "mac.example:8790",
-                             "address": "rene@mac.example:8790",
+    agent_mail._save_config({"name": "owner", "domain": "mac.example:8790",
+                             "address": "owner@mac.example:8790",
                              "home": {"domain": "mac.example:8790"}})
     state = {"running": False, "fail": True, "starts": 0}
     real = (home_post.running, home_post.start, home_post.stop)
@@ -114,7 +114,7 @@ def main():
         r6 = asyncio.run(agent_mail.ensure_home_post())
         check("a running post office resets the recovery state",
               r6["state"] == "running" and agent_mail._home_recovery["attempts"] == 0, str(r6))
-        agent_mail._save_config({"name": "rene", "domain": "relay.example", "address": "rene@relay.example"})
+        agent_mail._save_config({"name": "owner", "domain": "relay.example", "address": "owner@relay.example"})
         r7 = asyncio.run(agent_mail.ensure_home_post())
         check("a shared post office has no home machinery", r7["state"] == "not_home", str(r7))
         rep2 = asyncio.run(agent_mail.repair_home_post())

@@ -95,7 +95,7 @@ def fake_run_cli(argv, timeout=None, cwd=None, input_text=None):
             # npm answering 404 for an unpublished package: exit 1, the
             # error on stderr, and no verdict document on stdout.
             return 1, "", ("npm error code E404\nnpm error 404 Not Found - GET "
-                           "https://registry.npmjs.org/@reneturcios%2fprosecheck - Not found")
+                           "https://registry.npmjs.org/@owner%2fprosecheck - Not found")
         if PROSE_MODULE_FAIL["on"]:
             return 1, "", "Error: Cannot find module 'C:/tools/prosecheck/dist/cli.js'"
         words = len((input_text or "").split())

@@ -5,7 +5,7 @@ policy lives, it is plain data with comments, and it is diffable, so a person
 can read exactly what their copy will and will not do before it does anything.
 
 The gates come from the campaign's maintainer profile (Stages 0 to 6 and the
-gate-pass definition). The philosophy, in Rene's words: software is built,
+gate-pass definition). The philosophy, in the owner's words: software is built,
 then fixed, then fixed again. These gates exist for safety, for respecting a
 repo's own rules, and for honesty of evidence. They are not a perfection bar.
 Anything a gate cannot read is UNKNOWN, and an unknown is never a pass.

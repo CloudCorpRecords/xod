@@ -1043,7 +1043,7 @@ async def phone_enroll_advertise(body: Dict[str, Any], request: Request):
     over Agent Mail as the family.advertise op). Submission is not trust:
     it pends for the owner's tap — unless it arrived from this local
     network, observed here from the request's source address (never
-    claimed by the advertisement), in which case Rene's local-presence
+    claimed by the advertisement), in which case the owner's local-presence
     rule (2026-11-05) lets intake approve it without the tap, the full
     pairing gate still applying. The mail channel carries no presence
     and always pends."""
@@ -1055,7 +1055,7 @@ async def phone_enroll_advertise(body: Dict[str, Any], request: Request):
 @app.post("/api/phone/enroll/auto-approve")
 async def phone_enroll_auto_approve(body: Dict[str, Any]):
     """The owner's override for the local-presence rule: {on: bool}.
-    Default on (the rule is Rene's standing order, 2026-11-05)."""
+    Default on (the rule is the owner's standing order, 2026-11-05)."""
     from app.services import phone_enroll
     return {"ok": True,
             "auto_approve_local": phone_enroll.set_auto_approve_enabled(bool(body.get("on")))}
