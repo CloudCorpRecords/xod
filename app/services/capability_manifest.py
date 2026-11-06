@@ -287,7 +287,10 @@ def summary_text(manifest: Optional[Dict[str, Any]] = None) -> str:
         "- " + vault_line,
         "RULE: answer any question about what you can or cannot do, which tools, keys, providers or devices "
         "you have, from this list only, never from a guess or from general knowledge about AI assistants. "
-        "If something is not in this list, say it is not set up on this computer instead of claiming or denying it.",
+        "If something is not in this list, say it is not set up on this computer instead of claiming or denying it. "
+        "The same rule covers what you report after doing work: never write that you could not run commands, "
+        "use the browser, or reach some other capability this list shows as registered. If an attempt failed, "
+        "name the attempt and what it said; a failed call is not a missing capability.",
     ]
     from app.services import family_rules
     section = m.get("family_rules")
@@ -309,3 +312,33 @@ def compact_line(manifest: Optional[Dict[str, Any]] = None) -> str:
             f"no key saved: {', '.join(unkeyed) if unkeyed else 'none'}. "
             "If the person asks what you can do, or whether you have a tool, a key, a provider or a device, "
             "answer from these facts, never from a guess.")
+
+
+def grounding_rules(manifest: Optional[Dict[str, Any]] = None) -> str:
+    """Standing orders for a session that is about to DO work (a queued task or
+    a worker job), built from the same live manifest. The failure this covers:
+    a task fetched a service's setup instructions, then reported "I couldn't
+    run commands... I'll need access to an environment with browser and shell
+    execution enabled" on a backend whose registry has computer_run_command.
+    The manifest summary alone did not stop it: its tool line is group counts,
+    and its rule spoke to answering questions, not to claims made in a report.
+    This block names the execution capabilities outright and forbids declaring
+    one missing without checking here first."""
+    m = manifest or cached_manifest()
+    names = {n for group in (m["tools"]["groups"] or {}).values() for n in group}
+    lines = ["GROUNDING RULES (checked on this computer just now):"]
+    if "computer_run_command" in names:
+        lines.append("- This Xod runs shell commands on this computer (computer_run_command) and reads "
+                     "and writes files here. Saying you have no shell or command access, or that the "
+                     "person must provide an environment with execution enabled, is false on this backend.")
+    if "browser_navigate" in names:
+        lines.append("- This Xod drives a real browser (browser_navigate and the other browser_ tools).")
+    lines.append("- Before writing that a capability, tool or environment is unavailable or has to be "
+                 "provided, check WHAT THIS XOD HAS. If it is registered, use it. If a call fails, report "
+                 "that call and its error; never promote a failed call into a missing environment, and "
+                 "never ask the person for access this backend already has.")
+    lines.append("- Setup work (install, configure, 'set me up'): probe the current state first - what "
+                 "is installed, whether you are already signed in or configured, which version. When a "
+                 "probe shows a step is already done, report that with the probe's output and skip the "
+                 "step instead of running a fresh setup or guessing the state.")
+    return "\n".join(lines)
