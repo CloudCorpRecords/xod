@@ -42,10 +42,11 @@ does not move: signatures, family/account binding and the signed
 GitHub sign-in assertion are all still required, a prior owner
 denial is never overridden, and an ask with no presence evidence
 (the Agent Mail channel, a tailnet or off-LAN source) pends for the
-tap exactly as before. Bluetooth is not an evidence channel: the
-desktop's BLE surface observes only an anonymous service UUID and a
-user-set name with rotating addresses, nothing that binds a
-sighting to a signed advertisement (see local_presence.py). Every
+tap exactly as before. Bluetooth is the second evidence channel:
+while its ask is live the phone serves a signed presence token over
+BLE, bound to that ask's issued_at and signed by its family key,
+and services/ble_presence.py verifies the binding before a sighting
+counts (a bare sighting without the token never counts). Every
 auto-approval is audit-logged with the evidence and the registry
 state before/after, and the rule is the owner's setting
 (auto_approve_enabled, default on).
@@ -361,6 +362,16 @@ def intake(advertisement: Dict[str, Any], mail_sender: Optional[str] = None,
     if problems:
         _audit("family.advertise_refused", rid, pub)
         return {"ok": False, "state": "refused", "problems": problems}
+    if presence is None:
+        # Bluetooth evidence is observed out of band (this computer
+        # read the phone's signed token over BLE, possibly before
+        # the ask arrived), so when the carrying transport evidenced
+        # nothing, intake checks for a sighting bound to this ask.
+        try:
+            from app.services import ble_presence
+            presence = ble_presence.evidence_for(rid, pub, issued)
+        except Exception:
+            presence = None
     fp = f"{rid}|{pub}"
     with _lock:
         st = _load()
@@ -406,6 +417,48 @@ def pending() -> List[Dict[str, Any]]:
                     "issued_at": e.get("issued_at"), "received_at": e.get("received_at"),
                     "presence": e.get("presence")})
     return out
+
+
+def note_ble_sighting(token: Dict[str, Any], ble_address: Optional[str] = None,
+                      rssi: Optional[int] = None) -> Dict[str, Any]:
+    """A signed Bluetooth presence token this computer just read from
+    a nearby phone (services/phone_ble.py calls this). The sighting
+    is recorded in services/ble_presence.py; when it verifies against
+    an ask already pending here, bound to that ask and signed by the
+    ask's own key, the owner's local-presence rule takes the tap
+    through the same _try_auto_approve as every other channel. A
+    sighting for an ask that has not arrived yet is remembered by
+    ble_presence and picked up by intake() when the ask lands."""
+    from app.services import ble_presence
+    if not ble_presence.observe(token, ble_address=ble_address, rssi=rssi):
+        return {"ok": False, "observed": False,
+                "error": "not a signed Bluetooth presence token"}
+    device_id = str(token.get("device_id") or "")
+    with _lock:
+        st = _load()
+        entry = (st.get("pending") or {}).get(device_id)
+    if entry is None:
+        return {"ok": True, "observed": True, "device_id": device_id,
+                "state": "no_pending_ask"}
+    record = entry.get("record") or {}
+    evidence = ble_presence.evidence_for(device_id, record.get("public_key") or "",
+                                         entry.get("issued_at") or 0)
+    if evidence is None:
+        return {"ok": True, "observed": True, "device_id": device_id, "state": "pending"}
+    with _lock:
+        st = _load()
+        pend = st.get("pending") or {}
+        cur = pend.get(device_id)
+        if cur is not None and not cur.get("presence"):
+            cur["presence"] = evidence
+            pend[device_id] = cur
+            st["pending"] = pend
+            _save(st)
+    auto = _try_auto_approve(device_id, record, evidence)
+    if auto is not None:
+        return {"ok": True, "observed": True, **auto}
+    return {"ok": True, "observed": True, "device_id": device_id,
+            "state": "pending", "presence": evidence}
 
 
 # ---------------------------------------------------------------- enrollment

@@ -11,8 +11,15 @@ Wire format: the offer's JSON text in UTF-8, written in chunks no larger than th
 
 What Bluetooth adds and doesn't: it only carries the offer. Pairing itself still goes through the post office with the
 one-time code, and the safety numbers on both screens are still the check that the phone paired with this computer.
+
+While in "Pair nearby" the phone also serves a signed presence token (TOKEN_UUID): it streams the token by
+notification in chunks, the last ending in "\n", the mirror of the offer write. read_token() reads it and files
+the sighting with services/phone_enroll.py. The token is bound to the phone's live pairing ask and signed by its
+family key, which is what lets a BLE sighting count as local-presence evidence for the owner's auto-approve
+rule (services/ble_presence.py verifies the binding; a bare sighting never counts). The offer path is unchanged.
 """
 import asyncio
+import json
 import logging
 from typing import Any, Dict, List
 
@@ -20,6 +27,7 @@ logger = logging.getLogger("xod.phone_ble")
 
 SERVICE_UUID = "7c0d0001-7a1d-4f3e-9b5a-58f1d0c0de01"
 OFFER_UUID = "7c0d0002-7a1d-4f3e-9b5a-58f1d0c0de01"
+TOKEN_UUID = "7c0d0003-7a1d-4f3e-9b5a-58f1d0c0de01"
 SCAN_SEC = 6.0
 
 _seen: Dict[str, Any] = {}      # address -> BLEDevice from the last scan (Windows connects best to the scanned object)
@@ -80,6 +88,45 @@ async def offer_to(phone_id: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Couldn't reach the phone over Bluetooth ({e}). Keep 'Pair nearby' open on it and try again."}
     return {"success": True, "safety": offer["safety"], "computer": offer["computer"], "expires_at": offer["expires_at"],
             "message": "Sent. Tap Pair on your phone, then check the safety numbers match."}
+
+
+async def read_token(phone_id: str) -> Dict[str, Any]:
+    """Reads the phone's signed Bluetooth presence token and files the sighting with phone_enroll.
+    {success, observed, state, ...} mirrors note_ble_sighting, or {success: False, error}."""
+    if not available():
+        return {"success": False, "error": "Bluetooth pairing needs the 'bleak' package (pip install bleak)."}
+    from bleak import BleakClient
+    target = _seen.get(phone_id, phone_id)
+    buf = bytearray()
+    got_all = asyncio.Event()
+
+    def _on_token(_char: Any, data: bytearray) -> None:
+        buf.extend(data)
+        if b"\n" in data:
+            got_all.set()
+
+    try:
+        async with BleakClient(target, timeout=15.0) as client:
+            await client.start_notify(TOKEN_UUID, _on_token)
+            try:
+                await asyncio.wait_for(got_all.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                pass
+            try:
+                await client.stop_notify(TOKEN_UUID)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.info(f"phone_ble: token read from {phone_id} failed: {e}")
+        return {"success": False, "error": f"Couldn't reach the phone over Bluetooth ({e}). Keep 'Pair nearby' open on it and try again."}
+    text = bytes(buf).split(b"\n")[0].decode("utf-8", "replace").strip()
+    try:
+        token = json.loads(text)
+    except Exception:
+        return {"success": False, "error": "The phone nearby did not offer a signed presence token."}
+    from app.services import phone_enroll
+    r = phone_enroll.note_ble_sighting(token, ble_address=str(phone_id))
+    return {"success": bool(r.get("ok")), **r}
 
 
 if __name__ == "__main__":      # python -m app.services.phone_ble: list phones in "Pair nearby"

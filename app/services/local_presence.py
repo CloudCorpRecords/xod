@@ -25,12 +25,11 @@ Kinds:
     labelled as its own kind so the audit never dresses it up as
     Wi-Fi.
 
-Bluetooth is deliberately NOT an evidence kind here: the desktop's
-BLE surface (services/phone_ble.py) observes only an anonymous
-service UUID and a user-set device name, and Android rotates BLE
-addresses — nothing binds a BLE sighting to a signed advertisement's
-device id or key, so approving on it would be simulating evidence.
-See docs/HANDOFF-1.0.md follow-ups / the 2026-11-05 build log.
+Bluetooth is not an evidence kind in THIS module: classify() only
+ever sees an HTTP source address. Bluetooth presence lives in
+services/ble_presence.py, where the phone's signed token binds a
+BLE sighting to a signed advertisement's device id and key before
+a sighting may count as evidence.
 """
 import ipaddress
 import socket
