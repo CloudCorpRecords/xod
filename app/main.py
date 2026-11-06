@@ -909,6 +909,15 @@ async def capabilities_endpoint():
     return await capabilities.report()
 
 
+@app.get("/api/capabilities/manifest")
+async def capabilities_manifest_endpoint():
+    """The full inventory sessions answer from: providers keyed or not (presence only, never a
+    value), the search provider that serves, every registered tool grouped, family members and
+    paired phones with online state, and the family vault state (services/capability_manifest.py)."""
+    from app.services import capability_manifest
+    return capability_manifest.build_manifest()
+
+
 @app.get("/api/models")
 async def models_endpoint():
     """Every model Xod can use, on every server, with what it can do, its score and its jobs (services/model_hub.py)."""

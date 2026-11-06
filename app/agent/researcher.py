@@ -66,7 +66,14 @@ class _Prefetch:
         self.reads: List[asyncio.Future] = []
 
         async def go():
-            found = await web_reader.search(query, 8)
+            found = None
+            try:   # a saved search key serves first (services/search_providers.py); the browser is the fallback
+                from app.services import search_providers
+                found = await search_providers.search_for_chat(query, 8)
+            except Exception:
+                found = None
+            if not found:
+                found = await web_reader.search(query, 8)
             picks = web_reader.pick_pages(found.get("results") or [], n_read)
             self.reads = [asyncio.ensure_future(web_reader.read_page(h.get("open") or h["url"], query, budget,
                                                                      timeout=web_reader.READ_TIMEOUT)) for h in picks]
@@ -304,6 +311,15 @@ When the user asks in natural language to perform computer actions or browse the
         from app import platform_info
         if platform_info.WINDOWS:
             system_prompt = platform_info.localize(system_prompt) + "\n\n" + platform_info.SHELL_NOTE
+
+        # What this Xod has and does not have (services/capability_manifest.py): keyed providers,
+        # the search provider that actually serves, the registered tools, family and phones, the
+        # vault. Sessions answer questions about their own setup from this checked list.
+        try:
+            from app.services import capability_manifest
+            system_prompt += "\n\n" + capability_manifest.summary_text()
+        except Exception:
+            pass
 
         if active_workspace_path:
             system_prompt += f"""
@@ -1622,7 +1638,17 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
             extra = user_memory.relevant_note(query)
         except Exception:
             extra = ""
-        return [{"role": "system", "content": f"{prompt}\n\nToday is {cls._today()}." + (f"\n{note}" if note else "")}, *turns,
+        # The router answers most short questions itself, including ones about Xod's own setup
+        # ("don't you have a You.com API?"). It gets the checked facts (services/capability_manifest.py),
+        # because without them it once answered that there was no You.com tool while a verified
+        # You.com key sat in this computer's vault.
+        try:
+            from app.services import capability_manifest
+            facts = capability_manifest.compact_line()
+        except Exception:
+            facts = ""
+        return [{"role": "system", "content": f"{prompt}\n\nToday is {cls._today()}." + (f"\n{note}" if note else "")
+                 + (f"\n{facts}" if facts else "")}, *turns,
                 {"role": "user", "content": query + extra}]
 
     @staticmethod
@@ -1787,6 +1813,16 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         (prefill), so when the last page is in it only has that one left to read before it starts writing."""
         from app.services import web_reader
         tool = "web_search"
+        # Who serves the search: the keyed API provider when one is saved (the decider in
+        # services/search_providers.py), the browser otherwise. Named in the status line and in
+        # the tool result, so a search never silently bypasses a saved key again.
+        try:
+            from app.services import search_providers as _sp
+            _provider = _sp.preferred_provider()
+        except Exception:
+            _provider = "web_fallback"
+        search_status = (f"Searching with {'You.com' if _provider == 'you.com' else 'Tavily'}…"
+                         if _provider != "web_fallback" else "Searching the web in Xod's browser…")
         if re.search(r"\b(latest|newest|news|recent(ly)?|this (week|month)|who won|current(ly)?|right now|upcoming|last night|yesterday)\b", query, re.I):
             stamp = time.strftime("%B %Y")
             queries = [q if re.search(r"\b20\d\d\b", q) else f"{q} {stamp}" for q in queries]
@@ -1831,12 +1867,12 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         page_budget = 1800 if deep else 800          # every 100 characters is ~0.2 s before the first word
         n_read = 4 if deep else 3
 
-        # 1. Search, like a person would: a search engine's results page in Xod's own browser (no API key).
+        # 1. Search: the keyed API provider first when one is saved, Xod's own browser otherwise.
         ids = [f"fast_{i}" for i in range(len(queries))]
         found: List[Dict[str, Any]] = []
         futures = None
         if prefetch is not None:
-            yield {"type": "status", "content": "Searching the web in Xod's browser…"}
+            yield {"type": "status", "content": search_status}
             yield {"type": "tool_call", "name": tool, "args": {"query": prefetch.query}, "id": ids[0]}
             ids, queries = ids[:1], [prefetch.query]
             got = await prefetch.result()
@@ -1845,11 +1881,18 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                 picks = got[1]
         if not found:
             if prefetch is None:
-                yield {"type": "status", "content": "Searching the web in Xod's browser…"}
+                yield {"type": "status", "content": search_status}
                 for cid, q in zip(ids, queries):
                     yield {"type": "tool_call", "name": tool, "args": {"query": q}, "id": cid}
 
             async def find(q: str) -> Dict[str, Any]:
+                try:
+                    from app.services import search_providers
+                    api = await search_providers.search_for_chat(q, 8)
+                    if api:
+                        return api
+                except Exception:
+                    pass
                 try:
                     return await web_reader.search(q, 8)
                 except Exception as e:
@@ -1866,6 +1909,12 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                     merged.append(rs[rank])
         if picks is None:
             picks = web_reader.pick_pages(merged, n_read)
+
+        # The answer names who served the search when an API provider did (the clients report
+        # the real provider after their own cascade; the browser path leaves it unset).
+        _served_by = next((f.get("provider") for f in found if f.get("provider")), "")
+        if _served_by:
+            head = f"{query}\n\nSearch results (served by {_served_by}):\n"
 
         # 2. Read the best few in background tabs, in parallel; each page goes to the model as soon as it's in.
         blocks: List[str] = []
@@ -1900,16 +1949,19 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         for h in merged:
             h.pop("open", None)
         if not merged:
-            # The browser couldn't search (Chrome missing, every engine blocked): a configured API or plain HTTP.
+            # Nothing came back at all: the explicit API tool for the decider's provider
+            # (its own cascade ends at plain HTTP when no key is saved).
             for q in queries:
                 try:
-                    r = await execute_tool("tavily_search" if settings.tavily_api_key else "you_search", {"query": q})
+                    from app.services import search_providers as _sp3
+                    _tool = "tavily_search" if _sp3.preferred_provider() == "tavily" else "you_search"
+                    r = await execute_tool(_tool, {"query": q})
                 except Exception as e:
                     r = {"error": str(e)}
                 merged += [x for x in (r or {}).get("results") or [] if isinstance(x, dict)]
         engine = next((f.get("engine") for f in found if f.get("engine")), "")
         results = [{"results": [h for h in merged if h in (f.get("results") or [])] or (merged if i == 0 else []),
-                    "provider": "browser", "engine": engine,
+                    "provider": f.get("provider") or "browser", "engine": engine,
                     "pages_read": sum(1 for h in picks if h.get("content"))} for i, f in enumerate(found or [{}])]
         for cid, q, r in zip(ids, queries, results):
             evidence_board.update_from_tool(tool, {"query": q}, r)
@@ -2004,7 +2056,8 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         r"what tools (do you have|can you use|are (there|available))|which tools (do you have|can you use|are (there|available))|"
         r"what('s| is) (not |un)?(available|working|supported)( (for you|on this|here|right now))?\s*(\?|$)|"
         r"what (doesn't|does not|won't|isn't|is not) (work|available|supported)|"
-        r"why (can'?t|cannot|don't|won't|didn't) you (see|look at|read (images|pictures)|use (tools|the browser|apps)|hear|browse|connect|access|call tools)|"
+        r"why (can'?t|cannot|don't|won't|didn't) you (see|look at|read (images|pictures)|use (tools|the browser|apps)|hear|browse|connect|access|call tools|search|run a search)|"
+        r"don'?t you have\b[^?\n]{0,50}?\b(api|key|access|account)\b|"
         r"are you able to (see|use|read|browse|hear|connect)|can you (see|look at|read) (images|pictures|photos|screenshots)|"
         r"(your|xod's) (limits|limitations|capabilities|abilities)|what (are|is) (you|xod) capable of)", re.I)
 
@@ -2013,6 +2066,11 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         yield {"type": "status", "content": "Checking what works on this computer…"}
         rep = await capabilities.report()
         facts = capabilities.as_text(rep)
+        try:   # the wider inventory too: keyed providers, tools, family, phones, vault
+            from app.services import capability_manifest
+            facts += "\n" + capability_manifest.summary_text()
+        except Exception:
+            pass
         yield {"type": "tool_call", "name": "xod_capabilities", "args": {}, "id": "caps"}
         yield {"type": "tool_result", "name": "xod_capabilities", "id": "caps",
                "summary": f"{rep['counts']['ok']} working, {rep['counts']['limited']} limited, {rep['counts']['off']} not available",
