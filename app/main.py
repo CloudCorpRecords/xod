@@ -2966,6 +2966,17 @@ class SocialRunIn(BaseModel):
     dry_run: Optional[bool] = None
 
 
+class WhatsAppItemIn(BaseModel):
+    contact: str
+    text: str
+    phone: Optional[str] = ""
+
+
+class WhatsAppReadIn(BaseModel):
+    contact: str
+    phone: Optional[str] = ""
+
+
 class SocialFetchIn(BaseModel):
     platform: str
 
@@ -2984,6 +2995,48 @@ async def social_queue(state: Optional[str] = None, platform: Optional[str] = No
     from app.services import social_reply
     store = social_reply.default_store()
     return {"summary": store.summary(), "items": store.list(state=state, platform=platform)}
+
+
+@app.get("/api/whatsapp/queue")
+async def whatsapp_queue():
+    """The WhatsApp send queue plus the per-surface state the capability
+    manifest reports (services/whatsapp.py)."""
+    from app.services import whatsapp
+    return {"success": True, **whatsapp.surface_state(), "queue": whatsapp.queue_summary()}
+
+
+@app.post("/api/whatsapp/items")
+async def whatsapp_prepare(req: WhatsAppItemIn):
+    """Prepare a message for approval. This sends nothing: the item waits
+    in state awaiting_approval until the owner approves it here or on the
+    chat card, and only then does the send run."""
+    from app.services import whatsapp
+    return whatsapp.default_store().prepare(req.contact, req.text, req.phone or "", actor="owner")
+
+
+@app.post("/api/whatsapp/items/{item_id}/approve")
+async def whatsapp_approve(item_id: str):
+    """The owner's approval lane: approve the prepared message and run
+    the send through the phone, verified in the chat afterwards."""
+    from app.services import whatsapp
+    ok = whatsapp.default_store().approve(item_id, actor="owner")
+    if not ok.get("success"):
+        return ok
+    return await whatsapp.run_send(item_id, actor="owner")
+
+
+@app.post("/api/whatsapp/items/{item_id}/decline")
+async def whatsapp_decline(item_id: str):
+    from app.services import whatsapp
+    return whatsapp.default_store().decline(item_id, actor="owner")
+
+
+@app.post("/api/whatsapp/read")
+async def whatsapp_read(req: WhatsAppReadIn):
+    """Recent messages from one named chat, for drafting a reply with
+    context. Reading sends nothing."""
+    from app.services import whatsapp
+    return await whatsapp.read_chat(req.contact, req.phone or "")
 
 
 @app.post("/api/social/items")

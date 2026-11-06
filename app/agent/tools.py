@@ -2854,6 +2854,29 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "whatsapp",
+            "description": "WhatsApp on the person's own phone, through the paired Xod app (the phone is already signed in). "
+                           "read: the recent messages of one named chat, so a reply can be drafted with context. send: message "
+                           "one named contact; a send NEVER goes straight out: it prepares the exact text and waits for the "
+                           "person's approval on the card, then sends through the phone's WhatsApp app and checks the message "
+                           "is in the chat before calling it sent. One message per call, only to a contact the person named. "
+                           "status: whether WhatsApp can be read or sent on each paired phone, and what is missing. There is "
+                           "no WhatsApp Web route yet.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["status", "read", "send", "queue"]},
+                    "contact": {"type": "string", "description": "read / send: the chat exactly as it appears in WhatsApp (a contact name, or a number as the person typed it)"},
+                    "text": {"type": "string", "description": "send: the exact message text; what is approved is what is sent"},
+                    "phone": {"type": "string", "description": "Which phone, if more than one is paired"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "muse_approvals",
             "description": "The switch for approving the Muse app's cards (and Muse/Claude Code requests in Crew jobs) for the person. "
                            "status: how it's set and whether it's pressing now. off: every card waits for them. always: press every card. "
@@ -3903,6 +3926,44 @@ async def _test_send(a: Dict[str, Any]) -> Dict[str, Any]:
     return {"success": True, "response": body.decode()[:200]}
 
 
+async def _whatsapp_tool(a: Dict[str, Any]) -> Dict[str, Any]:
+    """WhatsApp through the person's own phone (services/whatsapp.py). A send is never
+    executed from a bare tool call: send prepares the exact message and returns the
+    person's approval card (the item's one-time grant stays with the card, not in what
+    the model reads, the desktop tools' pattern). Only the approved replay, carrying
+    that grant, runs the send, and the send is verified in the chat afterwards."""
+    from app.services import whatsapp
+    act = str(a.pop("action", "status") or "status").lower()
+    if act == "status":
+        return {"success": True, **whatsapp.surface_state(), "queue": whatsapp.queue_summary()}
+    if act == "queue":
+        return {"success": True, **whatsapp.queue_summary()}
+    if act == "read":
+        return await whatsapp.read_chat(str(a.get("contact") or ""), str(a.get("phone") or ""))
+    if act == "send":
+        grant = a.pop("_grant", None)
+        item_id = str(a.get("item_id") or "")
+        if grant and item_id:
+            ok = whatsapp.default_store().approve_with_grant(item_id, str(grant), actor="owner")
+            if not ok.get("success"):
+                return ok
+            return await whatsapp.run_send(item_id, actor="owner")
+        prep = whatsapp.default_store().prepare(str(a.get("contact") or ""), str(a.get("text") or ""),
+                                                str(a.get("phone") or ""), actor="chat")
+        if not prep.get("success"):
+            return prep
+        item = prep["item"]
+        from app.services import sentinel
+        held = sentinel.hold("whatsapp", {"action": "send", "contact": item["contact"],
+                                          "text": item["text"], "phone": item["phone"],
+                                          "item_id": item["id"], "_grant": item["grant"]},
+                             {"rule": "whatsapp_send",
+                              "why": f"Xod wants to send a WhatsApp message to {item['contact']}: \"{item['text']}\""})
+        held["args"] = {"action": "send", "contact": item["contact"], "text": item["text"]}
+        return held
+    return {"success": False, "error": "WhatsApp actions: status, read, send, queue."}
+
+
 async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_path: Optional[str] = None) -> Dict[str, Any]:
     """Dispatches tool execution to the appropriate service."""
     if name == "test_send" and TEST_HOOKS:
@@ -3932,6 +3993,8 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                 "screen_capture_tab", "screen_capture_desktop"):
         from app.services import activity as _act, browser_ops
         return await browser_ops.call(name, dict(arguments or {}), str(_act.origin.get() or "chat"))
+    if name == "whatsapp":
+        return await _whatsapp_tool(dict(arguments or {}))
     if name == "phone":
         from app.services import phone_mcp
         a = dict(arguments or {})

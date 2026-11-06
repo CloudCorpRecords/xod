@@ -175,6 +175,51 @@ def search_state(providers: Optional[List[Dict[str, Any]]] = None) -> Dict[str, 
             "fallback": "the other keyed provider, then the browser search, then keyless web search"}
 
 
+def messaging_state() -> Dict[str, Any]:
+    """WhatsApp per surface (services/whatsapp.py surface_state): which
+    surfaces exist, whether each can read and can send, and which route a
+    send would take. installed and signed_in are observed facts or null;
+    the desktop WhatsApp Web route reports built False until it exists."""
+    try:
+        from app.services import whatsapp
+        return whatsapp.surface_state()
+    except Exception as e:
+        logger.debug(f"messaging state unavailable: {e}")
+        return {"whatsapp": {"route": "phone", "send_route": None, "can_read": False,
+                             "can_send": False, "phones": []},
+                "desktop": {"route": "whatsapp_web", "built": False,
+                            "can_read": False, "can_send": False}}
+
+
+def _messaging_line(messaging: Dict[str, Any]) -> str:
+    wa = (messaging or {}).get("whatsapp") or {}
+    phones = wa.get("phones") or []
+    if not phones:
+        return ("WhatsApp: no phone is paired, so Xod cannot read or send WhatsApp messages. "
+                "The desktop WhatsApp Web route is not built.")
+    parts = []
+    for p in phones:
+        if p.get("can_send"):
+            state = "can read and send"
+        elif p.get("can_read"):
+            state = "can read, cannot send yet (the Tap switch is off on the phone)"
+        elif p.get("installed") is False:
+            state = "WhatsApp is not installed"
+        elif p.get("signed_in") is False:
+            state = "WhatsApp is signed out"
+        elif not p.get("online"):
+            state = "offline"
+        else:
+            state = "cannot read or send yet (phone switches are off)"
+        parts.append(f"{p.get('name')} ({state})")
+    line = "WhatsApp: " + "; ".join(parts) + "."
+    if wa.get("can_send"):
+        line += (" Sends go through the phone's WhatsApp app, one message at a time, and every send "
+                 "waits for the owner's approval first.")
+    line += " The desktop WhatsApp Web route is not built."
+    return line
+
+
 def build_manifest() -> Dict[str, Any]:
     from app.services import family_rules
     providers = provider_states()
@@ -184,6 +229,7 @@ def build_manifest() -> Dict[str, Any]:
             "devices": device_states(),
             "vault": vault_state(),
             "family_rules": family_rules.manifest_section(),
+            "messaging": messaging_state(),
             "generated_at": time.time()}
 
 
@@ -237,6 +283,7 @@ def summary_text(manifest: Optional[Dict[str, Any]] = None) -> str:
         f"No key saved: {', '.join(unkeyed) if unkeyed else 'none'}. A provider with no key saved cannot be called until the owner adds one in Settings.",
         f"- Tools: {m['tools']['total']} registered ({groups}). The full list is at GET /api/capabilities/manifest.",
         "- " + _device_line(m["devices"]),
+        "- " + _messaging_line(m.get("messaging") or messaging_state()),
         "- " + vault_line,
         "RULE: answer any question about what you can or cannot do, which tools, keys, providers or devices "
         "you have, from this list only, never from a guess or from general knowledge about AI assistants. "
