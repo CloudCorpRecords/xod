@@ -146,6 +146,28 @@
       </section>`;
   }
 
+  // Auto-Connect (services/auto_connect.py): one button and Xod
+  // finds the AIs already on this computer, connects the ones the
+  // person is signed into, and shows each one's state in plain
+  // words. Signed-out AIs say "sign in first"; nothing here ever
+  // logs anyone in.
+  function autoConnectSection(ac) {
+    const rows = ((ac && ac.assistants) || []).map((a) => `
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="size-2 rounded-full ${a.state === "live" ? "bg-emerald-400" : a.state === "not_found" ? "bg-zinc-600" : "bg-amber-400"}"></span>
+        <span class="text-[12px] text-zinc-200 flex-1">${esc(a.name)}: ${esc(a.display || a.state)}</span>
+      </div>`).join("");
+    return `
+      <section class="space-y-3">
+        <div class="task-card space-y-2">
+          <p class="task-title">Connect my AIs</p>
+          <p class="text-[12px] text-zinc-400">One click: Xod finds the AIs already on this computer and connects to the ones you are signed into. Your approvals still apply.</p>
+          ${rows}
+          <button data-auto-action="run" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 hover:bg-brand-400 text-[12px] font-semibold">Connect my AIs</button>
+        </div>
+      </section>`;
+  }
+
   // Phase 3 (simplicity redesign): connection requests surface as cards in
   // Family, in plain words - who is asking (friendly name + where), what it
   // can do and what it cannot do - with Allow / Block. Raw payloads and
@@ -253,13 +275,14 @@
   async function render() {
     const el = document.getElementById("familyBody");
     if (!el) return;
-    let r = null, c = null, mailStatus = null, reqThreads = [], mc = null;
+    let r = null, c = null, mailStatus = null, reqThreads = [], mc = null, ac = null;
     try { r = await api("/api/family"); } catch (e) { /* honest empty render below */ }
     try { c = await api("/api/family/control"); } catch (e) { /* control header just omits */ }
     try { mailStatus = await api("/api/mail/status"); } catch (e) { /* Messages health line just omits */ }
     try { const t = await api("/api/mail/threads?box=requests"); reqThreads = t.threads || []; } catch (e) { /* request cards just omit */ }
     try { mc = await api("/api/muse-connect"); } catch (e) { /* connect card just omits */ }
-    el.innerHTML = pausedLine(mailStatus) + controlView(c) + museConnectSection(mc) + requestsSection(reqThreads) + body(r);
+    try { ac = await api("/api/auto-connect"); } catch (e) { /* auto-connect card just omits */ }
+    el.innerHTML = pausedLine(mailStatus) + controlView(c) + museConnectSection(mc) + autoConnectSection(ac) + requestsSection(reqThreads) + body(r);
   }
 
   async function saveClientId() {
@@ -401,6 +424,13 @@
         const revBtn = e.target.closest("[data-muse-revoke]");
         if (revBtn) {
           try { await post("/api/muse-connect/revoke", { offer_id: revBtn.getAttribute("data-muse-revoke") }); } catch (err) { /* render shows the new truth */ }
+          render();
+          return;
+        }
+        const autoBtn = e.target.closest("[data-auto-action]");
+        if (autoBtn) {
+          autoBtn.disabled = true; autoBtn.textContent = "Connecting...";
+          try { await post("/api/auto-connect/run", {}); } catch (err) { /* render shows the new truth */ }
           render();
           return;
         }

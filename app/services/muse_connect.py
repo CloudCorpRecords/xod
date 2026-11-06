@@ -427,6 +427,47 @@ def status() -> Dict[str, Any]:
     return {"offers": offers, "connections": connections}
 
 
+def record_connection(offer: Dict[str, Any], muse: Dict[str, Any],
+                      state: str) -> Dict[str, Any]:
+    """Register an internally made connection (Auto-Connect,
+    services/auto_connect.py): the offer goes into the store as the
+    audit trail and the connection starts in the given state,
+    without a hello round trip. The panel and the revoke path treat
+    it like any other connection from then on."""
+    store = _load_store()
+    offer_id = offer["offer_id"]
+    if offer_id not in store["offers"]:
+        store["offers"][offer_id] = {
+            "offer": offer, "state": "offered", "inbox_dropped": False,
+            "origin": "auto-connect",
+        }
+    if offer_id not in store["connections"]:
+        store["connections"][offer_id] = {
+            "offer_id": offer_id,
+            "muse": muse,
+            "state": state,
+            "accepted_at": _iso(_now()),
+            "live_at": None,
+            "revoked_at": None,
+        }
+    _save_store(store)
+    return store["connections"][offer_id]
+
+
+def update_connection_state(offer_id: str, state: str) -> bool:
+    """Move a stored connection to a new state (Auto-Connect's
+    verification step). Returns False when no such connection."""
+    store = _load_store()
+    conn = store["connections"].get(offer_id)
+    if conn is None:
+        return False
+    conn["state"] = state
+    if state == "live" and not conn.get("live_at"):
+        conn["live_at"] = _iso(_now())
+    _save_store(store)
+    return True
+
+
 def revoke(offer_id: str) -> Dict[str, Any]:
     """End a connection from this side: stored state flips at once
     and a revocation note lands in the inbox so the Muse closes
