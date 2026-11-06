@@ -3353,6 +3353,40 @@ async def muse_connect_revoke(body: Dict[str, Any]):
     return await asyncio.to_thread(muse_connect.revoke, offer_id)
 
 
+@app.get("/api/auto-connect")
+async def auto_connect_status():
+    """Auto-Connect (services/auto_connect.py): which AIs this
+    machine has, which are signed in, and the state of each
+    connection. Detection only; nothing is merged or signed."""
+    from app.services import auto_connect
+    out = await asyncio.to_thread(auto_connect.status)
+    return {"success": True, **out}
+
+
+@app.post("/api/auto-connect/run")
+async def auto_connect_run(request: Request):
+    """The one click: find the AIs already installed here, merge
+    Xod's MCP entry into each signed-in one's config (backup first,
+    idempotent), record a signed offer per connection, and verify
+    what can be pinged. Signed-out AIs are reported, never logged
+    into."""
+    from app.services import auto_connect
+    out = await asyncio.to_thread(auto_connect.run_sweep, request.url.port)
+    return {"success": True, **out}
+
+
+@app.get("/api/connect/discovery")
+async def connect_discovery(request: Request):
+    """The local discovery document: everything an AI on this
+    machine needs to connect itself to this Xod with no paste from
+    its human (endpoints, the MCP entry, the steps in order). A
+    copy also sits in the family shared folder as
+    xod-connect-discovery.json."""
+    from app.services import auto_connect
+    doc = await asyncio.to_thread(auto_connect.discovery_doc, request.url.port)
+    return {"success": True, **doc}
+
+
 @app.post("/api/tree/message")
 async def tree_message(req: TreeMessageRequest):
     """Xod -> Tree bridge (services/tree_inbox.py): drop a message for Tree
