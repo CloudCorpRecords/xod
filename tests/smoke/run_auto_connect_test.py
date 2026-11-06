@@ -146,6 +146,34 @@ check("windows merge lands in the Claude-Data config, no classic file made",
       wres["ok"] and "xod" in json.loads(wcfg.read_text())["mcpServers"]
       and not (WINHOME / "AppData" / "Roaming" / "Claude").exists())
 
+# --- locked cookie store: signal unknown, never guessed -----------------------
+LOCKHOME = TMP / "lockhome"
+lcfg = (LOCKHOME / "AppData" / "Local" / "Claude-Data"
+        / "claude_pzs8sxrjxfjjc" / "claude_desktop_config.json")
+lcfg.parent.mkdir(parents=True)
+lcfg.write_text("{}", encoding="utf-8")
+(LOCKHOME / "AppData" / "Local" / "Claude-Data" / "claude_pzs8sxrjxfjjc"
+ / "Network").mkdir(parents=True)
+locked = (LOCKHOME / "AppData" / "Local" / "Claude-Data"
+          / "claude_pzs8sxrjxfjjc" / "Network" / "Cookies")
+locked.write_bytes(b"placeholder")
+from unittest import mock
+real_read_bytes = Path.read_bytes
+
+
+def locked_read(self):
+    if self.name == "Cookies":
+        raise PermissionError("locked by the running app")
+    return real_read_bytes(self)
+
+
+with mock.patch.object(Path, "read_bytes", locked_read), \
+        mock.patch.object(ac.shutil, "copy2",
+                          side_effect=OSError("still locked")):
+    ldet = ac.detect_one("claude-desktop", LOCKHOME, "Windows")
+check("locked cookie store reads as unknown sign-in, not signed out",
+      ldet["installed"] and ldet["signed_in"] is None, json.dumps(ldet))
+
 # --- sweep 1: signed-in desktop only --------------------------------------
 out = ac.run_sweep()
 states = {a["id"]: a["state"] for a in out["assistants"]}

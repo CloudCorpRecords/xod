@@ -161,16 +161,37 @@ def _claude_desktop_paths(home: Path, system: str) -> Tuple[Path, List[Path]]:
     return base / "claude_desktop_config.json", []
 
 
-def _cookie_signed_in(config_path: Path, extra_paths: List[Path]) -> bool:
+def _marker_in_copy(path: Path) -> Optional[bool]:
+    """Marker check through a temp copy (a running Chromium app
+    locks its cookie store, and a copy can sometimes still be
+    read). None when even the copy cannot be read."""
+    import tempfile
+    try:
+        fd, tmp = tempfile.mkstemp(prefix="xod-ck-")
+        os.close(fd)
+        shutil.copy2(path, tmp)
+        try:
+            return _marker_in_file(Path(tmp), b"sessionKey")
+        finally:
+            os.unlink(tmp)
+    except OSError:
+        return None
+
+
+def _cookie_signal(config_path: Path, extra_paths: List[Path]) -> Optional[bool]:
     """Claude's sign-in signal: a sessionKey cookie NAME in the
     app's own cookie store, beside whichever config layout exists.
     The Claude-Data layout nests its Chromium stores a few levels
     under the config's folder, so that folder is walked (names
-    only, depth-bounded)."""
+    only, depth-bounded).
+
+    True: the name is there. False: a store was readable and the
+    name is not in it (or no store exists yet). None: a store
+    exists but the running app holds it locked, so the signal
+    cannot be read from here; unknown, never guessed."""
+    stores: List[Path] = []
     for cfg in [config_path] + list(extra_paths):
-        for store in (cfg.parent / "Cookies", cfg.parent / "Network" / "Cookies"):
-            if _marker_in_file(store, b"sessionKey"):
-                return True
+        stores += [cfg.parent / "Cookies", cfg.parent / "Network" / "Cookies"]
         if "Claude-Data" in cfg.parts:
             base = cfg.parent
             depth0 = len(base.parts)
@@ -179,11 +200,33 @@ def _cookie_signed_in(config_path: Path, extra_paths: List[Path]) -> bool:
                     if len(Path(dirpath).parts) - depth0 > 3:
                         dirnames[:] = []
                         continue
-                    if "Cookies" in filenames and _marker_in_file(
-                            Path(dirpath) / "Cookies", b"sessionKey"):
-                        return True
+                    if "Cookies" in filenames:
+                        stores.append(Path(dirpath) / "Cookies")
             except OSError:
                 pass
+    readable = 0
+    locked = 0
+    for store in stores:
+        if not store.is_file():
+            continue
+        try:
+            if b"sessionKey" in store.read_bytes():
+                return True
+            readable += 1
+            continue
+        except OSError:
+            pass
+        copied = _marker_in_copy(store)
+        if copied is True:
+            return True
+        if copied is False:
+            readable += 1
+        else:
+            locked += 1
+    if readable:
+        return False
+    if locked:
+        return None
     return False
 
 
@@ -197,11 +240,12 @@ def detect_one(assistant_id: str, home: Path, system: str) -> Dict[str, Any]:
                      or any(p.exists() for p in extra)
                      or (system == "Windows"
                          and (home / "AppData" / "Local" / "Claude-Data").is_dir()))
+        signal = _cookie_signal(config, extra) if installed else False
         return {"id": assistant_id, "name": "Claude Desktop",
                 "kind": "json", "config_path": str(config),
                 "extra_config_paths": [str(p) for p in extra],
                 "installed": installed,
-                "signed_in": installed and _cookie_signed_in(config, extra)}
+                "signed_in": signal}
     if assistant_id == "claude-code":
         cfg = home / ".claude.json"
         installed = cfg.is_file() or (home / ".claude").is_dir()
@@ -575,7 +619,7 @@ def run_sweep(port: Optional[int] = None) -> Dict[str, Any]:
         if not det["installed"]:
             results.append(_record(rec, STATE_NOT_FOUND, "not installed here"))
             continue
-        if not det["signed_in"]:
+        if det["signed_in"] is False:
             results.append(_record(
                 rec, STATE_SIGN_IN_FIRST,
                 "installed but no sign-in found; open it and sign in, "
@@ -594,10 +638,14 @@ def run_sweep(port: Optional[int] = None) -> Dict[str, Any]:
         if det["id"] == "claude-desktop":
             # Observed 2026-11-06: this client attaches lazily, on
             # first chat. Wired is provable; attach is the app's.
+            sig = (" Sign-in signal unreadable from here (the "
+                   "running app holds its cookie store open), so "
+                   "this rests on presence, not a verified session."
+                   if det["signed_in"] is None else "")
             results.append(_record(
                 rec, STATE_NEEDS_FIRST_CHAT,
                 f"{wire}; {note}. This client attaches on its first "
-                "chat, so the last check happens inside the app",
+                f"chat, so the last check happens inside the app.{sig}",
                 offer_id))
             continue
         ok, detail = _verify(entry)
@@ -623,7 +671,8 @@ def _view(store: Dict[str, Any], dropped: Optional[List[str]] = None) -> Dict[st
         rec = store["assistants"].get(aid) or {}
         state = rec.get("state") or (
             STATE_NOT_FOUND if not det["installed"] else
-            STATE_SIGN_IN_FIRST if not det["signed_in"] else STATE_DETECTED)
+            STATE_SIGN_IN_FIRST if det["signed_in"] is False
+            else STATE_DETECTED)
         assistants.append({
             "id": aid, "name": det["name"],
             "installed": det["installed"], "signed_in": det["signed_in"],
