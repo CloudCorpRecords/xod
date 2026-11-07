@@ -1,13 +1,18 @@
 # Changelog
 
+## 1.0.2
+
+**Settings, rebuilt**
+- The Settings modal is five pages now (General, Models, Search & research, Connections, Advanced) picked from a rail, instead of one long scroll that stacked run mode, memory, keys, logins, the model picker, usage, media models and swarm keys. Same settings, same keys, same save and test flows underneath. Before and after: docs/screenshots/settings-before-long-scroll.png and settings-after-*.png.
+
+**First published release of the 1.0.1 work**
+- The 1.0.1 changes prepared on main (the capability manifest and its grounding fix, one-click connect and auto-connect, approval-first WhatsApp, Agent Mail by default) were never published as 1.0.1. They ship in 1.0.2; the 1.0.1 section below is their detailed record.
+
 ## 1.0.1
 
 **Xod knows what it has, and setup jobs stay jobs**
 - The capability manifest (PR #44) gives Xod a live inventory of itself: which providers are present, its tool catalog, family and phone state, and vault status, served at /api/capabilities/manifest and used to answer capability questions from evidence instead of habit.
 - The task capability grounding fix (PR #51) puts that manifest's grounding rules into job framing, and routes a "set me up for X" request carrying a link to a real computer job with shell tools, instead of a research loop that could end by claiming a capability was missing. Verified by a side by side acceptance run on the prompt that failed before the fix: it did the setup work, used the shell, and paused at the one genuine human step, a provider sign-in, without claiming anything was missing.
-
-**Settings, rebuilt**
-- The Settings modal is five pages now (General, Models, Search & research, Connections, Advanced) picked from a rail, instead of one long scroll that stacked run mode, memory, keys, logins, the model picker, usage, media models and swarm keys. Same settings, same keys, same save and test flows underneath.
 
 **Connecting Xod to your other AIs is one click, or none**
 - One-click connect (PR #48) adds Connect to Muse in Family: Xod makes the offer and the other assistant confirms, instead of a person copying keys between apps.
