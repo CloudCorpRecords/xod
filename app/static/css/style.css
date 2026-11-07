@@ -1256,3 +1256,12 @@
 .surface-row { display: flex; width: 100%; align-items: center; gap: 0.75rem; padding: 0.6rem 0.75rem; border-radius: 0.75rem;
   font-size: 13px; text-align: left; transition: background 0.15s; }
 .surface-row:hover { background: rgba(255, 255, 255, 0.06); }
+
+/* Settings pages: one page at a time, picked from the rail (js/settings.js) */
+.settings-page { display: none; }
+.settings-page.is-active { display: block; }
+.settings-page-title { font-size: 13px; font-weight: 600; color: #f4f4f5; margin-bottom: 0.9rem; }
+.settings-nav-btn { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.7rem; border-radius: 0.7rem;
+  font-size: 13px; color: #a1a1aa; white-space: nowrap; text-align: left; }
+.settings-nav-btn:hover { background: rgba(255, 255, 255, 0.05); color: #fff; }
+.settings-nav-btn.is-active { background: rgba(242, 178, 74, 0.14); color: #f5c86e; }
