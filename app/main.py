@@ -26,7 +26,7 @@ from app.agent.researcher import AgenticResearcher
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("main")
 
-app = FastAPI(title="Xod - Ultimate Researcher & TrustMRR Assistant", version="1.0.0")
+app = FastAPI(title="Xod - Ultimate Researcher & TrustMRR Assistant", version="1.0.1")
 
 # Only this machine's own UI may talk to the server. Xod can run commands, read files and edit its
 # own code, so a web page open in any browser (including Xod's own) must not be able to send it
