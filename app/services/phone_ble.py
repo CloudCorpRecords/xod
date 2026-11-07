@@ -60,6 +60,31 @@ async def find(timeout: float = SCAN_SEC) -> Dict[str, Any]:
     return {"success": True, "phones": phones}
 
 
+def offer_error_message(exc: Exception) -> str:
+    """The user-facing line for a failed offer write.
+
+    The characteristic-not-found case gets extra guidance, because its
+    proven cause (phone benchmark, 2026-11-07) is not the phone: the
+    companion serves OFFER_UUID (its own Bluetooth stack reports the
+    service started, with the characteristic), and a cache-free central
+    sees and writes it fine. A Windows computer that has paired with
+    the phone before can keep serving a stale cached GATT table that
+    predates the app's service, and bleak then reports the
+    characteristic as missing. Removing the phone from Windows
+    Bluetooth settings drops the cache, and the next connection reads
+    the phone's services fresh.
+    """
+    base = (f"Couldn't reach the phone over Bluetooth ({exc}). "
+            "Keep 'Pair nearby' open on it and try again.")
+    text = str(exc)
+    if OFFER_UUID in text and "not found" in text.lower():
+        base += (" If this computer has paired with this phone before, Windows may be "
+                 "showing an old Bluetooth service list for it: remove the phone from "
+                 "Windows Bluetooth settings, then try again so Windows reads the "
+                 "phone's services fresh.")
+    return base
+
+
 async def offer_to(phone_id: str) -> Dict[str, Any]:
     """Makes a fresh pairing offer and hands it to that phone. {success, safety, computer} or {success: False, error}"""
     if not available():
@@ -77,7 +102,7 @@ async def offer_to(phone_id: str) -> Dict[str, Any]:
     except Exception as e:
         phone_pair.cancel()
         logger.info(f"phone_ble: offer to {phone_id} failed: {e}")
-        return {"success": False, "error": f"Couldn't reach the phone over Bluetooth ({e}). Keep 'Pair nearby' open on it and try again."}
+        return {"success": False, "error": offer_error_message(e)}
     return {"success": True, "safety": offer["safety"], "computer": offer["computer"], "expires_at": offer["expires_at"],
             "message": "Sent. Tap Pair on your phone, then check the safety numbers match."}
 
