@@ -116,11 +116,11 @@ def main():
         check("the status says it's hosted here and running", st.get("self_hosted") and (st.get("home") or {}).get("running"), str(st)[:300])
         r = dana.py(f"""
 from app.agent import tools
-print(json.dumps(asyncio.run(tools.execute_tool('agent_mail_setup', {{'name': 'dana', 'network': '127.0.0.1:{dana.post}'}}))))""")
+print(json.dumps(asyncio.run(tools.execute_tool('agent_mail_setup', {{'name': 'dana', 'relay': 'this computer', 'network': '127.0.0.1:{dana.post}'}}))))""")
         # (that ran in a separate process; dana's running Xod opens her post office from the saved setup)
         dana.stop()
         dana.start()
-        check("the chat's setup, with no post office named, hosts on this computer", r.get("success") and r.get("self_hosted")
+        check("the chat's setup, naming this computer as the post office, hosts on this computer", r.get("success") and r.get("self_hosted")
               and r.get("address") == f"dana@127.0.0.1:{dana.post}" and "no server needed" in r.get("note", ""), str(r)[:300])
         st = dana.api("GET", "/api/mail/status")
         check("…and when Xod starts again, its post office opens again by itself", (st.get("home") or {}).get("running"), str(st)[:300])
