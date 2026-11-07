@@ -143,6 +143,7 @@ class AgenticResearcher:
         active_workspace_path: Optional[str] = None,
         attached_document: Optional[Dict[str, Any]] = None,
         spoken: bool = False,
+        system_extra: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         spoken: the question was asked out loud in a conversation, and the answer will be read
@@ -320,6 +321,13 @@ When the user asks in natural language to perform computer actions or browse the
             system_prompt += "\n\n" + capability_manifest.summary_text()
         except Exception:
             pass
+        if system_extra:
+            # Standing context for this run only, supplied by the caller (a
+            # queued task's framing and grounding rules, services/task_queue.py).
+            # It rides in the system prompt, never in the person's message:
+            # routing, the sentinel and delivery read that message as the
+            # person's own words.
+            system_prompt += "\n\n" + system_extra
 
         if active_workspace_path:
             system_prompt += f"""

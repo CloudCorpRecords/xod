@@ -1256,14 +1256,24 @@ class TaskQueue:
         except Exception:
             pass
 
-    def _framed_request(self, task: Dict[str, Any]) -> str:
-        """A queued task's request with the framing a chat turn gets for free:
-        this is work on the person's computer, plus the capability grounding
-        rules (services/capability_manifest.py). A bare request left the agent
-        free to finish with "I couldn't run commands; I'll need an environment
+    def _task_framing(self) -> str:
+        """The framing a queued task's run carries as SYSTEM context: this is
+        work on the person's computer, plus the capability grounding rules
+        (services/capability_manifest.py). A bare request left the agent free
+        to finish with "I couldn't run commands; I'll need an environment
         with shell execution enabled" on a backend that has shell execution -
         the framing and the rules are what make that claim checkable against
-        the live registry before it is written."""
+        the live registry before it is written.
+
+        System context, never the person's message: routing, the sentinel
+        and the delivered answer all read the user message as the person's
+        own words. When the framing rode inside the user message (the first
+        version of this fix), find requests stopped reaching the hunt - the
+        framing's own words matched the worker lane first - and the rules
+        text surfaced verbatim inside delivered answers (the xod-work
+        marker's goal, the report). The worker lane puts the same rules in
+        its system prompt; the research loop takes them the same way, via
+        run_research_stream's system_extra."""
         head = ("[Queued task: you are running on the person's computer with your full tool set, "
                 "not answering in chat. Work the request to a verified finish.]\n")
         try:
@@ -1271,16 +1281,26 @@ class TaskQueue:
             rules = capability_manifest.grounding_rules()
         except Exception:
             rules = ""
-        return head + (rules + "\n\n" if rules else "") + (task.get("request") or "")
+        return head + (rules + "\n\n" if rules else "")
 
-    async def _stream(self, task_id: str, message: str, steps: int):
+    def _framed_request(self, task: Dict[str, Any]) -> str:
+        """The framing (see _task_framing) followed by the request itself:
+        the composed view of everything a queued task's run is told. The
+        run itself receives the two parts through separate channels - the
+        request as the person's message, the framing as system context."""
+        return self._task_framing() + (task.get("request") or "")
+
+    async def _stream(self, task_id: str, message: str, steps: int, system_extra: str = ""):
         """Runs the agent for one stretch of a task; returns (report_text, steps, decisive_payloads).
-        Raises whatever the stream raises; the caller finishes the task as crashed."""
+        Raises whatever the stream raises; the caller finishes the task as crashed.
+        The message is the person's own text; the task framing rides as
+        system_extra (system context), never inside the message."""
         from app.agent.researcher import AgenticResearcher
         from app.services import decisive_evidence
         content, last_status = [], ""
         decisive_pairs = []
-        async for ev in AgenticResearcher().run_research_stream([{"role": "user", "content": message}]):
+        async for ev in AgenticResearcher().run_research_stream(
+                [{"role": "user", "content": message}], system_extra=system_extra or None):
             if ev.get("type") in ("tool_result", "subagent_tool_result"):
                 decisive_pairs.append((ev.get("name"), ev.get("data")))
             if ev.get("type") == "content":
@@ -1441,8 +1461,9 @@ class TaskQueue:
         if action["type"] == "approve" and task.get("pending_json"):
             sb.pending_submit = {**task["pending_json"], "created_at": time.time()}
 
+        framing = self._task_framing()
         if action["type"] == "start":
-            message = self._framed_request(task)
+            message = task["request"]
         elif action["type"] == "approve":
             message = "go ahead"
         else:
@@ -1452,7 +1473,7 @@ class TaskQueue:
         steps = task.get("steps") or 0
         payloads: List[Dict[str, Any]] = []
         try:
-            report, steps, payloads = await self._stream(task_id, message, steps)
+            report, steps, payloads = await self._stream(task_id, message, steps, framing)
         except Exception as e:
             logger.exception(f"Task {task_id} crashed")
             self._finish(task_id, "failed", f"Something went wrong: {e}", note="Crashed")
@@ -1470,11 +1491,11 @@ class TaskQueue:
             if problems:
                 self._update(task_id, note="The first attempt did not check out; running it again",
                              now="Checking the result before finishing")
-                retry_msg = (f"{self._framed_request(task)}\n\n(You already attempted this once and reported finishing, "
+                retry_msg = (f"{task['request']}\n\n(You already attempted this once and reported finishing, "
                              f"but checking found: {'; '.join(problems)}. Do it now for real, using your "
                              "file tools, then confirm briefly.)")
                 try:
-                    again, steps, payloads2 = await self._stream(task_id, retry_msg, steps)
+                    again, steps, payloads2 = await self._stream(task_id, retry_msg, steps, framing)
                     if again:
                         report = again
                     if payloads2:
