@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.0.1
+
+**Xod knows what it has, and setup jobs stay jobs**
+- The capability manifest (PR #44) gives Xod a live inventory of itself: which providers are present, its tool catalog, family and phone state, and vault status, served at /api/capabilities/manifest and used to answer capability questions from evidence instead of habit.
+- The task capability grounding fix (PR #51) puts that manifest's grounding rules into job framing, and routes a "set me up for X" request carrying a link to a real computer job with shell tools, instead of a research loop that could end by claiming a capability was missing. Verified by a side by side acceptance run on the prompt that failed before the fix: it did the setup work, used the shell, and paused at the one genuine human step, a provider sign-in, without claiming anything was missing.
+
+**Connecting Xod to your other AIs is one click, or none**
+- One-click connect (PR #48) adds Connect to Muse in Family: Xod makes the offer and the other assistant confirms, instead of a person copying keys between apps.
+- Auto-Connect (PR #49) lets Xod find the assistants already installed and signed in on the machine and wire itself to them: /api/auto-connect reports what is connectable, and a run connects what it finds. Proven live with Claude Code and Codex, and Claude Desktop is detected on both of its Windows layouts.
+- Shared family rules (PR #47): a rule set with one assistant is read by all of them from one canonical file, and the manifest exposes it.
+
+**WhatsApp messaging, approval first**
+- Xod can prepare a WhatsApp message (PR #50), but sending takes the owner's explicit approval: a prepared message, a one-time grant, and an executor that sends only when the state is approved, then verifies in the chat. The suite passes 39 of 39 and the gate has never been bypassed. Live proof on a paired phone is still owed, and is named as such below.
+
+**Agent Mail works out of the box**
+- A fresh Xod now defaults to the public Agent Mail post office (PR #53) instead of this computer, so two Xods can mail each other without anyone hosting a relay. An explicit relay choice, including this computer, still wins. The shipped client was verified end to end against the live relay before this release: addresses claimed, signed mail picked up and verified in both directions, mailboxes empty after pickup.
+
+**Repository hygiene**
+- The orchestration tiers framework and its incorporation notes are in the docs (PR #45).
+- The secret scan's two BLE pairing false positives (a public Bluetooth characteristic UUID and a fixed test fixture) are ignored by their exact fingerprints (PR #52), so the scan is green without widening its rules.
+
+**Checked before it shipped**
+- Each change above landed with its suites green on the merged tree: capability manifest 27 of 27, family rules 24 of 24, one-click connect 20 of 20, auto-connect 29 of 29, WhatsApp 39 of 39, and the capability fix suites at 15, 27, 49, and 17 of their totals.
+- Release preparation re-runs the full battery on the final 1.0.1 tree, dispositioned against the shipped 1.0.0 battery (152 suites, 114 pass, 38 fail, every failure dispositioned). The results are recorded with the release preparation record, not claimed here.
+
+**Known issues carried into 1.0.1, named plainly**
+- Carried from 1.0.0: Windows copies still update manually (the NSIS self-update wedge named since 0.9.20); every build still re-asks for its Accessibility switch once after an update; GitHub sign-in still cannot complete until the OAuth app is registered and its public client ID is saved in the panel; the first live family test on a real phone and the phone remote posting benchmark re-run are still outstanding; prosecheck is still not on npm, so the Repo Worker's prose gate still reads unknown and real opening stays off.
+- The WhatsApp send path has not yet had its live proof on a paired, reachable phone.
+- The continuous integration Python checks re-run is still owed: the job keeps being cancelled by an external macOS runner problem (runners never assigned), not by a failing test.
+
 ## 1.0.0
 
 **One big launch: the release candidate, the Repo Worker, Simplicity, and a phone health tool**
