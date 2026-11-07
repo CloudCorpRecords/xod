@@ -12,6 +12,7 @@ where it paused. You get a Mac notification when a task needs you or finishes.
 One task runs at a time (there's one browser); the rest queue up. Tasks survive restarts.
 """
 import asyncio
+import inspect
 import base64
 import json
 import logging
@@ -1299,8 +1300,22 @@ class TaskQueue:
         from app.services import decisive_evidence
         content, last_status = [], ""
         decisive_pairs = []
-        async for ev in AgenticResearcher().run_research_stream(
-                [{"role": "user", "content": message}], system_extra=system_extra or None):
+        researcher = AgenticResearcher()
+        stream_kwargs: Dict[str, Any] = {}
+        if system_extra:
+            # Pass the framing only to researcher implementations whose
+            # signature takes it; simpler implementations (older builds,
+            # test doubles) keep the pre-framing call shape.
+            try:
+                params = inspect.signature(researcher.run_research_stream).parameters
+                accepts = "system_extra" in params or any(
+                    prm.kind == inspect.Parameter.VAR_KEYWORD for prm in params.values())
+            except (TypeError, ValueError):
+                accepts = True
+            if accepts:
+                stream_kwargs["system_extra"] = system_extra
+        async for ev in researcher.run_research_stream(
+                [{"role": "user", "content": message}], **stream_kwargs):
             if ev.get("type") in ("tool_result", "subagent_tool_result"):
                 decisive_pairs.append((ev.get("name"), ev.get("data")))
             if ev.get("type") == "content":
