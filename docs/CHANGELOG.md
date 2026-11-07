@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+**Inbox status**
+- Xod now tracks which mail threads still need a reply across the owner's Gmail accounts and Muse Mail, and proves the answer instead of guessing: GET /api/inbox/status reports each source as ok, stale, or unread with its last check time, and GET /api/inbox/needs-reply serves the per-source digests behind it. A source that fails to refresh keeps serving its last good digest marked stale, and is never reported as empty. v1 reads through the host's existing signed-in mail routes; per-user OAuth sign-in is a later step.
+
 ## 1.0.2
 
 **Settings, rebuilt**

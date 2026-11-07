@@ -220,6 +220,36 @@ def _messaging_line(messaging: Dict[str, Any]) -> str:
     return line
 
 
+def inbox_state() -> Dict[str, Any]:
+    """Inbox status (services/inbox_status.py): which mail sources the
+    needs-reply digest tracks, each one's state (ok, stale, unread) and last
+    verified read, plus the route's limits. Counts and timestamps only: no
+    message content ever enters the manifest."""
+    try:
+        from app.services import inbox_status
+        return inbox_status.manifest_section()
+    except Exception as e:
+        logger.debug(f"inbox state unavailable: {e}")
+        return {"available": False, "read_only": True, "sources": [], "unread_sources": [],
+                "route": "", "limits": "inbox status unavailable on this computer"}
+
+
+def _inbox_line(inbox: Dict[str, Any]) -> str:
+    srcs = (inbox or {}).get("sources") or []
+    if not srcs:
+        return "Inbox status: not available on this computer."
+    parts = []
+    for s in srcs:
+        state = s.get("state")
+        tail = (f"{s.get('needs_reply_count')} waiting"
+                if state == "ok" else state)
+        parts.append(f"{s.get('label')} ({tail})")
+    return ("Inbox status: " + "; ".join(parts) +
+            ". The digest is at GET /api/inbox/needs-reply, read through this host's signed-in "
+            "mail routes; a source it cannot read is reported unread or stale with its error, "
+            "never as empty, and a full refresh takes minutes so answers come from its cache.")
+
+
 def build_manifest() -> Dict[str, Any]:
     from app.services import family_rules
     providers = provider_states()
@@ -230,6 +260,7 @@ def build_manifest() -> Dict[str, Any]:
             "vault": vault_state(),
             "family_rules": family_rules.manifest_section(),
             "messaging": messaging_state(),
+            "inbox": inbox_state(),
             "generated_at": time.time()}
 
 
@@ -284,6 +315,7 @@ def summary_text(manifest: Optional[Dict[str, Any]] = None) -> str:
         f"- Tools: {m['tools']['total']} registered ({groups}). The full list is at GET /api/capabilities/manifest.",
         "- " + _device_line(m["devices"]),
         "- " + _messaging_line(m.get("messaging") or messaging_state()),
+        "- " + _inbox_line(m.get("inbox") or inbox_state()),
         "- " + vault_line,
         "RULE: answer any question about what you can or cannot do, which tools, keys, providers or devices "
         "you have, from this list only, never from a guess or from general knowledge about AI assistants. "
