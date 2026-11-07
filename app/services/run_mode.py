@@ -36,6 +36,7 @@ OPTIONAL_LOOPS = {
     "handoff_dispatch": "watching repositories for hand-off files",
     "specialists": "restarting specialist model servers at startup",
     "partner_watchdog": "supervising the Partner process",
+    "inbox_warm": "keeping the inbox needs-reply cache warm (status is still served from the last read)",
 }
 LIGHT_BROWSER_IDLE_MINUTES = 3
 
