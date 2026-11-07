@@ -158,9 +158,27 @@ function swap(relaunch) {
   installing = true;
   if (WIN) {
     // Silent per-user install over the current one; --force-run opens Xod again afterwards.
-    const child = spawn(ready.appPath, relaunch ? ["/S", "--force-run"] : ["/S"], { detached: true, stdio: "ignore" });
+    // The installer replaces files in the install folder, so it must not start until Xod's own
+    // processes are gone: the server is detached and can still be shutting down after this shell
+    // exits, and an installer started over a still-running copy can sit spinning on locked files
+    // (the 2026-11-01 update: setup removed the old shortcuts, then never finished). The Mac
+    // branch below already waits for this process to exit before swapping; Windows waits the
+    // same way, through a small detached PowerShell shim that starts the installer once no
+    // process is running out of the install folder anymore (or after 120 s, whichever is first).
+    const installDir = path.dirname(app.getPath("exe")).replace(/'/g, "''");
+    const args = relaunch ? "/S --force-run" : "/S";
+    const ps = [
+      "$deadline = (Get-Date).AddSeconds(120)",
+      "while ((Get-Date) -lt $deadline) {",
+      `  $busy = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith('${installDir}') }`,
+      "  if (!$busy) { break }",
+      "  Start-Sleep -Milliseconds 500",
+      "}",
+      `Start-Process -FilePath '${ready.appPath.replace(/'/g, "''")}' -ArgumentList '${args}'`,
+    ].join(" ");
+    const child = spawn("powershell", ["-NoProfile", "-WindowStyle", "Hidden", "-Command", ps], { detached: true, stdio: "ignore" });
     child.unref();
-    log("installing", ready.version, relaunch ? "(then reopening)" : "(on quit)");
+    log("installing", ready.version, relaunch ? "(then reopening)" : "(on quit)", "once Xod has exited");
     return true;
   }
   const target = currentBundle();
