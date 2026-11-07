@@ -7,3 +7,7 @@ c0c04f5c86ed1c906f93e037cd5ff917e3f38197:app/services/family_registry.py:generic
 e7d92900f7413c0996918dd84b8a59b5439c985e:tests/smoke/run_phone_enroll_test.py:generic-api-key:95
 # The pairing auto-approve test vector (a fake device's public keys and a signature, the public half by design):
 c37a0d00200b9000e9d9737fe36459f28ccfe3b3:tests/smoke/run_phone_enroll_autoapprove_test.py:generic-api-key:69
+# Bluetooth pairing evidence commit (tree/ble-pairing-evidence): TOKEN_UUID is a public BLE characteristic UUID, not a key:
+93e5d48e3cfb26d5c77603f2dcb3beccb580d79b:app/services/phone_ble.py:generic-api-key:30
+# The BLE pairing enrollment test vector (a fake device's box key, a fixed test fixture):
+93e5d48e3cfb26d5c77603f2dcb3beccb580d79b:tests/smoke/run_phone_enroll_ble_autoapprove_test.py:generic-api-key:66
