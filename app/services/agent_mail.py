@@ -35,7 +35,10 @@ KEYCHAIN = os.environ.get("XOD_IDENTITY_SERVICE", "Xod identity")
 SETTING = "agent_mail"
 POLL_SECONDS = 30
 # The default post office. Anyone can run their own (relay/README.md) and use it instead.
-DEFAULT_RELAY = os.environ.get("XOD_DEFAULT_RELAY", "")
+# The public post office is the Cloudflare Worker relay below. An empty default would mean
+# every user picks their own relay on setup; XOD_DEFAULT_RELAY still overrides it per install.
+PUBLIC_DEFAULT_RELAY = "https://xod-post.xod-post.workers.dev"
+DEFAULT_RELAY = os.environ.get("XOD_DEFAULT_RELAY", PUBLIC_DEFAULT_RELAY)
 ADDRESS_RE = re.compile(r"^([a-z0-9](?:[a-z0-9._-]{0,30}[a-z0-9])?)@([a-z0-9.-]+(?::\d{2,5})?)$")
 TRUST = ("unknown", "known", "mine", "blocked")
 
