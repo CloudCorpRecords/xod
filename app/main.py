@@ -859,6 +859,9 @@ async def _start_task_worker():
     agent_mail.start()                      # picks up Agent Mail every 30 s once an address is set up
     # Lightweight mode (services/run_mode.py) skips the optional loops; the work itself is unchanged.
     from app.services import run_mode
+    if not run_mode.skip("inbox_warm"):
+        from app.services import inbox_status
+        inbox_status.start()                # keeps the inbox needs-reply digests warm (services/inbox_status.py)
     if not run_mode.skip("soul_life"):
         from app.services import soul
         asyncio.create_task(soul.life_loop())   # when you're away, the companion does things for itself
@@ -918,6 +921,26 @@ async def capabilities_manifest_endpoint():
     paired phones with online state, and the family vault state (services/capability_manifest.py)."""
     from app.services import capability_manifest
     return capability_manifest.build_manifest()
+
+
+@app.get("/api/inbox/status")
+async def inbox_status_endpoint():
+    """How much the inbox digest actually knows right now, per mail source: last verified read,
+    digest age, cached counts, last error, and which sources are stale or unread. Cache-only,
+    no network (services/inbox_status.py)."""
+    from app.services import inbox_status
+    return inbox_status.status()
+
+
+@app.get("/api/inbox/needs-reply")
+async def inbox_needs_reply_endpoint(days: int = 7, refresh: bool = False, max_age_minutes: int = 15):
+    """Mail threads whose newest message is inbound and unanswered, across the tracked sources,
+    each with its source's checked_at. Served from the per-source cache (kept warm in the
+    background); a source that cannot be read is named in unread_sources with its error, never
+    reported as empty. refresh=true re-reads every source inline first: minutes on a slow
+    route, which is the documented cost the warm cache exists to avoid."""
+    from app.services import inbox_status
+    return await asyncio.to_thread(inbox_status.needs_reply, days, refresh, max_age_minutes)
 
 
 @app.get("/api/models")
