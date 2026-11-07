@@ -1,6 +1,6 @@
 # Incorporation notes: applying this framework beyond the ladder
 
-Added 2026-11-06 on Rene's direction: after the tiers pass, this repo
+Added 2026-11-06 on the owner's direction: after the tiers pass, this repo
 goes one step further and covers the things the fleet wants next;
 start incorporating that material into what is currently building.
 This file records how Xod applies the vendored framework beyond the

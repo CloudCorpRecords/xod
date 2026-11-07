@@ -2,7 +2,7 @@
 Auto-Connect: Xod finds the AIs already on this computer and connects
 itself, in one click.
 
-Rene's direction (2026-11-06): it should be super easy, one click, or
+Direction (2026-11-06): it should be super easy, one click, or
 the person just tells their AI "I have these already installed, can you
 go and connect me" and Xod goes ahead and automatically connects,
 looks for what is installed, connects itself, super easy if they are

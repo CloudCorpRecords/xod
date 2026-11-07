@@ -55,7 +55,7 @@ LIST_SCREEN = """App: WhatsApp
 [1] TextView "WhatsApp" @180,150
 [2] ImageButton "Search" @950,150
 [3] TextView "Mama" @400,350
-[4] TextView "Rene Turcios" @420,520
+[4] TextView "Robin Taylor" @420,520
 [5] TextView "Aysha Medlin" @430,690"""
 
 SEARCH_SCREEN = """App: WhatsApp
@@ -63,26 +63,26 @@ SEARCH_SCREEN = """App: WhatsApp
 [2] TextView "Type a name or number" @400,320"""
 
 RESULTS_SCREEN = """App: WhatsApp
-[1] EditText "Rene Turcios" @480,150
-[2] TextView "Rene Turcios" @420,400
-[3] TextView "Rene T. (work)" @400,560"""
+[1] EditText "Robin Taylor" @480,150
+[2] TextView "Robin Taylor" @420,400
+[3] TextView "Robin T. (work)" @400,560"""
 
 CHAT_BEFORE = """App: WhatsApp
-[1] TextView "Rene Turcios" @400,150
+[1] TextView "Robin Taylor" @400,150
 [2] TextView "Did the build pass?" @320,500
 [3] TextView "Yes, it shipped this morning" @760,700
 [4] EditText "Type a message" @430,2250
 [5] ImageButton "Voice message" @980,2250"""
 
 CHAT_TYPED = """App: WhatsApp
-[1] TextView "Rene Turcios" @400,150
+[1] TextView "Robin Taylor" @400,150
 [2] TextView "Did the build pass?" @320,500
 [3] TextView "Yes, it shipped this morning" @760,700
 [4] EditText "On my way, see you at 7" @430,2250
 [5] Button "Send" @980,2250"""
 
 CHAT_AFTER = """App: WhatsApp
-[1] TextView "Rene Turcios" @400,150
+[1] TextView "Robin Taylor" @400,150
 [2] TextView "Did the build pass?" @320,500
 [3] TextView "Yes, it shipped this morning" @760,700
 [4] TextView "On my way, see you at 7" @740,950
@@ -153,12 +153,12 @@ async def main():
 
     print("P chat opening resolution")
     results_screen = wa.parse_screen(RESULTS_SCREEN)["elements"]
-    kind, el = wa.find_chat_match(results_screen, "Rene Turcios")
+    kind, el = wa.find_chat_match(results_screen, "Robin Taylor")
     check("an exact chat name matches its row", kind == "exact" and el["n"] == 2, kind)
-    kind, el = wa.find_chat_match(results_screen, "Rene")
+    kind, el = wa.find_chat_match(results_screen, "Robin")
     check("several partial matches are ambiguous, never a guess", kind == "ambiguous", kind)
-    kind, el = wa.find_chat_match(results_screen, "Rene T.")
-    check("one partial match resolves to its row", kind == "partial" and el["label"] == "Rene T. (work)", kind)
+    kind, el = wa.find_chat_match(results_screen, "Robin T.")
+    check("one partial match resolves to its row", kind == "partial" and el["label"] == "Robin T. (work)", kind)
     kind, el = wa.find_chat_match(results_screen, "Nobody Here")
     check("no match is none", kind == "none", kind)
     kind, el = wa.find_chat_match(wa.parse_screen(LIST_SCREEN)["elements"], "Aysha")
@@ -167,7 +167,7 @@ async def main():
     print("G the approval gate, proven with a spying executor")
     store = wa.WhatsAppStore(TMP / "wa-gate.json")
     spy = wa.FixtureExecutor()
-    prep = store.prepare("Rene Turcios", "hello there", actor="test")
+    prep = store.prepare("Robin Taylor", "hello there", actor="test")
     check("prepare stores the item awaiting approval", prep["success"] and prep["item"]["state"] == "awaiting_approval")
     item = prep["item"]
     out = await wa.run_send(item["id"], executor=spy, store=store)
@@ -257,7 +257,7 @@ async def main():
     fake = FakeTransport()
     phone_mcp.transport = fake
     store2 = wa.WhatsAppStore(TMP / "wa-e2e.json")
-    prep = store2.prepare("Rene Turcios", SENT_TEXT, actor="test")
+    prep = store2.prepare("Robin Taylor", SENT_TEXT, actor="test")
     store2.approve(prep["item"]["id"], actor="test")
     out = await wa.run_send(prep["item"]["id"], actor="test",
                             executor=wa.PhoneExecutor(store2), store=store2)
@@ -272,7 +272,7 @@ async def main():
           (store2.observations().get("phone@wa.local:8790") or {}).get("installed") is True
           and (store2.observations().get("phone@wa.local:8790") or {}).get("signed_in") is True,
           str(store2.observations()))
-    got = await wa.read_chat("Rene Turcios", executor=wa.PhoneExecutor(store2), store=store2)
+    got = await wa.read_chat("Robin Taylor", executor=wa.PhoneExecutor(store2), store=store2)
     check("the read path returns the chat's messages", got["success"] and len(got["messages"]) >= 2, str(got)[:200])
 
     print("M the manifest carries the messaging section")
