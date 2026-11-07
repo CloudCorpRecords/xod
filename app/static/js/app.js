@@ -1537,6 +1537,7 @@ function closeSettingsModal() {
 }
 
 function scrollToMediaModelsSettings() {
+  if (typeof showSettingsTab === "function") showSettingsTab("models");
   const card = document.getElementById("mediaModelsSettingsCard");
   if (card) {
     card.scrollIntoView({ behavior: "smooth", block: "center" });

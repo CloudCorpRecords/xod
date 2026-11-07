@@ -6,6 +6,9 @@
 - The capability manifest (PR #44) gives Xod a live inventory of itself: which providers are present, its tool catalog, family and phone state, and vault status, served at /api/capabilities/manifest and used to answer capability questions from evidence instead of habit.
 - The task capability grounding fix (PR #51) puts that manifest's grounding rules into job framing, and routes a "set me up for X" request carrying a link to a real computer job with shell tools, instead of a research loop that could end by claiming a capability was missing. Verified by a side by side acceptance run on the prompt that failed before the fix: it did the setup work, used the shell, and paused at the one genuine human step, a provider sign-in, without claiming anything was missing.
 
+**Settings, rebuilt**
+- The Settings modal is five pages now (General, Models, Search & research, Connections, Advanced) picked from a rail, instead of one long scroll that stacked run mode, memory, keys, logins, the model picker, usage, media models and swarm keys. Same settings, same keys, same save and test flows underneath.
+
 **Connecting Xod to your other AIs is one click, or none**
 - One-click connect (PR #48) adds Connect to Muse in Family: Xod makes the offer and the other assistant confirms, instead of a person copying keys between apps.
 - Auto-Connect (PR #49) lets Xod find the assistants already installed and signed in on the machine and wire itself to them: /api/auto-connect reports what is connectable, and a run connects what it finds. Proven live with Claude Code and Codex, and Claude Desktop is detected on both of its Windows layouts.

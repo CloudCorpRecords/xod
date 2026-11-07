@@ -340,23 +340,23 @@
             <span class="size-2 rounded-full bg-emerald-400" id="lmStudioPulseDot"></span>
             <span id="llmStatusText" class="truncate">AI model</span>
           </button>
-          <button id="btnTrustMRRStatus" onclick="closeSettingsPanel();openSettingsModal()" class="conn-row" data-pack="startup-intel">
+          <button id="btnTrustMRRStatus" onclick="closeSettingsPanel();openSettingsTab('search')" class="conn-row" data-pack="startup-intel">
             <i data-lucide="shield-check" class="size-3.5 text-zinc-500" id="trustmrrStatusIcon"></i>
             <span id="trustmrrStatusText" class="truncate">Checking…</span>
           </button>
-          <button id="btnYouStatus" onclick="closeSettingsPanel();openSettingsModal()" class="conn-row">
+          <button id="btnYouStatus" onclick="closeSettingsPanel();openSettingsTab('search')" class="conn-row">
             <i data-lucide="search" class="size-3.5 text-zinc-500" id="youStatusIcon"></i>
             <span id="youStatusText" class="truncate">Web search</span>
           </button>
-          <button id="btnTavilyStatus" onclick="closeSettingsPanel();openSettingsModal()" class="conn-row">
+          <button id="btnTavilyStatus" onclick="closeSettingsPanel();openSettingsTab('search')" class="conn-row">
             <i data-lucide="sparkles" class="size-3.5 text-zinc-500" id="tavilyStatusIcon"></i>
             <span id="tavilyStatusText" class="truncate">Tavily AI</span>
           </button>
-          <button id="btnYoutubeStatus" onclick="closeSettingsPanel();openSettingsModal()" class="conn-row">
+          <button id="btnYoutubeStatus" onclick="closeSettingsPanel();openSettingsTab('search')" class="conn-row">
             <i data-lucide="video" class="size-3.5 text-zinc-500" id="youtubeStatusIcon"></i>
             <span id="youtubeStatusText" class="truncate">YouTube Intel</span>
           </button>
-        <button class="surface-row" onclick="closeSettingsPanel();openSettingsModal()">
+        <button class="surface-row" onclick="closeSettingsPanel();openSettingsTab('search')">
           <i data-lucide="key-round" class="size-4 text-zinc-300 shrink-0"></i>
           <span class="flex-1 min-w-0"><span class="block text-zinc-100">Keys &amp; providers</span><span class="block text-[12px] text-zinc-500">API keys and provider setup.</span></span>
           <i data-lucide="chevron-right" class="size-4 text-zinc-600 shrink-0"></i>
@@ -982,7 +982,7 @@
   <!-- SETTINGS MODAL -->
   <!-- ============================================================== -->
   <div id="settingsModal" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="bg-surface-800 border border-surface-700 rounded-2xl w-full max-w-3xl lg:max-w-4xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+    <div class="bg-surface-800 border border-surface-700 rounded-2xl w-full max-w-5xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
       <!-- Modal Header -->
       <div class="px-6 py-4 border-b border-surface-700 flex items-center justify-between">
         <div class="flex items-center gap-2.5">
@@ -994,14 +994,29 @@
         </button>
       </div>
 
-      <!-- Modal Body -->
-      <div class="p-6 space-y-5 overflow-y-auto flex-1">
+      <!-- Modal Body: left rail + one page at a time (settings.js) -->
+      <div class="flex flex-col sm:flex-row flex-1 min-h-0">
+        <nav class="flex sm:flex-col gap-1 p-3 sm:w-48 shrink-0 overflow-x-auto sm:overflow-x-visible border-b sm:border-b-0 sm:border-r border-surface-700/60" aria-label="Settings sections">
+          <button type="button" class="settings-nav-btn is-active" data-settings-tab="general" onclick="showSettingsTab('general')"><i data-lucide="sliders" class="size-4 shrink-0"></i><span>General</span></button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="models" onclick="showSettingsTab('models')"><i data-lucide="cpu" class="size-4 shrink-0"></i><span>Models</span></button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="search" onclick="showSettingsTab('search')"><i data-lucide="search" class="size-4 shrink-0"></i><span>Search &amp; research</span></button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="connections" onclick="showSettingsTab('connections')"><i data-lucide="key-round" class="size-4 shrink-0"></i><span>Connections</span></button>
+          <button type="button" class="settings-nav-btn" data-settings-tab="advanced" onclick="showSettingsTab('advanced')"><i data-lucide="zap" class="size-4 shrink-0"></i><span>Advanced</span></button>
+        </nav>
+        <div id="settingsPages" class="p-6 overflow-y-auto flex-1 min-w-0">
+        <section class="settings-page is-active" data-settings-page="general">
+          <h4 class="settings-page-title">General</h4>
+          <div class="space-y-5">
         <!-- How Xod runs: headless / lightweight (js/run_mode.js, services/run_mode.py; same switch as the tray and `xod mode`) -->
         <div id="runModeSection"></div>
 
         <!-- What Xod knows about you (js/about_you.js, services/user_memory.py) -->
         <div id="aboutYouSection"></div>
-
+          </div>
+        </section>
+        <section class="settings-page" data-settings-page="search">
+          <h4 class="settings-page-title">Search &amp; research</h4>
+          <div class="space-y-5">
         <!-- API keys: Search & research — one card per provider, same shape for each.
              Behavior lives in app.js (testKeyCard / saveKeyCard / removeKeyCard):
              Test checks the key in the box before anything is stored, a pasted key is
@@ -1208,6 +1223,11 @@
           <div id="testYoutubeFeedback" class="text-xs hidden"></div>
         </div>
         </div>
+          </div>
+        </section>
+        <section class="settings-page" data-settings-page="connections">
+          <h4 class="settings-page-title">Connections</h4>
+          <div class="space-y-5">
         <!-- 1Password: API keys as op:// references, website logins (onepassword.js) -->
         <div id="onePasswordSection" class="space-y-3 rounded-xl bg-surface-750 p-4 border border-surface-700">
           <label class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
@@ -1237,6 +1257,11 @@
           <p id="vaultFeedback" class="text-[12px] hidden"></p>
         </div>
 
+          </div>
+        </section>
+        <section class="settings-page" data-settings-page="models">
+          <h4 class="settings-page-title">Models</h4>
+          <div class="space-y-5">
         <!-- LLM Provider & Model Section -->
         <div class="space-y-3">
           <label class="text-xs font-semibold text-zinc-300">LLM Provider</label>
@@ -1576,6 +1601,11 @@
           </div>
         </div>
 
+          </div>
+        </section>
+        <section class="settings-page" data-settings-page="advanced">
+          <h4 class="settings-page-title">Advanced</h4>
+          <div class="space-y-5">
         <!-- JIT Swarm & Model Tiers Section -->
         <div class="space-y-3 rounded-xl bg-surface-750 p-4 border border-surface-700">
           <div class="flex items-center justify-between">
@@ -1687,6 +1717,9 @@
               </div>
             </div>
           </div>
+        </div>
+          </div>
+        </section>
         </div>
       </div>
 
@@ -4530,6 +4563,7 @@
   <script src="/static/js/model_switcher.js?v=moonlit76"></script>
   <script src="/static/js/onepassword.js?v=moonlit76"></script>
   <script src="/static/js/surfaces.js?v=moonlit78"></script>
+  <script src="/static/js/settings.js?v=moonlit81"></script>
 </body>
 </html>
 
