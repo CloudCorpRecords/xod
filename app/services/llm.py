@@ -106,6 +106,17 @@ PROVIDER_NAMES = {"ollama": "Ollama", "lm_studio": "LM Studio", "xod": "The buil
                   "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter", "fireworks": "Fireworks", "anthropic": "Claude",
                   "custom": "Your model server"}
 CLOUD_THINK_HEADROOM = 2048      # tokens a cloud reasoning model may spend thinking before the answer even starts
+# The Fireworks models Xod offers by name: the settings fallback when the live list cannot be fetched, and the
+# rows the AI models panel shows for Fireworks. All verified chat + tools models on the account.
+FIREWORKS_CATALOG = [
+    {"id": "accounts/fireworks/models/glm-5p3-flash", "name": "GLM 5.3 Flash (320B, 1M Context, Vision, Fast) - Recommended", "is_loaded": True},
+    {"id": "accounts/fireworks/models/deepseek-v4p1-flash-1017", "name": "DeepSeek V4.1 Flash 1017 (1M Context, Fast, Cheap)", "is_loaded": True},
+    {"id": "accounts/fireworks/models/minimax-m3p1-flash", "name": "MiniMax M3.1 Flash (1M Context, Fast, Cheap)", "is_loaded": True},
+    {"id": "accounts/fireworks/models/deepseek-v4p1-flash", "name": "DeepSeek V4.1 Flash (1M Context)", "is_loaded": True},
+    {"id": "accounts/fireworks/models/minimax-m3", "name": "MiniMax M3 (512K Context)", "is_loaded": True},
+    {"id": "accounts/fireworks/models/kimi-k3", "name": "Kimi K3 (1M Context, Vision)", "is_loaded": True}
+]
+FIREWORKS_SEES = {"accounts/fireworks/models/glm-5p3-flash", "accounts/fireworks/models/kimi-k3"}
 _no_effort: set = set()          # (provider, model) that rejected reasoning_effort
 
 
@@ -842,14 +853,7 @@ class LLMService:
                     logger.warning(f"Could not fetch Fireworks models: {e}")
 
             # Return curated serverless catalog if offline or pre-key
-            return [
-                {"id": "accounts/fireworks/models/glm-5p3-flash", "name": "GLM 5.3 Flash (320B, 1M Context, Vision, Fast) - Recommended", "is_loaded": True},
-                {"id": "accounts/fireworks/models/deepseek-v4p1-flash-1017", "name": "DeepSeek V4.1 Flash 1017 (1M Context, Fast, Cheap)", "is_loaded": True},
-                {"id": "accounts/fireworks/models/minimax-m3p1-flash", "name": "MiniMax M3.1 Flash (1M Context, Fast, Cheap)", "is_loaded": True},
-                {"id": "accounts/fireworks/models/deepseek-v4p1-flash", "name": "DeepSeek V4.1 Flash (1M Context)", "is_loaded": True},
-                {"id": "accounts/fireworks/models/minimax-m3", "name": "MiniMax M3 (512K Context)", "is_loaded": True},
-                {"id": "accounts/fireworks/models/kimi-k3", "name": "Kimi K3 (1M Context, Vision)", "is_loaded": True}
-            ]
+            return [dict(m) for m in FIREWORKS_CATALOG]
 
         info = self._build_endpoint(active_provider, key_profile_id=key_profile_id)
         headers = {

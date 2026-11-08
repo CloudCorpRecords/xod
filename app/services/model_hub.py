@@ -73,6 +73,17 @@ async def all_models() -> Dict[str, Any]:
     for prov, field in (("anthropic", "anthropic_api_key"), ("openai", "openai_api_key"), ("gemini", "gemini_api_key"),
                         ("groq", "groq_api_key"), ("openrouter", "openrouter_api_key"), ("fireworks", "fireworks_api_key")):
         if getattr(settings, field, ""):
+            if prov == "fireworks":
+                # Fireworks gets one row per curated catalog model, not just the active one, so the panel
+                # offers the whole Fireworks shelf (DeepSeek, MiniMax, ...) to switch chat to.
+                from app.services.llm import FIREWORKS_CATALOG, FIREWORKS_SEES
+                fw_ids = [m["id"] for m in FIREWORKS_CATALOG]
+                if settings.llm_provider == "fireworks" and settings.llm_model and settings.llm_model not in fw_ids:
+                    fw_ids = [settings.llm_model] + fw_ids
+                for mid in fw_ids:
+                    out.append({"provider": prov, "server": "Fireworks", "base_url": "", "model": mid, "where": "online", "size_gb": None,
+                                "tools": True, "vision": mid in FIREWORKS_SEES, "thinking": None, "context": None, "online": True})
+                continue
             mid = settings.llm_model if settings.llm_provider == prov else CLOUD_DEFAULTS[prov]
             out.append({"provider": prov, "server": prov.title(), "base_url": "", "model": mid, "where": "online", "size_gb": None,
                         "tools": True, "vision": prov in CLOUD_SEES, "thinking": None, "context": None, "online": True})
