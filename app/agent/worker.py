@@ -89,9 +89,9 @@ _DO_RE = re.compile(r"\b(?:make|create|write|build|set ?up|code|generate|fix|deb
 # missions finished with zero tool calls and no file (b4cb8ea060 and
 # a09cc20b6e, 2026-11-08). The noun list in _DO_RE names scripts, csv and
 # json files but not the plain text file a proof step writes.
-_FILE_JOB_RE = re.compile(r"\b(?:create|write|make|save)\b[^?!]{0,80}?\bfile\b[^?!]{0,120}?\bwith exact text\b"
+_FILE_JOB_RE = re.compile(r"\b(?:create|write|make|save)\b[^?!]{0,80}?\bfile\b[^?!]{0,240}?\bwith exact text\b"
                           r"|\b(?:create|write|make)\b[^?!]{0,100}?\bcontaining exactly\b"
-                          r"|\b(?:create|write|make|save)\b[^?!]{0,80}?\bcontents are exactly\b", re.I)
+                          r"|\b(?:create|write|make|save)\b[^?!]{0,240}?\bcontents are exactly\b", re.I)
 # "Go through the websites about them and bring me the info": reading pages, not one search.
 _GATHER_RE = re.compile(r"\b(?:go (?:through|thru|thur)|visit|read|click (?:through|around)|dig (?:into|through|deeper)|look through|"
                         r"open up|check out)\b[^.?!]{0,50}?\b(?:websites?|web ?pages?|sites|pages|links|articles|sources|them|each one|"
