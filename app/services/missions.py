@@ -82,6 +82,17 @@ _TERMINAL_TASK = ("done", "failed", "cancelled")
 # answer for them. What the code cannot do is tell an unattended
 # question from one a person is about to answer; the 600 second
 # threshold is the whole distinction, and it is recorded as a limit.
+#
+# One exception, added 2026-11-08 on the owner's standing needs-you
+# rule (the AI guesses the strongest match and keeps moving): a
+# QUESTION wait whose task carries a locate "ask" payload is answered
+# by supervision itself at the threshold, with the strongest
+# candidate, through the queue's own finish path, the guess written
+# into the result as a guess. A mission died on exactly that shape
+# (mission-5bf2c71b83) because the resume could not answer a question
+# that already carried its own best answer. Approval waits remain
+# exempt absolutely; blocked waits and payload-less questions keep
+# the resume-then-fail shape above.
 PAUSE_WEDGE_THRESHOLD_SEC = 600
 PAUSE_RESUME_WINDOW_SEC = 600
 
@@ -1709,6 +1720,14 @@ class MissionRunner:
         window = self.pause_threshold_sec if attempts == 0 else self.pause_resume_window_sec
         if waited < window:
             return "wait"
+        if task.get("waiting_kind") == "question" and self._auto_answer_question(
+                mission_id, fresh, task, waited):
+            # The question carried its own best answer and nobody gave
+            # a better one in time: the step's one automatic
+            # intervention is the answer itself, spent like the resume.
+            _save_subtask(sub["id"], paused_at=None,
+                          pause_resume_attempts=max(attempts, 1))
+            return "resume"
         if attempts == 0:
             try:
                 res = self.queue.retry(sub["task_id"])
@@ -1728,6 +1747,99 @@ class MissionRunner:
             return "fail"
         self._fail_paused_wedge(mission_id, fresh, task, waited, resume_failed=False)
         return "fail"
+
+    def _auto_answer_question(self, mission_id: str, sub: Dict[str, Any],
+                              task: Dict[str, Any], waited: float) -> bool:
+        """Answers a waiting locate question with its strongest match,
+        through the queue's own finish path; True when it answered.
+
+        The person's standing needs-you rule: when a question carries
+        its own candidates (a locate "ask": two close matches), the AI
+        guesses the strongest match and keeps moving, and logs the
+        guess. The shipped behaviour spent the one automatic resume
+        and then failed the mission when the resumed task waited again
+        (mission-5bf2c71b83, 2026-11-08: two files with the same name,
+        nobody answered, the mission died on a question it could have
+        answered itself). Only a question wait reaches this, only when
+        the task's stored evidence holds an ask payload with
+        candidates, and the finish is the queue's own _finish (the
+        same path a person's resolving answer takes), never an
+        attribution to the person: the result text names the pick as
+        Xod's guess and names the matches not picked. Approval waits
+        never reach here (they return earlier in _supervise_pause) and
+        are never auto-answered."""
+        raw = task.get("evidence_json")
+        try:
+            data = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            data = None
+        entries = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        payload = None
+        for entry in entries:  # the queue's own tag for a locate payload first
+            if isinstance(entry, dict) and entry.get("tool") == "locate_files":
+                p = entry.get("payload")
+                if isinstance(p, dict) and p.get("status") == "ask" and p.get("candidates"):
+                    payload = p
+                    break
+        if payload is None:
+            for entry in entries:
+                p = entry.get("payload") if isinstance(entry, dict) else None
+                if isinstance(p, dict) and p.get("status") == "ask" and p.get("candidates"):
+                    payload = p
+                    break
+        if payload is None:
+            return False
+        cands = [c for c in payload["candidates"] if isinstance(c, dict) and c.get("path")]
+        if not cands:
+            return False
+        # The strongest match: the highest locate score; the payload's
+        # own order breaks ties (it arrives ranked).
+        chosen = max(enumerate(cands),
+                     key=lambda t: (float(t[1].get("score") or 0), -t[0]))[1]
+        finish = getattr(self.queue, "_finish", None)
+        if not callable(finish):
+            return False
+        from app.services import decisive_evidence
+        found = dict(payload)
+        found["status"] = "found"
+        found["candidates"] = [chosen]
+        found.pop("question", None)
+        block = decisive_evidence.render_locate(found)
+        if not block or "Not found" in block:
+            block = (f"**{chosen.get('name') or 'file'}**\n"
+                     f"   Path: {chosen.get('path') or ''}")
+        others = [c for c in cands if c is not chosen]
+        note = (f"Nobody answered this question within {int(waited)} seconds, so Xod "
+                f"answered it itself with the strongest match, per the standing rule "
+                f"that Xod guesses the strongest match and keeps moving: "
+                f"**{chosen.get('name') or 'file'}** at `{chosen.get('path')}`.")
+        if others:
+            note += (" The other close match" + ("es were" if len(others) > 1 else " was")
+                     + ": " + ", ".join(f"**{c.get('name') or 'file'}** at `{c.get('path')}`"
+                                        for c in others)
+                     + ". This pick is Xod's best guess, not the person's answer; "
+                       "if it is the wrong file, that is the pick to correct.")
+        try:
+            finish(sub["task_id"], "done", note + "\n\n" + block,
+                   note="Xod answered its own question (strongest match)")
+        except Exception:
+            logger.exception(f"Mission {mission_id}: the automatic answer of "
+                             f"task {sub['task_id']} raised")
+            return False
+        logger.warning(f"Mission {mission_id}: step {sub['idx'] + 1} ({sub['title']}) "
+                       f"sat waiting {int(waited)}s on a question nobody answered; "
+                       f"Xod picked the strongest match itself: {chosen.get('path')}")
+        try:
+            from app.services import event_log
+            event_log.emit("mission.auto_answer", actor="missions",
+                           ids={"mission_id": mission_id, "task_id": sub["task_id"]},
+                           payload={"question": payload.get("question"),
+                                    "picked": chosen.get("path"),
+                                    "candidates": [c.get("path") for c in cands],
+                                    "waited_sec": int(waited)})
+        except Exception:
+            pass
+        return True
 
     def _fail_paused_wedge(self, mission_id: str, sub: Dict[str, Any], task: Dict[str, Any],
                            waited: float, resume_failed: bool) -> None:
