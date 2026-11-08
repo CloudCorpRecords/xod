@@ -80,6 +80,18 @@ _START_RE = re.compile(r"^\s*(?:ok(?:ay)?[,.!]?\s*)?(?:please\s+)?(?:proceed|sta
 _DO_RE = re.compile(r"\b(?:make|create|write|build|set ?up|code|generate|fix|debug)\b[^.?!]{0,80}?\b(?:script|program|cli|command[- ]line tool|"
                     r"bot|scraper|cron job|config(?:uration)?|csv|spreadsheet|json file|dotfiles?)\b"
                     r"|\bthen (?:run|test|execute) (?:it|them)\b", re.I)
+# A dictated file write: a named file whose contents are dictated word for
+# word ("Create the file at /path with exact text: ...", the exact words a
+# mission step's assembled request uses, or in plain words "a file
+# containing exactly ..."). That is a job on the computer, not a question
+# for the planner: left to deliberation, this exact request was answered
+# with a prose refusal and no tool ever ran, so the write step of two
+# missions finished with zero tool calls and no file (b4cb8ea060 and
+# a09cc20b6e, 2026-11-08). The noun list in _DO_RE names scripts, csv and
+# json files but not the plain text file a proof step writes.
+_FILE_JOB_RE = re.compile(r"\b(?:create|write|make|save)\b[^?!]{0,80}?\bfile\b[^?!]{0,120}?\bwith exact text\b"
+                          r"|\b(?:create|write|make)\b[^?!]{0,100}?\bcontaining exactly\b"
+                          r"|\b(?:create|write|make|save)\b[^?!]{0,80}?\bcontents are exactly\b", re.I)
 # "Go through the websites about them and bring me the info": reading pages, not one search.
 _GATHER_RE = re.compile(r"\b(?:go (?:through|thru|thur)|visit|read|click (?:through|around)|dig (?:into|through|deeper)|look through|"
                         r"open up|check out)\b[^.?!]{0,50}?\b(?:websites?|web ?pages?|sites|pages|links|articles|sources|them|each one|"
@@ -149,7 +161,7 @@ def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
     from app.agent import builder
     if builder.wants_build(q):
         return None
-    if _DO_RE.search(q):
+    if _DO_RE.search(q) or _FILE_JOB_RE.search(q):
         return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
     if _SETUP_RE.search(q) and _URL_RE.search(q):
         return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
