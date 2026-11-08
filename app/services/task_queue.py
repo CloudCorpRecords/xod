@@ -1704,6 +1704,11 @@ class TaskQueue:
 
     def _finish(self, task_id: str, status: str, report: str, note: str, **fields: Any) -> None:
         fields.pop("result", None)  # the report argument wins
+        # A finished task is not waiting for anything: clear the whole
+        # waiting state, not just the kind (on the shipped tree the
+        # detail and a stale next_action outlived the task's end).
+        fields.setdefault("waiting_detail", None)
+        fields.setdefault("next_action", None)
         self._update(task_id, note=note, status=status, result=report, finished_at=time.time(),
                      waiting_kind=None, now="Done" if status == "done" else "Stopped", **fields)
         t = self.get(task_id)
