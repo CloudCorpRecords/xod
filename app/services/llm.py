@@ -844,11 +844,11 @@ class LLMService:
             # Return curated serverless catalog if offline or pre-key
             return [
                 {"id": "accounts/fireworks/models/glm-5p3-flash", "name": "GLM 5.3 Flash (320B, 1M Context, Vision, Fast) - Recommended", "is_loaded": True},
-                {"id": "accounts/fireworks/models/llama-v3p3-70b-instruct", "name": "Llama 3.3 70B Instruct", "is_loaded": True},
-                {"id": "accounts/fireworks/models/deepseek-v3", "name": "DeepSeek V3 (671B MoE)", "is_loaded": True},
-                {"id": "accounts/fireworks/models/deepseek-r1", "name": "DeepSeek R1 (Reasoning)", "is_loaded": True},
-                {"id": "accounts/fireworks/models/qwen2p5-72b-instruct", "name": "Qwen 2.5 72B Instruct", "is_loaded": True},
-                {"id": "accounts/fireworks/models/llama-v3p2-11b-vision-instruct", "name": "Llama 3.2 11B Vision", "is_loaded": True}
+                {"id": "accounts/fireworks/models/deepseek-v4p1-flash-1017", "name": "DeepSeek V4.1 Flash 1017 (1M Context, Fast, Cheap)", "is_loaded": True},
+                {"id": "accounts/fireworks/models/minimax-m3p1-flash", "name": "MiniMax M3.1 Flash (1M Context, Fast, Cheap)", "is_loaded": True},
+                {"id": "accounts/fireworks/models/deepseek-v4p1-flash", "name": "DeepSeek V4.1 Flash (1M Context)", "is_loaded": True},
+                {"id": "accounts/fireworks/models/minimax-m3", "name": "MiniMax M3 (512K Context)", "is_loaded": True},
+                {"id": "accounts/fireworks/models/kimi-k3", "name": "Kimi K3 (1M Context, Vision)", "is_loaded": True}
             ]
 
         info = self._build_endpoint(active_provider, key_profile_id=key_profile_id)
