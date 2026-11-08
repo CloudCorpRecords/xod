@@ -133,6 +133,20 @@ def _conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(DB_PATH), timeout=10)
     c.row_factory = sqlite3.Row
+    # WAL's standard pairing (Tier 6 load work, 2026-11-08): under WAL,
+    # synchronous=FULL fsyncs on EVERY commit, and this database is
+    # written synchronously on the event loop for every progress line,
+    # plan save and state change. Under three concurrent tasks those
+    # fsyncs serialized into seconds of loop stall (measured: ~25 ms
+    # per commit on this machine's disk, loop lag p95 ~1.9 s under the
+    # Tier 6 three-task shape). NORMAL fsyncs at WAL checkpoints
+    # instead: an app crash loses nothing, an OS crash can drop the
+    # most recent writes, and task state is re-verified against the
+    # disk effects it describes before anything is called done.
+    try:
+        c.execute("PRAGMA synchronous = NORMAL")
+    except sqlite3.DatabaseError:
+        pass
     return c
 
 
@@ -1615,7 +1629,11 @@ class TaskQueue:
         mission = sb.latest_mission if (sb.latest_mission or {}).get("started_at", 0) >= started - 1 else None
         problems: List[str] = []
         if not mission and task_id not in self._cancel_requested:
-            problems = self._verify_file_effects(task, started)
+            # Verification runs declared commands (subprocess, up to the
+            # run timeout) and reads the disk: it belongs off the event
+            # loop, where a long check froze every other task and the
+            # HTTP surface with it (Tier 6 load work, 2026-11-08).
+            problems = await asyncio.to_thread(self._verify_file_effects, task, started)
             if problems:
                 self._update(task_id, note="The first attempt did not check out; running it again",
                              now="Checking the result before finishing")
@@ -1630,7 +1648,7 @@ class TaskQueue:
                         payloads = payloads2
                 except Exception:
                     logger.exception(f"Task {task_id} verification retry crashed")
-                problems = self._verify_file_effects(task, started)
+                problems = await asyncio.to_thread(self._verify_file_effects, task, started)
 
         self._running_id = None
         if task_id in self._cancel_requested:
@@ -1669,7 +1687,7 @@ class TaskQueue:
         common = {"mission_json": snapshot, "result": report, "next_action": None}
 
         if status == "completed":
-            problems = self._verify_file_effects(task, started)
+            problems = await asyncio.to_thread(self._verify_file_effects, task, started)
             if problems:
                 self._finish(task_id, "failed",
                              f"{report}\n\nNot finished: {'; '.join(problems)}".strip(),

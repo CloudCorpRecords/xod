@@ -889,7 +889,12 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                     job_problems.append(f"{u['tool']} broke off and did not land ({u['evidence']}); it may be retried once")
                 else:
                     job_problems.append(f"{u['tool']} outcome is still UNKNOWN ({u['evidence']}); not retried blindly")
-            problems = q._verify_file_effects({"id": task_id, "request": step["text"]}, began)
+            # Off the loop: a step's verification can execute a declared
+            # command (subprocess, up to the run timeout); run inline it
+            # froze every other task and the HTTP surface for its whole
+            # duration (Tier 6 load work, 2026-11-08).
+            problems = await asyncio.to_thread(q._verify_file_effects,
+                                               {"id": task_id, "request": step["text"]}, began)
             own = None if step.get("parallel") else _self_report_problem(step["text"], report)
             if own and jobs and not job_problems:
                 # The agent could not see the end; the orchestrator did: every job it started
