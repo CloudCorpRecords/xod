@@ -346,6 +346,15 @@ def scan_inbox(store: Dict[str, Any]) -> bool:
             continue
         conn = store["connections"].get(offer_id)
         if conn is None:
+            exp_ts = _parse_iso(
+                (rec.get("offer") or {}).get("expires_at") or "")
+            if exp_ts and _now() > exp_ts:
+                # An expired offer is terminal for that offer: a
+                # late hello does not connect it. The Muse side
+                # refuses expired offers at verify time too; this
+                # keeps the Xod side honest when a stale hello
+                # lands in the inbox anyway.
+                continue
             store["connections"][offer_id] = {
                 "offer_id": offer_id,
                 "muse": hello.get("muse") or {},
