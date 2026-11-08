@@ -717,7 +717,14 @@ def _self_report_problem(step_text: str, report: str) -> Optional[str]:
     from app.services import missions
     from app.services import task_queue as TQ
     if TQ._claimed_file_effects(step_text) or TQ._claimed_run_effects(step_text, []):
-        return None
+        # Judged by the disk, unless a declared input is missing: then the
+        # disk has nothing honest to judge the output against, and the
+        # report's own words are evidence again. Without this, a step that
+        # admits its input file is missing still completes, because the
+        # output claim silences the report and the disk check never models
+        # inputs (Tier 6 leg C, defect D1).
+        if all(p.exists() for p in TQ._claimed_input_effects(step_text)):
+            return None
     if not (report or "").strip():
         return "the step ended without any report of what it did"
     report = report.replace("\u2019", "'").replace("\u2018", "'")   # models write curly apostrophes
