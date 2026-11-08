@@ -919,6 +919,7 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 pass
             step["result"] = (report or "")[:4000]
             step["finished_at"] = time.time()
+            _log_slow_step(task_id, step, k, began, blocked=bool(problems))
             if problems:
                 step["status"] = "blocked"
                 step["blocker"] = "; ".join(problems)
@@ -941,6 +942,43 @@ async def run_stepwise(q: Any, task_id: str) -> None:
         esc = q._escalations.pop(task_id, None)
         if esc is not None and not esc.done() and esc is not asyncio.current_task():
             esc.cancel()
+
+
+# A step slower than this is named in the log (Tier 6 D4: the stalls
+# under load could not be attributed to any step because nothing
+# recorded per-step durations). missions.py keeps the same threshold
+# for mission steps; keep the two in step.
+SLOW_STEP_MS = 1000
+
+
+def _log_slow_step(task_id: str, step: Dict[str, Any], k: int, began: float,
+                   blocked: bool) -> None:
+    """Slow-step record: a step whose run took over SLOW_STEP_MS is
+    logged (warning + a task.slow_step event) with its duration and
+    the tools it used, so a freeze under load names the step that was
+    running. Fast steps record nothing, and a failure to record never
+    breaks the run."""
+    try:
+        dur_ms = int((time.time() - began) * 1000)
+        if dur_ms <= SLOW_STEP_MS:
+            return
+        tools: List[str] = []
+        try:
+            from app.services import activity
+            seen = {e.get("tool") for e in activity.entries_for_origin(
+                f"task:{task_id}", since=began - 0.5)}
+            tools = sorted(t for t in seen if t)
+        except Exception:
+            pass
+        logger.warning(f"slow step: task {task_id} step {k} ({step.get('id')}) took "
+                       f"{dur_ms} ms; tools: {', '.join(tools) or 'none recorded'}")
+        from app.services import event_log
+        event_log.emit("task.slow_step", actor="orchestrator", ids={"task_id": task_id},
+                       payload={"step_id": step.get("id"), "step_index": k,
+                                "duration_ms": dur_ms, "tools": tools,
+                                "blocked": blocked})
+    except Exception:
+        pass
 
 
 def _mission_mark() -> Tuple[int, Any, int]:

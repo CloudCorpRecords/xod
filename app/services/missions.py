@@ -251,6 +251,55 @@ def _has_decisive_evidence(task: Dict[str, Any]) -> bool:
     return isinstance(ev, list) and bool(ev)
 
 
+# A step slower than this is named in the log (Tier 6 D4: the stalls
+# under load could not be attributed to any step because nothing
+# recorded per-step durations). orchestrator.py keeps the same
+# threshold for stepwise tasks; keep the two in step.
+SLOW_STEP_MS = 1000
+
+
+def _log_slow_subtask(mission_id: str, sub: Dict[str, Any], task: Optional[Dict[str, Any]],
+                      outcome: Dict[str, Any]) -> None:
+    """Slow-step record: a mission step whose dispatch-to-outcome run
+    took over SLOW_STEP_MS is logged (warning + a mission.slow_step
+    event) with its duration and the tools its task used, so a freeze
+    under load names the step that was running. Fast steps record
+    nothing, and a failure to record never breaks the run."""
+    try:
+        started = sub.get("started_at")
+        if not started:
+            # The driving subtask dict predates dispatch; the persisted
+            # row carries the dispatch stamp.
+            stored = next((s for s in list_subtasks(mission_id) if s["id"] == sub.get("id")), None)
+            started = (stored or {}).get("started_at")
+        if not started:
+            return
+        dur_ms = int((time.time() - float(started)) * 1000)
+        if dur_ms <= SLOW_STEP_MS:
+            return
+        tools: List[str] = []
+        raw = (task or {}).get("agent_steps")
+        try:
+            steps = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        except Exception:
+            steps = []
+        if isinstance(steps, list):
+            tools = sorted({str(s.get("tool") or s.get("name")) for s in steps
+                            if isinstance(s, dict) and (s.get("tool") or s.get("name"))})
+        logger.warning(f"slow step: mission {mission_id} step {sub.get('idx', -1) + 1} "
+                       f"({sub.get('id')}) took {dur_ms} ms; tools: "
+                       f"{', '.join(tools) or 'none recorded'}")
+        from app.services import event_log
+        event_log.emit("mission.slow_step", actor="missions",
+                       ids={"mission_id": mission_id, "task_id": sub.get("task_id")},
+                       payload={"step_id": sub.get("id"),
+                                "step_index": sub.get("idx", -1) + 1,
+                                "duration_ms": dur_ms, "tools": tools,
+                                "status": outcome.get("status")})
+    except Exception:
+        pass
+
+
 def _run_effect_problem(eff: Dict[str, Any]) -> Optional[str]:
     """Re-executes one declared run effect through the queue's own run
     check; returns its problem text, or None when the exit code is the
@@ -1669,6 +1718,7 @@ class MissionRunner:
         _save_subtask(sub["id"], status=outcome["status"], claimed=outcome["claimed"],
                       verified_status=outcome["verified_status"], evidence=outcome["evidence"],
                       finished_at=time.time())
+        _log_slow_subtask(mission_id, sub, task, outcome)
         # Fix round 5: if a stale peer process already finished this
         # mission from its own older composition of this same outcome,
         # the verdict of record is reconciled with the fresh outcome
