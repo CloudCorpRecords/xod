@@ -716,7 +716,7 @@ Break it into a short list of subtasks the agent can do one at a time, in order.
 - "instruction": exactly what to do, in one or two sentences.
 - "expected_effects": the files this subtask will create, modify or delete, so the result can be checked on disk afterwards. Each effect is {{"kind": "create", "path": "/absolute/path", "content": null}} where kind is "create", "modify" or "delete", path is absolute or starts with ~/, and content is the exact file contents ONLY when the job dictates them word for word, otherwise null. An effect can instead prove that produced code works: {{"kind": "run", "command": "a single command line", "cwd": "/absolute/path", "expect_exit": 0}} where command is one plain command with no shell chaining, pipes or redirection, cwd is the directory the command runs from, and expect_exit (which defaults to 0) is the exit code that counts as success. If a subtask changes no files (looking something up, answering, deciding), expected_effects is [].
 - "inputs": what this subtask must be given to work. Each input is {{"source": "goal"}} (the mission goal itself, which carries any evidence pack or brief the user supplied), {{"source": "prior_step", "ref": "1"}} (the reported result of an earlier step, by its number), or {{"source": "file", "ref": "/absolute/path"}} (a file whose contents the step needs). The goal is always delivered; declare prior_step or file inputs whenever the step's work depends on them. A step whose declared input cannot be delivered never starts.
-- "tools": the tools this subtask needs, by name (for example "computer_write_file" for a step that writes a file, "computer_read_file" for one that only reads). A step whose declared file effects need a tool its "tools" list leaves out never starts.
+- "tools": the tools this subtask needs, by their exact names (for example "computer_write_file" for a step that writes a file, "computer_read_file" for one that only reads, "computer_manage_file" or "fs_create_folder" for a step that creates a directory, "computer_manage_file" for one that deletes a file). Do not invent tool names. A step whose declared file effects need a tool its "tools" list leaves out never starts.
 - When a subtask creates a test file or an executable artifact, give it a "run" effect that runs what it made: run the test file with the project's test runner, or invoke the artifact harmlessly, with cwd set to the directory the subtask creates the file in. Creating a file is not proof it works; the run is the proof.
 
 Between 2 and 8 subtasks. Later subtasks may rely on earlier ones; nothing runs at the same time.
@@ -1046,8 +1046,55 @@ def _empty_declared_content_problem(subtask: Dict[str, Any]) -> Optional[str]:
 # unequipped by the subtask itself.
 
 _FILE_WRITE_TOOLS = ("computer_write_file", "fs_write_workspace_file")
-_DIR_WRITE_TOOLS = ("computer_manage_file", "fs_create_folder", "computer_write_file")
+_EDIT_TOOLS = ("computer_edit_file",)
+_DIR_WRITE_TOOLS = ("computer_manage_file", "fs_create_folder", "computer_write_file",
+                    "fs_write_workspace_file")
 _DELETE_TOOLS = ("computer_manage_file",)
+
+# Planner-facing names for the file-effect tools. The executor canonicalizes
+# model tool names through its alias map (app/agent/researcher.py
+# _canonicalize_tool_name); a declared capability contract is judged by the
+# names its tools would actually run as, so a planner that reaches for
+# computer_create_directory (mission-baba238e08, 2026-11-08: the step was
+# stopped at assembly for a capability the step genuinely had) is judged
+# against computer_manage_file, not against a string it never wrote.
+# Mirrors the file-effect family of the executor's map; keep the two in step.
+_TOOL_NAME_ALIASES = {
+    "computer_create_directory": "computer_manage_file",
+    "create_directory": "computer_manage_file",
+    "make_directory": "computer_manage_file",
+    "computer_create_folder": "computer_manage_file",
+    "computer_mkdir": "computer_manage_file",
+    "create_folder": "fs_create_folder",
+    "mkdir": "fs_create_folder",
+    "computer_create_file": "computer_write_file",
+    "create_file": "computer_write_file",
+    "write_file": "computer_write_file",
+    "computer_delete_file": "computer_manage_file",
+    "delete_file": "computer_manage_file",
+    "computer_remove_file": "computer_manage_file",
+    "remove_file": "computer_manage_file",
+}
+
+
+def _canonical_tool_name(name: str) -> str:
+    n = (name or "").strip().lower()
+    return _TOOL_NAME_ALIASES.get(n, n)
+
+
+def _effect_tools(subtask: dict, eff: dict):
+    """(tools that can perform this effect, what it does in words) — the one
+    mapping both gates judge against: the declared-contract check below and
+    the dispatch-time availability check (_write_tool_problem). A modify is
+    performable by the edit tool as well as the whole-file writers."""
+    kind = (eff.get("kind") or "").strip().lower()
+    if kind == "delete":
+        return _DELETE_TOOLS, "delete"
+    if kind == "create" and _declares_directory(subtask):
+        return _DIR_WRITE_TOOLS, "create the directory"
+    if kind == "modify":
+        return _FILE_WRITE_TOOLS + _EDIT_TOOLS, "write the file"
+    return _FILE_WRITE_TOOLS, "write the file"
 
 
 def _available_tool_names(request: str) -> List[str]:
@@ -1089,12 +1136,7 @@ def _write_tool_problem(subtask: Dict[str, Any], request: str) -> Optional[str]:
         return None
     names = set(_available_tool_names(request))
     for eff in effects:
-        if eff.get("kind") == "delete":
-            needed, what = _DELETE_TOOLS, "delete"
-        elif eff.get("kind") == "create" and _declares_directory(subtask):
-            needed, what = _DIR_WRITE_TOOLS, "create the directory"
-        else:
-            needed, what = _FILE_WRITE_TOOLS, "write the file"
+        needed, what = _effect_tools(subtask, eff)
         if not any(n in names for n in needed):
             return (f"Assembly stopped this step before any task was created: subtask "
                     f"\"{subtask.get('title', '')}\" must {what} {eff.get('path', '')}, "
@@ -1124,21 +1166,22 @@ def _contract_tool_problem(subtask: Dict[str, Any]) -> Optional[str]:
     tools = contract.get("tools")
     if tools is None:
         return None
-    names = set(tools)
+    declared = {str(t) for t in tools if str(t).strip()}
+    # Judge the contract by the names its tools would actually run as: the
+    # executor canonicalizes aliases, so a declared computer_create_directory
+    # counts as the directory tool it names, not as an unknown string. The
+    # problem text still quotes what the planner actually declared.
+    names = declared | {_canonical_tool_name(t) for t in declared}
     for eff in subtask.get("expected_effects") or []:
-        if eff.get("kind") == "delete":
-            needed, what = _DELETE_TOOLS, "delete"
-        elif eff.get("kind") == "create" and _declares_directory(subtask):
-            needed, what = _DIR_WRITE_TOOLS, "create the directory"
-        elif eff.get("kind") in ("create", "modify"):
-            needed, what = _FILE_WRITE_TOOLS, "write the file"
+        if eff.get("kind") in ("create", "modify", "delete"):
+            needed, what = _effect_tools(subtask, eff)
         else:
             continue
         if not any(n in names for n in needed):
             return (f"Assembly stopped this step before any task was created: subtask "
                     f"\"{subtask.get('title', '')}\" must {what} {eff.get('path', '')}, "
                     f"but its declared capability contract (tools: "
-                    f"{', '.join(sorted(names)) or 'none'}) includes none of the tools "
+                    f"{', '.join(sorted(declared)) or 'none'}) includes none of the tools "
                     f"that could do it ({', '.join(needed)}). A step is dispatched only "
                     f"to a flow its contract equips; the contract and the effects must "
                     f"be fixed in the plan, not worked around at run time.")
