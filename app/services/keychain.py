@@ -31,7 +31,7 @@ import os
 import sys
 import threading
 import time
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 import keyring
 from keyring import errors  # noqa: F401  (callers catch keyring.errors via this module)
@@ -50,9 +50,59 @@ _vault: Optional[Dict[str, object]] = None
 _problem: Optional[str] = None
 _unreadable_until: float = 0.0
 
+# A platform key store can block forever when it wants an interactive unlock nobody
+# will answer — a locked Secret Service collection on Linux (the 2026-11-08 Steam Deck
+# hang: Xod restarted while the KDE wallet was locked and its import never returned, so
+# it never bound its port), or a Keychain prompt on an unattended Mac. Starting Xod must
+# never wait on that prompt, so every raw keyring call gets KEYRING_TIMEOUT seconds;
+# past that the vault counts as unreadable — the same degraded path as a backend that
+# fails fast with NoKeyringError — and the store is left alone for KEYRING_COOLDOWN
+# seconds before anything tries it again, so the paths that poll problem() don't stall
+# either. "Try again" (reset_cache) clears the cooldown. A store that answers in time
+# behaves exactly as before.
+KEYRING_TIMEOUT = float(os.environ.get("XOD_KEYRING_TIMEOUT", "5"))
+KEYRING_COOLDOWN = 60.0
+_keyring_down_until = 0.0
+
 
 class Unreadable(errors.KeyringError):
     """The vault is there but Xod can't read it now; nothing may be written over it."""
+
+
+class KeyringTimeout(errors.KeyringError):
+    """The platform key store didn't answer in time (locked, or waiting on a prompt)."""
+
+
+def _call_keyring(fn: Callable, *args):
+    """fn(*args) against the platform key store, with a hard timeout.
+
+    The call runs on a daemon thread: if the store is parked on an unlock prompt the
+    thread stays there (it can still land if the user unlocks later), but the caller is
+    released after KEYRING_TIMEOUT seconds with KeyringTimeout instead of hanging the
+    whole process. Callers all hold _lock, so timed-out calls never pile up in parallel.
+    """
+    global _keyring_down_until
+    if time.monotonic() < _keyring_down_until:
+        raise KeyringTimeout("the key store didn't answer a moment ago and is being left alone for now")
+    box: Dict[str, object] = {}
+
+    def run() -> None:
+        try:
+            box["value"] = fn(*args)
+        except BaseException as e:  # ferried back and re-raised in the calling thread
+            box["error"] = e
+
+    worker = threading.Thread(target=run, daemon=True, name="xod-keyring")
+    worker.start()
+    worker.join(KEYRING_TIMEOUT)
+    if worker.is_alive():
+        _keyring_down_until = time.monotonic() + KEYRING_COOLDOWN
+        logger.warning(f"Key store did not answer within {KEYRING_TIMEOUT:g}s; saved keys count as "
+                       "unavailable until it does (locked keyring?)")
+        raise KeyringTimeout(f"key store did not answer within {KEYRING_TIMEOUT:g}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def _key(service: str, account: str) -> str:
@@ -66,13 +116,17 @@ def _load() -> Dict[str, object]:
         if _problem and now < _unreadable_until:
             raise Unreadable(_problem)
         try:
-            raw = keyring.get_password(SERVICE, ACCOUNT)
+            raw = _call_keyring(keyring.get_password, SERVICE, ACCOUNT)
             if raw and raw.startswith('{"pieces":'):
                 n = int(json.loads(raw)["pieces"])
-                raw = "".join(keyring.get_password(SERVICE, f"{ACCOUNT}.{i}") or "" for i in range(1, n + 1))
+                raw = "".join(_call_keyring(keyring.get_password, SERVICE, f"{ACCOUNT}.{i}") or "" for i in range(1, n + 1))
         except Exception as e:
-            _problem = (f"macOS didn't let Xod read its saved keys ({type(e).__name__}). Choose Try again, then "
-                        "Always Allow when macOS asks.")
+            if isinstance(e, KeyringTimeout):
+                _problem = ("Xod's saved keys didn't answer in time — the key store looks locked. "
+                            "Unlock it, then choose Try again.")
+            else:
+                _problem = (f"macOS didn't let Xod read its saved keys ({type(e).__name__}). Choose Try again, then "
+                            "Always Allow when macOS asks.")
             _unreadable_until = time.monotonic() + UNREADABLE_COOLDOWN_SEC
             logger.warning(f"Keychain read failed: {type(e).__name__}: {e}")
             raise Unreadable(_problem) from e
@@ -105,7 +159,7 @@ def problem() -> Optional[str]:
 def set_item(service: str, account: str, value: str) -> None:
     """keyring.set_password, except that on a Mac an existing item is changed in place (see the top of this file)."""
     if sys.platform != "darwin" or not hasattr(keyring.get_keyring(), "keychain"):
-        keyring.set_password(service, account, value)
+        _call_keyring(keyring.set_password, service, account, value)
         return
     from keyring.backends.macOS import api
     update = api._sec.SecItemUpdate
@@ -143,15 +197,15 @@ def _write_vault() -> None:
         return
     pieces = [data[i:i + CHUNK] for i in range(0, len(data), CHUNK)] or [""]
     for i, piece in enumerate(pieces, 1):
-        keyring.set_password(SERVICE, f"{ACCOUNT}.{i}", piece)
+        _call_keyring(keyring.set_password, SERVICE, f"{ACCOUNT}.{i}", piece)
     try:
-        old = json.loads(keyring.get_password(SERVICE, ACCOUNT) or "{}").get("pieces", 0)
+        old = json.loads(_call_keyring(keyring.get_password, SERVICE, ACCOUNT) or "{}").get("pieces", 0)
     except (ValueError, AttributeError):
         old = 0
-    keyring.set_password(SERVICE, ACCOUNT, json.dumps({"pieces": len(pieces)}))
+    _call_keyring(keyring.set_password, SERVICE, ACCOUNT, json.dumps({"pieces": len(pieces)}))
     for i in range(len(pieces) + 1, int(old) + 1):     # a shorter vault than before: remove the leftover pieces
         try:
-            keyring.delete_password(SERVICE, f"{ACCOUNT}.{i}")
+            _call_keyring(keyring.delete_password, SERVICE, f"{ACCOUNT}.{i}")
         except Exception:
             pass
 
@@ -169,7 +223,7 @@ def get_password(service: str, account: str) -> Optional[str]:
             return None
         # First time this one is asked for: bring over the old item if there is one.
         try:
-            old = keyring.get_password(service, account)
+            old = _call_keyring(keyring.get_password, service, account)
         except Exception as e:
             logger.warning(f"Keychain read failed for {account}: {type(e).__name__}")
             return None
@@ -211,7 +265,7 @@ def _drop_legacy(service: str, account: str) -> bool:
     if not LEGACY:
         return False
     try:
-        keyring.delete_password(service, account)
+        _call_keyring(keyring.delete_password, service, account)
         return True
     except Exception:
         return False
@@ -219,6 +273,6 @@ def _drop_legacy(service: str, account: str) -> bool:
 
 def reset_cache() -> None:
     """Forget what's in memory so the next call reads the Keychain again (Try again, and tests)."""
-    global _vault, _problem, _unreadable_until
+    global _vault, _problem, _unreadable_until, _keyring_down_until
     with _lock:
-        _vault, _problem, _unreadable_until = None, None, 0.0
+        _vault, _problem, _unreadable_until, _keyring_down_until = None, None, 0.0, 0.0
