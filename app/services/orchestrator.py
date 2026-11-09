@@ -1228,6 +1228,14 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                     if any(i["status"] == "pending" for i in items):
                         q._progress(task_id, f"✗ Step {k} blocked ({step['blocker'][:100]}); continuing independent steps")
                         continue
+                if fatal_key_err:
+                    # A missing API key cannot be supplied by an answer
+                    # here (Argon keyless-probe contract, check 4a): the
+                    # task fails honestly instead of waiting on the person.
+                    save_plan(task_id, items, instr)
+                    q._finish(task_id, "failed", _final_report(items) + f"\n\nStopped at step {k}: {step['blocker']}",
+                              note="A step did not check out")
+                    return
                 step["waiting"] = True
                 save_plan(task_id, items, instr)
                 _pause_blocked_on_person(q, task_id, items, step, k, problems)
