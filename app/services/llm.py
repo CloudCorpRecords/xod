@@ -128,6 +128,34 @@ class EngineUnresponsive(Exception):
     """The built-in engine stopped answering and a restart didn't help."""
 
 
+class StreamStalled(Exception):
+    """A local model server (LM Studio, Ollama, ...) sent no output for too long. Before this,
+    only the built-in engine had a quiet watchdog (_watched); every other local provider's
+    stream waited out the raw httpx read timeout of 300 s, so one wedged generation burned
+    five minutes before the step could fail and retry (long-form Run 4, 2026-11-08)."""
+
+    def __init__(self, quiet: float):
+        super().__init__(f"no output for {quiet:.0f}s")
+        self.quiet = quiet
+
+
+def _local_stall_limits() -> Tuple[float, float]:
+    """(first-output, between-output) quiet limits in seconds for local providers other than
+    the built-in engine. First output gets the longer window: a local model reading a big
+    prompt (prefill) is quiet legitimately, while a generation that has started and then
+    goes quiet is wedged. Env-overridable for tests and weak hardware."""
+    import os
+    try:
+        first = float(os.environ.get("XOD_LOCAL_STALL_FIRST_SEC", "180"))
+    except ValueError:
+        first = 180.0
+    try:
+        between = float(os.environ.get("XOD_LOCAL_STALL_SEC", "90"))
+    except ValueError:
+        between = 90.0
+    return first, between
+
+
 def _notice(text: str) -> None:
     cb = engine_notice.get()
     if cb:
@@ -171,13 +199,28 @@ async def _open_stream(client: httpx.AsyncClient, url: str, payload: Dict[str, A
 
 
 async def _lines(response: httpx.Response, info: Dict[str, Any]) -> AsyncGenerator[str, None]:
-    """response.aiter_lines(), with each wait watched (see _watched)."""
+    """response.aiter_lines(), with each wait watched (see _watched). For local providers
+    other than the built-in engine (which _watched already guards), a quiet wait past the
+    local stall limit raises StreamStalled instead of waiting out the 300 s httpx read
+    timeout: the caller ends the stream as a stall, and whatever the step already landed
+    on disk stays landed for the retry to build on."""
     it = response.aiter_lines()
+    watched_local = info["provider"] in LOCAL_PROVIDERS and info["provider"] != "xod"
+    first_limit, between_limit = _local_stall_limits()
+    seen = False
     while True:
         try:
-            line = await _watched(it.__anext__(), info)
+            if watched_local:
+                try:
+                    line = await asyncio.wait_for(it.__anext__(),
+                                                  timeout=between_limit if seen else first_limit)
+                except asyncio.TimeoutError:
+                    raise StreamStalled(between_limit if seen else first_limit)
+            else:
+                line = await _watched(it.__anext__(), info)
         except StopAsyncIteration:
             return
+        seen = True
         yield line
 
 
@@ -1362,6 +1405,9 @@ class LLMService:
                         return
                     restarted, engine_start = True, local_engine.started_at
                     continue
+                except StreamStalled as e:
+                    yield {"type": "error", "content": f"{info['provider']} stopped responding (no output for {e.quiet:.0f}s)."}
+                    return
                 except httpx.ReadTimeout:
                     yield {"type": "error", "content": f"{info['provider']} stopped responding (no output for {LLM_TIMEOUT.read:.0f}s)."}
                     return
@@ -1534,6 +1580,9 @@ class LLMService:
                         return
                     restarted, engine_start = True, local_engine.started_at
                     continue
+                except StreamStalled as e:
+                    yield {"type": "error", "content": f"{info['provider']} stopped responding (no output for {e.quiet:.0f}s)."}
+                    return
                 except httpx.ReadTimeout:
                     yield {"type": "error", "content": f"{info['provider']} stopped responding (no output for {LLM_TIMEOUT.read:.0f}s)."}
                     return

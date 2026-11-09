@@ -295,6 +295,154 @@ def _sanitize_and_shape_steps(request: str, steps: List[Any]) -> List[Any]:
     return sanitized[:MAX_STEPS]
 
 
+MAX_ARTIFACT_SUBSTEPS = 8
+
+
+def _raw_path_in_text(text: str, path: Any) -> Optional[Tuple[str, int, int]]:
+    """The raw path token in `text` that resolves to `path` (a claim path from
+    task_queue._claimed_file_effects, which expands ~), as (raw, start, end)."""
+    import os
+    from app.services import task_queue as TQ
+    for m in TQ._PATH_RE.finditer(text or ""):
+        raw = m.group(0).rstrip(".,;:)`")
+        if not raw or raw in ("~", "/"):
+            continue
+        try:
+            if os.path.normpath(os.path.expanduser(raw)) == os.path.normpath(str(path)):
+                return raw, m.start(), m.start() + len(raw)
+        except Exception:
+            continue
+    return None
+
+
+def _spec_after_path(text: str, end: int) -> str:
+    """The balanced parenthetical immediately following a path in the step text, if any:
+    the shaped build step carries each file's spec that way (".../Info.plist (valid XML
+    plist with NSServices ...)")."""
+    i = end
+    while i < len(text) and text[i] in " \t":
+        i += 1
+    if i >= len(text) or text[i] != "(":
+        return ""
+    depth = 0
+    for j in range(i, len(text)):
+        if text[j] == "(":
+            depth += 1
+        elif text[j] == ")":
+            depth -= 1
+            if depth == 0:
+                return text[i + 1:j].strip()
+    return ""
+
+
+def _artifact_substep_text(step_text: str, claim: Dict[str, Any]) -> Optional[str]:
+    """One single-artifact step text for one write claim of a multi-file step, carrying that
+    file's own spec fragment. Returns None when the resulting text does not claim exactly
+    this one file (the step checker reads claims from the text, so a substep text that
+    still claimed the sibling files would be judged on all of them)."""
+    from app.services import task_queue as TQ
+    found = _raw_path_in_text(step_text, claim["path"])
+    if not found:
+        return None
+    raw, _start, end = found
+    spec = _spec_after_path(step_text, end)
+    tail = (" This is one file of several named by a single larger step; the other files are "
+            "separate substeps and are NOT part of this substep. Create only this file; do "
+            "not create or modify any other file.")
+    candidates = []
+    if spec:
+        candidates.append(f"Create exactly one file: {raw} ({spec})." + tail)
+    candidates.append(f"Create exactly one file: {raw}." + tail)
+    import os
+    for text in candidates:
+        claims = TQ._claimed_file_effects(text)
+        if len(claims) == 1 and claims[0].get("kind") == "write" and \
+                os.path.normpath(str(claims[0]["path"])) == os.path.normpath(str(claim["path"])):
+            return text
+    return None
+
+
+def _multi_file_write_claims(step: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The distinct file-write claims a step's own text makes (empty when the step is not a
+    splittable multi-file step)."""
+    if step.get("parallel") or step.get("substep_of"):
+        return []
+    from app.services import task_queue as TQ
+    claims = [c for c in TQ._claimed_file_effects(str(step.get("text") or ""))
+              if c.get("kind") == "write" and c.get("target") == "file"]
+    seen, out = set(), []
+    import os
+    for c in claims:
+        key = os.path.normpath(str(c["path"]))
+        if key not in seen:
+            seen.add(key)
+            out.append(c)
+    return out if 2 <= len(out) <= MAX_ARTIFACT_SUBSTEPS else []
+
+
+def _maybe_split_step(q: Any, task_id: str, items: List[Dict[str, Any]], instr: List[str],
+                      step: Dict[str, Any]) -> bool:
+    """Splits a step that must produce several files into one plan item per file, so no
+    single model stream has to emit every file (Run 4, 2026-11-08: step 1 streamed 585 s,
+    wrote only Info.plist, and its one retry re-ran the whole 3-file step into a 300 s
+    stall). Each substep is a normal plan item: the step checker judges it on its one file,
+    its artifact ledger entry is recorded when that file lands, and a retry only ever
+    re-runs the one missing file.
+
+    Splits a fresh pending step, or an in-progress step on its retry (retry_pending): on a
+    retry, a claimed file the queue's own file-effect check verifies on disk becomes a
+    completed substep and is never re-run; the rest become pending substeps carrying the
+    failed attempt's note, so their prompts check prior effects before redoing anything.
+    Returns True when the plan changed (the caller re-picks the next step)."""
+    claims = _multi_file_write_claims(step)
+    if not claims:
+        return False
+    is_retry = step.get("status") == "in_progress" and step.pop("retry_pending", False)
+    if step.get("status") == "in_progress" and not is_retry:
+        return False   # a step resumed mid-flight keeps the existing resume semantics
+    step_text = str(step.get("text") or "")
+    sub_texts: List[Optional[str]] = [_artifact_substep_text(step_text, c) for c in claims]
+    if any(t is None for t in sub_texts):
+        if is_retry:
+            step["retry_pending"] = True   # unsplittable: leave the whole-step retry as it was
+        return False
+    subs: List[Dict[str, Any]] = []
+    for claim, sub_text in zip(claims, sub_texts):
+        sub = _item(sub_text, origin="substep")
+        sub["substep_of"] = step["id"]
+        if is_retry:
+            verified = False
+            try:
+                verified = not q._verify_file_effects(
+                    {"id": task_id, "request": f"Create the file {claim['path']}"},
+                    step.get("started_at") or 0)
+            except Exception:
+                verified = False
+            if verified:
+                sub["status"] = "completed"
+                sub["result"] = ("Already on disk and verified when the original step was split "
+                                 "for its retry; not re-run.")
+                sub["artifacts"] = [str(claim["path"])]
+                sub["evidence"] = [f"verified on disk at split: {claim['path']}"]
+                sub["finished_at"] = time.time()
+            else:
+                note = str(step.get("note") or "")
+                sub["note"] = note if note.startswith("first attempt did not check out") else \
+                    "first attempt did not check out: the original multi-file step did not finish"
+                if step.get("started_at"):
+                    sub["prior_started_at"] = step["started_at"]
+        subs.append(sub)
+    idx = next(n for n, i in enumerate(items) if i["id"] == step["id"])
+    items[idx:idx + 1] = subs
+    save_plan(task_id, items, instr, bump=True,
+              why=f"split multi-file step into {len(subs)} single-artifact substeps")
+    _emit("plan.split", task_id, step_id=step["id"], substeps=len(subs),
+          pre_completed=sum(1 for s in subs if s["status"] == "completed"))
+    q._progress(task_id, f"• Splitting a {len(claims)}-file step into {len(subs)} single-file "
+                         f"substeps, one model stream each")
+    return True
+
+
 def _parse_steps(raw: str) -> List[Any]:
     """Steps as text, or {"text", "parallel": [jobs]} for a fan-out of independent read-only jobs."""
     from app.services.llm import parse_llm_json
@@ -1094,6 +1242,8 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 q._finish(task_id, "done" if ok else "failed", _final_report(items),
                           note="Finished" if ok else "Stopped with open steps")
                 return
+            if _maybe_split_step(q, task_id, items, instr, step):
+                continue   # the plan changed under us: re-pick (the first pending substep)
             prior_ops: List[str] = []
             if step["status"] == "in_progress" and step.get("started_at"):
                 # In flight when the run stopped (a restart, a crash, an interrupt): resume it,
@@ -1193,6 +1343,17 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 continue
             step["evidence"] = step_ops + job_evidence
             step_files = _step_written_files(task_id, step.get("started_at") or began)
+            if step_files and step.get("substep_of"):
+                # A substep's ledger entry is exactly its one file: the written-files scan
+                # uses a half-second slack window, which would otherwise absorb a sibling
+                # substep's just-landed file when substeps run back to back.
+                import os
+                from app.services import task_queue as TQ
+                own = {os.path.normpath(str(c["path"]))
+                       for c in TQ._claimed_file_effects(step["text"]) if c.get("kind") == "write"}
+                scoped = [p for p in step_files if os.path.normpath(os.path.expanduser(p)) in own]
+                if scoped:
+                    step_files = scoped
             if step_files:
                 step["artifacts"] = step_files
             try:   # instructions found inside content this step read: recorded by code, reported, never followed
