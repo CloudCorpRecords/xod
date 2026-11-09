@@ -3,6 +3,11 @@ A post office (Agent Mail relay) inside Xod: the same protocol as relay/server.p
 host its own address with no shared post office. services/home_post.py runs it on its own port; it serves only these
 endpoints, never the rest of Xod.
 
+One optional extra, only when the builder passes an enroll intake (a computer's OWN post office, via home_post.py):
+POST /v1/enroll/advertise takes a phone's signed family join ask directly over HTTP (services/phone_enroll.py is
+its only judge — the full pairing gate, unchanged). A shared relay never passes an intake, so the route does not
+exist there.
+
 Differences from a public relay:
 - Only this computer can claim or remove names (requests from 127.0.0.1 / ::1). Anyone who can reach it can look
   names up and drop off sealed mail, which is the point; they can't read anything.
@@ -66,13 +71,21 @@ class Ack(BaseModel):
     ids: List[str]
 
 
+class Advertise(BaseModel):
+    advertisement: Dict[str, Any]
+
+
 def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Callable[[str], bool]] = None,
              on_mail: Optional[Callable[[str], None]] = None,
-             on_paired: Optional[Callable[[str, str, str], None]] = None) -> FastAPI:
+             on_paired: Optional[Callable[[str, str, str], None]] = None,
+             enroll_intake: Optional[Callable[[Dict[str, Any], str], Dict[str, Any]]] = None) -> FastAPI:
     """The post office. domain() is the domain addresses get at registration (this Xod's chosen network name).
     on_mail(name) is told each time mail is left for a name here (this Xod checks at once instead of at its next poll).
     on_paired(address, sign_pub, box_pub) is told when a phone registered with a live pairing code, with the exact
-    keys its signed registration carried, so this Xod can pin them as the person's phone."""
+    keys its signed registration carried, so this Xod can pin them as the person's phone.
+    enroll_intake(advertisement, source_ip) — only a computer's own post office passes one (home_post.py): it
+    judges a phone's enrollment ask handed in over HTTP, source address attached, and its verdict dict is the
+    response. Without one there is no enroll route at all."""
     app = FastAPI(title="Xod Post Office (this computer)", version="1", docs_url=None, redoc_url=None, openapi_url=None)
     lock = threading.Lock()
     hits: Dict[str, deque] = defaultdict(deque)
@@ -133,7 +146,7 @@ def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Cal
     @app.get("/.well-known/xod-relay")
     def about() -> Dict[str, Any]:
         return {"service": "xod-relay", "version": 1, "domain": domain(), "max_envelope_bytes": MAX_ENVELOPE,
-                "expire_days": EXPIRE_DAYS, "self_hosted": True}
+                "expire_days": EXPIRE_DAYS, "self_hosted": True, "enroll_advertise": enroll_intake is not None}
 
     @app.post("/v1/names")
     def register(reg: Registration, request: Request) -> Dict[str, Any]:
@@ -232,5 +245,18 @@ def make_app(db_path: str, domain: Callable[[], str], pair_code_ok: Optional[Cal
             for mid in body.ids[:200]:
                 n += c.execute("DELETE FROM mail WHERE id=? AND name=?", (mid, who)).rowcount
         return {"deleted": n}
+
+    if enroll_intake is not None:
+        @app.post("/v1/enroll/advertise")
+        def enroll_advertise(body: Advertise, request: Request) -> Dict[str, Any]:
+            # Pairing Gap 2 (2026-11-09): the phone hands its signed join ask in
+            # directly instead of over mail, so the transport can evidence what
+            # mail cannot — where the request actually came from. Submission is
+            # not trust: the intake behind this (services/phone_enroll.py, wired
+            # by home_post.py) applies the full pairing gate, and the observed
+            # source address travels with the ask — presence is decided there
+            # from the source, never from anything the advertisement claims.
+            rate_limit(f"enroll:{ip(request)}", 30, 60)
+            return enroll_intake(body.advertisement, ip(request))
 
     return app
