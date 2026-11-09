@@ -1265,3 +1265,22 @@
   font-size: 13px; color: #a1a1aa; white-space: nowrap; text-align: left; }
 .settings-nav-btn:hover { background: rgba(255, 255, 255, 0.05); color: #fff; }
 .settings-nav-btn.is-active { background: rgba(242, 178, 74, 0.14); color: #f5c86e; }
+
+/* Calm mode (html.xod-calm, toggled by mascot.js when the window is hidden,
+   unfocused, or untouched for a minute): the atmospheric background and
+   avatar motion pause instead of repainting forever. */
+html.xod-calm .aurora-orb-1,
+html.xod-calm .aurora-orb-2,
+html.xod-calm .neural-core,
+html.xod-calm .rotating-ring,
+html.xod-calm .rotating-ring-fast,
+html.xod-calm .rotating-ring-reverse {
+  animation-play-state: paused !important;
+}
+/* Backdrop blur is the GPU process's biggest steady cost: every presented
+   frame re-blurs the glass panels. While calm there is nothing to watch,
+   so the blur goes off; it returns with the first interaction. */
+html.xod-calm * {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}

@@ -1234,3 +1234,21 @@ body.xod-previewing .action-footer > button { white-space: nowrap; }
 .xh-note-entry .xh-q { opacity: .7; font-size: 11.5px; }
 .xh-note-entry a { display: block; font-size: 11.5px; color: #7cc4f2; text-decoration: underline; text-underline-offset: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .xh-note-entry .xh-lessons, [data-sec=notebook] .xh-lessons li { font-size: 12px; }
+
+/* Calm mode (html.xod-calm, toggled by mascot.js when the window is hidden,
+   unfocused, or untouched for a minute): decorative infinite animations
+   pause instead of repainting forever. They resume the moment the user is
+   back. Functional feedback animations (voice waves, cursors) are exempt. */
+html.xod-calm .star,
+html.xod-calm .xod-mascot--hero,
+html.xod-calm .xod-mascot--wander,
+html.xod-calm .xod-mascot .xm-swirl,
+html.xod-calm .xod-mascot .xm-glow,
+html.xod-calm .xod-mascot .xm-z,
+html.xod-calm .xod-mascot .xm-rings circle,
+html.xod-calm .xod-mascot--hero::before,
+html.xod-calm .xod-mascot--wander::before,
+html.xod-calm .xm-dream i,
+html.xod-calm .xm-dream span {
+  animation-play-state: paused !important;
+}

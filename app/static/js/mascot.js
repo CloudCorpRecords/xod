@@ -403,6 +403,17 @@
     return live.filter((m) => m.querySelector("svg, video.xm-pack-media") && (m.offsetParent !== null || m.dataset.live === "1"));
   }
 
+  // frame() runs at display rate, and scanning the whole document for mascots
+  // on every frame was the most expensive single item in the renderer's idle
+  // profile (three querySelectorAll passes plus a forced layout per mascot,
+  // at up to 120Hz). The list changes rarely, so cache it and refresh about
+  // once a second; disconnected elements are dropped on the spot.
+  let liveCache = null, liveCacheAt = 0;
+  function liveMascotsCached(t) {
+    if (!liveCache || t - liveCacheAt > 1000) { liveCache = liveMascots(); liveCacheAt = t; }
+    return liveCache.filter((m) => m.isConnected);
+  }
+
   function mount(m) {
     const cid = characterOf(m);
     m.innerHTML = PACKS[cid] ? packMarkup(cid) : characterSvg(cid);
@@ -581,9 +592,43 @@
     }
   }
 
+  // ------------------------------------------------------------- activity gate
+  // Is anything worth painting at full frame rate right now? Springs still in
+  // flight, a fidget or blink in progress, an active mood, or a fresh stimulus
+  // (pointer, typing, voice, a look-at request, a reaction window). When none
+  // of that holds, the companions are only breathing, which reads fine at a
+  // few frames a second. Pure state reads: no DOM access, so asking on every
+  // vsync is effectively free.
+  function mascotActive(t) {
+    if (S.forced && t < S.forced.until) return true;
+    if (S.mood !== "idle" && S.mood !== "sleepy") return true;
+    if (S.talk > 0.04) return true;
+    const hot = [S.happyUntil, S.errorUntil, S.dizzyUntil, S.yawnUntil, S.startleUntil,
+      S.oohUntil, S.curiousUntil, S.munchUntil, S.giggleUntil, S.danceUntil, S.loveUntil,
+      S.lookAtUntil, (S.voiceAt || 0) + 250, (S.hearAt || 0) + 250];
+    for (const u of hot) if (t < u) return true;
+    if (S.pointer && t - S.pointerAt < 5000) return true;
+    if (t - S.typingAt < 1800) return true;
+    for (const r of rigs.values()) {
+      if (r.settled) continue;
+      if (r.dragging || (r.petting || 0) > 0.1) return true;
+      if (r.fidget && t < r.fidget.until) return true;
+      if (r.blinkT >= 0) return true;
+      if (r.lookUntil > t) return true;
+      const springs = [r.x, r.y, r.rot, r.sx, r.sy, r.lx, r.ly, r.lid, r.pupil, r.wink,
+        r.mw, r.mc, r.mo, r.dx, r.dy, r.fade, r.cheek];
+      for (const p of Object.values(r.parts)) springs.push(p.s);
+      for (const s of springs) if (Math.abs(s.v) > 0.5 || Math.abs(s.x - s.t) > 0.02) return true;
+    }
+    return false;
+  }
+
   // ---------------------------------------------------------------- per-frame
   let last = now();
+  let lastPaint = 0;
   function frame() {
+    requestAnimationFrame(frame);
+    if (document.hidden) { last = now(); return; }
     const t = now();
     const dt = Math.min(0.05, (t - last) / 1000);
     last = t;
@@ -599,12 +644,18 @@
       for (const el of [...rigs.keys()]) if (!el.isConnected) rigs.delete(el);
     }
     if (t - (S.dreamTick || 0) > 500) { S.dreamTick = t; try { dream(t); } catch (e) {} }
-    for (const el of liveMascots()) {
+    // Idle and settled: repaint a few times a second, not at display rate.
+    // Repainting the rigs on every vsync (SVG attribute writes, a filtered
+    // hero, forced layouts) was most of the renderer's constant idle CPU,
+    // and kept the GPU process compositing just as hard.
+    const paintCap = document.documentElement.classList.contains("xod-calm") ? 1000 : (mascotActive(t) ? 0 : 200);
+    if (t - lastPaint < paintCap) return;
+    lastPaint = t;
+    for (const el of liveMascotsCached(t)) {
       const r = rigFor(el);
       if (r.settled) continue;
       try { if (r.pack) paintPack(r, t); else animate(r, t, dt, drowsy); } catch (e) { if (!S.warned) { S.warned = true; console.warn("Xod companion:", e); } }
     }
-    requestAnimationFrame(frame);
   }
 
   function attentionPoint(r, t) {
@@ -661,7 +712,12 @@
 
     // ---- where to look
     let lx = 0, ly = 0;
-    const box = r.el.getBoundingClientRect();
+    // getBoundingClientRect forces a full layout of a layout-dirty document,
+    // and this runs per rig per paint. The companion barely moves on screen,
+    // so reuse its box for half a second; that turns nearly every one of
+    // those forced layouts into a plain property read.
+    if (!r.boxCache || t - (r.boxAt || 0) > 500) { r.boxCache = r.el.getBoundingClientRect(); r.boxAt = t; }
+    const box = r.boxCache;
     const cx = box.left + box.width / 2, cy = box.top + box.height / 2;
     const pt = attentionPoint(r, t);
     let toward = 0;
@@ -1303,6 +1359,11 @@
   }
 
   function watchAgent() {
+    // Calm mode: nobody is looking (window hidden, unfocused, or untouched
+    // for a minute), so the decorative motion stops. The CSS companion rules
+    // key off html.xod-calm and frame() drops to a one-second paint cap.
+    const calm = document.hidden || !document.hasFocus() || Date.now() - S.lastActivity > 60000;
+    document.documentElement.classList.toggle("xod-calm", calm);
     if (S.forced && now() < S.forced.until) { setMood(S.forced.mood); return; }
     let busy = false;
     try { busy = typeof isStreaming !== "undefined" && !!isStreaming; } catch (_) {}
@@ -1363,6 +1424,7 @@
     // A cursor whooshing past the big one: whoa.
     let lastMove = null;
     document.addEventListener("pointermove", (e) => {
+      S.lastActivity = Date.now();
       const t = now();
       if (lastMove) {
         const speed = Math.hypot(e.clientX - lastMove.x, e.clientY - lastMove.y) / Math.max(1, t - lastMove.t);
