@@ -1923,7 +1923,7 @@ class TaskQueue:
         fields.setdefault("waiting_detail", None)
         fields.setdefault("next_action", None)
         self._update(task_id, note=note, status=status, result=report, finished_at=time.time(),
-                     waiting_kind=None, waiting_detail=None, pending_json=None,
+                     waiting_kind=None, pending_json=None,
                      now="Done" if status == "done" else "Stopped", **fields)
         from app.services import agent_log
         agent_log.clear_waiting_for_origin(f"task:{task_id}", decision=f"expired ({status})")
