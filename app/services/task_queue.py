@@ -175,6 +175,20 @@ def _conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     c = sqlite3.connect(str(DB_PATH), timeout=10)
     c.row_factory = sqlite3.Row
+    # WAL's standard pairing (Tier 6 load work, 2026-11-08): under WAL,
+    # synchronous=FULL fsyncs on EVERY commit, and this database is
+    # written synchronously on the event loop for every progress line,
+    # plan save and state change. Under three concurrent tasks those
+    # fsyncs serialized into seconds of loop stall (measured: ~25 ms
+    # per commit on this machine's disk, loop lag p95 ~1.9 s under the
+    # Tier 6 three-task shape). NORMAL fsyncs at WAL checkpoints
+    # instead: an app crash loses nothing, an OS crash can drop the
+    # most recent writes, and task state is re-verified against the
+    # disk effects it describes before anything is called done.
+    try:
+        c.execute("PRAGMA synchronous = NORMAL")
+    except sqlite3.DatabaseError:
+        pass
     return c
 
 
@@ -541,6 +555,109 @@ def _output_tail(*parts: Any) -> str:
     return "\n".join(chunks).strip()[-_RUN_OUTPUT_TAIL:]
 
 
+# ------------------------------------------------------------- pytest interpreters
+# A declared run of the form "python3 -m pytest ..." names a bare
+# interpreter, and a bare python3 resolves through the app process's
+# PATH: on the owner's Mac that is the Xcode command-line-tools stub
+# (3.9, no pytest), so the run could only ever exit 1 with "No module
+# named pytest" and the step failed as if its tests had failed
+# (missions e0c5872dea and c9a6185f36, 2026-11-08). The tests were
+# never exercised: an environment failure wearing a test failure's
+# clothes. A pytest run therefore resolves a sane interpreter first:
+# the project's own venv, then the interpreter this app itself runs
+# on (the bundled python in the shipped app), then a task venv
+# provisioned in the run's directory. An interpreter pinned by
+# absolute path is respected verbatim, except the Xcode stub itself.
+_PYTEST_PROBE_TIMEOUT_SEC = 20
+_PYTEST_PROVISION_TIMEOUT_SEC = 300
+
+
+def _is_disqualified_python(path: str) -> bool:
+    """The Xcode stub is never a test interpreter: it ships no pytest
+    and exists only to nag for the command line tools install."""
+    return "/Xcode.app/" in (path or "").replace("\\", "/")
+
+
+def _python_can_pytest(py: str) -> bool:
+    try:
+        proc = subprocess.run([py, "-c", "import pytest"], capture_output=True,
+                              timeout=_PYTEST_PROBE_TIMEOUT_SEC)
+        return proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _venv_python(base: Path) -> Optional[str]:
+    for sub in ("bin/python", "bin/python3", "Scripts/python.exe"):
+        p = base / sub
+        if p.exists():
+            return str(p)
+    return None
+
+
+def _provision_pytest_venv(cwd: Path) -> Optional[str]:
+    """Makes <cwd>/.xod-test-venv from the app's own interpreter and
+    installs pytest into it; returns its python, or None when that
+    could not be done (no usable base interpreter, venv or install
+    failed, pytest still not importable)."""
+    base = sys.executable
+    if not base or _is_disqualified_python(base) or not os.path.exists(base):
+        return None
+    venv_dir = Path(cwd) / ".xod-test-venv"
+    try:
+        proc = subprocess.run([base, "-m", "venv", str(venv_dir)],
+                              capture_output=True, text=True,
+                              timeout=_PYTEST_PROVISION_TIMEOUT_SEC)
+        if proc.returncode != 0:
+            return None
+        py = _venv_python(venv_dir)
+        if not py:
+            return None
+        proc = subprocess.run([py, "-m", "pip", "install", "--quiet", "pytest"],
+                              capture_output=True, text=True,
+                              timeout=_PYTEST_PROVISION_TIMEOUT_SEC)
+        if proc.returncode != 0:
+            return None
+        return py if _python_can_pytest(py) else None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _resolve_pytest_python(cwd: Path):
+    """(interpreter, why_not) for a pytest run from cwd: the first
+    candidate that can import pytest, in the order project venv, task
+    venv, the app's own interpreter, freshly provisioned task venv.
+    (None, why) when no interpreter here can run pytest."""
+    candidates = []
+    for name in (".venv", "venv", ".xod-test-venv"):
+        py = _venv_python(Path(cwd) / name)
+        if py:
+            candidates.append(py)
+    own = sys.executable
+    if own and not _is_disqualified_python(own):
+        candidates.append(own)
+    for py in candidates:
+        if not _is_disqualified_python(py) and _python_can_pytest(py):
+            return py, ""
+    py = _provision_pytest_venv(cwd)
+    if py:
+        return py, ""
+    return None, ("no venv in the project, no app interpreter and no provisioned "
+                  "task venv here can run pytest")
+
+
+def _is_pytest_invocation(argv: List[str]) -> bool:
+    """A "pythonX -m pytest ..." run whose interpreter this layer must
+    resolve: a bare interpreter name always; an absolute path only
+    when it names the disqualified Xcode stub (a pinned interpreter
+    anywhere else is the plan's own choice and runs verbatim)."""
+    if len(argv) < 3 or argv[1] != "-m" or argv[2] != "pytest":
+        return False
+    if os.path.basename(argv[0]).lower() in ("python", "python3", "python.exe", "python3.exe"):
+        return os.path.sep not in argv[0] or _is_disqualified_python(argv[0])
+    return False
+
+
 def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
     """Runs one accepted run claim; returns its problem text, or None when
     the exit code is the required one. Refused claims are never executed;
@@ -561,7 +678,16 @@ def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
     # Resolve bare `python` / `python3` / `pytest` to a project venv in cwd or Xod's
     # active Python interpreter so run claims never fall back to Xcode's pytest-less
     # /usr/bin/python3 stub.
-    if argv:
+    ran_with = None
+    if _is_pytest_invocation(argv):
+        py, why_not = _resolve_pytest_python(cwd)
+        if py is None:
+            return (f"the run of '{command}' from {cwd} could not be run as a test: "
+                    f"{why_not}. This is an environment problem, not a test failure: "
+                    f"the tests themselves were never exercised.")
+        argv = [py] + argv[1:]
+        ran_with = py
+    elif argv:
         head = argv[0]
         cwd_path = Path(cwd)
         venv_py = next(
@@ -596,7 +722,8 @@ def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
     tail = _output_tail(proc.stdout, proc.stderr)
     return (f"the run of '{command}' from {cwd} exited with code {proc.returncode}, "
             f"not the required code {claim['expect_exit']}"
-            + (f". Output tail: {tail}" if tail else ". It produced no output"))
+            + (f". Output tail: {tail}" if tail else ". It produced no output")
+            + (f" (The pytest run used the interpreter {ran_with}.)" if ran_with else ""))
 
 
 def _candidate_for_answer_path(p: str) -> Dict[str, Any]:
@@ -1755,7 +1882,7 @@ class TaskQueue:
         common = {"mission_json": snapshot, "result": report, "next_action": None}
 
         if status == "completed":
-            problems = self._verify_file_effects(task, started)
+            problems = await asyncio.to_thread(self._verify_file_effects, task, started)
             if problems:
                 self._finish(task_id, "failed",
                              f"{report}\n\nNot finished: {'; '.join(problems)}".strip(),
@@ -1790,8 +1917,13 @@ class TaskQueue:
 
     def _finish(self, task_id: str, status: str, report: str, note: str, **fields: Any) -> None:
         fields.pop("result", None)  # the report argument wins
+        # A finished task is not waiting for anything: clear the whole
+        # waiting state, not just the kind (on the shipped tree the
+        # detail and a stale next_action outlived the task's end).
+        fields.setdefault("waiting_detail", None)
+        fields.setdefault("next_action", None)
         self._update(task_id, note=note, status=status, result=report, finished_at=time.time(),
-                     waiting_kind=None, waiting_detail=None, pending_json=None,
+                     waiting_kind=None, pending_json=None,
                      now="Done" if status == "done" else "Stopped", **fields)
         from app.services import agent_log
         agent_log.clear_waiting_for_origin(f"task:{task_id}", decision=f"expired ({status})")

@@ -28,6 +28,7 @@ that step already took, so completed work is never repeated.
 import asyncio
 import json
 import logging
+import os
 import re
 import sqlite3
 import time
@@ -1205,6 +1206,7 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             res_cap = 6000 if _is_large_context() else 4000
             step["result"] = (cleaned_report or "")[:res_cap]
             step["finished_at"] = time.time()
+            _log_slow_step(task_id, step, k, began, blocked=bool(problems))
             if problems:
                 step["status"] = "blocked"
                 step["blocker"] = "; ".join(problems)
@@ -1226,9 +1228,9 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                     if any(i["status"] == "pending" for i in items):
                         q._progress(task_id, f"✗ Step {k} blocked ({step['blocker'][:100]}); continuing independent steps")
                         continue
+                step["waiting"] = True
                 save_plan(task_id, items, instr)
-                q._finish(task_id, "failed", _final_report(items) + f"\n\nStopped at step {k}: {step['blocker']}",
-                          note="A step did not check out")
+                _pause_blocked_on_person(q, task_id, items, step, k, problems)
                 return
             step["status"] = "completed"
             save_plan(task_id, items, instr)
@@ -1259,6 +1261,43 @@ async def run_stepwise(q: Any, task_id: str) -> None:
         esc = q._escalations.pop(task_id, None)
         if esc is not None and not esc.done() and esc is not asyncio.current_task():
             esc.cancel()
+
+
+# A step slower than this is named in the log (Tier 6 D4: the stalls
+# under load could not be attributed to any step because nothing
+# recorded per-step durations). missions.py keeps the same threshold
+# for mission steps; keep the two in step.
+SLOW_STEP_MS = 1000
+
+
+def _log_slow_step(task_id: str, step: Dict[str, Any], k: int, began: float,
+                   blocked: bool) -> None:
+    """Slow-step record: a step whose run took over SLOW_STEP_MS is
+    logged (warning + a task.slow_step event) with its duration and
+    the tools it used, so a freeze under load names the step that was
+    running. Fast steps record nothing, and a failure to record never
+    breaks the run."""
+    try:
+        dur_ms = int((time.time() - began) * 1000)
+        if dur_ms <= SLOW_STEP_MS:
+            return
+        tools: List[str] = []
+        try:
+            from app.services import activity
+            seen = {e.get("tool") for e in activity.entries_for_origin(
+                f"task:{task_id}", since=began - 0.5)}
+            tools = sorted(t for t in seen if t)
+        except Exception:
+            pass
+        logger.warning(f"slow step: task {task_id} step {k} ({step.get('id')}) took "
+                       f"{dur_ms} ms; tools: {', '.join(tools) or 'none recorded'}")
+        from app.services import event_log
+        event_log.emit("task.slow_step", actor="orchestrator", ids={"task_id": task_id},
+                       payload={"step_id": step.get("id"), "step_index": k,
+                                "duration_ms": dur_ms, "tools": tools,
+                                "blocked": blocked})
+    except Exception:
+        pass
 
 
 def _mission_mark() -> Tuple[int, Any, int]:
@@ -1349,6 +1388,67 @@ def _paused_on_person(q: Any, task_id: str, items: List[Dict[str, Any]], instr: 
     return True
 
 
+_PATH_TOKEN_RE = re.compile(r"(?:~[/\\]|/|[A-Za-z]:[/\\])[^\s\"'<>|`]+")
+_MISSING_WORDS_RE = re.compile(r"not on disk|does not exist|no such file|could not be read|"
+                               r"couldn't read|cannot read|can't read|missing|not found", re.I)
+
+
+def _unblock_condition(problems: List[str], step_text: str = "") -> Tuple[str, bool]:
+    """(what the person can do to unblock the step, whether it names a
+    missing input) — derived from the step's own problems, so the
+    needs-you says the condition, not just the failure: a path the
+    step needed and the disk does not have is named outright, so the
+    person can create it or point to the right one. A problem string
+    can carry the path truncated at its first dot (the self-report
+    check splits a report into sentences on dots), so a problem path
+    that is a strict prefix of a path the step itself names is
+    completed from the step's text before it is quoted."""
+    text = "; ".join(problems)
+    step_paths = [m.group(0).rstrip(".,;:)")
+                  for m in _PATH_TOKEN_RE.finditer(step_text or "")]
+    for m in _PATH_TOKEN_RE.finditer(text):
+        p = m.group(0).rstrip(".,;:)")
+        if len(p) < 3:
+            continue
+        full = next((sp for sp in step_paths if sp.startswith(p) and len(sp) > len(p)), None)
+        cand = full or p
+        try:
+            if not os.path.exists(os.path.expanduser(cand)):
+                return (f"To unblock: make sure {cand} exists (create it, or point to the "
+                        f"right file in your answer), then answer here and the step "
+                        f"will run again.", True)
+        except OSError:
+            continue
+    if _MISSING_WORDS_RE.search(text):
+        return ("To unblock: provide the missing input the step names, then answer "
+                "here and the step will run again.", True)
+    return ("To unblock: fix what the step describes, then answer here and the "
+            "step will run again.", False)
+
+
+def _pause_blocked_on_person(q: Any, task_id: str, items: List[Dict[str, Any]],
+                             step: Dict[str, Any], k: int, problems: List[str]) -> None:
+    """Parks a blocked step on the person (Tier 6 leg C fix): the task
+    waits with the blocker as a needs-you — the same waiting machinery
+    a classic task and a browser stop use, so the answer, retry and
+    cancel surfaces all reach it — and the wait's message states the
+    unblock condition derived from the problems. The step stays
+    blocked with waiting=True, which is the shape _take_resume picks
+    up when the person answers."""
+    condition, missing_input = _unblock_condition(problems, step.get("text") or "")
+    kind = "question" if missing_input else "blocked"
+    question = f"Step {k} is blocked: {step.get('blocker')}. {condition}"
+    q._update(task_id, note="Waiting for you", status="waiting", waiting_kind=kind,
+              waiting_detail={"message": question, "blocker": step.get("blocker"), "step": k},
+              result=_final_report(items), next_action=None,
+              now="Needs your help to continue")
+    from app.services import task_queue as TQ
+    TQ.notify(q.get(task_id)["title"],
+              "A step is blocked and needs you." if kind == "blocked"
+              else "Has a question for you.")
+    TQ._phone(q.get(task_id), kind)
+
+
 async def _take_resume(q: Any, task_id: str, task: Dict[str, Any]) -> Optional[str]:
     """When the person approved or answered a waiting step: that step goes back in progress,
     the paused page's mission and pending approval are restored, and the message that
@@ -1377,7 +1477,10 @@ async def _take_resume(q: Any, task_id: str, task: Dict[str, Any]) -> Optional[s
     step["blocker"] = None
     step["attempts"] = max(0, int(step.get("attempts") or 1) - 1)   # the person's turn is not a failed attempt
     save_plan(task_id, items, instr)
-    q._update(task_id, next_action=None)
+    # The wait is over: the task row must not keep carrying it (a stale
+    # waiting_detail outlived the wait on the shipped tree, because no
+    # resume or finish path cleared it).
+    q._update(task_id, next_action=None, waiting_kind=None, waiting_detail=None)
     if action["type"] == "approve":
         return "go ahead"
     return f"{action.get('text', '')}\n(continue)"
