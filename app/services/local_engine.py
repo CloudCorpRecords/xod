@@ -48,8 +48,12 @@ CATALOG: List[Dict[str, Any]] = [
     {"id": "qwen2.5-1.5b", "repo": "mlx-community/Qwen2.5-1.5B-Instruct-4bit", "label": "Qwen 2.5 1.5B",
      "download_gb": 0.9, "need_gb": 2.0, "min_ram_gb": 8, "thinks": False,
      "blurb": "Tiny and quick. Fine for chat and simple tasks; struggles with long multi-step jobs."},
+    {"id": "qwen3.5-2b", "repo": "mlx-community/Qwen3.5-2B-MLX-4bit", "label": "Qwen 3.5 2B",
+     "download_gb": 1.4, "need_gb": 1.8, "min_ram_gb": 6, "thinks": True,
+     "blurb": "Compact reasoning model for 8 GB Macs under tight memory headroom."},
     {"id": "qwen3.5-4b", "repo": "mlx-community/Qwen3.5-4B-MLX-4bit", "label": "Qwen 3.5 4B",
-     "download_gb": 3.1, "need_gb": 4.0, "min_ram_gb": 8, "thinks": True,
+     "download_gb": 3.1, "need_gb": 4.0, "need_gb_8gb": 3.05, "max_kv_size_8gb": 4096,
+     "min_ram_gb": 8, "thinks": True,
      "blurb": "Best pick for 8–16 GB Macs. Fast: a researched answer in about 10 seconds on an M1 Pro.",
      "recommended_up_to_gb": 23},
     {"id": "qwen3.5-9b", "repo": "mlx-community/Qwen3.5-9B-MLX-4bit", "label": "Qwen 3.5 9B",
@@ -70,12 +74,34 @@ def total_ram_gb() -> float:
         return 16.0
 
 
-def recommend(ram_gb: Optional[float] = None) -> Dict[str, Any]:
+def effective_need_gb(entry: Dict[str, Any], ram_gb: Optional[float] = None) -> float:
+    """Effective resident footprint for `entry` on a machine with `ram_gb` total RAM.
+    On 8 GB machines (`ram_gb <= 9.0`), `qwen3.5-4b` runs with a bounded 4096-token KV
+    cache (`--max-kv-size 4096`), trimming its context allowance from 1.5 GB to 0.55 GB
+    so its total footprint is 3.05 GB <= 3.20 GB (the 40% cap on 8 GB)."""
+    ram = ram_gb if ram_gb is not None else total_ram_gb()
+    if ram <= 9.0 and entry.get("need_gb_8gb") is not None:
+        return float(entry["need_gb_8gb"])
+    return float(entry.get("need_gb") or 6.0)
+
+
+def recommend(ram_gb: Optional[float] = None, available_gb: Optional[float] = None) -> Dict[str, Any]:
     """The model to suggest for this Mac: the smallest good one for its memory class. On 16 GB the 4B
     model leaves room for the browser and everything else (a 9B or 12B model there pushes the Mac
-    into swap, and every answer waits on the disk); bigger Macs get the bigger models."""
-    ram = ram_gb or total_ram_gb()
-    fits = [m for m in CATALOG if m["min_ram_gb"] <= ram and m["id"] != "qwen2.5-1.5b"]
+    into swap, and every answer waits on the disk); bigger Macs get the bigger models.
+    On 8 GB Macs, Qwen 3.5 4B uses a bounded 4k KV cache (3.05 GB <= 3.2 GB 40% cap), or steers
+    to Qwen 3.5 2B (1.8 GB) when available memory would violate the 25% (2.0 GB) free floor."""
+    ram = ram_gb if ram_gb is not None else total_ram_gb()
+    if ram < 6.0:
+        return {**CATALOG[0], "cloud_only_recommended": True}
+    if ram <= 9.0:
+        q4b = next(m for m in CATALOG if m["id"] == "qwen3.5-4b")
+        q2b = next(m for m in CATALOG if m["id"] == "qwen3.5-2b")
+        need_4b = effective_need_gb(q4b, ram)
+        if available_gb is not None and (available_gb - need_4b) < (ram * 0.25):
+            return {**q2b, "steered_from": q4b["id"], "steered_reason": "free_floor_25pct"}
+        return {**q4b, "need_gb": need_4b, "max_kv_size": q4b.get("max_kv_size_8gb", 4096)}
+    fits = [m for m in CATALOG if m["min_ram_gb"] <= ram and m["id"] not in ("qwen2.5-1.5b", "qwen3.5-2b")]
     for m in fits:
         if ram <= m.get("recommended_up_to_gb", 10 ** 6):
             return m
@@ -156,8 +182,12 @@ def download_status(repo: str) -> Dict[str, Any]:
 
 def _command(repo: str, port: int) -> List[str]:
     """The engine's command line (the smoke tests swap in a stand-in engine here)."""
-    return [sys.executable, "-m", "app.services.engine_child", "--model", repo, "--host", "127.0.0.1",
-            "--port", str(port), "--max-tokens", "8192"]
+    cmd = [sys.executable, "-m", "app.services.engine_child", "--model", repo, "--host", "127.0.0.1",
+           "--port", str(port), "--max-tokens", "8192"]
+    entry = catalog_entry(repo)
+    if entry and total_ram_gb() <= 9.0 and entry.get("max_kv_size_8gb"):
+        cmd.extend(["--max-kv-size", str(entry["max_kv_size_8gb"])])
+    return cmd
 
 
 # The engine's own log (mlx_lm.server logs every request). It goes to a file, not a pipe: nothing reads a pipe
@@ -219,18 +249,19 @@ class LocalEngine:
             if not is_downloaded(repo):
                 raise RuntimeError(f"The built-in model {repo} isn't downloaded yet. Open Settings → AI model to download it.")
             entry = catalog_entry(repo) or {"need_gb": 6.0}
+            need_gb = effective_need_gb(entry)
             # FIX C budget gate (services/model_budget.py): the projected total across
             # ALL engines must fit the machine's budget before this load starts. A
             # refusal raises ModelBudgetRefused (a RuntimeError) before anything is
             # stopped or started: no partial load, no silent failure.
             from app.services import model_budget
             old_repo = self.repo if self.running() else None
-            await model_budget.model_budget.require_load("builtin", repo, entry["need_gb"], "builtin_engine")
+            await model_budget.model_budget.require_load("builtin", repo, need_gb, "builtin_engine")
             if old_repo and old_repo != repo:
                 model_budget.model_budget.note_unloaded("builtin", old_repo, "switch", "builtin_engine")
             await self.stop()
             from app.services.memory_broker import memory_broker
-            await memory_broker.make_room(entry["need_gb"], f"chat model {repo.split('/')[-1]}")
+            await memory_broker.make_room(need_gb, f"chat model {repo.split('/')[-1]}")
             env = dict(os.environ, HF_HUB_OFFLINE="1", TOKENIZERS_PARALLELISM="false")
             ENGINE_LOG.parent.mkdir(parents=True, exist_ok=True)
             with open(ENGINE_LOG, "wb") as log:     # the child keeps its own handle; a fresh log each start

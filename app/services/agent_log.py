@@ -167,3 +167,51 @@ def approval_decided(pid: str, decision: str) -> None:
 def approvals(limit: int = 100) -> List[Dict[str, Any]]:
     with _conn() as c:
         return [dict(r) for r in c.execute("SELECT * FROM agent_approvals ORDER BY ts DESC LIMIT ?", (limit,))]
+
+
+def waiting_approvals_for(origin: str, since: float = 0.0) -> List[Dict[str, Any]]:
+    """Returns open ('waiting') approval rows for a given origin (e.g. 'task:<id>')."""
+    if not origin:
+        return []
+    try:
+        with _conn() as c:
+            rows = c.execute(
+                "SELECT * FROM agent_approvals WHERE origin = ? AND decision = 'waiting' AND ts >= ? ORDER BY ts DESC",
+                (origin, float(since or 0.0)),
+            ).fetchall()
+            return [dict(r) for r in rows]
+    except Exception as e:
+        logger.debug(f"waiting_approvals_for failed: {e}")
+        return []
+
+
+def clear_waiting_for_origin(origin: str, decision: str = "expired (task ended)") -> int:
+    """Marks any still-'waiting' approval/question cards for `origin` as closed when the task ends."""
+    if not origin:
+        return 0
+    try:
+        now = time.time()
+        with _conn() as c:
+            rows = c.execute(
+                "SELECT id FROM agent_approvals WHERE origin = ? AND decision = 'waiting'",
+                (origin,),
+            ).fetchall()
+            if not rows:
+                return 0
+            c.execute(
+                "UPDATE agent_approvals SET decision = ?, decided_at = ? WHERE origin = ? AND decision = 'waiting'",
+                (decision, now, origin),
+            )
+        from app.services import event_log
+        ids = event_log.ids_from_origin(origin)
+        for r in rows:
+            event_log.emit(
+                "card.answered",
+                actor="xod",
+                ids=ids,
+                payload={"card_id": r["id"], "decision": decision, "origin": origin},
+            )
+        return len(rows)
+    except Exception as e:
+        logger.debug(f"clear_waiting_for_origin failed: {e}")
+        return 0

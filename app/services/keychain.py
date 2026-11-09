@@ -30,6 +30,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from typing import Dict, Optional
 
 import keyring
@@ -42,10 +43,12 @@ SERVICE = os.environ.get("XOD_SECRETS_SERVICE", DEFAULT_SERVICE)
 ACCOUNT = "_vault"
 CHUNK = 1000 if sys.platform == "win32" else 0   # characters per piece (Windows stores them as UTF-16)
 LEGACY = SERVICE == DEFAULT_SERVICE  # only the real vault looks at the old one-per-key items
+UNREADABLE_COOLDOWN_SEC = 60.0
 
 _lock = threading.RLock()
 _vault: Optional[Dict[str, object]] = None
 _problem: Optional[str] = None
+_unreadable_until: float = 0.0
 
 
 class Unreadable(errors.KeyringError):
@@ -57,8 +60,11 @@ def _key(service: str, account: str) -> str:
 
 
 def _load() -> Dict[str, object]:
-    global _vault, _problem
+    global _vault, _problem, _unreadable_until
     if _vault is None:
+        now = time.monotonic()
+        if _problem and now < _unreadable_until:
+            raise Unreadable(_problem)
         try:
             raw = keyring.get_password(SERVICE, ACCOUNT)
             if raw and raw.startswith('{"pieces":'):
@@ -67,6 +73,7 @@ def _load() -> Dict[str, object]:
         except Exception as e:
             _problem = (f"macOS didn't let Xod read its saved keys ({type(e).__name__}). Choose Try again, then "
                         "Always Allow when macOS asks.")
+            _unreadable_until = time.monotonic() + UNREADABLE_COOLDOWN_SEC
             logger.warning(f"Keychain read failed: {type(e).__name__}: {e}")
             raise Unreadable(_problem) from e
         try:
@@ -81,7 +88,7 @@ def _load() -> Dict[str, object]:
             vault = {}
         vault.setdefault("secrets", {})
         vault.setdefault("checked", [])
-        _vault, _problem = vault, None
+        _vault, _problem, _unreadable_until = vault, None, 0.0
     return _vault
 
 
@@ -212,6 +219,6 @@ def _drop_legacy(service: str, account: str) -> bool:
 
 def reset_cache() -> None:
     """Forget what's in memory so the next call reads the Keychain again (Try again, and tests)."""
-    global _vault, _problem
+    global _vault, _problem, _unreadable_until
     with _lock:
-        _vault, _problem = None, None
+        _vault, _problem, _unreadable_until = None, None, 0.0

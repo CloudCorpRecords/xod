@@ -84,9 +84,46 @@ QUEUE_PATH = DATA_DIR / "model-budget-queue.json"
 ENGINES = ("builtin", "lm_studio", "ollama")
 
 
-def estimate_gb(file_gb: float) -> float:
-    """Estimated resident footprint of a model from its file size (see module docstring)."""
+def estimate_gb(file_gb: float, bounded_kv_gb: Optional[float] = None) -> float:
+    """Estimated resident footprint of a model from its file size (see module docstring).
+    When `bounded_kv_gb` is set (e.g. 4096-token KV cap on an 8 GB Mac), use that
+    bounded context allowance instead of the unbounded 35% allowance."""
+    if bounded_kv_gb is not None:
+        return round(file_gb + max(0.35, float(bounded_kv_gb)), 2)
     return round(file_gb + max(CONTEXT_ALLOWANCE_MIN_GB, file_gb * CONTEXT_ALLOWANCE_FRAC), 2)
+
+
+def resolve_8gb_catalog_tension(total_gb: float, available_gb: float, model: str, est_gb: float) -> Dict[str, Any]:
+    """Resolves the 40% cap vs 8 GB catalog pick tension (Section 2c / 3.2):
+    - On <= 4.5 GB machines, local chat models are disallowed (cloud-only relay).
+    - On 8 GB machines (total_gb <= 9.0), a 4B 4-bit model (2.5 GB weights) runs with
+      a bounded 4096-token KV cache (0.55 GB allowance -> 3.05 GB total <= 3.20 GB 40% cap).
+    - If loading 3.05 GB would leave less than the 25% free floor (2.0 GB), automatically
+      recommend steering down to Qwen3.5-2B-MLX-4bit (1.8 GB) or Cloud."""
+    low = (model or "").lower()
+    if total_gb <= 4.5:
+        return {
+            "adjusted_est_gb": est_gb,
+            "bounded_kv_tokens": None,
+            "steered_model": None,
+            "cloud_only_class": True,
+        }
+    if total_gb <= 9.0 and ("4b" in low or abs(est_gb - 4.0) < 0.15):
+        bounded_est = 3.05
+        floor_gb = total_gb * FREE_FLOOR_FRAC
+        steered = "mlx-community/Qwen3.5-2B-MLX-4bit" if (available_gb - bounded_est) < floor_gb else None
+        return {
+            "adjusted_est_gb": bounded_est,
+            "bounded_kv_tokens": 4096,
+            "steered_model": steered,
+            "cloud_only_class": False,
+        }
+    return {
+        "adjusted_est_gb": est_gb,
+        "bounded_kv_tokens": None,
+        "steered_model": None,
+        "cloud_only_class": False,
+    }
 
 
 def evaluate_budget(total_gb: float, available_gb: float, resident_gb: float,
@@ -346,11 +383,25 @@ class ModelBudget:
                             "last_used_at": e.get("last_used_at")} for e in models],
                 "gb": round(sum(e["gb"] for e in models), 2),
             })
+        unmanaged_residents = [
+            {"engine": e["engine"], "model": e["model"], "gb": e["gb"]}
+            for e in self.resident()
+            if not e.get("managed")
+        ]
+        unmanaged_gb = round(sum(e["gb"] for e in unmanaged_residents), 2)
+        unmanaged_over = unmanaged_gb > budget_gb
         return {
             "total_ram_gb": total, "available_gb": avail,
             "budget_gb": budget_gb, "budget_frac": self._budget_frac,
             "free_floor_gb": round(total * self._free_floor_frac, 2),
             "resident_gb": resident, "over_budget": resident > budget_gb,
+            "unmanaged_resident_gb": unmanaged_gb,
+            "unmanaged_over_budget": unmanaged_over,
+            "unmanaged_residents": unmanaged_residents,
+            "unmanaged_policy": (
+                "tier2_card_lockout_new_loads_reuse_or_cloud"
+                if unmanaged_over else "normal"
+            ),
             "engines": engines,
             "queue": self._queue_read(),
             "summary": (f"Local models are holding {resident:.1f} GB of the {budget_gb:.1f} GB "
@@ -434,10 +485,20 @@ class ModelBudget:
                     "reasons": []}
         m = self._machine_fn()
         rep = self._replace_gb(engine, model) if replace_gb is None else replace_gb
+        tension = resolve_8gb_catalog_tension(m["total_gb"], m["available_gb"], model, est_gb)
+        effective_est = tension["adjusted_est_gb"] if engine == "builtin" else est_gb
         verdict = evaluate_budget(m["total_gb"], m["available_gb"], self.resident_gb(),
-                                   est_gb, rep, self._budget_frac, self._free_floor_frac)
+                                   effective_est, rep, self._budget_frac, self._free_floor_frac)
+        unmanaged_residents = [
+            {"engine": e["engine"], "model": e["model"], "gb": e["gb"]}
+            for e in self.resident()
+            if not e.get("managed")
+        ]
         decision = {"allowed": verdict["allowed"], "engine": engine, "model": model,
-                    "est_gb": est_gb, "source": source, "route": "load", "queued": False,
+                    "est_gb": effective_est, "source": source, "route": "load", "queued": False,
+                    "bounded_kv_tokens": tension.get("bounded_kv_tokens"),
+                    "steered_model": tension.get("steered_model"),
+                    "unmanaged_residents": unmanaged_residents,
                     "reasons": verdict["reasons"], **{k: verdict[k] for k in
                     ("budget_gb", "projected_gb", "free_after_gb", "free_floor_gb")}}
         if verdict["allowed"]:

@@ -104,11 +104,23 @@ def search_path() -> str:
     if time.time() - _path_cache["at"] < 300 and _path_cache["path"]:
         return _path_cache["path"]
     parts: List[str] = []
+    # Keep Xod's active Python runtime ahead of macOS's /usr/bin stub so child tools
+    # (`python3`, `python`, `pip`, `pytest`) never fall back to Xcode's bare python3
+    # or crash when PYTHONHOME points at Xod's bundled Python 3.12 runtime.
+    try:
+        parts.append(str(Path(sys.executable).parent))
+        parts.append(str(Path(sys.executable).resolve().parent))
+    except Exception:
+        pass
+    pyhome = os.environ.get("PYTHONHOME")
+    if pyhome:
+        parts.append(os.path.join(pyhome, "bin"))
     if not WIN:
         shell = os.environ.get("SHELL") or "/bin/zsh"
         try:
+            clean_env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONPATH")}
             r = subprocess.run([shell, "-lic", "printf %s \"$PATH\""], capture_output=True, text=True, timeout=8,
-                               stdin=subprocess.DEVNULL)
+                               stdin=subprocess.DEVNULL, env=clean_env)
             parts += [p for p in r.stdout.strip().split(":") if p.startswith("/")]
         except Exception:
             pass

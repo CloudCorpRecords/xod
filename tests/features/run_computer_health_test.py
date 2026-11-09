@@ -66,9 +66,10 @@ def spawn_detached(exe: Path, args, tag: str) -> int:
     init/launchd - the exact shape of the Nov 4 leaks. Returns the child's pid."""
     pidfile = RUN / f"pid-{tag}.txt"
     code = (
-        "import subprocess, sys, pathlib;"
+        "import os, subprocess, sys, pathlib;"
+        "env = dict(os.environ); env.setdefault('PYTHONHOME', sys.base_prefix);"
         f"p = subprocess.Popen([{str(exe)!r}, '-c', {SLEEPER!r}] + {list(args)!r},"
-        " start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);"
+        " start_new_session=True, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL);"
         f"pathlib.Path({str(pidfile)!r}).write_text(str(p.pid))"
     )
     subprocess.run([sys.executable, "-c", code], check=True, timeout=60)
@@ -107,11 +108,12 @@ def main():
         spawned.append(younger)
         home_profile = RUN / "fakehome" / "User Data"
         home_profile.mkdir(parents=True, exist_ok=True)
+        fake_env = {**os.environ, "PYTHONHOME": os.environ.get("PYTHONHOME") or sys.base_prefix}
         visible = subprocess.Popen([str(chrome_exe), "-c", SLEEPER, f"--user-data-dir={home_profile}"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
+                                   env=fake_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
         owned = subprocess.Popen([str(chrome_exe), "-c", SLEEPER, "--headless=new",
                                   f"--user-data-dir={home_profile}"],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
+                                 env=fake_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).pid
         spawned += [visible, owned]
         time.sleep(1.2)                       # let ages register
 

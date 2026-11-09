@@ -96,15 +96,20 @@ def friendly_error(info: Dict, status_code: Optional[int] = None, body: str = ""
 
 
 async def status(base_url: str, model: str) -> Dict:
-    """For the header: is Ollama answering, and is the chosen model installed?"""
+    """For the header: is Ollama answering, and is the chosen model installed?
+    Distinguishes a timeout under memory pressure from a server that is not running (Run 1 D1 fix)."""
     try:
         async with httpx.AsyncClient(timeout=2) as c:
             tags = (await c.get(f"{_native(base_url)}/api/tags")).json().get("models", [])
+    except httpx.TimeoutException:
+        return {"cloud": False, "provider": "ollama", "model": model, "ready": False,
+                "running": True, "problem": "Ollama is running, but busy or slow to respond under memory load"}
     except Exception:
-        return {"cloud": False, "provider": "ollama", "model": model, "ready": False, "problem": "Ollama isn't running"}
+        return {"cloud": False, "provider": "ollama", "model": model, "ready": False,
+                "running": False, "problem": "Ollama isn't running"}
     installed = any(_same(model, t) for t in tags)
     return {"cloud": False, "provider": "ollama", "model": model, "ready": installed,
-            "problem": None if installed else f"{model} isn't installed in Ollama"}
+            "running": True, "problem": None if installed else f"{model} isn't installed in Ollama"}
 
 
 async def long_context_model(base_url: str, model: str) -> str:

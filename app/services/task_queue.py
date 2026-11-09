@@ -503,14 +503,45 @@ def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
     """Runs one accepted run claim; returns its problem text, or None when
     the exit code is the required one. Refused claims are never executed;
     the refusal itself is the problem."""
+    import shutil
+    from app.services.agent_clis import search_path
     command, cwd = claim["command"], claim["cwd"]
     if claim.get("refused"):
         return (f"the run of '{command}' from {cwd} was refused and was not run: "
                 f"{claim['refused']}")
     argv = _split_command(command)
+    path_val = search_path()
+    env = dict(os.environ, PATH=path_val)
+    existing_py_path = env.get("PYTHONPATH", "")
+    base_dir_str = str(BASE_DIR)
+    if base_dir_str not in existing_py_path.split(os.pathsep):
+        env["PYTHONPATH"] = f"{existing_py_path}{os.pathsep}{base_dir_str}" if existing_py_path else base_dir_str
+    # Resolve bare `python` / `python3` / `pytest` to a project venv in cwd or Xod's
+    # active Python interpreter so run claims never fall back to Xcode's pytest-less
+    # /usr/bin/python3 stub.
+    if argv:
+        head = argv[0]
+        cwd_path = Path(cwd)
+        venv_py = next(
+            (
+                p for p in (
+                    cwd_path / ".venv" / "bin" / "python",
+                    cwd_path / "venv" / "bin" / "python",
+                    cwd_path / ".venv" / "Scripts" / "python.exe",
+                    cwd_path / "venv" / "Scripts" / "python.exe",
+                )
+                if p.is_file()
+            ),
+            None,
+        )
+        active_py = str(venv_py) if venv_py else sys.executable
+        if head in ("python", "python3"):
+            argv = [active_py, *argv[1:]]
+        elif head == "pytest" and not shutil.which("pytest", path=path_val):
+            argv = [active_py, "-m", "pytest", *argv[1:]]
     try:
         proc = subprocess.run(argv, cwd=str(cwd), shell=False, capture_output=True,
-                              text=True, timeout=RUN_TIMEOUT_SEC)
+                              text=True, timeout=RUN_TIMEOUT_SEC, env=env)
     except subprocess.TimeoutExpired as e:
         tail = _output_tail(e.output, e.stderr)
         return (f"the run of '{command}' from {cwd} timed out after {RUN_TIMEOUT_SEC} "
@@ -550,6 +581,7 @@ class TaskQueue:
         self._cancel_at: Dict[str, float] = {}
         self._escalations: Dict[str, asyncio.Task] = {}
         self._watchdog: Optional[asyncio.Task] = None
+        self._last_stream_meta: Dict[str, Dict[str, Any]] = {}
 
     # ------------------------------------------------------------------ storage
     def get(self, task_id: str) -> Optional[Dict[str, Any]]:
@@ -802,9 +834,10 @@ class TaskQueue:
         if not t or t["status"] != "waiting" or t.get("waiting_kind") != "approval":
             return {"success": False, "error": "This task isn't waiting for an approval."}
         self._update(task_id, note="You approved it", status="queued", next_action={"type": "approve"},
-                     waiting_kind=None, now="Approved; continuing")
+                     waiting_kind=None, waiting_detail=None, now="Approved; continuing")
         from app.services import agent_log
         agent_log.approval_decided(f"task-{task_id}-{t.get('steps') or 0}", "allowed")
+        agent_log.clear_waiting_for_origin(f"task:{task_id}", decision="allowed")
         from app.services import event_log
         event_log.emit("task.action", actor="user", ids={"task_id": task_id},
                        payload={"action": "approve"})
@@ -826,7 +859,11 @@ class TaskQueue:
                            payload={"action": "answer", "text": text[:200], "resolved": "locate"})
             return {"success": True}
         self._update(task_id, note=f"You replied: {text}", status="queued",
-                     next_action={"type": "continue", "text": text}, waiting_kind=None, now="Continuing with your answer")
+                     next_action={"type": "continue", "text": text},
+                     waiting_kind=None, waiting_detail=None, pending_json=None,
+                     now="Continuing with your answer")
+        from app.services import agent_log
+        agent_log.clear_waiting_for_origin(f"task:{task_id}", decision="answered")
         from app.services import event_log
         event_log.emit("task.action", actor="user", ids={"task_id": task_id},
                        payload={"action": "answer", "text": text[:200]})
@@ -906,12 +943,40 @@ class TaskQueue:
             orchestrator.reopen(task_id)
         # A bot check the user cleared continues on the same page; everything else picks up where it stopped.
         self._update(task_id, note="Trying again", status="queued",
-                     next_action={"type": "continue", "text": "continue"}, waiting_kind=None, now="Trying again")
+                     next_action={"type": "continue", "text": "continue"},
+                     waiting_kind=None, waiting_detail=None, pending_json=None, now="Trying again")
+        from app.services import agent_log
+        agent_log.clear_waiting_for_origin(f"task:{task_id}", decision="retried")
         from app.services import event_log
         event_log.emit("task.action", actor="user", ids={"task_id": task_id},
                        payload={"action": "retry"})
         self._kick()
         return {"success": True}
+
+    def clear_waiting(self, task_id: str, reason: str = "Task ended", status: str = "failed") -> bool:
+        """Clears any open clarification question or approval wait when a task or its parent mission ends."""
+        t = self.get(task_id)
+        from app.services import agent_log
+        agent_log.clear_waiting_for_origin(f"task:{task_id}", decision=f"expired ({reason[:80]})")
+        if not t:
+            return False
+        if t["status"] == "waiting" or t.get("waiting_kind") or t.get("waiting_detail") or t.get("pending_json"):
+            new_status = status if t["status"] == "waiting" else t["status"]
+            fields: Dict[str, Any] = {
+                "status": new_status,
+                "waiting_kind": None,
+                "waiting_detail": None,
+                "pending_json": None,
+                "next_action": None,
+            }
+            if new_status in ("done", "failed", "cancelled") and not t.get("finished_at"):
+                fields["finished_at"] = time.time()
+                fields["now"] = "Stopped" if new_status != "done" else "Done"
+            if reason and not t.get("result"):
+                fields["result"] = reason
+            self._update(task_id, note=reason[:300], **fields)
+            return True
+        return False
 
     async def cancel(self, task_id: str) -> Dict[str, Any]:
         t = self.get(task_id)
@@ -940,10 +1005,12 @@ class TaskQueue:
             self._update(task_id, note="Stopping after the current step", now="Stopping…")
             self._schedule_cancel_escalation(task_id)
             return {"success": True, "stopping": True}
-        self._update(task_id, note="Cancelled", status="cancelled", waiting_kind=None, finished_at=time.time(), next_action=None)
+        self._update(task_id, note="Cancelled", status="cancelled", waiting_kind=None, waiting_detail=None,
+                     pending_json=None, finished_at=time.time(), next_action=None)
+        from app.services import agent_log
         if t.get("waiting_kind") == "approval":
-            from app.services import agent_log
             agent_log.approval_decided(f"task-{task_id}-{t.get('steps') or 0}", "declined")
+        agent_log.clear_waiting_for_origin(f"task:{task_id}", decision="cancelled")
         await self._close_tab(t.get("tab_id"))
         return {"success": True}
 
@@ -1010,10 +1077,13 @@ class TaskQueue:
                     pass
         await self._sweep_tool_children(task_id)
         fields: Dict[str, Any] = {"status": status, "finished_at": time.time(), "now": now_text,
-                                  "next_action": None, "waiting_kind": None}
+                                  "next_action": None, "waiting_kind": None,
+                                  "waiting_detail": None, "pending_json": None}
         if result is not None:
             fields["result"] = result
         self._update(task_id, note=note, **fields)
+        from app.services import agent_log
+        agent_log.clear_waiting_for_origin(f"task:{task_id}", decision=f"stopped ({status})")
         self._cancel_requested.discard(task_id)
         self._cancel_at.pop(task_id, None)
         esc = self._escalations.pop(task_id, None)
@@ -1300,6 +1370,8 @@ class TaskQueue:
         from app.services import decisive_evidence
         content, last_status = [], ""
         decisive_pairs = []
+        errors: List[str] = []
+        held_approval: Optional[Dict[str, Any]] = None
         researcher = AgenticResearcher()
         stream_kwargs: Dict[str, Any] = {}
         if system_extra:
@@ -1314,10 +1386,21 @@ class TaskQueue:
                 accepts = True
             if accepts:
                 stream_kwargs["system_extra"] = system_extra
+        stream_t0 = time.time()
         async for ev in researcher.run_research_stream(
                 [{"role": "user", "content": message}], **stream_kwargs):
             if ev.get("type") in ("tool_result", "subagent_tool_result"):
                 decisive_pairs.append((ev.get("name"), ev.get("data")))
+                data = ev.get("data")
+                if isinstance(data, dict) and data.get("needs_approval"):
+                    held_approval = data
+            elif ev.get("type") == "approval_hold":
+                data = ev.get("data")
+                held_approval = data if isinstance(data, dict) else {"needs_approval": True}
+            elif ev.get("type") == "error":
+                err_txt = str(ev.get("content") or ev.get("error") or "Model stream error").strip()
+                if err_txt:
+                    errors.append(err_txt)
             if ev.get("type") == "content":
                 piece = ev.get("content", "")
                 content.append(piece if isinstance(piece, str) else json.dumps(piece))
@@ -1333,6 +1416,10 @@ class TaskQueue:
                         self._progress(task_id, line)
             if task_id in self._cancel_requested:
                 break
+        stream_ms = int((time.time() - stream_t0) * 1000)
+        if stream_ms >= 500:
+            logger.info("slow_step task=%s phase=stream duration_ms=%d steps=%d", task_id, stream_ms, steps)
+        self._last_stream_meta[task_id] = {"errors": errors, "held_approval": held_approval, "duration_ms": stream_ms}
         return "".join(content).strip(), steps, decisive_evidence.collect(decisive_pairs)
 
     def _verify_file_effects(self, task: Dict[str, Any], started: float) -> List[str]:
@@ -1500,9 +1587,45 @@ class TaskQueue:
         # problem named; mission tasks are verified at their finish below,
         # without a retry (their flow has its own confirmation states).
         mission = sb.latest_mission if (sb.latest_mission or {}).get("started_at", 0) >= started - 1 else None
+        meta = self._last_stream_meta.get(task_id) or {}
+        from app.services import agent_log
+        open_approvals = agent_log.waiting_approvals_for(f"task:{task_id}", since=started - 1)
+        held_approval = meta.get("held_approval") or (open_approvals[0] if open_approvals else None)
+        if not mission and held_approval and task_id not in self._cancel_requested:
+            # D1 fix (Run 0): an unexecuted approval card pauses the task in waiting;
+            # it may never close the task as done.
+            self._running_id = None
+            label = str(held_approval.get("tool") or held_approval.get("title") or "Approve")
+            msg = str(held_approval.get("message") or held_approval.get("detail") or report or "Needs your approval.")
+            evidence = {"evidence_json": json.dumps(payloads)} if payloads else {}
+            self._update(
+                task_id,
+                note=f"Waiting for your OK ({label})",
+                status="waiting",
+                waiting_kind="approval",
+                pending_json=held_approval,
+                waiting_detail={"label": label, "message": msg},
+                result=report,
+                now="Waiting for your OK",
+                next_action=None,
+                **evidence,
+            )
+            notify(self.get(task_id)["title"], f"Needs your OK ({label}).")
+            _phone(self.get(task_id), "approval")
+            return
+
         problems: List[str] = []
         if not mission and task_id not in self._cancel_requested:
-            problems = self._verify_file_effects(task, started)
+            ver_t0 = time.time()
+            problems = await asyncio.to_thread(self._verify_file_effects, task, started)
+            ver_ms = int((time.time() - ver_t0) * 1000)
+            if ver_ms >= 500:
+                logger.info("slow_step task=%s phase=verify_file_effects duration_ms=%d", task_id, ver_ms)
+            stream_errors = meta.get("errors") or []
+            if stream_errors and not (report or "").strip():
+                problems.append(f"model stream error: {'; '.join(stream_errors)}")
+            elif re.search(r"(?:^|\n)\s*(?:The model stopped:|\*\*Paused after |\*\*Not finished yet:)", report or ""):
+                problems.append(f"the worker stopped before finishing ({(report or '').splitlines()[0][:160]})")
             if problems:
                 self._update(task_id, note="The first attempt did not check out; running it again",
                              now="Checking the result before finishing")
@@ -1517,7 +1640,33 @@ class TaskQueue:
                         payloads = payloads2
                 except Exception:
                     logger.exception(f"Task {task_id} verification retry crashed")
-                problems = self._verify_file_effects(task, started)
+                meta2 = self._last_stream_meta.get(task_id) or {}
+                open_approvals2 = agent_log.waiting_approvals_for(f"task:{task_id}", since=started - 1)
+                held2 = meta2.get("held_approval") or (open_approvals2[0] if open_approvals2 else None)
+                if held2 and task_id not in self._cancel_requested:
+                    self._running_id = None
+                    label = str(held2.get("tool") or held2.get("title") or "Approve")
+                    msg = str(held2.get("message") or held2.get("detail") or report or "Needs your approval.")
+                    evidence = {"evidence_json": json.dumps(payloads)} if payloads else {}
+                    self._update(
+                        task_id,
+                        note=f"Waiting for your OK ({label})",
+                        status="waiting",
+                        waiting_kind="approval",
+                        pending_json=held2,
+                        waiting_detail={"label": label, "message": msg},
+                        result=report,
+                        now="Waiting for your OK",
+                        next_action=None,
+                        **evidence,
+                    )
+                    return
+                problems = await asyncio.to_thread(self._verify_file_effects, task, started)
+                stream_errors2 = meta2.get("errors") or []
+                if stream_errors2 and not (report or "").strip():
+                    problems.append(f"model stream error: {'; '.join(stream_errors2)}")
+                elif re.search(r"(?:^|\n)\s*(?:The model stopped:|\*\*Paused after |\*\*Not finished yet:)", report or ""):
+                    problems.append(f"the worker stopped before finishing ({(report or '').splitlines()[0][:160]})")
 
         self._running_id = None
         if task_id in self._cancel_requested:
@@ -1592,7 +1741,10 @@ class TaskQueue:
     def _finish(self, task_id: str, status: str, report: str, note: str, **fields: Any) -> None:
         fields.pop("result", None)  # the report argument wins
         self._update(task_id, note=note, status=status, result=report, finished_at=time.time(),
-                     waiting_kind=None, now="Done" if status == "done" else "Stopped", **fields)
+                     waiting_kind=None, waiting_detail=None, pending_json=None,
+                     now="Done" if status == "done" else "Stopped", **fields)
+        from app.services import agent_log
+        agent_log.clear_waiting_for_origin(f"task:{task_id}", decision=f"expired ({status})")
         t = self.get(task_id)
         routine_run = None
         try:   # a scheduled run's result reaches the person through its delivery policy only

@@ -1623,9 +1623,50 @@ class MissionRunner:
         if outcome["status"] in ("failed", "blocked"):
             mission = get_mission(mission_id)
             if not mission["continue_on_failure"]:
-                for rest in list_subtasks(mission_id):
-                    if rest["status"] in ("pending", "queued"):
-                        _save_subtask(rest["id"], status="skipped")
+                remaining = [r for r in list_subtasks(mission_id) if r["status"] in ("pending", "queued")]
+                # Blocked-state continuation (Section 2b): if a step is `blocked` and later subtasks
+                # explicitly declare independent contracts (e.g. `independent: True` or `inputs`
+                # that only reference `goal` and not the blocked step or its file paths), mark only
+                # the dependent subtasks `blocked` and allow the independent subtasks to run!
+                blocked_paths = {
+                    str(e.get("path") or "")
+                    for e in (sub.get("expected_effects") or [])
+                    if isinstance(e, dict) and e.get("path")
+                }
+                def _is_independent_of_blocked(rest_sub: Dict[str, Any]) -> bool:
+                    if outcome["status"] != "blocked":
+                        return False
+                    contract = rest_sub.get("contract") or {}
+                    if contract.get("independent") is True:
+                        return True
+                    inputs = contract.get("inputs") or []
+                    if not inputs:
+                        return False
+                    for inp in inputs:
+                        if not isinstance(inp, dict):
+                            continue
+                        src = inp.get("source")
+                        ref = str(inp.get("ref") or "")
+                        if src == "prior_step" and ref in ("", str(sub["idx"] + 1), sub.get("id", ""), sub.get("title", "")):
+                            return False
+                        if src == "file" and (not ref or ref in blocked_paths):
+                            return False
+                    return True
+
+                if outcome["status"] == "blocked" and any(_is_independent_of_blocked(r) for r in remaining):
+                    for rest in remaining:
+                        if not _is_independent_of_blocked(rest):
+                            _save_subtask(
+                                rest["id"],
+                                status="blocked",
+                                verified_status="blocked",
+                                evidence=[f"Blocked by Step {sub['idx'] + 1} ({sub['title']})"],
+                                finished_at=time.time(),
+                            )
+                    return True
+
+                for rest in remaining:
+                    _save_subtask(rest["id"], status="skipped")
                 self._finish(mission_id,
                              reason=f"Step {sub['idx'] + 1} ({sub['title']}) {outcome['status']}: "
                                     + (outcome["evidence"][0] if outcome["evidence"] else "see the step report"))
@@ -1706,6 +1747,11 @@ class MissionRunner:
                    "waited again past the resume window with nobody answering; the "
                    "step fails here instead of waiting forever")
         logger.warning(f"Mission {mission_id}: step {sub['idx'] + 1} ({sub['title']}) {why}")
+        if sub.get("task_id") and hasattr(self.queue, "clear_waiting"):
+            try:
+                self.queue.clear_waiting(sub["task_id"], reason=why, status="failed")
+            except Exception:
+                logger.debug("clear_waiting on wedged subtask failed", exc_info=True)
         _save_subtask(sub["id"], status="failed", verified_status="failed",
                       claimed=(task.get("result") or ""), evidence=[why],
                       finished_at=time.time(), paused_at=None)
@@ -1740,6 +1786,16 @@ class MissionRunner:
                       "because this mission was set to keep going past failures.")
         state = "failed" if (reason or failed or blocked) else "done"
         finished = time.time()
+        # Question lifecycle cleanup (Section 2b): when a mission ends, ensure no
+        # subtask's underlying task is left hanging in `waiting` with an open question.
+        if hasattr(self.queue, "clear_waiting"):
+            for s in subs:
+                tid = s.get("task_id")
+                if tid:
+                    try:
+                        self.queue.clear_waiting(tid, reason=reason or f"Mission {state}", status="failed" if state == "failed" else "done")
+                    except Exception:
+                        pass
         _save_mission(mission_id, state=state, finished_at=finished,
                       failure_reason=reason if state == "failed" else None)
         report = build_report(get_mission(mission_id))

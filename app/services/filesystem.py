@@ -306,23 +306,39 @@ class FileSystemService:
             return {"error": f"Failed to read file: {str(e)}"}
 
     def write_file(self, raw_path: str, content: str) -> Dict[str, Any]:
-        """Saves text content to a computer file."""
+        """Saves text content to a computer file with fsync + read-back verification."""
+        import hashlib
         target = self.resolve_path(raw_path)
         if target.is_dir():
-            return {"error": "Target path is a directory."}
+            return {"success": False, "error": "Target path is a directory."}
 
         # Check protected paths
         if str(target) in PROTECTED_PATHS:
-            return {"error": "Modifying this system file is protected for computer safety."}
+            return {"success": False, "error": "Modifying this system file is protected for computer safety."}
 
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "w", encoding="utf-8") as f:
-                f.write(content)
+            expected_bytes = content.encode("utf-8")
+            expected_sha = hashlib.sha256(expected_bytes).hexdigest()
+            with open(target, "wb") as f:
+                f.write(expected_bytes)
+                f.flush()
+                os.fsync(f.fileno())
 
+            if not target.exists():
+                return {"success": False, "error": f"Write verification failed: {target} does not exist on disk."}
             st = target.stat()
+            actual_bytes = target.read_bytes()
+            actual_sha = hashlib.sha256(actual_bytes).hexdigest()
+            if st.st_size != len(expected_bytes) or actual_sha != expected_sha:
+                return {
+                    "success": False,
+                    "error": f"Write verification mismatch for {target}: expected {len(expected_bytes)}B, got {st.st_size}B.",
+                }
             return {
                 "success": True,
+                "verified_on_disk": True,
+                "sha256": actual_sha,
                 "name": target.name,
                 "path": str(target),
                 "size_bytes": st.st_size,
@@ -332,7 +348,7 @@ class FileSystemService:
             }
         except Exception as e:
             logger.error("Failed to write file %s: %s", target, e)
-            return {"error": f"Failed to write file: {str(e)}"}
+            return {"success": False, "error": f"Failed to write file: {str(e)}"}
 
     def create_file(self, raw_dir: str, filename: str, content: str = "") -> Dict[str, Any]:
         """Creates a new file in the target directory."""

@@ -129,6 +129,12 @@ def _last_answer(messages: List[Dict[str, Any]]) -> Tuple[str, str]:
 def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """{"goal": …} when this is a job to do on the computer (or to read the web for), or a reply that carries one on."""
     q = (query or "").strip()
+    match_q = q
+    if "YOUR STEP NOW" in q:
+        after = q.split("YOUR STEP NOW", 1)[1]
+        if ":" in after:
+            after = after.split(":", 1)[1]
+        match_q = after.strip() or q
     prev = _last_job(messages)
     if prev and prev.get("goal"):
         kind = prev.get("kind") or "computer"
@@ -138,22 +144,22 @@ def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
         # It stopped to ask ("which one: three.js or plain canvas?"), and this is the answer.
         if prev.get("waiting") and len(q) < 150 and not _QUESTION_RE.match(q):
             return {"goal": prev["goal"], "kind": kind, "resume": prev.get("left") or "", "extra": q}
-    if _NOT_HERE_RE.search(q):
+    if _NOT_HERE_RE.search(match_q):
         return None
-    if _INSTALL_RE.search(q) or _DEV_RE.search(q):
+    if _INSTALL_RE.search(match_q) or _DEV_RE.search(match_q):
         return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
-    if _QUESTION_RE.match(q) or len(q) > 1500:
+    if _QUESTION_RE.match(match_q) or len(q) > 1500:
         return None
-    if wants_phone(q):
+    if wants_phone(match_q):
         return {"goal": q, "kind": "phone", "resume": "", "extra": ""}
     from app.agent import builder
-    if builder.wants_build(q):
+    if builder.wants_build(match_q):
         return None
-    if _DO_RE.search(q):
+    if _DO_RE.search(match_q):
         return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
-    if _SETUP_RE.search(q) and _URL_RE.search(q):
+    if _SETUP_RE.search(match_q) and _URL_RE.search(match_q):
         return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
-    if _GATHER_RE.search(q):
+    if _GATHER_RE.search(match_q):
         return {"goal": q, "kind": "web", "resume": "", "extra": ""}
     # "Want me to try that?" → "yes" / "well install homebrew": the offer becomes the job.
     answer, asked = _last_answer(messages)
@@ -559,9 +565,17 @@ async def done_check(goal: str, log: List[Dict[str, Any]], final: str, kind: str
         verdict = parse_llm_json(reply.get("content", "")) or {}
     except Exception as e:
         logger.warning(f"done-check failed: {e}")
-        verdict = {}
+        # D1 fix: never certify completion when the verification model call itself
+        # hung or errored out (e.g. ~100s timeout under swap pressure in Run 1).
+        return {
+            "done": False,
+            "proof": "",
+            "missing": f"The verification check failed or timed out ({e}); confirm the result with a tool before finishing.",
+            "needs_person": False,
+            "checker_error": True,
+        }
     if not isinstance(verdict, dict) or "done" not in verdict:
-        # No verdict: trust a clean finish, but not one whose last step failed.
+        # No structured JSON verdict from a healthy model reply: require at least one succeeded tool call.
         last_ok = not log[-1]["failed"]
         return {"done": last_ok, "proof": "", "missing": "" if last_ok else "The last step failed; fix it and check again.",
                 "needs_person": False}
@@ -786,7 +800,9 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             if ev.get("type") == "deliberation_complete":
                 calls, content = ev.get("tool_calls") or [], ev.get("content") or ""
             elif ev.get("type") == "error":
-                stopped = f"The model stopped: {ev.get('content') or 'no reason given'}."
+                err_msg = ev.get("content") or "no reason given"
+                stopped = f"The model stopped: {err_msg}."
+                yield {"type": "error", "content": err_msg}
                 break
         if stopped:
             break
@@ -895,6 +911,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         _shrink(convo)
         if held:
             # The safety check (or a connected app) wants the person's OK: stop here, with the card showing.
+            yield {"type": "approval_hold", "data": held}
             answer = (f"**Waiting for your OK** on the card above: {held.get('message') or 'this step needs your approval.'} "
                       "After you approve it, say **continue** and I'll carry on.")
             left = f"waited for approval of {held.get('tool')}"

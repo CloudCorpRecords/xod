@@ -19,7 +19,10 @@ import json
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
-from PIL import Image, ImageEnhance, ImageFilter, ImageDraw, ImageFont
+try:
+    from PIL import Image, ImageEnhance, ImageFilter, ImageDraw, ImageFont
+except ImportError:
+    Image = ImageEnhance = ImageFilter = ImageDraw = ImageFont = None  # type: ignore
 from app.paths import DATA_DIR
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent

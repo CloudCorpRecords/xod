@@ -523,6 +523,7 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
 
         prior_messages = messages[:-1] if len(messages) > 1 else []
         deliberation = None
+        deliberation_error = None
         try:
             from app.services.agent_clis import context_note
             computer_note = await asyncio.to_thread(context_note, user_query)
@@ -541,9 +542,16 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
             if ev.get("type") == "deliberation_complete":
                 deliberation = ev.get("deliberation")
             else:
+                if ev.get("type") == "error":
+                    deliberation_error = ev.get("content") or "Model deliberation failed"
                 yield ev
 
         if not deliberation:
+            if deliberation_error:
+                # D1 fix: do not invent a fake 1-step web_search plan and mark it
+                # completed when the model call itself failed or timed out.
+                yield {"type": "done"}
+                return
             deliberation = {
                 "thought": "Directly evaluating user request and deploying intelligence research.",
                 "decision": "execute_plan",
@@ -746,6 +754,39 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                             "content": json.dumps(clean_payload)
                         })
 
+                held_res = next(
+                    (r for r in executed_results if isinstance(r, dict) and r.get("needs_approval")),
+                    None,
+                )
+                if held_res is not None:
+                    # D1 fix: approvals are a pause, never a completed step or finished task.
+                    step["status"] = "waiting"
+                    yield {"type": "plan_step", "step_id": step["id"], "status": "waiting"}
+                    yield {"type": "approval_hold", "data": held_res}
+                    yield {
+                        "type": "content",
+                        "content": (
+                            f"**Waiting for your OK** on the card above: "
+                            f"{held_res.get('message') or 'this step needs your approval.'} "
+                            "After you approve it, say **continue** and I'll carry on."
+                        ),
+                    }
+                    yield {"type": "done"}
+                    return
+
+                all_failed = bool(executed_results) and all(
+                    isinstance(r, dict) and (
+                        r.get("success") is False
+                        or bool(r.get("error"))
+                        or (r.get("exit_code") not in (None, 0))
+                    )
+                    for r in executed_results
+                )
+                if all_failed:
+                    step["status"] = "failed"
+                    yield {"type": "plan_step", "step_id": step["id"], "status": "failed"}
+                    continue
+
             step["status"] = "completed"
             yield {"type": "plan_step", "step_id": step["id"], "status": "completed"}
 
@@ -908,9 +949,10 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                     # Concluded; no further tool calls necessary
                     break
 
-        # Ensure all intermediate steps marked completed
+        # Ensure intermediate steps that are still in_progress are marked completed,
+        # but never overwrite a step that explicitly failed or paused for approval.
         for s in plan_steps[:-1]:
-            if s["status"] != "completed":
+            if s["status"] not in ("completed", "failed", "waiting"):
                 s["status"] = "completed"
                 yield {"type": "plan_step", "step_id": s["id"], "status": "completed"}
 
@@ -1298,6 +1340,7 @@ CRITICAL INSTRUCTIONS:
 
         accumulated_text = ""
         synthesis_tool_call_detected = False
+        synthesis_error: Optional[str] = None
 
         try:
             # The research is done by now: writing it up needs no thinking phase, which on a local
@@ -1316,15 +1359,20 @@ CRITICAL INSTRUCTIONS:
                         synthesis_tool_call_detected = True
                         continue
                     yield chunk
+                elif chunk.get("type") == "error":
+                    synthesis_error = str(chunk.get("content") or "Synthesis model stream error")
+                    yield chunk
                 else:
                     yield chunk
         except Exception as e:
             logger.error(f"Final streaming error: {e}")
-            yield {"type": "error", "content": f"Synthesis error: {str(e)}"}
+            synthesis_error = f"Synthesis error: {str(e)}"
+            yield {"type": "error", "content": synthesis_error}
 
         # Robust Recovery: If model only emitted a tool call syntax and produced no real text
+        # (Never run recovery claiming "investigation has completed" if the synthesis LLM call itself errored out.)
         cleaned_prose = re.sub(r'(?:<\|?tool_call\|?>)?\s*(?:call:)?([a-zA-Z0-9_]+)\s*\{.*?\}\s*(?:<\|?/?tool_call\|?>)?', '', accumulated_text, flags=re.DOTALL).strip()
-        if (synthesis_tool_call_detected or not accumulated_text.strip()) and len(cleaned_prose) < 50:
+        if not synthesis_error and (synthesis_tool_call_detected or not accumulated_text.strip()) and len(cleaned_prose) < 50:
             if is_media_task and evidence_board.media_telemetry:
                 last_m = evidence_board.media_telemetry[-1]
                 m_filename = last_m.get("filename") or "asset"
@@ -1408,6 +1456,12 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         if _block and _block not in accumulated_text:
             yield {"type": "content", "content": "\n\n" + _block}
             accumulated_text += "\n\n" + _block
+
+        if synthesis_error and not accumulated_text.strip():
+            final_step["status"] = "failed"
+            yield {"type": "plan_step", "step_id": final_step["id"], "status": "failed"}
+            yield {"type": "done"}
+            return
 
         for ev in self._source_link_events(evidence_board, accumulated_text, user_query):
             yield ev

@@ -1134,6 +1134,12 @@ class LLMService:
                 raise _gave_up()
             if isinstance(last_err, httpx.ConnectError) and ollama_context.friendly_error(info):
                 raise Exception(ollama_context.friendly_error(info))
+            if isinstance(last_err, httpx.ReadTimeout):
+                raise Exception(
+                    f"{info['provider']} at {info['base_url']} is running, but timed out after "
+                    f"{MAX_ATTEMPTS} tries ({type(last_err).__name__}) — the model server is busy "
+                    "or under memory pressure, not offline."
+                )
             raise Exception(
                 f"Could not get a response from {info['provider']} at {info['base_url']} "
                 f"after {MAX_ATTEMPTS} tries ({type(last_err).__name__}). "

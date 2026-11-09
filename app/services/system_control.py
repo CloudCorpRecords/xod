@@ -515,7 +515,24 @@ class SystemControlService:
         # Your terminal's PATH, not the app's: macOS starts apps with /usr/bin:/bin:/usr/sbin:/sbin, which misses
         # ~/.local/bin, Homebrew, npm and the rest, so `muse`, `claude`, `brew`, `node` … weren't found.
         from app.services.agent_clis import search_path
-        env = dict(os.environ, PATH=search_path())
+        from app.paths import APP_ROOT
+        import shlex
+        import shutil
+        path_val = search_path()
+        env = dict(os.environ, PATH=path_val)
+        existing_py_path = env.get("PYTHONPATH", "")
+        app_root_str = str(APP_ROOT)
+        if app_root_str not in existing_py_path.split(os.pathsep):
+            env["PYTHONPATH"] = f"{existing_py_path}{os.pathsep}{app_root_str}" if existing_py_path else app_root_str
+        # Rewrite bare `pytest` invocations when no `pytest` binary is on PATH so test steps
+        # run under Xod's active Python interpreter with `pytest_shim` instead of failing.
+        if not shutil.which("pytest", path=path_val):
+            py_q = shlex.quote(sys.executable)
+            command = re.sub(
+                r'(^|&&|\|\||;)\s*pytest(?=\s|$)',
+                lambda m: f"{m.group(1)} {py_q} -m pytest",
+                command,
+            )
         proc = await asyncio.create_subprocess_shell(command, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env, start_new_session=True)
         self._register_tool_child(proc, track=track)
         return proc
@@ -1406,9 +1423,10 @@ class SystemControlService:
     def write_file(self, filepath: str, content: str, create_dirs: bool = True) -> Dict[str, Any]:
         """
         Creates or overwrites a file on the host computer.
-        Automatically creates missing parent directories.
+        Automatically creates missing parent directories and verifies the write landed on disk.
         """
         try:
+            import hashlib
             why = self._unsafe_target(filepath, destructive=False)
             if why:
                 return {"success": False, "refused": True, "error": why}
@@ -1419,10 +1437,30 @@ class SystemControlService:
             if create_dirs:
                 p.parent.mkdir(parents=True, exist_ok=True)
 
-            p.write_text(content, encoding="utf-8")
+            expected_bytes = content.encode("utf-8")
+            expected_sha = hashlib.sha256(expected_bytes).hexdigest()
+            with open(p, "wb") as f:
+                f.write(expected_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+
+            if not p.exists():
+                return {"success": False, "error": f"Write verification failed: {p} does not exist after write."}
             st = p.stat()
+            actual_bytes = p.read_bytes()
+            actual_sha = hashlib.sha256(actual_bytes).hexdigest()
+            if st.st_size != len(expected_bytes) or actual_sha != expected_sha:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Write verification mismatch for {p}: expected {len(expected_bytes)} bytes "
+                        f"(sha256 {expected_sha[:12]}), found {st.st_size} bytes (sha256 {actual_sha[:12]})."
+                    ),
+                }
             return {
                 "success": True,
+                "verified_on_disk": True,
+                "sha256": actual_sha,
                 "filepath": str(p),
                 "name": p.name,
                 "size_bytes": st.st_size,
@@ -1441,9 +1479,10 @@ class SystemControlService:
     ) -> Dict[str, Any]:
         """
         Surgically replaces a specific block of text in an existing file anywhere on the computer.
-        Avoids overwriting entire files, ensuring safe and precise updates.
+        Avoids overwriting entire files, ensuring safe and precise updates with read-back verification.
         """
         try:
+            import hashlib
             p = Path(os.path.expanduser(filepath)).resolve()
             if not p.exists():
                 return {"success": False, "error": f"File not found: {filepath}"}
@@ -1485,7 +1524,22 @@ class SystemControlService:
                 new_text = original_text.replace(target_content, replacement_content, 1)
                 replaced_count = 1
 
-            p.write_text(new_text, encoding="utf-8")
+            expected_bytes = new_text.encode("utf-8")
+            expected_sha = hashlib.sha256(expected_bytes).hexdigest()
+            with open(p, "wb") as f:
+                f.write(expected_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+
+            st = p.stat()
+            actual_bytes = p.read_bytes()
+            actual_sha = hashlib.sha256(actual_bytes).hexdigest()
+            if st.st_size != len(expected_bytes) or actual_sha != expected_sha:
+                return {
+                    "success": False,
+                    "error": f"Edit verification mismatch on disk for {p.name}.",
+                    "filepath": str(p),
+                }
 
             old_lines_count = len(original_text.splitlines())
             new_lines_count = len(new_text.splitlines())
@@ -1493,8 +1547,11 @@ class SystemControlService:
 
             return {
                 "success": True,
+                "verified_on_disk": True,
+                "sha256": actual_sha,
                 "filepath": str(p),
                 "name": p.name,
+                "size_bytes": st.st_size,
                 "line_number": line_num,
                 "occurrences_replaced": replaced_count,
                 "lines_delta": delta,

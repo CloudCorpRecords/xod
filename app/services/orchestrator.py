@@ -119,9 +119,15 @@ def save_plan(task_id: str, items: List[Dict[str, Any]], instructions: List[str]
 
 def _item(text: Any, origin: str = "plan") -> Dict[str, Any]:
     parallel = None
+    independent = False
+    depends_on: List[Any] = []
     if isinstance(text, dict):
-        parallel, text = text.get("parallel"), text.get("text", "")
+        parallel = text.get("parallel")
+        independent = bool(text.get("independent"))
+        depends_on = list(text.get("depends_on") or [])
+        text = text.get("text", "")
     return {"id": f"s-{uuid.uuid4().hex[:6]}", "text": str(text).strip(), "status": "pending", "parallel": parallel,
+            "independent": independent, "depends_on": depends_on,
             "blocker": None, "result": None, "evidence": [], "origin": origin,
             "attempts": 0, "started_at": None, "finished_at": None, "note": None}
 
@@ -230,7 +236,14 @@ def _parse_steps(raw: str) -> List[Any]:
             elif jobs:
                 out.append(jobs[0])
         elif isinstance(s, dict) and s.get("text"):
-            out.append(str(s["text"]).strip())
+            if s.get("independent") or s.get("depends_on"):
+                out.append({
+                    "text": str(s["text"]).strip(),
+                    "independent": bool(s.get("independent")),
+                    "depends_on": list(s.get("depends_on") or []),
+                })
+            else:
+                out.append(str(s["text"]).strip())
         elif str(s).strip():
             out.append(str(s).strip())
     return out[:MAX_STEPS]
@@ -343,7 +356,10 @@ def _apply_idle(task_id: str, t: Dict[str, Any], sid: str, kind: str, body: str)
     if kind == "cancel":
         report = _cancel_plan(task_id, "you cancelled it")
         task_queue._update(task_id, status="cancelled", finished_at=time.time(), next_action=None,
-                           waiting_kind=None, now="Cancelled", note="Cancelled by you", result=report)
+                           waiting_kind=None, waiting_detail=None, pending_json=None,
+                           now="Cancelled", note="Cancelled by you", result=report)
+        from app.services import agent_log
+        agent_log.clear_waiting_for_origin(f"task:{task_id}", decision="cancelled")
         _mark_steer(sid, "applied", report)
         _emit("steer.applied", task_id, steer_id=sid, kind=kind, note=report[:200])
         return {"state": "applied", "note": report}
@@ -495,7 +511,10 @@ async def _apply_inbox(q: Any, task_id: str, task: Dict[str, Any]) -> Optional[s
             _mark_steer(sid, "applied", report)
             _emit("steer.applied", task_id, steer_id=sid, kind=kind, note=report[:200])
             q._update(task_id, status="cancelled", finished_at=time.time(), next_action=None, waiting_kind=None,
+                      waiting_detail=None, pending_json=None,
                       now="Cancelled", note="Cancelled by you", result=report)
+            from app.services import agent_log
+            agent_log.clear_waiting_for_origin(f"task:{task_id}", decision="cancelled")
             return "cancelled"
         if kind == "pause":
             nxt = next((i for i in items if i["status"] in ("in_progress", "pending")), None)
@@ -662,10 +681,20 @@ async def _scripted_stream(task_id: str, calls: List[Tuple[str, Dict[str, Any]]]
 async def _run_step(q: Any, task_id: str, prompt: str, steps: int) -> Tuple[str, int, bool]:
     """Runs one step's agent stream as its own asyncio task, watching the inbox for urgent
     steers while it runs. Returns (report, steps, interrupted)."""
+    import inspect
     if task_id in SCRIPTED:
         run = asyncio.ensure_future(_scripted_stream(task_id, SCRIPTED[task_id], steps))
     else:
-        run = asyncio.ensure_future(q._stream(task_id, prompt, steps))
+        framing = q._task_framing() if hasattr(q, "_task_framing") else ""
+        try:
+            params = inspect.signature(q._stream).parameters
+            accepts_framing = "system_extra" in params or len(params) >= 4
+        except Exception:
+            accepts_framing = False
+        if accepts_framing and framing:
+            run = asyncio.ensure_future(q._stream(task_id, prompt, steps, framing))
+        else:
+            run = asyncio.ensure_future(q._stream(task_id, prompt, steps))
     try:
         while not run.done():
             await asyncio.wait({run}, timeout=STEER_POLL_SEC)
@@ -716,10 +745,12 @@ def _self_report_problem(step_text: str, report: str) -> Optional[str]:
     import re
     from app.services import missions
     from app.services import task_queue as TQ
-    if TQ._claimed_file_effects(step_text) or TQ._claimed_run_effects(step_text, []):
-        return None
     if not (report or "").strip():
         return "the step ended without any report of what it did"
+    if re.search(r"(?:^|\n)\s*(?:The model stopped:|\*\*Paused after |\*\*Not finished yet:)", report or ""):
+        return f"its report says: {(report or '').strip().splitlines()[0][:200]}"
+    if TQ._claimed_file_effects(step_text) or TQ._claimed_run_effects(step_text, []):
+        return None
     report = report.replace("\u2019", "'").replace("\u2018", "'")   # models write curly apostrophes
     # An empty "couldn't ...: Nothing" section of a confirmed/inferred/unknown report is not an admission (live S5).
     report = re.sub(r"(?:could not|couldn't|can't|cannot|unable to)\s+[\w ,/]{0,40}?[:*]+\s*\**\s*(?:nothing|none|n/?a|-|—)\b\.?",
@@ -886,7 +917,10 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                     job_problems.append(f"{u['tool']} broke off and did not land ({u['evidence']}); it may be retried once")
                 else:
                     job_problems.append(f"{u['tool']} outcome is still UNKNOWN ({u['evidence']}); not retried blindly")
-            problems = q._verify_file_effects({"id": task_id, "request": step["text"]}, began)
+            problems = await asyncio.to_thread(q._verify_file_effects, {"id": task_id, "request": step["text"]}, began)
+            meta = getattr(q, "_last_stream_meta", {}).get(task_id) or {}
+            if meta.get("errors") and not (report or "").strip():
+                problems = problems + [f"model stream error: {'; '.join(meta['errors'])}"]
             own = None if step.get("parallel") else _self_report_problem(step["text"], report)
             if own and jobs and not job_problems:
                 # The agent could not see the end; the orchestrator did: every job it started
@@ -919,6 +953,24 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             if problems:
                 step["status"] = "blocked"
                 step["blocker"] = "; ".join(problems)
+                # Blocked-state continuation (Section 2b): if any remaining pending steps are
+                # explicitly marked independent (or have `depends_on` not naming this blocked step),
+                # block only dependent steps and let independent steps run!
+                pending_after = [i for i in items if i["status"] == "pending"]
+                has_explicit_dag = any(i.get("independent") or i.get("depends_on") for i in pending_after)
+                if has_explicit_dag:
+                    blocked_ids = {step["id"], k}
+                    for rem in pending_after:
+                        deps = set(rem.get("depends_on") or [])
+                        if not rem.get("independent") and (not deps or (deps & blocked_ids)):
+                            rem["status"] = "blocked"
+                            rem["blocker"] = f"blocked by step {k}: {step['blocker'][:160]}"
+                            rem["finished_at"] = time.time()
+                            blocked_ids.add(rem["id"])
+                    save_plan(task_id, items, instr)
+                    if any(i["status"] == "pending" for i in items):
+                        q._progress(task_id, f"✗ Step {k} blocked ({step['blocker'][:100]}); continuing independent steps")
+                        continue
                 save_plan(task_id, items, instr)
                 q._finish(task_id, "failed", _final_report(items) + f"\n\nStopped at step {k}: {step['blocker']}",
                           note="A step did not check out")
@@ -946,10 +998,33 @@ def _mission_mark() -> Tuple[int, Any, int]:
 
 def _paused_on_person(q: Any, task_id: str, items: List[Dict[str, Any]], instr: List[str],
                       step: Dict[str, Any], report: str, began: float, mark: Tuple[int, Any, int]) -> bool:
-    """A browser mission inside the step stopped for the person (an irreversible submit needs
-    their OK, a question, a bot check). The step is blocked with what would unblock it and the
-    task waits, keeping the page and the pending approval, exactly like a classic task. True
-    when the run must stop here."""
+    """A browser mission or safety/MCP approval inside the step stopped for the person (an
+    irreversible submit or tool call needs their OK, a question, a bot check). The step is blocked
+    with what would unblock it and the task waits, keeping the page and the pending approval,
+    exactly like a classic task. True when the run must stop here."""
+    # Check non-browser tool/Sentinel approval holds first (D1 Run 0 fix).
+    try:
+        from app.services import agent_log
+        meta = getattr(q, "_last_stream_meta", {}).get(task_id) or {}
+        open_approvals = agent_log.waiting_approvals_for(f"task:{task_id}", since=began - 0.5)
+        held = meta.get("held_approval") or (open_approvals[0] if open_approvals else None)
+    except Exception:
+        held = None
+    if held:
+        label = str(held.get("tool") or held.get("title") or "Approve")
+        msg = str(held.get("message") or held.get("detail") or report or "Needs your approval.")
+        step["status"] = "blocked"
+        step["waiting"] = True
+        step["blocker"] = f"waiting for your OK ({label})"
+        save_plan(task_id, items, instr)
+        q._update(task_id, note=f"Waiting for your OK ({label})", status="waiting",
+                  waiting_kind="approval", pending_json=held, result=report,
+                  waiting_detail={"label": label, "message": msg},
+                  now="Waiting for your OK", next_action=None)
+        from app.services import task_queue as TQ
+        TQ.notify(q.get(task_id)["title"], f"Needs your OK ({label}).")
+        TQ._phone(q.get(task_id), "approval")
+        return True
     try:
         from app.services.browser_sandbox import browser_sandbox_service as sb
         from app.services import resources
