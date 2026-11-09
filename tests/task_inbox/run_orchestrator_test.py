@@ -403,14 +403,22 @@ async def a8_midchain_failure(q):
     SKIP_WRITE.add(lie)
     ack = O.submit(request_for(write_step(d / "a.txt", "A"), write_step(lie, "B"), write_step(d / "c.txt", "C")))
     tid = ack["task_id"]
-    t = await wait_status(q, tid, ("done", "failed"))
+    # Since the blocked-state fix (Tier 6 leg C), a blocked step pauses the
+    # task on the person instead of failing it: the task waits with the
+    # blocker as a needs-you, and only the person's cancel (or an answer
+    # that lets the step check out) moves it on.
+    t = await wait_status(q, tid, ("waiting", "failed"))
     items, _, _ = O.load_plan(tid)
-    check("task failed honestly", t["status"] == "failed")
+    check("task waits on the person at the blocked step, not failed", t["status"] == "waiting")
     check("step 2 blocked with its reason after one retry",
           items[1]["status"] == "blocked" and "not on disk" in (items[1]["blocker"] or "") and items[1]["attempts"] == 2,
           json.dumps(items[1])[:300])
     check("step 3 never ran", items[2]["status"] == "pending" and not (d / "c.txt").exists())
-    check("report names the stop", "Stopped at step 2" in (t["result"] or ""))
+    check("the wait names the stop", "blocked" in ((t.get("waiting_detail") or {}).get("message") or ""))
+    await q.cancel(tid)
+    t = q.get(tid)
+    check("cancel lands the waiting task, blocker kept",
+          t["status"] == "cancelled" and "not on disk" in (O.load_plan(tid)[0][1].get("blocker") or ""))
     SKIP_WRITE.discard(lie)
 
 
@@ -494,11 +502,14 @@ async def a12_hedged_report(q):
           json.dumps(items[1])[:300])
     ack = O.submit(request_for(f"Check the job never-{d.name} finished"))
     HEDGE[f"Check the job never-{d.name} finished"] = -5      # hedges on every attempt
-    t = await wait_status(q, ack["task_id"], ("done", "failed"))
+    t = await wait_status(q, ack["task_id"], ("waiting", "failed"))
     items, _, _ = O.load_plan(ack["task_id"])
     check("a step that never confirms is blocked, not completed",
-          t["status"] == "failed" and items[0]["status"] == "blocked" and "can't tell" in (items[0]["blocker"] or ""),
+          t["status"] == "waiting" and items[0]["status"] == "blocked" and "can't tell" in (items[0]["blocker"] or ""),
           json.dumps(items[0])[:300])
+    await q.cancel(ack["task_id"])
+    check("the never-confirming task is cancelled by the person, not failed by the block",
+          q.get(ack["task_id"])["status"] == "cancelled")
 
 
 async def a13_unknown_not_redone(q):
@@ -562,10 +573,13 @@ async def a15_waits_for_step_jobs(q):
           any("duplicated side effect" in p for p in twice[0]), str(twice))
     bad = f"Run a real job: sleep 1 && exit 3"
     ack = O.submit(request_for(bad))
-    t = await wait_status(q, ack["task_id"], ("done", "failed"), timeout=30)
+    t = await wait_status(q, ack["task_id"], ("waiting", "failed"), timeout=30)
     items, _, _ = O.load_plan(ack["task_id"])
-    check("a job that exits non-zero never completes the step", t["status"] == "failed" and items[0]["status"] == "blocked"
+    check("a job that exits non-zero never completes the step", t["status"] == "waiting" and items[0]["status"] == "blocked"
           and "exit code 3" in (items[0]["blocker"] or ""), json.dumps(items[0])[:300])
+    await q.cancel(ack["task_id"])
+    check("the failed-job task is cancelled by the person, not failed by the block",
+          q.get(ack["task_id"])["status"] == "cancelled")
 
 
 async def a16_results_travel(q):
