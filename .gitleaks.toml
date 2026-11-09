@@ -1,0 +1,15 @@
+# Gitleaks allowlist for known test fixtures.
+#
+# The two phone enroll smoke tests sign a fake family registry for a
+# synthetic device (id "vector-mac", family "vector-family", account
+# "VectorAccount") with key material generated for the tests. The tests
+# run against a registry and keyring that live in a temp folder, and the
+# keys protect nothing real: no shipped device, account or service uses
+# them. The generic-api-key rule flags the fake box_key in these files;
+# that is a false positive, so the two fixture files are allowlisted by
+# path. Real key material anywhere else in the repo still fails the scan.
+[allowlist]
+paths = [
+  "tests/smoke/run_phone_enroll_autoapprove_test.py",
+  "tests/smoke/run_phone_enroll_test.py",
+]
