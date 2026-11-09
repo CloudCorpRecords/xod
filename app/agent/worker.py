@@ -71,15 +71,22 @@ _DEV_RE = re.compile(r"\b(?:npm|npx|pnpm|yarn|pip3?|pipx|uv|winget|choco(?:latey
                      r"|\b(?:web|http|local|dev|api|flask|express|fastapi|django) ?server\b", re.I)
 # Installing a model, a connector or an add-on has its own place in Xod.
 _NOT_HERE_RE = re.compile(r"\b(?:model|llm|connector|connection|add-?on|plugin|extension for xod|xod update|update xod)\b", re.I)
+_XOD_OWN_META_RE = re.compile(
+    r"\b(?:connector|connection|add-?on|plugin|extension for xod|xod update|update xod)\b"
+    r"|\b(?:install|download|switch|change|pick|select|load|unload|delete|remove)\b[^.?!]{0,40}\b(?:model|llm)s?\b",
+    re.I,
+)
 _CONTINUE_RE = re.compile(r"^\s*(?:ok(?:ay)?[,.!]?\s*)?(?:please\s+)?(?:continue|keep going|go on|carry on|resume|finish (?:it|that|the job)|"
                           r"try again|do it|go ahead|yes,? (?:continue|keep going|go ahead)|it didn'?t work|proceed|start|begin|"
                           r"go for it|let'?s (?:go|do it)|launch it)\b", re.I)
 # "Start!" carries on a job that isn't finished; after one that is, it means something new.
 _START_RE = re.compile(r"^\s*(?:ok(?:ay)?[,.!]?\s*)?(?:please\s+)?(?:proceed|start|begin|go for it|let'?s (?:go|do it))\b", re.I)
 # Jobs said in plain words: "make a script that gets the top stories and saves a csv, then run it".
-_DO_RE = re.compile(r"\b(?:make|create|write|build|set ?up|code|generate|fix|debug)\b[^.?!]{0,80}?\b(?:script|program|cli|command[- ]line tool|"
-                    r"bot|scraper|cron job|config(?:uration)?|csv|spreadsheet|json file|dotfiles?)\b"
-                    r"|\bthen (?:run|test|execute) (?:it|them)\b", re.I)
+_DO_RE = re.compile(r"\b(?:make|create|write|build|set ?up|code|generate|fix|debug|register)\b(?:[^?!\n]|\.(?!\s)){0,140}?\b(?:script|program|cli|command[- ]line tool|"
+                    r"bot|scraper|cron job|config(?:uration)?|csv|spreadsheet|json file|dotfiles?|service|workflow|quick action|plist|bundle)\b"
+                    r"|\bthen (?:run|test|execute) (?:it|them)\b"
+                    r"|\b(?:/System/Library/CoreServices/pbs|~/Library/Services)\b"
+                    r"|\b(?:test|run|execute)\b(?:[^?!\n]|\.(?!\s)){0,100}?\b(?:installed service|functional test|python3?\s+\S+\.py)\b", re.I)
 # "Go through the websites about them and bring me the info": reading pages, not one search.
 _GATHER_RE = re.compile(r"\b(?:go (?:through|thru|thur)|visit|read|click (?:through|around)|dig (?:into|through|deeper)|look through|"
                         r"open up|check out)\b[^.?!]{0,50}?\b(?:websites?|web ?pages?|sites|pages|links|articles|sources|them|each one|"
@@ -134,6 +141,7 @@ def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
         after = q.split("YOUR STEP NOW", 1)[1]
         if ":" in after:
             after = after.split(":", 1)[1]
+        after = after.split("\n\nDo only this step", 1)[0]
         match_q = after.strip() or q
     prev = _last_job(messages)
     if prev and prev.get("goal"):
@@ -144,11 +152,11 @@ def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
         # It stopped to ask ("which one: three.js or plain canvas?"), and this is the answer.
         if prev.get("waiting") and len(q) < 150 and not _QUESTION_RE.match(q):
             return {"goal": prev["goal"], "kind": kind, "resume": prev.get("left") or "", "extra": q}
-    if _NOT_HERE_RE.search(match_q):
+    if _XOD_OWN_META_RE.search(match_q) or (_NOT_HERE_RE.search(match_q) and not _DO_RE.search(match_q)):
         return None
     if _INSTALL_RE.search(match_q) or _DEV_RE.search(match_q):
         return {"goal": q, "kind": "computer", "resume": "", "extra": ""}
-    if _QUESTION_RE.match(match_q) or len(q) > 1500:
+    if _QUESTION_RE.match(match_q) or len(match_q) > 1500:
         return None
     if wants_phone(match_q):
         return {"goal": q, "kind": "phone", "resume": "", "extra": ""}
@@ -344,7 +352,8 @@ Windows notes:
 SHELL_MAC = """
 Mac notes:
 - Commands run in zsh. Homebrew: `brew install <name>`; `brew search <name>` when unsure of the name.
-- A Python virtual environment: call its own python, e.g. `<venv>/bin/python -m pip install <pkg>`."""
+- A Python virtual environment: call its own python, e.g. `<venv>/bin/python -m pip install <pkg>`.
+- A macOS right-click Service / Quick Action in `~/Library/Services/<Name>.workflow` is a directory bundle (never a flat file) containing `Contents/Info.plist` (XML plist with `NSServices`: `[{"NSMenuItem": {"default": "..."}, "NSMessage": "runWorkflowAsService", "NSSendTypes": ["public.utf8-plain-text"]}]`), `Contents/document.wflow` (XML plist), and your executable script; register it via `/System/Library/CoreServices/pbs -update`."""
 
 
 # ------------------------------------------------------------------ decision-time guidance
@@ -544,6 +553,10 @@ FINISHED = {
                 "(a version printed, an import that worked, the program's own output, a page that answered).\n"
                 "For a server or web page, proof is the page's content fetched and shown in an output; \"the port is open\" or\n"
                 "\"it's listening\" is not proof.",
+    "computer_step": "This is ONE step of a multi-step plan. Finished means: everything asked for in THIS step is done and "
+                     "verified by the tool outputs below (for file creation/editing steps, successful write/edit tool outputs "
+                     "for the requested files count as proof; if this step asks to run a command or test, the command's output "
+                     "must show it succeeded). Do NOT require work that belongs to later steps of the plan.",
     "web": "Finished means: every part of what the person asked for is covered by pages the worker actually read (web_scrape\n"
            "outputs), and the worker's last message gives them that information. Search results alone are not reading the\n"
            "websites. A page that was blocked or empty doesn't count: another source for the same thing does.",
@@ -554,10 +567,30 @@ FINISHED = {
 }
 
 
+def _is_orchestrated_step(goal: str) -> bool:
+    return bool(goal and "YOUR STEP NOW" in goal)
+
+
+def _step_goal(goal: str) -> str:
+    """Extracts the active step instruction when `goal` is an orchestrator `_step_prompt`."""
+    q = (goal or "").strip()
+    if "YOUR STEP NOW" not in q:
+        return q
+    after = q.split("YOUR STEP NOW", 1)[1]
+    if ":" in after:
+        after = after.split(":", 1)[1]
+    after = after.split("\n\nDo only this step", 1)[0]
+    return after.strip() or q
+
+
 async def done_check(goal: str, log: List[Dict[str, Any]], final: str, kind: str = "computer") -> Dict[str, Any]:
     if not log:
         return {"done": False, "missing": "Nothing has been run yet. Do the job with the tools.", "needs_person": False}
-    prompt = CHECK.format(finished=FINISHED.get(kind, FINISHED["computer"]), goal=goal, steps=_steps_text(log, goal=goal),
+    is_step = _is_orchestrated_step(goal)
+    effective_goal = _step_goal(goal) if is_step else goal
+    fin_key = "computer_step" if (is_step and kind == "computer") else kind
+    prompt = CHECK.format(finished=FINISHED.get(fin_key, FINISHED["computer"]), goal=effective_goal,
+                          steps=_steps_text(log, goal=effective_goal),
                           final=(final or "(none)")[:800])
     try:
         reply = await llm_service.chat_completion(messages=[{"role": "user", "content": prompt}], temperature=0.0,
@@ -626,13 +659,32 @@ def calls_in_text(content: str, allowed: set) -> List[Dict[str, Any]]:
     return out[:4]
 
 
-def _shrink(convo: List[Dict[str, Any]]) -> None:
-    """Older tool results get short, so thirty steps still fit a local model's context."""
+def _worker_context_limits(force_local: Optional[bool] = None) -> Tuple[int, int, int, int, int]:
+    """Returns `(keep_full, max_tool_body, shrink_threshold, head_chars, tail_chars)`.
+    On a cloud / large-context brain, retains significantly more tool output history so multi-file
+    long-form tasks do not lose file contents after a few turns. On a local model, preserves the
+    tight 8 GB memory budget."""
+    if force_local is None:
+        try:
+            is_local = llm_service._is_local()
+        except Exception:
+            is_local = True
+    else:
+        is_local = bool(force_local)
+    if is_local:
+        return KEEP_FULL, 4000, 600, 250, 300
+    return max(KEEP_FULL, 14), 10000, 3200, 1400, 1400
+
+
+def _shrink(convo: List[Dict[str, Any]], force_local: Optional[bool] = None) -> None:
+    """Older tool results get short so thirty steps still fit a local model's context, while scaling
+    up retention when running on a cloud / large-context brain."""
+    keep_full, _max_body, threshold, head_n, tail_n = _worker_context_limits(force_local=force_local)
     tool_msgs = [m for m in convo if m.get("role") == "tool"]
-    for m in tool_msgs[:-KEEP_FULL]:
+    for m in tool_msgs[:-keep_full]:
         c = m.get("content") or ""
-        if len(c) > 600:
-            m["content"] = c[:250] + " … " + c[-300:]
+        if len(c) > threshold:
+            m["content"] = c[:head_n] + " … " + c[-tail_n:]
 
 
 def _summary(name: str, res: Any) -> str:
@@ -904,7 +956,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                         "out": out[:8000] if page else out[-3000:], "page": page,
                         "exit": res.get("exit_code") if isinstance(res, dict) else None, "new": True})
             body = json.dumps(res, default=str) if not isinstance(res, str) else res
-            convo.append({"role": "tool", "tool_call_id": cid, "name": name, "content": body[:4000]})
+            _keep_full, max_tool_body, _thr, _h, _t = _worker_context_limits()
+            convo.append({"role": "tool", "tool_call_id": cid, "name": name, "content": body[:max_tool_body]})
             if isinstance(res, dict) and res.get("needs_approval"):
                 held = res
                 break

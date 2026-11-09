@@ -65,10 +65,19 @@ def _count_tests(text: str) -> int:
 
 def _file_type_problem(p: Path) -> Optional[str]:
     """A type problem with the file at p, or None. Only the suffixes
-    with a decidable bar are judged (.py, test files, .json); anything
+    with a decidable bar are judged (.py, test files, .json, .plist, .wflow,
+    shell scripts, and flat .service/.workflow files under Services); anything
     else passes on existence and content, as before."""
+    import plistlib
     try:
-        if p.suffix == ".py":
+        sfx = p.suffix.lower()
+        if sfx in (".service", ".workflow") and p.is_file() and (
+            "Services" in p.parts or sys.platform == "darwin"
+        ):
+            return (f"{p.name} is a flat file, not a macOS Service bundle directory: "
+                    f"a service in ~/Library/Services must be a .workflow or .service directory "
+                    f"containing Contents/Info.plist (with NSServices) and Contents/document.wflow")
+        if sfx == ".py":
             if p.stat().st_size > 2_000_000:
                 return None
             text = p.read_text(encoding="utf-8", errors="replace")
@@ -79,14 +88,47 @@ def _file_type_problem(p: Path) -> Optional[str]:
             if _is_test_file_name(p.name) and _count_tests(text) == 0:
                 return (f"{p.name} collects no tests: a test file must define "
                         f"at least one test")
-        elif p.suffix == ".json":
+        elif sfx == ".json":
             if p.stat().st_size > 2_000_000:
                 return None
             try:
                 json.loads(p.read_text(encoding="utf-8", errors="replace"))
             except Exception as e:
                 return f"{p.name} is not valid JSON ({e})"
-    except OSError:
+        elif sfx in (".plist", ".wflow"):
+            if p.stat().st_size > 2_000_000:
+                return None
+            try:
+                pl = plistlib.loads(p.read_bytes())
+            except Exception as e:
+                return f"{p.name} is not a valid plist ({e})"
+            if p.name == "Info.plist" and any(
+                part.lower().endswith((".workflow", ".service")) for part in p.parts
+            ):
+                ns_services = pl.get("NSServices") if isinstance(pl, dict) else None
+                if not isinstance(ns_services, list) or not ns_services or not all(
+                    isinstance(item, dict) and item.get("NSMenuItem") and item.get("NSMessage")
+                    for item in ns_services
+                ):
+                    return (f"{p.name} is missing a valid NSServices entry "
+                            f"(requires NSMenuItem and NSMessage)")
+        else:
+            is_shell = sfx in (".sh", ".bash", ".zsh")
+            if not is_shell and p.is_file() and 0 < p.stat().st_size <= 500_000:
+                head_bytes = p.read_bytes()[:64]
+                if head_bytes.startswith(b"#!") and re.search(br"\b(?:ba|z)?sh\b", head_bytes.splitlines()[0]):
+                    is_shell = True
+            if is_shell and p.stat().st_size <= 500_000:
+                shell_bin = "/bin/zsh" if sfx == ".zsh" and os.path.exists("/bin/zsh") else "/bin/bash"
+                if os.path.exists(shell_bin):
+                    proc = subprocess.run(
+                        [shell_bin, "-n", str(p)],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if proc.returncode != 0:
+                        err_line = ((proc.stderr or proc.stdout or "").strip().splitlines() or ["syntax error"])[-1]
+                        return f"{p.name} has a shell syntax error ({err_line[:160]})"
+    except (OSError, subprocess.SubprocessError):
         return None
     return None
 
@@ -327,7 +369,7 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
     if cm:
         content = cm.group(1).split("\n")[0].strip() or None
     claims: List[Dict[str, Any]] = []
-    sentences = re.split(r"[.!?\n]", text)
+    sentences = re.split(r"\.(?=\s|$)|[!?\n]", text)
     for p in dict.fromkeys(paths):
         kind = None
         for s in sentences:
@@ -1468,6 +1510,10 @@ class TaskQueue:
             p = Path(raw)
             if want == "file" and not p.is_file():
                 problems.append(f"{p.name} was written during the task but is not on disk now")
+            elif want == "file" and p.is_file():
+                type_problem = _file_type_problem(p)
+                if type_problem:
+                    problems.append(type_problem)
             elif want == "absent" and p.exists():
                 problems.append(f"{p.name} was deleted during the task but is still on disk")
             elif want == "present" and not p.exists():
@@ -1622,11 +1668,15 @@ class TaskQueue:
             if ver_ms >= 500:
                 logger.info("slow_step task=%s phase=verify_file_effects duration_ms=%d", task_id, ver_ms)
             stream_errors = meta.get("errors") or []
-            if stream_errors and not (report or "").strip():
+            if stream_errors and (not (report or "").strip() or any(err in (report or "") for err in stream_errors)):
                 problems.append(f"model stream error: {'; '.join(stream_errors)}")
             elif re.search(r"(?:^|\n)\s*(?:The model stopped:|\*\*Paused after |\*\*Not finished yet:)", report or ""):
                 problems.append(f"the worker stopped before finishing ({(report or '').splitlines()[0][:160]})")
-            if problems:
+            fatal_key_err = any(
+                re.search(r"missing api key for|no api key (?:configured|set|saved) for", p, re.I)
+                for p in problems
+            )
+            if problems and not fatal_key_err:
                 self._update(task_id, note="The first attempt did not check out; running it again",
                              now="Checking the result before finishing")
                 retry_msg = (f"{task['request']}\n\n(You already attempted this once and reported finishing, "
@@ -1663,7 +1713,7 @@ class TaskQueue:
                     return
                 problems = await asyncio.to_thread(self._verify_file_effects, task, started)
                 stream_errors2 = meta2.get("errors") or []
-                if stream_errors2 and not (report or "").strip():
+                if stream_errors2 and (not (report or "").strip() or any(err in (report or "") for err in stream_errors2)):
                     problems.append(f"model stream error: {'; '.join(stream_errors2)}")
                 elif re.search(r"(?:^|\n)\s*(?:The model stopped:|\*\*Paused after |\*\*Not finished yet:)", report or ""):
                     problems.append(f"the worker stopped before finishing ({(report or '').splitlines()[0][:160]})")

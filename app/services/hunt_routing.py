@@ -108,6 +108,12 @@ def is_find_intent(text: str) -> bool:
     asks, change requests, and exact-format dictates are not hunts here.
     """
     q = (text or "").strip()
+    if "\nYOUR STEP NOW" in q:
+        after = q.split("\nYOUR STEP NOW", 1)[1]
+        if ":" in after:
+            after = after.split(":", 1)[1]
+        after = after.split("\n\nDo only this step", 1)[0]
+        q = after.strip() or q
     if not q or len(q) > 2000:
         return False
     from app.services import decisive_evidence

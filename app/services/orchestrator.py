@@ -28,6 +28,7 @@ that step already took, so completed work is never repeated.
 import asyncio
 import json
 import logging
+import re
 import sqlite3
 import time
 import uuid
@@ -186,6 +187,12 @@ add steps the person did not ask for. A task that is genuinely one action is one
 or looking something up from the step that uses it: "summarize the file X" is ONE step (read it and
 summarize it), not a read step followed by a summary step.
 
+Keep each step description concise (under 45 words): never paste multi-line scripts, plists, or full file
+bodies inside a step description; the step worker writes the code with its file tools. When a task asks to
+build and install a system service, Quick Action, workflow, or CLI utility, plan 3 distinct steps:
+(1) create the complete bundle and script files on disk, (2) register or install at the destination and
+verify registration, (3) run an end-to-end functional test on sample input and verify its output.
+
 When the task asks for several INDEPENDENT look-ups or research jobs (reading only: no writing, sending or
 changing anything), put them in ONE step that runs them in parallel:
   {{"text": "short name of the combined job", "parallel": ["job one, fully self-contained", "job two, ..."]}}
@@ -215,11 +222,76 @@ Answer with JSON only: {{"steps": ["...", "..."]}}"""
 
 
 async def _ask_model(prompt: str) -> str:
-    from app.services.llm import llm_service, JSON_MIN_TOKENS
+    from app.services.llm import llm_service
     reply = await llm_service.chat_completion(
         messages=[{"role": "user", "content": prompt}],
-        temperature=0.1, max_tokens=max(JSON_MIN_TOKENS, 1200), think=False, task="mission_plan")
+        temperature=0.1, max_tokens=600, think=False, task="mission_plan")
     return reply.get("content", "") or ""
+
+
+_INLINE_CODE_DUMP_RE = re.compile(
+    r"(?:\s*(?:with the following content|containing the following(?:\s+content|\s+script|\s+code)?)\s*:\s*\n.+)"
+    r"|(?:\n+```[\s\S]*)"
+    r"|(?:\n+#!/[\s\S]*)",
+    re.I | re.S,
+)
+
+_MACOS_SERVICE_TASK_RE = re.compile(
+    r"(?:~/Library/Services|/Library/Services|\b(?:right[- ]click|quick action|macos service|services menu)\b)"
+    r"[\s\S]{0,400}?\b(?:service|workflow|quick action|right[- ]click|ai|llm|selected text|selection)\b",
+    re.I,
+)
+
+
+def _strip_inline_code_from_step(text: str) -> str:
+    """Removes multi-line script/code dumps that a planner stuffed into a step description."""
+    cleaned = _INLINE_CODE_DUMP_RE.sub("", text or "").strip()
+    if "\n" in cleaned and len(cleaned) > 320:
+        first_line = cleaned.splitlines()[0].strip().rstrip(":")
+        if len(first_line) >= 20:
+            cleaned = first_line
+    return cleaned or (text or "").strip()
+
+
+def _sanitize_and_shape_steps(request: str, steps: List[Any]) -> List[Any]:
+    """Sanitizes planner output (stripping inline truncated code dumps) and enforces a 3-step
+    build -> register -> functional-test plan shape for macOS Service / Quick Action builds."""
+    sanitized: List[Any] = []
+    for s in steps or []:
+        if isinstance(s, dict) and s.get("text") and not s.get("parallel"):
+            s_copy = dict(s)
+            s_copy["text"] = _strip_inline_code_from_step(str(s["text"]))
+            sanitized.append(s_copy)
+        elif isinstance(s, str):
+            sanitized.append(_strip_inline_code_from_step(s))
+        else:
+            sanitized.append(s)
+
+    req = request or ""
+    if _MACOS_SERVICE_TASK_RE.search(req):
+        joined = " ".join(s.get("text", "") if isinstance(s, dict) else str(s) for s in sanitized).lower()
+        has_bundle = ".workflow" in joined and "info.plist" in joined
+        has_pbs = "pbs" in joined
+        has_test = ("test" in joined or "verify" in joined) and len(sanitized) >= 3
+        if not (has_bundle and has_pbs and has_test):
+            # Extract custom service name if the request explicitly named a .workflow bundle, else AskXodAI.workflow.
+            m_wf = re.search(r"([\w\- ]+\.workflow)\b", req)
+            wf_name = m_wf.group(1).strip() if m_wf else "AskXodAI.workflow"
+            return [
+                (f"Create the files ~/Library/Services/{wf_name}/Contents/Info.plist (valid XML plist with NSServices "
+                 f"array containing NSMenuItem default 'Ask Xod AI', NSMessage 'runWorkflowAsService', and NSSendTypes "
+                 f"['public.utf8-plain-text']), ~/Library/Services/{wf_name}/Contents/document.wflow (valid Automator "
+                 f"Run Shell Script plist invoking ask_ai.py), and ~/Library/Services/{wf_name}/Contents/ask_ai.py "
+                 f"(executable Python script reading selected text from sys.argv or sys.stdin and querying "
+                 f"http://127.0.0.1:1234/v1/chat/completions with fallback to http://127.0.0.1:11434/v1/chat/completions, "
+                 f"without requiring an external API key)."),
+                (f"Register the Quick Action with macOS by running /System/Library/CoreServices/pbs -update and "
+                 f"verify {wf_name} appears in /System/Library/CoreServices/pbs -dump_pboard."),
+                (f"Test the installed service end-to-end by running "
+                 f"python3 ~/Library/Services/{wf_name}/Contents/ask_ai.py 'Reply with OK' and confirming exit code 0 "
+                 f"and a non-empty response."),
+            ]
+    return sanitized[:MAX_STEPS]
 
 
 def _parse_steps(raw: str) -> List[Any]:
@@ -250,7 +322,8 @@ def _parse_steps(raw: str) -> List[Any]:
 
 
 async def default_planner(request: str) -> List[str]:
-    return _parse_steps(await _ask_model(PLAN_PROMPT.format(request=request, max_steps=MAX_STEPS)))
+    raw_steps = _parse_steps(await _ask_model(PLAN_PROMPT.format(request=request, max_steps=MAX_STEPS)))
+    return _sanitize_and_shape_steps(request, raw_steps)
 
 
 async def default_replanner(request: str, done: List[Dict[str, Any]], remaining: List[Dict[str, Any]],
@@ -449,11 +522,128 @@ async def _search_memory_first(q: Any, task_id: str, request: str) -> Dict[str, 
     return mem
 
 
+def _is_large_context() -> bool:
+    """True when the active chat model is a cloud provider (or large-context backend) rather than
+    a memory-constrained local model."""
+    try:
+        from app.services.llm import llm_service
+        return not llm_service._is_local()
+    except Exception:
+        return False
+
+
+def _step_written_files(task_id: str, since: float) -> List[str]:
+    """Ordered unique file paths written or edited by this task's tools since `since`."""
+    try:
+        from app.services import activity
+        entries = activity.entries_for_origin(f"task:{task_id}", since=since - 0.5)
+    except Exception:
+        return []
+    paths: List[str] = []
+    seen = set()
+    for e in entries:
+        if not e.get("ok"):
+            continue
+        for op in e.get("ops") or []:
+            if op.get("kind") in ("write_file", "restore_file", "remove_created"):
+                p = str(op.get("path") or "").strip()
+                if p and p not in seen:
+                    seen.add(p)
+                    paths.append(p)
+        if not e.get("ops") and e.get("tool") in ("computer_write_file", "computer_edit_file", "fs_write_workspace_file"):
+            p = str(e.get("detail") or "").strip()
+            if p and p not in seen:
+                seen.add(p)
+                paths.append(p)
+    return paths
+
+
+def _task_artifact_ledger(task_id: str, items: List[Dict[str, Any]], large_ctx: Optional[bool] = None) -> str:
+    """Builds a provenance-preserving workspace artifact ledger (CLM-024) of files created or
+    modified by completed steps in this task, reading their current on-disk contents so later
+    steps do not suffer step-boundary amnesia."""
+    import os
+    from pathlib import Path
+    if large_ctx is None:
+        large_ctx = _is_large_context()
+    per_file = 2400 if large_ctx else 700
+    total_cap = 9600 if large_ctx else 2100
+    max_files = 8 if large_ctx else 4
+
+    candidate_paths: List[str] = []
+    seen = set()
+    for i in items:
+        if i.get("status") != "completed":
+            continue
+        for p in i.get("artifacts") or []:
+            if p and p not in seen:
+                seen.add(p)
+                candidate_paths.append(p)
+    for p in _step_written_files(task_id, 0.0):
+        if p and p not in seen:
+            seen.add(p)
+            candidate_paths.append(p)
+
+    if not candidate_paths:
+        return ""
+
+    blocks: List[str] = []
+    used = 0
+    for raw_p in candidate_paths[-max_files:]:
+        try:
+            fp = Path(os.path.expanduser(raw_p))
+            if not fp.is_file():
+                continue
+            size = fp.stat().st_size
+            raw_bytes = fp.read_bytes()[: per_file * 2]
+            if b"\x00" in raw_bytes[:512]:
+                snippet = "(binary file)"
+            else:
+                text = raw_bytes.decode("utf-8", errors="replace").strip()
+                if len(text) > per_file:
+                    half = per_file // 2
+                    snippet = text[:half] + "\n... [truncated] ...\n" + text[-half:]
+                else:
+                    snippet = text
+            entry = f"- {raw_p} ({size} bytes):\n  ```\n  {snippet.replace(chr(10), chr(10) + '  ')}\n  ```"
+            if used + len(entry) > total_cap and blocks:
+                break
+            blocks.append(entry)
+            used += len(entry)
+        except Exception:
+            continue
+
+    if not blocks:
+        return ""
+    return (
+        "\nWorkspace artifact ledger (files created or updated by earlier steps in this task, read from disk now):\n"
+        + "\n".join(blocks)
+    )
+
+
+_PLAN_UPDATE_RE = re.compile(r"(?:^|\n)\s*PLAN_UPDATE:\s*(.+?)\s*$", re.I | re.M)
+MAX_AUTO_REPLANS = 2
+
+
+def _extract_plan_update(report: str) -> Tuple[str, Optional[str]]:
+    """Extracts an optional `PLAN_UPDATE: <instruction>` directive from a step's report and returns
+    `(cleaned_report, plan_update_instruction)`."""
+    if not report:
+        return "", None
+    m = _PLAN_UPDATE_RE.search(report)
+    if not m:
+        return report, None
+    directive = m.group(1).strip()
+    cleaned = _PLAN_UPDATE_RE.sub("", report).strip()
+    return (cleaned or report.strip()), (directive if len(directive) >= 5 else None)
+
+
 def _step_prompt(task: Dict[str, Any], items: List[Dict[str, Any]], instructions: List[str],
                  step: Dict[str, Any], prior_ops: List[str]) -> str:
     live = [i for i in items if i["status"] != "cancelled"]
     k = next((n for n, i in enumerate(live, 1) if i["id"] == step["id"]), 0)
     done = [i for i in items if i["status"] == "completed"]
+    large_ctx = _is_large_context()
     parts = ["You are carrying out ONE step of a larger task for the person.",
              f"\nThe overall task:\n{task['request']}"]
     try:
@@ -467,14 +657,20 @@ def _step_prompt(task: Dict[str, Any], items: List[Dict[str, Any]], instructions
         parts.append("\nChanges the person made since the task started (newest last; they win over the "
                      "original wording wherever they conflict):\n" + "\n".join(f"- {x}" for x in instructions))
     if done:
-        # Results travel between steps in full (up to 4000 characters each for the last two): each step is a
-        # fresh agent run, and a 300-character snippet once left a "summarize" step without the text its
-        # "read" step had found (live S10).
-        recent = {i["id"] for i in done[-2:]}
+        # Results travel between steps in full (up to 6000 chars for the last 3 on cloud / 4000 for the last 2
+        # on local, and 1500 chars for older steps on cloud / 600 on local): each step is a fresh agent run,
+        # and a 300-character snippet once left a later step without the text its earlier step had found (live S10).
+        recent_n = 3 if large_ctx else 2
+        recent_cap = 6000 if large_ctx else 4000
+        older_cap = 1500 if large_ctx else 600
+        recent = {i["id"] for i in done[-recent_n:]}
         parts.append("\nSteps already completed. Their effects already exist; do NOT redo any of them:\n"
-                     + "\n".join(f"- {i['text']}" + (f"\n  RESULT: {str(i.get('result') or '')[:4000 if i['id'] in recent else 300]}"
+                     + "\n".join(f"- {i['text']}" + (f"\n  RESULT: {str(i.get('result') or '')[:recent_cap if i['id'] in recent else older_cap]}"
                                                        if i.get("result") else "")
                                  for i in done))
+        ledger = _task_artifact_ledger(task["id"], items, large_ctx=large_ctx)
+        if ledger:
+            parts.append(ledger)
     retrying = str(step.get("note") or "").startswith("first attempt did not check out")
     if prior_ops and retrying:
         # Unknown is not failed (spec section 9): actions already taken get checked, never redone blindly.
@@ -495,8 +691,12 @@ def _step_prompt(task: Dict[str, Any], items: List[Dict[str, Any]], instructions
         parts.append("\nYou already attempted this step once and checking found: " + found + "."
                      + (" Establish the real outcome as above." if prior_ops else " Do it now for real, using your tools."))
     parts.append(f"\nYOUR STEP NOW (step {k} of {len(live)}):\n{step['text']}")
-    parts.append("\nDo only this step, using your tools. Then reply with a short report of what you did "
-                 "and what you found. If you cannot do it, say exactly what blocks it.")
+    tail = ("\nDo only this step, using your tools. Then reply with a short report of what you did "
+            "and what you found. If you cannot do it, say exactly what blocks it.")
+    if k < len(live):
+        tail += (" If what you discovered on disk means the remaining steps of the plan need to be adjusted, "
+                 "add a final line `PLAN_UPDATE: <how the remaining steps should be updated>`.")
+    parts.append(tail)
     return "\n".join(parts)
 
 
@@ -736,12 +936,34 @@ _UNVERIFIED_RES = (
 )
 
 
+_MODEL_OR_PLAN_ERROR_RES = (
+    r"\bmissing api key for\b",
+    r"\bno api key (?:configured|set|saved) for\b",
+    r"\brefused the api key\b",
+    r"\bi couldn't work out the steps for that just now, so i haven't done anything\b",
+    r"\bi can't do this one yet:\b",
+)
+
+_EXPLICIT_INCOMPLETE_OR_PUNT_RES = (
+    r"\b(?:is|remains|left)\s+incomplete\b",
+    r"\bwritten,?\s+but\s+(?:it\s+is\s+)?incomplete\b",
+    r"\bmissing its closing\b",
+    r"\b(?:truncated|cut off)\s+(?:mid-|before|at)\b",
+    r"\bi can (?:fix|finish|complete) (?:that|this|it) in the next step if you\b",
+    r"\bif you'?d like me to (?:continue|finish|fix|complete)\b",
+    r"\bwould you like me to (?:continue|finish|fix|complete)\b",
+    r"\blet me know if you(?:'d like| want) me to (?:continue|finish|fix|complete)\b",
+)
+
+
 def _self_report_problem(step_text: str, report: str) -> Optional[str]:
     """The step's own report admits it did not finish, was blocked, or could not tell whether
     its outcome holds. A step whose outcome the disk check cannot establish (no file or run
     claim in its words) is only completed on a report that does not say otherwise: a step is
     never marked completed because it was attempted. A step with verifiable claims that all
-    held is judged by the disk, not by a hedge in its wording."""
+    held is judged by the disk, not by a hedge in its wording — unless the report explicitly
+    emits a model/API-key error, admits the written artifact is incomplete/truncated, or punts
+    completion under granted authority (Rule 6)."""
     import re
     from app.services import missions
     from app.services import task_queue as TQ
@@ -749,9 +971,27 @@ def _self_report_problem(step_text: str, report: str) -> Optional[str]:
         return "the step ended without any report of what it did"
     if re.search(r"(?:^|\n)\s*(?:The model stopped:|\*\*Paused after |\*\*Not finished yet:)", report or ""):
         return f"its report says: {(report or '').strip().splitlines()[0][:200]}"
+    norm_report = (report or "").replace("\u2019", "'").replace("\u2018", "'")
+    for p in _MODEL_OR_PLAN_ERROR_RES:
+        m_err = re.search(p, norm_report, re.I)
+        if m_err:
+            return f"its report says: {norm_report.strip().splitlines()[0][:200]}"
+    for p in _EXPLICIT_INCOMPLETE_OR_PUNT_RES:
+        m_inc = re.search(p, norm_report, re.I)
+        if m_inc:
+            for s in re.split(r"[.\n]", norm_report):
+                if re.search(p, s, re.I):
+                    return f"its report admits the step is incomplete: {s.strip()[:200]}"
+            return f"its report admits the step is incomplete: {m_inc.group(0)[:200]}"
+    m_exact = re.search(r"reply with exactly this text and nothing else:\s*(.+)", step_text or "", re.I)
+    if m_exact:
+        want = m_exact.group(1).strip().strip("\"'`")
+        got = re.sub(r"<!--.*?-->", "", norm_report, flags=re.S).strip()
+        if want and got != want:
+            return f"exact reply mismatch: expected {want!r}, got {got[:120]!r}"
     if TQ._claimed_file_effects(step_text) or TQ._claimed_run_effects(step_text, []):
         return None
-    report = report.replace("\u2019", "'").replace("\u2018", "'")   # models write curly apostrophes
+    report = norm_report
     # An empty "couldn't ...: Nothing" section of a confirmed/inferred/unknown report is not an admission (live S5).
     report = re.sub(r"(?:could not|couldn't|can't|cannot|unable to)\s+[\w ,/]{0,40}?[:*]+\s*\**\s*(?:nothing|none|n/?a|-|—)\b\.?",
                     "", report, flags=re.I)
@@ -836,6 +1076,7 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             version = save_plan(task_id, items, instr, bump=True, why="first plan")
             q._progress(task_id, f"• Plan ready: {len(items)} step(s)")
         steps = task.get("steps") or 0
+        auto_replans = 0
         # No browser tab is grabbed up front: tasks run side by side, and the browser is claimed (and
         # its global mission state touched) only by a task that actually uses it (services/resources.py).
         resume_msg = await _take_resume(q, task_id, task)
@@ -919,7 +1160,12 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                     job_problems.append(f"{u['tool']} outcome is still UNKNOWN ({u['evidence']}); not retried blindly")
             problems = await asyncio.to_thread(q._verify_file_effects, {"id": task_id, "request": step["text"]}, began)
             meta = getattr(q, "_last_stream_meta", {}).get(task_id) or {}
-            if meta.get("errors") and not (report or "").strip():
+            step_ops = _ops_summary(task_id, step.get("started_at") or began)
+            if meta.get("errors") and (
+                not (report or "").strip()
+                or any(err in (report or "") for err in meta["errors"])
+                or not step_ops
+            ):
                 problems = problems + [f"model stream error: {'; '.join(meta['errors'])}"]
             own = None if step.get("parallel") else _self_report_problem(step["text"], report)
             if own and jobs and not job_problems:
@@ -933,14 +1179,21 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 problems = problems + [own]
             if fan_problem:
                 problems = problems + [fan_problem]
-            if problems and step["attempts"] < 2:
+            fatal_key_err = any(
+                re.search(r"missing api key for|no api key (?:configured|set|saved) for", p, re.I)
+                for p in problems
+            )
+            if problems and step["attempts"] < 2 and not fatal_key_err:
                 step["note"] = "first attempt did not check out: " + "; ".join(problems)
                 step.setdefault("log", []).append({"at": time.time(), "text": step["note"][:300]})
                 step["retry_pending"] = True
                 save_plan(task_id, items, instr)
                 q._progress(task_id, f"🔄 Step {k} did not check out; trying it once more")
                 continue
-            step["evidence"] = _ops_summary(task_id, step["started_at"] or began) + job_evidence
+            step["evidence"] = step_ops + job_evidence
+            step_files = _step_written_files(task_id, step.get("started_at") or began)
+            if step_files:
+                step["artifacts"] = step_files
             try:   # instructions found inside content this step read: recorded by code, reported, never followed
                 from app.services import sentinel
                 flags = sentinel.flags_for(f"task:{task_id}", step["started_at"] or began)
@@ -948,7 +1201,9 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                     step["flags"] = [{"quote": f["quote"], "tool": f["tool"], "addresses": f["targets"][:5]} for f in flags]
             except Exception:
                 pass
-            step["result"] = (report or "")[:4000]
+            cleaned_report, plan_update_directive = _extract_plan_update(report or "")
+            res_cap = 6000 if _is_large_context() else 4000
+            step["result"] = (cleaned_report or "")[:res_cap]
             step["finished_at"] = time.time()
             if problems:
                 step["status"] = "blocked"
@@ -978,6 +1233,26 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             step["status"] = "completed"
             save_plan(task_id, items, instr)
             q._progress(task_id, f"✓ Step {k}/{n_live} done")
+            remaining_pending = [i for i in items if i["status"] == "pending"]
+            if plan_update_directive and remaining_pending and auto_replans < MAX_AUTO_REPLANS:
+                done_now = [i for i in items if i["status"] == "completed"]
+                try:
+                    adapted_steps = await replanner(task["request"], done_now, remaining_pending, plan_update_directive)
+                    adapted_steps = _sanitize_and_shape_steps(task["request"], adapted_steps)
+                except Exception as e:
+                    logger.warning(f"adaptive replan failed for {task_id}: {e}")
+                    adapted_steps = []
+                if adapted_steps:
+                    auto_replans += 1
+                    for rem in remaining_pending:
+                        rem["status"] = "cancelled"
+                        rem["note"] = f"superseded by step {k} discovery (plan v{version + 1})"
+                        rem["finished_at"] = time.time()
+                    items = items + [_item(t, origin="adaptive") for t in adapted_steps]
+                    version = save_plan(task_id, items, instr, expect_version=version, bump=True,
+                                        why=f"adaptive: {plan_update_directive[:160]}")
+                    _emit("plan.adapted", task_id, step_index=k, note=plan_update_directive[:200], version=version)
+                    q._progress(task_id, f"↪ Plan adapted from step {k} discovery: {plan_update_directive[:120]}")
     finally:
         q._cancel_requested.discard(task_id)
         q._cancel_at.pop(task_id, None)

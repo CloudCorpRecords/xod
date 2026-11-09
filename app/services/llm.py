@@ -437,8 +437,11 @@ class LLMService:
                              if p["id"] == key_profile_id), None)
                 return key_profiles.key_for_profile(provider, key_profile_id), name
             value, name = key_profiles.active_key(provider)
-            if value or key_profiles.has_metadata(provider):
+            if value:
                 return value, name
+            if key_profiles.has_metadata(provider):
+                fallback = (getattr(settings, f"{provider}_api_key", "") or "").strip()
+                return fallback, name
         except Exception:
             pass
         return (getattr(settings, f"{provider}_api_key", "") or ""), "Default"

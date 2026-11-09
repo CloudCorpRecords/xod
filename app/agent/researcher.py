@@ -382,18 +382,26 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
             *messages
         ]
 
+        route_query = user_query
+        if "\nYOUR STEP NOW" in (user_query or ""):
+            _after_step = user_query.split("\nYOUR STEP NOW", 1)[1]
+            if ":" in _after_step:
+                _after_step = _after_step.split(":", 1)[1]
+            _after_step = _after_step.split("\n\nDo only this step", 1)[0]
+            route_query = _after_step.strip() or user_query
+
         # "Find me FDE jobs", "only remote ones", "apply to 2 and 5": real openings from companies' own
         # job boards, and applications as tasks that stop for an OK before submitting.
         if not has_image and not has_document:
             from app.agent import jobs as job_lane
-            jd = job_lane.route(user_query, messages)
+            jd = job_lane.route(route_query, messages)
             if jd:
                 async for ev in job_lane.stream(user_query, messages, jd, execute_tool, spoken=spoken):
                     yield ev
                 return
 
         # Clear-cut web tasks and "submit it" / "continue" replies skip planning entirely.
-        early_mission = self._mission_request(user_query, {})
+        early_mission = self._mission_request(route_query, {})
         if early_mission:
             async for ev in self._stream_browser_mission(**early_mission):
                 yield ev
@@ -402,8 +410,8 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         # "Remember that my dog is called Biscuit": what Xod knows about you picks the fact up on its own (user_memory,
         # in the background); the answer is just an OK. The planner had nothing to plan and wrote an echo with "Sources: None".
         from app.services import user_memory as _um
-        rem = _um.REMEMBER_RE.match(user_query or "")
-        if rem and not has_image and not has_document and "?" not in user_query:
+        rem = _um.REMEMBER_RE.match(route_query or "")
+        if rem and not has_image and not has_document and "?" not in route_query:
             what = rem.group(1).strip().rstrip(".!")
             what = re.sub(r"\bmy\b", "your", re.sub(r"\bI am\b|\bI'm\b", "you're", re.sub(r"\bI\b", "you", what)))
             yield {"type": "content", "content": f"Got it: I'll remember that {what}."}
@@ -412,15 +420,15 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
 
         # "Check yourself" / "something's broken": the doctor answers, no planner, no free-written report.
         # (The planner reached for general system stats and the writer invented problems that weren't there.)
-        if self._SELF_CHECK_RE.search(user_query):
-            async for ev in self._stream_self_check(user_query):
+        if self._SELF_CHECK_RE.search(route_query):
+            async for ev in self._stream_self_check(route_query):
                 yield ev
             return
 
         # "Change your own code so …": straight to the self-edit gate. Left to the planner, Gemma
         # answered from its training ("I can't modify my own code") without trying the tool.
-        if self._SELF_EDIT_RE.search(user_query):
-            async for ev in self._stream_self_edit(user_query):
+        if self._SELF_EDIT_RE.search(route_query):
+            async for ev in self._stream_self_edit(route_query):
                 yield ev
             return
 
@@ -429,7 +437,7 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         # (agent/worker.py). As a fixed plan, every step ran blind and a failed install ended in "you can run …".
         # "New goal: find a flat under $2k by November" / "turn on the morning brief at 7:30" (services/goals.py)
         from app.services import goals
-        goal_turn = goals.route(user_query) if not has_image and not has_document else None
+        goal_turn = goals.route(route_query) if not has_image and not has_document else None
         if goal_turn:
             async for ev in goals.stream_chat(goal_turn):
                 yield ev
@@ -437,8 +445,8 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
 
         # A server's "add this to your MCP config" pasted into the chat: read it, try it, connect it (mcp_import).
         from app.services import mcp_import
-        if not has_image and not has_document and mcp_import.looks_like(user_query):
-            async for ev in mcp_import.stream_chat(user_query):
+        if not has_image and not has_document and mcp_import.looks_like(route_query):
+            async for ev in mcp_import.stream_chat(route_query):
                 yield ev
             return
 
@@ -3057,8 +3065,9 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
         except Exception as e:
             logger.error(f"Deliberation error: {e}" + (f" (the model said: {model_error})" if model_error else ""))
             if model_error:
-                # The model itself failed (not running, not installed...): a web search would still need it
-                # to write the answer, so say what's wrong now instead of failing again a minute later.
+                # The model itself failed (not running, not installed, missing API key...): yield an error event
+                # so task_queue and orchestrator record the failure instead of marking the step completed.
+                yield {"type": "error", "content": model_error}
                 yield {"type": "deliberation_complete", "deliberation": {
                     "thought": "", "decision": "direct_answer", "plan_title": "", "plan_steps": [], "task_focus": "general",
                     "is_swarm": False, "direct_response": model_error}}
@@ -3066,6 +3075,7 @@ Keep reasoning brief (1-2 sentences). Emit ONLY a JSON object:
             if self._LOCAL_ACTION_RE.search(query or ""):
                 # Something to do on this computer: searching the web for it would only describe how to do it.
                 why = f" The model replied with an error: {model_error}" if model_error else " The model didn't give me a usable plan."
+                yield {"type": "error", "content": model_error or why.strip()}
                 yield {"type": "deliberation_complete", "deliberation": {
                     "thought": "", "decision": "direct_answer", "plan_title": "", "plan_steps": [], "task_focus": "general",
                     "is_swarm": False,
