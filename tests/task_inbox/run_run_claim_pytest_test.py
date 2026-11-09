@@ -2,7 +2,7 @@
 Run-claim fix (2026-11-08): a pytest run step must run on an interpreter
 that can actually run pytest.
 
-Live record (Rene's Mac, shipped 1.0.2, missions e0c5872dea and
+Live record (the owner's Mac, shipped 1.0.2, missions e0c5872dea and
 c9a6185f36): step 3 declared the run "python3 -m pytest
 test_wordfreq.py". The gate executed it verbatim; the app process's
 PATH resolved the bare python3 to /Applications/Xcode.app's python3

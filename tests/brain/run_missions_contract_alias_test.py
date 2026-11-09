@@ -1,14 +1,14 @@
 """
 Missions harness fix (2026-11-08): the capability gate and tool-name aliases.
 
-Live record (Rene's Mac, shipped 1.0.2, mission-baba238e08): step 1,
+Live record (the owner's Mac, shipped 1.0.2, mission-baba238e08): step 1,
 "Create proof directory", was stopped at assembly before any task was
 created because the plan declared its tool as "computer_create_directory"
 and the contract checker did not recognize that name as able to create
 a directory:
 
     subtask "Create proof directory" must create the directory
-    /Users/reneturcios/xod-t1-scratch/proofdir, but its declared
+    /Users/owner/xod-t1-scratch/proofdir, but its declared
     capability contract (tools: computer_create_directory) includes
     none of the tools that could do it (computer_manage_file,
     fs_create_folder, computer_write_file).

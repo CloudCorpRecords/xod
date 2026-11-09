@@ -2,7 +2,7 @@
 Missions harness fix (2026-11-08): a question nobody answers must not
 kill a mission when the question carries its own best answer.
 
-Live record (Rene's Mac, shipped 1.0.2, mission-5bf2c71b83): a locate
+Live record (the owner's Mac, shipped 1.0.2, mission-5bf2c71b83): a locate
 hunt ended in "ask" with two close matches sharing one file name
 (class-fq-name-to-source.tab) at different paths. Nobody answered;
 the fix round 5 supervision spent its one automatic resume, the task
@@ -93,8 +93,8 @@ class AnswerQueue:
             "id": t, "status": "done", "result": report, "evidence_json": ev}
 
 
-ASK_PATH_A = "/Users/reneturcios/work/alpha/class-fq-name-to-source.tab"
-ASK_PATH_B = "/Users/reneturcios/work/beta/class-fq-name-to-source.tab"
+ASK_PATH_A = "/Users/owner/work/alpha/class-fq-name-to-source.tab"
+ASK_PATH_B = "/Users/owner/work/beta/class-fq-name-to-source.tab"
 
 
 def ask_evidence(score_a=812.0, score_b=830.0):

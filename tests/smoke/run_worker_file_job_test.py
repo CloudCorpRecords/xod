@@ -1,11 +1,11 @@
 """
 Worker routing fix (2026-11-08): a dictated file write is a computer job.
 
-Live record (Rene's Mac, shipped 1.0.2, missions b4cb8ea060 and
+Live record (the owner's Mac, shipped 1.0.2, missions b4cb8ea060 and
 a09cc20b6e): step 2, "Write proof note", carried the assembled request
 
     Create note.txt in proofdir containing exactly baseline proof 7731
-    Create the file at /Users/reneturcios/xod-t1-scratch/proofdir/note.txt
+    Create the file at /Users/owner/xod-t1-scratch/proofdir/note.txt
     with exact text: baseline proof 7731
 
 and finished with ZERO tool calls: the worker router did not claim the
