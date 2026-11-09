@@ -38,6 +38,21 @@ async def nomic(texts: List[str], timeout: float = 3.0) -> Optional[List[np.ndar
     for url, model in _endpoints():
         if time.time() < _down_until.get(url, 0):
             continue
+        if url not in _warm:
+            # FIX C gate, probe-free form (services/model_budget.py): the first
+            # request to a cold server loads the embedding model. It is small, so
+            # this only refuses when the machine is already at the wall, in which
+            # case callers use their hashed-vector fallback, as designed.
+            try:
+                from app.services import model_budget
+                engine = "lm_studio" if url == LM_STUDIO[0] else "ollama"
+                d = model_budget.model_budget.quick_check(
+                    engine, model, model_budget.estimate_gb(0.27), "embeddings")
+                if not d["allowed"]:
+                    _down_until[url] = time.time() + 120
+                    continue
+            except Exception:
+                pass
         try:
             # The first request may load the model (several seconds).
             async with httpx.AsyncClient(timeout=timeout if url in _warm else max(timeout, 40.0)) as c:

@@ -69,6 +69,8 @@ class MemoryBroker:
         if loaded.get("builtin"):
             from app.services.local_engine import local_engine
             await local_engine.stop()   # started again by the next chat message (local_engine.ensure_running)
+            from app.services import model_budget
+            model_budget.model_budget.note_unloaded("builtin", loaded.get("key"), "broker_pause", "memory_broker")
         else:
             from app.services.llm import llm_service
             await llm_service.unload_lmstudio_model(loaded.get("instance_id"))
@@ -104,6 +106,26 @@ class MemoryBroker:
                 self._log("Chat model is back")
 
     async def _load_teacher(self, teacher: Dict[str, Any]) -> bool:
+        # FIX C budget gate (services/model_budget.py): reloading the teacher is a
+        # local load like any other. Over budget it stays paused, the refusal is in
+        # the ledger with its reasons, and the request is queued waiting for memory
+        # (or reroutes to cloud at the chat layer). The broker's own make_room()
+        # freeing does not override the budget: never just load anyway.
+        try:
+            from app.services import model_budget
+            from app.services.llm import llm_service
+            st = await llm_service.get_lmstudio_status()
+            row = next((m for m in st.get("models", []) if m.get("key") == teacher["key"]), None)
+            est = model_budget.estimate_gb(row["size_gb"]) if row and row.get("size_gb") else 7.5
+            decision = await model_budget.model_budget.check_load(
+                "lm_studio", teacher["key"], est, "teacher_reload")
+            if not decision["allowed"]:
+                self._log(f"Not reloading the chat model ({teacher['key']}): "
+                          + "; ".join(decision["reasons"]))
+                return False
+        except Exception as e:
+            # A broken check must not break chat: refuse only on a real refusal.
+            logger.warning(f"Teacher reload budget check failed: {e}")
         try:
             if LMS_CLI.exists():
                 args = [str(LMS_CLI), "load", teacher["key"], "-y"]
@@ -113,6 +135,9 @@ class MemoryBroker:
                                                          stderr=asyncio.subprocess.DEVNULL)
                 await p.wait()
                 if p.returncode == 0:
+                    from app.services import model_budget
+                    model_budget.model_budget.note_loaded(
+                        "lm_studio", teacher["key"], None, "teacher_reload")
                     return True
             from app.services.llm import llm_service
             return bool((await llm_service.load_lmstudio_model(teacher["key"])).get("success"))

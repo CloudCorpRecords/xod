@@ -115,16 +115,30 @@ async def report() -> Dict[str, Any]:
     servers = [_builtin(a["provider"]), lm, ol]
     # Loaded but not what answers chats: memory a cloud (or other) model doesn't need. Small embedding models don't count.
     idle = [s for s in servers if s["can_stop"] and not s["in_use"] and any(not m.get("embedding") for m in s["models"])]
+    # FIX C visibility: per-engine state, model and footprint against the budget
+    # (services/model_budget.py). Defensive: the header must never break on it.
+    budget = None
+    try:
+        from app.services import model_budget
+        budget = model_budget.budget_status()
+    except Exception as e:
+        logger.debug(f"budget status failed: {e}")
     return {"answering": a, "servers": servers, "unused": [s["id"] for s in idle],
-            "unused_gb": round(sum(s["memory_gb"] or 0 for s in idle), 1), "idle_minutes": idle_minutes()}
+            "unused_gb": round(sum(s["memory_gb"] or 0 for s in idle), 1), "idle_minutes": idle_minutes(),
+            "budget": budget}
 
 
-async def stop(server: str) -> Dict[str, Any]:
-    """Frees what a server holds: stops the built-in engine, or unloads LM Studio's / Ollama's models."""
+async def stop(server: str, reason: str = "user_stop") -> Dict[str, Any]:
+    """Frees what a server holds: stops the built-in engine, or unloads LM Studio's / Ollama's models.
+    Every unload is recorded in the FIX C ledger (services/model_budget.py) under `reason`."""
+    from app.services import model_budget
     if server == "builtin":
         from app.services.local_engine import local_engine
         was = local_engine.running()
+        repo = local_engine.repo
         await local_engine.stop()
+        if was and repo:
+            model_budget.model_budget.note_unloaded("builtin", repo, reason, "local_servers")
         return {"success": True, "stopped": was, "message": "Stopped the built-in engine. It starts again when a chat needs it."
                 if was else "The built-in engine wasn't running."}
     async with httpx.AsyncClient(timeout=30) as c:
@@ -136,6 +150,8 @@ async def stop(server: str) -> Dict[str, Any]:
                 for iid in m["instances"]:
                     r = await c.post(f"{llm_service.get_lmstudio_native_base()}/api/v1/models/unload", json={"instance_id": iid})
                     n += r.status_code < 300
+                if m["instances"]:
+                    model_budget.model_budget.note_unloaded("lm_studio", m["id"], reason, "local_servers")
             return {"success": True, "stopped": n, "message": f"Unloaded {n} model{'s' if n != 1 else ''} from LM Studio."}
         if server == "ollama":
             from app.services.ollama_hub import root
@@ -144,6 +160,7 @@ async def stop(server: str) -> Dict[str, Any]:
             for m in s["models"]:
                 r = await c.post(f"{root()}/api/generate", json={"model": m["id"], "keep_alive": 0})
                 n += r.status_code < 300
+                model_budget.model_budget.note_unloaded("ollama", m["id"], reason, "local_servers")
             return {"success": True, "stopped": n, "message": f"Unloaded {n} model{'s' if n != 1 else ''} from Ollama."}
     return {"success": False, "error": f"Unknown server {server}"}
 
@@ -160,6 +177,9 @@ def after_switch(provider: str) -> None:
     except RuntimeError:
         return
     logger.info(f"Switched to {provider}: stopping the built-in engine")
+    if local_engine.repo:
+        from app.services import model_budget
+        model_budget.model_budget.note_unloaded("builtin", local_engine.repo, "switch", "local_servers")
     loop.create_task(local_engine.stop())
 
 
@@ -186,7 +206,11 @@ async def check_idle() -> Optional[str]:
     quiet = time.time() - local_engine.last_used
     if quiet < limit * 60 or (local_engine.proc and await _busy(local_engine.proc.pid)):
         return None
+    repo = local_engine.repo
     await local_engine.stop()
+    if repo:
+        from app.services import model_budget
+        model_budget.model_budget.note_unloaded("builtin", repo, "idle", "local_servers")
     msg = f"Stopped the built-in engine after {limit} minutes unused, to free its memory. It starts again when needed."
     logger.info(msg)
     return msg
@@ -199,3 +223,10 @@ async def idle_loop() -> None:
             await check_idle()
         except Exception as e:
             logger.warning(f"Idle check failed: {e}")
+        try:
+            # FIX C: the same grace, cross-engine, for models Xod loaded into
+            # LM Studio / Ollama (never those engines' own models, never the apps).
+            from app.services import model_budget
+            await model_budget.model_budget.check_idle_unloads(idle_minutes())
+        except Exception as e:
+            logger.warning(f"Cross-engine idle check failed: {e}")

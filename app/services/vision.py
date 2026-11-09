@@ -113,6 +113,26 @@ async def describe(image: str, focus: str = "", timeout: float = 120) -> Optiona
             "messages": [{"role": "user", "content": prompt, "images": [data]}]}
     try:
         async with httpx.AsyncClient(timeout=timeout) as c:
+            # FIX C gate (services/model_budget.py): if the seeing model is not
+            # resident, this request would LOAD it into Ollama. Over budget the
+            # look simply does not happen; vision already fails soft with None.
+            try:
+                from app.services import model_budget
+                ps = (await c.get(f"{_root()}/api/ps")).json().get("models", [])
+                if any((m.get("name") or m.get("model")) == vm for m in ps):
+                    model_budget.model_budget.note_used("ollama", vm)
+                else:
+                    tags = (await c.get(f"{_root()}/api/tags")).json().get("models", [])
+                    size = next((t.get("size", 0) for t in tags
+                                 if (t.get("name") or t.get("model")) == vm), 0)
+                    est = model_budget.estimate_gb(size / 1024 ** 3) if size else 3.5
+                    decision = await model_budget.model_budget.check_load("ollama", vm, est, "vision")
+                    if not decision["allowed"]:
+                        logger.info(f"vision model {vm} not loaded: the memory budget refused "
+                                    f"({'; '.join(decision['reasons'])})")
+                        return None
+            except Exception as e:
+                logger.debug(f"vision budget gate skipped: {e}")
             r = await c.post(f"{_root()}/api/chat", json=body)
             if r.status_code >= 500:
                 # Usually no room next to the chat model on the GPU: let the others go (they load again when

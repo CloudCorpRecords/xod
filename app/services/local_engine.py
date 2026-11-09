@@ -218,8 +218,17 @@ class LocalEngine:
                 return
             if not is_downloaded(repo):
                 raise RuntimeError(f"The built-in model {repo} isn't downloaded yet. Open Settings → AI model to download it.")
-            await self.stop()
             entry = catalog_entry(repo) or {"need_gb": 6.0}
+            # FIX C budget gate (services/model_budget.py): the projected total across
+            # ALL engines must fit the machine's budget before this load starts. A
+            # refusal raises ModelBudgetRefused (a RuntimeError) before anything is
+            # stopped or started: no partial load, no silent failure.
+            from app.services import model_budget
+            old_repo = self.repo if self.running() else None
+            await model_budget.model_budget.require_load("builtin", repo, entry["need_gb"], "builtin_engine")
+            if old_repo and old_repo != repo:
+                model_budget.model_budget.note_unloaded("builtin", old_repo, "switch", "builtin_engine")
+            await self.stop()
             from app.services.memory_broker import memory_broker
             await memory_broker.make_room(entry["need_gb"], f"chat model {repo.split('/')[-1]}")
             env = dict(os.environ, HF_HUB_OFFLINE="1", TOKENIZERS_PARALLELISM="false")
@@ -234,12 +243,20 @@ class LocalEngine:
                     if self.proc.poll() is not None:
                         self.last_error = _log_tail() or f"exit code {self.proc.returncode}"
                         self.proc = None
+                        model_budget.model_budget.note_load_failed("builtin", repo, "builtin_engine")
                         raise RuntimeError(f"The built-in model didn't start: {self.last_error}")
                     try:
                         if (await client.get(f"{self.base_url}/models")).status_code == 200:
                             self.started_at = time.time()
                             self.last_error = None
                             logger.info(f"Built-in engine serving {repo} on port {self.port}")
+                            try:
+                                from app.services import local_servers, model_budget
+                                model_budget.model_budget.note_loaded(
+                                    "builtin", repo, local_servers._family_rss_gb(self.proc.pid),
+                                    "builtin_engine")
+                            except Exception:
+                                pass
                             # mlx_lm.server loads weights on the first request; warm it now.
                             try:
                                 await client.post(f"{self.base_url}/chat/completions", timeout=180, json={
@@ -251,6 +268,7 @@ class LocalEngine:
                         pass
                     await asyncio.sleep(1)
             await self.stop()
+            model_budget.model_budget.note_load_failed("builtin", repo, "builtin_engine")
             raise RuntimeError("The built-in model took too long to start.")
 
     async def stop(self) -> None:

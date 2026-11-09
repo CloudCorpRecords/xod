@@ -740,6 +740,19 @@ class LLMService:
         if status.get("loaded_model") and status["loaded_model"]["key"] == model_key:
             return {"success": True, "message": f"{model_key} is already loaded in memory."}
 
+        # FIX C budget gate (services/model_budget.py), BEFORE anything is unloaded:
+        # the projected total across all engines must fit, or this load does not
+        # happen and the refusal says why (and whether the work reroutes to cloud
+        # or waits for memory). No partial load, no silent failure.
+        from app.services import model_budget
+        target = next((m for m in status.get("models", []) if m.get("key") == model_key), None)
+        est = model_budget.estimate_gb(target["size_gb"]) if target and target.get("size_gb") else 7.0
+        decision = await model_budget.model_budget.check_load("lm_studio", model_key, est, "lm_studio_load")
+        if not decision["allowed"]:
+            return {"success": False, "budget_refused": True, "route": decision["route"],
+                    "queued": decision["queued"],
+                    "message": str(model_budget.ModelBudgetRefused(decision))}
+
         async with httpx.AsyncClient(timeout=120.0) as client:
             # Safely unload any currently active model to protect system memory
             if status.get("loaded_model") and status["loaded_model"].get("instance_id"):
@@ -760,20 +773,28 @@ class LLMService:
                 )
                 if res.status_code == 200:
                     settings.llm_model = model_key
+                    from app.services import model_budget
+                    model_budget.model_budget.note_loaded(
+                        "lm_studio", model_key,
+                        target.get("size_gb") if target else None, "lm_studio_load")
                     return {"success": True, "message": f"Successfully loaded {model_key}!"}
                 else:
                     err = res.json().get("error", {}).get("message", res.text)
+                    model_budget.model_budget.note_load_failed("lm_studio", model_key, "lm_studio_load")
                     return {"success": False, "message": f"Load failed: {err}"}
             except Exception as e:
+                model_budget.model_budget.note_load_failed("lm_studio", model_key, "lm_studio_load")
                 return {"success": False, "message": f"Connection error loading model: {str(e)}"}
 
     async def unload_lmstudio_model(self, instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Unloads model to free RAM/VRAM."""
         root_url = self.get_lmstudio_native_base()
+        model_key = None
         if not instance_id:
             status = await self.get_lmstudio_status()
             if status.get("loaded_model"):
                 instance_id = status["loaded_model"].get("instance_id")
+                model_key = status["loaded_model"].get("key")
 
         if not instance_id:
             return {"success": False, "message": "No active model instance found to unload."}
@@ -785,11 +806,104 @@ class LLMService:
                     json={"instance_id": instance_id}
                 )
                 if res.status_code == 200:
+                    if model_key:
+                        from app.services import model_budget
+                        model_budget.model_budget.note_unloaded("lm_studio", model_key, "unload", "lm_studio_unload")
                     return {"success": True, "message": "Model unloaded successfully. System memory freed."}
                 else:
                     return {"success": False, "message": f"Unload failed: {res.text}"}
         except Exception as e:
             return {"success": False, "message": f"Error: {str(e)}"}
+
+    # ------------------------------------------------------------------
+    # FIX C: local loads under the memory budget (services/model_budget.py)
+    # ------------------------------------------------------------------
+    def _budget_cloud_endpoint(self) -> Optional[Dict[str, Any]]:
+        """The configured cloud endpoint a budget-refused local chat reroutes to, or None."""
+        try:
+            tiers = self.get_available_tiers()
+            if tiers.get("cloud_ready") and tiers.get("cloud_options"):
+                top = tiers["cloud_options"][0]
+                return self._build_endpoint(top["provider"], top["model"])
+        except Exception as e:
+            logger.debug(f"budget cloud lookup failed: {e}")
+        return None
+
+    async def _gate_local_chat_or_cloud(self, info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """For LM Studio / Ollama chats: if sending this request would pull a model
+        into memory, the FIX C gate decides first. Returns a cloud endpoint to
+        reroute to, or None to proceed with the local request as planned. Raises
+        ModelBudgetRefused when the load is refused and no cloud is configured."""
+        from app.services import model_budget
+        engine, model = info["provider"], info["model"]
+        if engine == "lm_studio":
+            st = await self.get_lmstudio_status()
+            if not st.get("online"):
+                return None                      # server down: no load can happen
+            loaded = st.get("loaded_model") or {}
+            if loaded.get("key") == model:
+                model_budget.model_budget.note_used(engine, model)
+                return None
+            row = next((m for m in st.get("models", []) if m.get("key") == model), None)
+            est = model_budget.estimate_gb(row["size_gb"]) if row and row.get("size_gb") else 7.0
+        else:  # ollama: a request for a model that is not resident IS a load
+            import httpx
+            from app.services import ollama_context
+            from app.services.ollama_hub import root
+            try:
+                async with httpx.AsyncClient(timeout=3) as c:
+                    ps = (await c.get(f"{root()}/api/ps")).json().get("models", [])
+                    names = [m.get("name") or "" for m in ps]
+                    variant = ollama_context._variants.get(model)
+                    if any(ollama_context._same(model, {"name": n}) or (variant and n == variant)
+                           for n in names):
+                        model_budget.model_budget.note_used(engine, model)
+                        return None
+                    tags = (await c.get(f"{root()}/api/tags")).json().get("models", [])
+                    size = next((t.get("size", 0) for t in tags if ollama_context._same(model, t)), 0)
+            except Exception:
+                return None                      # Ollama unreachable: no load can happen
+            est = model_budget.estimate_gb(size / 1024 ** 3) if size else 6.5
+        decision = await model_budget.model_budget.check_load(engine, model, est, "chat")
+        if decision["allowed"]:
+            return None
+        cloud = self._budget_cloud_endpoint()
+        if cloud is not None:
+            logger.warning(f"{engine} model {model} refused by the memory budget; "
+                           f"routing this chat to {cloud['provider']}")
+            return cloud
+        raise model_budget.ModelBudgetRefused(decision)
+
+    async def _ensure_local_or_route(self, info: Dict[str, Any]):
+        """Starts whatever a local chat needs before the request goes out, under the
+        FIX C budget gate: reloads a broker-paused teacher, starts the built-in
+        engine, and gates any load a request to LM Studio / Ollama would trigger.
+        On a refusal with a cloud model configured, returns the cloud endpoint
+        instead (the chat runs there); with no cloud, the refusal raises so the
+        caller sees the honest reason. Returns (info, engine_start)."""
+        engine_start: Optional[float] = None
+        provider = info["provider"]
+        if provider in ("lm_studio", "xod"):
+            from app.services.memory_broker import memory_broker
+            await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
+        if provider == "xod":
+            from app.services import model_budget
+            from app.services.local_engine import local_engine
+            try:
+                await local_engine.ensure_running(info["model"])   # built-in engine starts on first use
+            except model_budget.ModelBudgetRefused:
+                cloud = self._budget_cloud_endpoint()
+                if cloud is None:
+                    raise
+                logger.warning(f"Built-in model {info['model']} refused by the memory budget; "
+                               f"routing this chat to {cloud['provider']}")
+                return cloud, None
+            engine_start = local_engine.started_at
+        elif provider in ("lm_studio", "ollama"):
+            rerouted = await self._gate_local_chat_or_cloud(info)
+            if rerouted is not None:
+                return rerouted, None
+        return info, engine_start
 
     # ------------------------------------------------------------------
     # Universal Inference with Custom Tools Support
@@ -922,14 +1036,7 @@ class LLMService:
         if info["provider"] in ("openai", "gemini", "groq", "openrouter", "fireworks", "anthropic") and info["api_key"] == "missing":
             raise Exception(f"No API key configured for {info['provider'].upper()}. Please configure your {info['provider'].replace('_', ' ').title()} API key in Settings!")
 
-        engine_start: Optional[float] = None
-        if info["provider"] in ("lm_studio", "xod"):
-            from app.services.memory_broker import memory_broker
-            await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
-        if info["provider"] == "xod":
-            from app.services.local_engine import local_engine
-            await local_engine.ensure_running(info["model"])   # built-in engine starts on first use
-            engine_start = local_engine.started_at
+        info, engine_start = await self._ensure_local_or_route(info)
         url = f"{info['base_url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {info['api_key']}",
@@ -1051,6 +1158,18 @@ class LLMService:
                 return False                   # unloaded for an image/video job: don't load it just to warm it
         except Exception:
             pass
+        if info["provider"] in ("lm_studio", "ollama"):
+            # Same doctrine, one level down: a warm-up must never CAUSE a load. If the
+            # FIX C ledger does not show the model resident, there is nothing to warm.
+            try:
+                from app.services import model_budget
+                resident = {e["model"] for e in model_budget.model_budget.resident()
+                            if e["engine"] == info["provider"]}
+                variant = ollama_context._variants.get(info["model"])
+                if info["model"] not in resident and variant not in resident:
+                    return False
+            except Exception:
+                pass
         payload: Dict[str, Any] = {"model": info["model"], "messages": messages, "temperature": 0.0, "max_tokens": 1}
         if info["provider"] == "ollama":
             payload["model"] = await ollama_context.long_context_model(info["base_url"], info["model"])
@@ -1101,14 +1220,12 @@ class LLMService:
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}
             return
 
-        engine_start: Optional[float] = None
-        if info["provider"] in ("lm_studio", "xod"):
-            from app.services.memory_broker import memory_broker
-            await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
-        if info["provider"] == "xod":
-            from app.services.local_engine import local_engine
-            await local_engine.ensure_running(info["model"])   # built-in engine starts on first use
-            engine_start = local_engine.started_at
+        from app.services import model_budget
+        try:
+            info, engine_start = await self._ensure_local_or_route(info)
+        except model_budget.ModelBudgetRefused as e:
+            yield {"type": "error", "content": str(e)}
+            return
         url = f"{info['base_url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {info['api_key']}",
@@ -1271,14 +1388,12 @@ class LLMService:
             yield {"type": "error", "content": f"Missing API key for {info['provider'].upper()}. Please open Settings (⚙️) and enter your {info['provider'].replace('_', ' ').title()} API key."}
             return
 
-        engine_start: Optional[float] = None
-        if info["provider"] in ("lm_studio", "xod"):
-            from app.services.memory_broker import memory_broker
-            await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
-        if info["provider"] == "xod":
-            from app.services.local_engine import local_engine
-            await local_engine.ensure_running(info["model"])   # built-in engine starts on first use
-            engine_start = local_engine.started_at
+        from app.services import model_budget
+        try:
+            info, engine_start = await self._ensure_local_or_route(info)
+        except model_budget.ModelBudgetRefused as e:
+            yield {"type": "error", "content": str(e)}
+            return
         url = f"{info['base_url']}/chat/completions"
         headers = {
             "Authorization": f"Bearer {info['api_key']}",

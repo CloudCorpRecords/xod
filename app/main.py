@@ -870,6 +870,8 @@ async def _start_task_worker():
         asyncio.create_task(autoconnect.loop())  # keeps finding the AI on this computer and keeps it working
     from app.services import local_servers
     asyncio.create_task(local_servers.idle_loop())   # stops the built-in engine after a while unused
+    from app.services import computer_health
+    asyncio.create_task(computer_health.health_loop())   # watches the machine itself; part of the lightweight layer, never skipped by run_mode
     from app.services import browser_ops
     browser_ops.start()                     # the browser-ops sweeper's schedule, where it applies (15 min)
     from app.services import phone
@@ -3721,6 +3723,25 @@ class LocalServerStop(BaseModel):
 async def local_servers_stop(req: LocalServerStop):
     from app.services import local_servers
     return await local_servers.stop(req.server)
+
+
+@app.get("/api/computer-health")
+async def computer_health_endpoint():
+    """How the computer itself is doing: latest census, findings, actions, and the
+    plain-language readout (services/computer_health.py). Read-only."""
+    from app.services import computer_health
+    return computer_health.status() or {"latest": None, "history": []}
+
+
+@app.get("/api/model-budget")
+async def model_budget_endpoint():
+    """FIX C: local models against the memory budget: per-engine state, model and
+    footprint, the waiting-for-memory queue, and recent ledger events
+    (services/model_budget.py). Read-only."""
+    from app.services import model_budget
+    st = model_budget.budget_status()
+    st["recent"] = model_budget.model_budget.recent_events(20)
+    return st
 
 
 class EngineIdle(BaseModel):
