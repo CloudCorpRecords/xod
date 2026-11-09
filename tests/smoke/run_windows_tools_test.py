@@ -262,12 +262,32 @@ async def main():
     net = sc._network()
     check("the local IP address is the real one (not 169.254…)", net.get("local_ip") and not net["local_ip"].startswith(("169.254", "127.")), str(net))
 
-    from app.services import speech
-    voices = await speech.list_voices(refresh=True)
-    check("Windows voices are listed", len(voices) > 0, str(voices))
-    if voices:
-        wav = await speech.synthesize("Hello from Xod on Windows.")
-        check("a spoken reply is made (WAV)", wav[:4] == b"RIFF" and len(wav) > 10000, str(len(wav)))
+    # Voices: this suite runs with XOD_SPEECH=off (line 16), and under that switch
+    # speech.list_voices() returns its startup cache, empty, by design: the off
+    # switch means no voice probe ever, so the check below could never pass in
+    # this process. The voice checks therefore run in a child process with the
+    # switch unset. The child synthesizes to a WAV file, never to the speakers,
+    # so the suite still makes no sound, and this process never probes at all.
+    import json as _json
+    probe = (
+        "import asyncio, json\n"
+        "from app.services import speech\n"
+        "async def go():\n"
+        "    voices = await speech.list_voices(refresh=True)\n"
+        "    wav = await speech.synthesize('Hello from Xod on Windows.') if voices else b''\n"
+        "    print(json.dumps({'voices': [v['name'] for v in voices], "
+        "'wav_len': len(wav or b''), 'riff': (wav or b'')[:4] == b'RIFF'}))\n"
+        "asyncio.run(go())\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "XOD_SPEECH"}
+    p = sp.run([sys.executable, "-c", probe], capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=120)
+    try:
+        got = _json.loads(p.stdout.strip().splitlines()[-1])
+    except Exception:
+        got = {}
+    check("Windows voices are listed", len(got.get("voices") or []) > 0, (p.stdout + p.stderr)[-300:])
+    if got.get("voices"):
+        check("a spoken reply is made (WAV)", bool(got.get("riff")) and got.get("wav_len", 0) > 10000, str(got))
 
     failed = [n for n, ok in results if not ok]
     print(f"\nSUMMARY {'PASS' if not failed else 'FAIL'} {failed}")
