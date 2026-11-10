@@ -128,6 +128,25 @@ check("revoke from this side flips state and writes the note",
 out = mx.revoke("no-such-offer")
 check("revoking an unknown id is an honest failure", not out["success"])
 
+# --- an expired offer stays terminal even if a hello lands -------------
+stale2 = mx.build_offer(identity=IDENT, ttl=-60)
+store = mx._load_store()
+store["offers"][stale2["offer_id"]] = {
+    "offer": stale2, "state": "offered", "inbox_dropped": True}
+mx._save_store(store)
+late_hello = {"type": mx.HELLO_TYPE, "offer_id": stale2["offer_id"],
+              "muse": {"name": "Late"}, "accepted_at": "2026-11-06T18:00:00Z"}
+(INBOX / f"muse-connect-hello-{stale2['offer_id']}.json").write_text(
+    json.dumps(late_hello), encoding="utf-8")
+st = mx.status()
+late_conn = [c for c in st["connections"]
+             if c["offer_id"] == stale2["offer_id"]]
+late_offer = [o for o in st["offers"]
+              if o["offer_id"] == stale2["offer_id"]]
+check("a hello after expiry creates no connection",
+      len(late_conn) == 0 and len(late_offer) == 1
+      and late_offer[0]["state"] == "expired", json.dumps(late_conn))
+
 # --- rules pickup -------------------------------------------------------
 (TMP / "family-rules.json").write_text('{"version": 1, "rules": []}', encoding="utf-8")
 offer2 = mx.build_offer(identity=IDENT)
