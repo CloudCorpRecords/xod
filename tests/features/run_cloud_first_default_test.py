@@ -1,5 +1,5 @@
 """
-R11: the cloud-first default (Rene's directive, 2026-11-09).
+R11: the cloud-first default (the 2026-11-09 directive).
 
 Xod was built local-first; for the larger audience that flips. A fresh install
 defaults to a cloud posture — an honest "needs a cloud key" setup state — and

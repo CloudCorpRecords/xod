@@ -2,8 +2,49 @@
 
 ## Unreleased
 
+## 1.1.0
+
 **Inbox status**
 - Xod now tracks which mail threads still need a reply across the owner's Gmail accounts and Muse Mail, and proves the answer instead of guessing: GET /api/inbox/status reports each source as ok, stale, or unread with its last check time, and GET /api/inbox/needs-reply serves the per-source digests behind it. A source that fails to refresh keeps serving its last good digest marked stale, and is never reported as empty. v1 reads through the host's existing signed-in mail routes; per-user OAuth sign-in is a later step.
+
+**Long-form tasks hold together**
+- A long task's steps are split before they run, so one step no longer tries to do a whole multi-file job in a single stream. A step whose stream stalls is caught by a watchdog and retried, instead of hanging until the task dies.
+- A step that reports a file written is verified against the disk before the write counts. A write that never landed is retried, not believed.
+- When a step is blocked on the person (an approval, a sign-in, an answer only they can give), the task pauses and waits for them instead of failing outright, and resumes when they respond. On the acceptance suite for this behavior the fixed tree scores 16 of 16; the tree before the fix scored 8 of 16 and failed the whole task.
+
+**Computer Health watches the machine**
+- Xod now keeps a lightweight health watch on its own computer: memory pressure, swap, disk, and the load its own processes add, served at /api/computer-health and /api/model-budget. It is built to be left on: its own cost was measured first (22.4 MB RSS on the reference machine, against a 64 MB ceiling), and its budget is set by weak hardware, not by a fast desktop.
+
+**A budget gate on local models**
+- Before Xod loads a local model, the load now has to fit a budget: the model's footprint after loading stays within 40 percent of RAM, and at least 25 percent of memory stays free. A load that does not fit is refused, and the work routes to the configured cloud provider, or waits, instead of squeezing the machine until everything on it slows down.
+
+**Fresh installs start cloud-first**
+- A fresh install now defaults to a cloud provider with the person's own API key (BYOK): the setup state says plainly that a cloud key is needed, and nothing hunts for, starts, or downloads a local model on its own. Before this change, a fresh install's autoconnect loop checked every 30 seconds, picked a local model by itself, started servers that were stopped, and could pull model files without being asked. All of that is gated off now.
+- Local, routed, and family-borrowed inference still exist, behind one explicit opt-in setting that is off by default. An install that already chose a provider keeps its choice: the migration is decided once, saved, and logged, and a person's own pick of a local model counts as the opt-in.
+
+**Family devices get their keys by enrolling**
+- A device that completes gated family enrollment now receives the family's API keys on its own: the key bundle lives encrypted in the family's synced space, wrapped per recipient device, and enrollment triggers a fetch and apply into the device's own OS keystore. No plaintext keys are stored in any synced space or log.
+- When a key lives on another family device, that device's own running Xod service performs the keystore read and delivers the key over the family channel, after checking that the requester is a signed registry member, is signed in with the family SSO, and is a named recipient of the bundle. Every delivery is audit-logged by field name only. Revoking a device re-wraps the bundle without it.
+- This also retires a class of failure where a machine's keys existed but could not be read outside a GUI session (the macOS Keychain and Windows logon-session walls). Enrolled devices no longer depend on a person sitting at the machine to fetch a key.
+
+**Pairing: the phone can hand in its enrollment ask on the local network**
+- A phone joining the family can now deliver its gated enrollment ask to the computer's own post office over local HTTP, so same-network auto-approve can actually fire. The gate itself is unchanged on both sides: signed family registry membership and a live family SSO session for the same account, or the pairing is refused and undone.
+
+**The light build boots without the heavy libraries**
+- The lightweight node's core no longer imports numpy at startup: the memory service, recall, embeddings, curiosity, speech-to-text, and the vendored image runtime load it only inside the functions that actually compute with it. With numpy blocked entirely, the full startup chain imports and the app constructs; with numpy present, behavior is byte-identical. The light build from this tree is verified running.
+
+**Keystore reads cannot hang forever**
+- Reads of the OS keystore now run under a timeout, so a keychain that never answers degrades to a reported error instead of wedging startup or a running task.
+
+**Checked before it shipped**
+- The consolidation gate on the merged tree, against the pre-wave main baseline, showed zero new failures. The suites behind this wave: cloud-first default 18 of 18, family key interop 49 of 49, pairing gap 2 (desktop) 18 of 18, blocked-step pause acceptance 16 of 16, orchestrator 82 of 82, computer health 15 of 15, family vault 41 of 41, auto-connect 29 of 29, memory sync 27 of 27, local memory cap 22 of 22.
+- The numpy gate: with numpy blocked by an import hook, the full startup chain imports on this tree and fails on the previous one at exactly the import that killed the light build; with numpy present, a behavior script over the touched modules produces byte-identical output on both trees.
+- Two suite failures pre-date this wave and are unchanged by it: the keychain suite's two macOS-specific checks, and the local-models suite, both failing identically on the pre-wave tree. They are named here rather than silently carried.
+
+**What this release does not claim**
+- Long-form autonomy is still Tier 6 MIXED and is not certified. The newest graded bench run (Run 5) verified the step splitting, the 180-second stall watchdog, and the blocked-step pause live, and still failed: the local model could not keep up once the test machine saturated under its own load. The separating run, the same bench on the cloud route, has not been graded yet. Nothing in this release should be read as long-form being solved.
+- The Android companion for the pairing change is written but has not been compile-verified in an Android build yet, so no Android pairing claim ships with this release.
+- Carried from 1.0.2, unchanged: Windows copies still update manually (the NSIS self-update wedge); every build still re-asks for its Accessibility switch once after an update; the Mac build is not notarized and the Windows installer is not code-signed yet, so a first launch still needs the right-click Open and SmartScreen steps in the install notes; GitHub sign-in still cannot complete until the OAuth app is registered and its public client ID is saved in the panel.
 
 ## 1.0.2
 

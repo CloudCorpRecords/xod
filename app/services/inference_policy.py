@@ -1,5 +1,5 @@
 """
-Cloud-first inference policy (R11, 2026-11-09, Rene's directive).
+Cloud-first inference policy (R11, the 2026-11-09 directive).
 
 Xod was built local-first. For the larger audience that flips: a fresh install
 defaults to a CLOUD provider posture — the setup state asks the person for
