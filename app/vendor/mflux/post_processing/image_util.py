@@ -2,7 +2,12 @@ from __future__ import annotations
 import PIL
 from PIL import Image
 import mlx.core as mx
-import numpy as np
+
+# numpy is imported lazily inside the methods that use it (_to_numpy,
+# _pil_to_numpy), so this module imports cleanly where numpy is absent (the
+# light core ships without numpy; see app/services/memory_service.py). The
+# __future__ annotations import above keeps the np.ndarray signature
+# annotations from being evaluated at import time.
 
 from mflux.config.runtime_config import RuntimeConfig
 from mflux.post_processing.image import Image
@@ -48,6 +53,7 @@ class ImageUtil:
 
     @staticmethod
     def _to_numpy(images: mx.array) -> np.ndarray:
+        import numpy as np
         images = mx.transpose(images, (0, 2, 3, 1))
         images = mx.array.astype(images, mx.float32)
         images = np.array(images)
@@ -61,6 +67,7 @@ class ImageUtil:
 
     @staticmethod
     def _pil_to_numpy(image: PIL.Image.Image) -> np.ndarray:
+        import numpy as np
         image = np.array(image).astype(np.float32) / 255.0
         images = np.stack([image], axis=0)
         return images

@@ -1,6 +1,9 @@
 from __future__ import annotations
 import mlx.core as mx
-import numpy as np
+
+# numpy is imported lazily inside _create_sigmas_values (its only use), so
+# this module imports cleanly where numpy is absent (the light core ships
+# without numpy; see app/services/memory_service.py).
 
 from mflux.config.config import Config
 from mflux.config.model_config import ModelConfig
@@ -46,6 +49,7 @@ class RuntimeConfig:
 
     @staticmethod
     def _create_sigmas_values(num_inference_steps: int) -> mx.array:
+        import numpy as np
         sigmas = np.linspace(1.0, 1 / num_inference_steps, num_inference_steps)
         sigmas = mx.array(sigmas).astype(mx.float32)
         return mx.concatenate([sigmas, mx.zeros(1)])

@@ -11,6 +11,8 @@ one sentence repeated twenty times. Each segment carries Whisper's own doubts (h
 silence, how sure it was of the words, how repetitive the text is); clean() drops what it doubts, so
 background sound becomes nothing instead of a question Xod answers.
 """
+from __future__ import annotations
+
 import asyncio
 import io
 import logging
@@ -21,7 +23,13 @@ import time
 import wave
 from typing import Any, Dict
 
-import numpy as np
+# numpy is deliberately NOT imported at module level: it is imported lazily
+# inside the functions that use it (_decode_wav, _decode, _has_voice, clean,
+# _prepare_sync). The light core ships without numpy by design (featherweight
+# always-on layer), so this module must import cleanly where numpy is absent;
+# where numpy is installed the behavior is identical. The __future__
+# annotations import above keeps the np.ndarray signature annotations from
+# being evaluated at import time.
 
 logger = logging.getLogger("xod.speech")
 
@@ -34,6 +42,7 @@ _lock = asyncio.Lock()
 
 def _decode_wav(audio: bytes) -> np.ndarray:
     """16-bit PCM WAV (what Xod's recorder sends) -> 16 kHz mono float32, without ffmpeg."""
+    import numpy as np
     with wave.open(io.BytesIO(audio)) as w:
         if w.getsampwidth() != 2:
             raise ValueError("expected 16-bit audio")
@@ -63,6 +72,7 @@ def _decode(audio: bytes) -> np.ndarray:
     )
     if p.returncode != 0:
         raise ValueError(f"couldn't read the recording: {p.stderr.decode(errors='replace')[:200]}")
+    import numpy as np
     return np.frombuffer(p.stdout, np.int16).astype(np.float32) / 32768.0
 
 
@@ -96,6 +106,7 @@ STOCK_LINES = {
 def _has_voice(x) -> bool:
     """Is there speech-like sound at all? Speech comes in bursts well above the room's level;
     a fan, hum or silence doesn't. (Whisper invents words for those.)"""
+    import numpy as np
     frame = 480   # 30 ms
     n = x.size // frame
     if n < 8:
@@ -141,6 +152,7 @@ def name_fixed(text: str) -> str:
 
 def clean(out: Dict[str, Any]):
     """Whisper's result -> (text you said, why it was dropped or "", confidence 0–1)."""
+    import numpy as np
     segs = out.get("segments") or []
     kept, probs = [], []
     for s in segs:
@@ -235,6 +247,7 @@ def _prepare_sync() -> None:
     """Loads Whisper now (a second of silence), so the first thing you say isn't waiting for it."""
     global _prepared
     import mlx_whisper
+    import numpy as np
     mlx_whisper.transcribe(np.zeros(16000, np.float32), path_or_hf_repo=MODEL, verbose=None)
     _prepared = True
 

@@ -5,11 +5,19 @@ It's the same model in both (Ollama calls it "nomic-embed-text"), so vectors fro
 and with ones already stored: memory, recall and the companion's notebook search by meaning whichever app
 you use. Never a cloud model. If neither has it, callers fall back to their own hashed vectors.
 """
+from __future__ import annotations
+
 import logging
 import time
 from typing import List, Optional
 
-import numpy as np
+# numpy is deliberately NOT imported at module level: it is imported lazily
+# inside nomic(), the only function that uses it, at the point where a server
+# has answered. The light core ships without numpy by design (featherweight
+# always-on layer), so this module must import cleanly where numpy is absent;
+# where numpy is installed the behavior is identical. The __future__
+# annotations import above keeps the np.ndarray signature annotation from
+# being evaluated at import time.
 
 logger = logging.getLogger("xod.embeddings")
 
@@ -60,6 +68,7 @@ async def nomic(texts: List[str], timeout: float = 3.0) -> Optional[List[np.ndar
             if res.status_code == 200:
                 rows = sorted(res.json().get("data", []), key=lambda d: d.get("index", 0))
                 if len(rows) == len(texts):
+                    import numpy as np
                     vecs = []
                     for r in rows:
                         v = np.array(r["embedding"], dtype=np.float32)

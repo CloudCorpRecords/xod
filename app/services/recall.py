@@ -15,6 +15,8 @@ Everything is in recall.db in Xod's data folder. Embeddings are always computed 
 model, whatever answers your questions). Indexing is incremental: after each chat turn, when a task finishes,
 and once at startup for what came before.
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -25,7 +27,12 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
+# numpy is deliberately NOT imported at module level: it is imported lazily
+# inside the functions that use it (index_new, search). The light core ships
+# without numpy by design (featherweight always-on layer), so this module
+# must import cleanly where numpy is absent; where numpy is installed the
+# behavior is identical. The __future__ annotations import above keeps the
+# np.ndarray signature annotations from being evaluated at import time.
 
 from app.paths import DATA_DIR
 from app.timefmt import nopad
@@ -184,6 +191,7 @@ def _collect_companion(c: sqlite3.Connection) -> List[Dict[str, Any]]:
 
 async def index_new(limit: int = 200) -> int:
     """Adds what happened since the last run. Returns how many episodes were added."""
+    import numpy as np
     global _index_lock
     if _index_lock is None:
         _index_lock = asyncio.Lock()
@@ -350,6 +358,7 @@ async def search(query: str, k: int = 5, kinds: Optional[List[str]] = None, when
             except sqlite3.OperationalError:
                 pass
         # Meaning (embeddings), compared within the same kind of vector
+        import numpy as np
         sem_rank: Dict[str, int] = {}
         models = {r["emb_model"] for r in rows}
         qvecs: Dict[str, np.ndarray] = {}

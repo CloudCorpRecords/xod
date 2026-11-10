@@ -43,7 +43,12 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
+# numpy is deliberately NOT imported at module level: it is imported lazily
+# inside the functions that use it (uncertainty, _novelty, knowledge), at the
+# points where embedding vectors are compared. The light core ships without
+# numpy by design (featherweight always-on layer), so this module must import
+# cleanly where numpy is absent; where numpy is installed the behavior is
+# identical.
 
 from app.paths import DATA_DIR
 
@@ -405,6 +410,7 @@ async def uncertainty(ask, questions: List[str]) -> List[Dict[str, Any]]:
             overlap = len(w1 & w2) / max(1, min(len(w1), len(w2))) if w1 and w2 else 0.0
             sem = 0.0
             if vecs:
+                import numpy as np
                 sim = float(np.dot(vecs[i], vecs[len(questions) + i]))
                 lo, hi = (0.6, 0.92) if model == "nomic" else (0.3, 0.9)
                 sem = min(1.0, max(0.0, (sim - lo) / (hi - lo)))
@@ -552,6 +558,7 @@ async def _novelty(topic: str, text: str) -> Tuple[float, Optional[bytes], str]:
                          (topic, model)).fetchall()
     finally:
         c.close()
+    import numpy as np
     sims = []
     for r in rows:
         if r["embedding"]:
@@ -691,6 +698,7 @@ async def knowledge(query: str, k: int = 3) -> List[Dict[str, Any]]:
     if model != "nomic":
         return []
     q = vecs[0]
+    import numpy as np
     scored = []
     for r in rows:
         ev = np.frombuffer(r["embedding"], dtype=np.float32)
