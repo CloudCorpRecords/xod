@@ -108,19 +108,67 @@ def device_identity():
     the synced space. Mirrors how services/mail_crypto.py identities
     are held, but in the keystore rather than a data-dir file because
     this identity guards the family vault.
+
+    The stored identity is load-bearing from the moment it is
+    advertised: the family vault is sealed to its box key, so the
+    identity a device resolves must be the one that was enrolled,
+    byte for byte. Two rules follow (both were Run 6 failure modes):
+
+    - Absence is proven against the store, not against this process's
+      cached vault snapshot. keychain.py caches the vault per process;
+      a long-lived process that read its (then empty) vault before
+      another process enrolled this device would otherwise see "no
+      identity", generate a second one, and overwrite the enrolled
+      identity with it. When the cached view shows no identity, the
+      store is read fresh before any generation is considered.
+    - A stored identity that cannot be used (unreadable store,
+      corrupt values, only one of the two keys present) fails loudly.
+      Silently regenerating would orphan everything already sealed
+      to the enrolled identity, so it is never done.
     """
     from app.services import keychain, mail_crypto as mc
     sign = keychain.get_password(FAMILY_SERVICE, "device_sign_key")
     box = keychain.get_password(FAMILY_SERVICE, "device_box_key")
+    if not (sign and box):
+        # The cached vault may predate this device's enrollment by
+        # another process; read the store fresh before concluding
+        # that no identity exists.
+        keychain.reset_cache()
+        sign = keychain.get_password(FAMILY_SERVICE, "device_sign_key")
+        box = keychain.get_password(FAMILY_SERVICE, "device_box_key")
     if sign and box:
         try:
             return mc.Identity.from_secrets(sign, box)
-        except Exception:
-            pass  # unreadable stored key: fall through and re-enroll
+        except Exception as e:
+            raise keychain.Unreadable(
+                "this device's stored family identity could not be read "
+                "back; refusing to replace it with a new one") from e
+    if sign or box:
+        raise keychain.Unreadable(
+            "this device's stored family identity is incomplete (only one "
+            "of its two keys is present); refusing to replace it with a "
+            "new one")
+    problem = keychain.problem()
+    if problem:
+        raise keychain.Unreadable(problem)
     ident = mc.Identity.new()
     sign, box = ident.secrets()
     keychain.set_password(FAMILY_SERVICE, "device_sign_key", sign)
     keychain.set_password(FAMILY_SERVICE, "device_box_key", box)
+    # Converge on the durable record: if another process stored an
+    # identity while this one was generating, the stored one wins, so
+    # every process ends up holding the identity that is actually
+    # persisted (and, once advertised, enrolled).
+    keychain.reset_cache()
+    stored_sign = keychain.get_password(FAMILY_SERVICE, "device_sign_key")
+    stored_box = keychain.get_password(FAMILY_SERVICE, "device_box_key")
+    if stored_sign and stored_box and (stored_sign, stored_box) != (sign, box):
+        try:
+            return mc.Identity.from_secrets(stored_sign, stored_box)
+        except Exception as e:
+            raise keychain.Unreadable(
+                "this device's stored family identity could not be read "
+                "back; refusing to replace it with a new one") from e
     return ident
 
 
