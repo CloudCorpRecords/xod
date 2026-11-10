@@ -779,6 +779,14 @@ class LLMService:
 
     async def load_lmstudio_model(self, model_key: str) -> Dict[str, Any]:
         """Loads a model into LM Studio memory, safely unloading others first."""
+        # Cloud-first policy (R11): with local inference OFF, nothing loads a
+        # local model — not even an explicit load request; the answer names
+        # the setting that turns it on.
+        from app.services import inference_policy
+        if not inference_policy.allowed():
+            return {"success": False, "local_inference_off": True,
+                    "message": "Local inference is off. Turn on \"Allow local inference\" in "
+                               "Settings → AI model to load models on this computer."}
         root_url = self.get_lmstudio_native_base()
         status = await self.get_lmstudio_status()
 
@@ -929,6 +937,20 @@ class LLMService:
         caller sees the honest reason. Returns (info, engine_start)."""
         engine_start: Optional[float] = None
         provider = info["provider"]
+        # Cloud-first policy (services/inference_policy.py, R11): with local
+        # inference OFF, no chat path may start or load anything local — the
+        # chat reroutes to the configured cloud provider, or fails with the
+        # honest setup reason. This runs before the broker/engine, so a
+        # refused chat can never cause a load on its way to failing.
+        if provider in LOCAL_PROVIDERS:
+            from app.services import inference_policy
+            if not inference_policy.allowed():
+                cloud = self._budget_cloud_endpoint()
+                if cloud is not None:
+                    logger.warning(f"Local inference is off; routing this chat to {cloud['provider']} "
+                                   f"instead of {provider}.")
+                    return cloud, None
+                raise inference_policy.LocalInferenceOff(inference_policy.OFF_MESSAGE)
         if provider in ("lm_studio", "xod"):
             from app.services.memory_broker import memory_broker
             await memory_broker.ensure_teacher()  # reloads the chat model if it was paused for an image/video job
