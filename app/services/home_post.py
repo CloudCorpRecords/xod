@@ -174,6 +174,20 @@ def base_for(dom: str) -> Optional[str]:
     return f"http://127.0.0.1:{PORT}" if running() and dom and dom.lower() == domain().lower() else None
 
 
+def enroll_intake(advertisement: Dict[str, Any], source_ip: str) -> Dict[str, Any]:
+    """Pairing Gap 2 (2026-11-09): a phone's enrollment ask handed to this
+    computer's own post office over HTTP (post_office.py's /v1/enroll/advertise)
+    goes through the SAME intake as the Agent Mail channel — one gate, two
+    transports (services/phone_enroll.py judges both; nothing here re-decides
+    any part of the pairing gate). The only difference is the evidence the
+    transport carries: the request's observed source address, classified by
+    services/local_presence.py — a same-Wi-Fi arrival can be auto-approved
+    under the owner's rule (2026-11-05); mail carries no presence at all and
+    always pends, and an off-LAN HTTP arrival pends exactly the same way."""
+    from app.services import local_presence, phone_enroll
+    return phone_enroll.intake(advertisement, presence=local_presence.classify(source_ip))
+
+
 def running() -> bool:
     return _server is not None and not getattr(_server, "should_exit", True) and _task is not None and not _task.done()
 
@@ -192,7 +206,8 @@ async def start(dom: str) -> Dict[str, Any]:
     def on_mail(name: str) -> None:      # mail for this Xod itself (e.g. the phone app asking): pick it up now
         if name == (agent_mail._config().get("name") or ""):
             agent_mail.wake()
-    app = make_app(str(DB_PATH), domain, pair_code_ok=phone_pair.consume_code, on_mail=on_mail, on_paired=phone_pair.paired)
+    app = make_app(str(DB_PATH), domain, pair_code_ok=phone_pair.consume_code, on_mail=on_mail, on_paired=phone_pair.paired,
+                   enroll_intake=enroll_intake)
     try:
         with socket.socket() as s:       # is the port free? (uvicorn would only log the failure)
             s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
