@@ -326,6 +326,27 @@ def publish(secrets: dict, my_id: str, view=None, identity=None, path=None) -> d
             "recipients": bundle["recipients"], "fields": sorted(secrets)}
 
 
+def _refresh_settings_snapshot() -> bool:
+    """Re-read the keystore into the running process's config settings
+    snapshot (app.config.settings) after a vault apply landed keys.
+
+    The snapshot is taken once at process start, and step execution
+    (services/harness.py _tool_config) and /api/config read provider
+    keys from it, so keys delivered by a vault apply stayed invisible
+    to both until a restart (Run 6 attempt 3: sync reported the key
+    present while step 1 read "no OpenAI key saved"). reload_secrets
+    is the same refresh the /api/secrets/retry endpoint runs. Best
+    effort: the keys ARE in the keystore either way; False means
+    snapshot readers keep the pre-apply view until the next refresh,
+    and the applied result says so."""
+    try:
+        from app import config
+        config.reload_secrets()
+        return True
+    except Exception:
+        return False
+
+
 def apply(my_id: str, view=None, identity=None, path=None) -> dict:
     """Unwrap the current bundle into this device's own keystore, if
     this device is a trusted recipient and the version is new.
@@ -386,8 +407,10 @@ def apply(my_id: str, view=None, identity=None, path=None) -> dict:
                 "message": f"{KEYSTORE_UNREACHABLE_MESSAGE} ({type(e).__name__})",
                 "fields_written": sorted(applied_fields)}
     _set_setting(VERSION_SETTING, str(version))
+    refreshed = _refresh_settings_snapshot()
     return {"state": "applied", "version": version,
-            "fields": sorted(applied_fields), "pinned_skipped": sorted(skipped)}
+            "fields": sorted(applied_fields), "pinned_skipped": sorted(skipped),
+            "settings_refreshed": refreshed}
 
 
 def publish_from_keystore(my_id: str, view=None) -> dict:
