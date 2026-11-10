@@ -62,6 +62,13 @@ def main() -> None:
 
     llm_routing.save_settings(mode="off")
 
+    # R11 fixture note: this suite models an install that RUNS local as Xod's
+    # own pick (the 0.9.23 Razer shape). Under the cloud-first policy that
+    # state exists only on an install that opted into local inference, so the
+    # fixture opts in explicitly; the promotion rules under test are unchanged.
+    from app.services import inference_policy
+    inference_policy.set_allowed(True, source="test_fixture")
+
     def boot_prefer():
         """The boot/autoconnect invocation of prefer_key, exactly as
         app/services/autoconnect.py makes it. Returns (result, error)."""

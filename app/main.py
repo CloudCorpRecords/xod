@@ -21,6 +21,7 @@ from app.services.tavily_search import tavily_client
 from app.services.tech_auditor import tech_auditor
 from app.services.omni_search import omni_search_engine
 from app.services.llm import llm_service
+from app.services import inference_policy
 from app.agent.researcher import AgenticResearcher
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -194,6 +195,7 @@ class ConfigUpdateRequest(BaseModel):
     llm_base_url: Optional[str] = None
     llm_model: Optional[str] = None
     llm_auto_model: Optional[bool] = None
+    allow_local_inference: Optional[bool] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
@@ -868,6 +870,13 @@ async def _start_task_worker():
     if not run_mode.skip("recall_startup_index"):
         from app.services import recall
         recall.schedule_index(20)               # catch Xod's memory up on chats and tasks since it last ran
+    # Cloud-first policy decision (R11): made once, persisted, logged, before
+    # anything that might load or route to a local model starts.
+    try:
+        from app.services import inference_policy
+        inference_policy.ensure_migrated()
+    except Exception as e:
+        logger.warning(f"inference policy decision failed: {e}")
     if not run_mode.skip("autoconnect"):
         from app.services import autoconnect
         asyncio.create_task(autoconnect.loop())  # keeps finding the AI on this computer and keeps it working
@@ -2245,6 +2254,8 @@ async def get_config():
         "llm_base_url": settings.llm_base_url,
         "llm_model": settings.llm_model,
         "llm_auto_model": auto_model_enabled(),
+        "allow_local_inference": inference_policy.allowed(),
+        "inference": inference_policy.route_state(),
         "has_openai_key": bool(settings.openai_api_key),
         "has_anthropic_key": bool(settings.anthropic_api_key),
         "has_gemini_key": bool(settings.gemini_api_key),
@@ -2327,6 +2338,11 @@ async def _update_config_apply(req: ConfigUpdateRequest):
     if req.llm_auto_model is not None:
         from app.services import auto_model
         auto_model.set_auto_enabled(bool(req.llm_auto_model))
+
+    if req.allow_local_inference is not None:
+        # The cloud-first opt-in itself (R11): a person flipping this is the
+        # choice; the decision is persisted and logged by the policy module.
+        inference_policy.set_allowed(bool(req.allow_local_inference), source="user_setting")
 
     if req.openai_api_key is not None:
         update_env_variable("OPENAI_API_KEY", req.openai_api_key.strip())

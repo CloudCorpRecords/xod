@@ -304,8 +304,16 @@ async def check() -> Dict[str, Any]:
             added = []
         problem = await _usable(provider, model, servers + added)
 
+        # Cloud-first policy (services/inference_policy.py, R11): with local
+        # inference OFF, this loop must not start servers, pick a local model,
+        # or fetch local helper models — a fresh install stays in its honest
+        # "needs a cloud key" setup state instead of hunting this computer
+        # for a model every 30 s (the 2026-11-06 fresh-install finding).
+        from app.services import inference_policy
+        local_ok = inference_policy.allowed()
+
         # The chosen server is installed but not running: start it.
-        if problem and "isn't running" in problem:
+        if problem and "isn't running" in problem and local_ok:
             started = False
             if provider == "ollama" and _apps.get("ollama") and _may_try("ollama"):
                 started = (await ollama_hub.start_ollama()).get("success", False)
@@ -320,7 +328,14 @@ async def check() -> Dict[str, Any]:
         ranked = rank(servers, pc["ai_memory_gb"])
         never_chosen = not get_setting("llm_provider", "")
         mine = never_chosen or setup_wizard.chosen_by() == "auto"
-        if problem or never_chosen:
+        if not local_ok and (problem or never_chosen):
+            # Nothing local may be picked or loaded. Say what WOULD connect
+            # Xod, once per problem, and leave the choice untouched.
+            notes.append("Local inference is off, so Xod isn't using models on this computer. "
+                         "Add a cloud API key in Settings → AI model, or turn on \"Allow local inference\" there.")
+            if provider in ("ollama", "lm_studio", "local", "xod"):
+                problem = problem or "No model is connected yet"
+        elif problem or never_chosen:
             best = next((r for r in ranked if r["tools"] is not False and r["fits"]), ranked[0] if ranked else None)
             if best and mine and (best["provider"], best["model"]) != (provider, model):
                 res = setup_wizard.choose(best["provider"], best["model"], best["base_url"], how="auto")
@@ -337,7 +352,7 @@ async def check() -> Dict[str, Any]:
 
         # Searching memory by meaning needs a small embedding model (services/embeddings.py). With Ollama as the model
         # app and none anywhere, fetch it once (274 MB), and say so.
-        if provider == "ollama" and not problem and os.environ.get("XOD_AUTOCONNECT", "").lower() != "off" \
+        if provider == "ollama" and not problem and local_ok and os.environ.get("XOD_AUTOCONNECT", "").lower() != "off" \
                 and not _last_try.get("embeddings") and any(s["provider"] == "ollama" for s in servers):
             _last_try["embeddings"] = time.time()
             try:
@@ -352,7 +367,7 @@ async def check() -> Dict[str, Any]:
 
         # Eyes (services/vision.py): the chat model can't see and there's no vision model: fetch a small one, once,
         # if the disk has room for it with plenty to spare. Otherwise say how to get one.
-        if provider == "ollama" and not problem and os.environ.get("XOD_AUTOCONNECT", "").lower() != "off" \
+        if provider == "ollama" and not problem and local_ok and os.environ.get("XOD_AUTOCONNECT", "").lower() != "off" \
                 and not _last_try.get("vision") and any(s["provider"] == "ollama" for s in servers):
             _last_try["vision"] = time.time()
             try:
@@ -386,10 +401,11 @@ async def check() -> Dict[str, Any]:
 
 def state() -> Dict[str, Any]:
     from app.config import settings
-    from app.services import machine, setup_wizard
+    from app.services import inference_policy, machine, setup_wizard
     return {"machine": machine.profile(), "servers": _servers, "apps": _apps, "notes": _notes, "events": _events[-10:],
             "current": {"provider": settings.llm_provider, "model": settings.llm_model, "base_url": settings.llm_base_url,
                         "chosen_by": setup_wizard.chosen_by()},
+            "inference": inference_policy.route_state(),
             "checked_at": _last_check}
 
 

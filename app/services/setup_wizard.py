@@ -149,6 +149,16 @@ def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> D
     allowed = {"xod", "lm_studio", "ollama", "local", "custom", "anthropic", "openai", "gemini", "groq", "openrouter", "fireworks"}
     if provider not in allowed:
         return {"success": False, "error": f"Unknown provider {provider}"}
+    # Cloud-first policy (services/inference_policy.py, R11): an AUTOMATIC pick
+    # may never land on a local provider while local inference is off — that
+    # is exactly the fresh-install hunting this policy exists to stop. A
+    # person's own pick (how="you") is the explicit opt-in and is recorded as
+    # such after the switch succeeds (below).
+    from app.services import inference_policy
+    if how == "auto" and provider in inference_policy.LOCAL_PROVIDERS and not inference_policy.allowed():
+        return {"success": False, "error": "Local inference is off; Xod won't pick a model on this "
+                                           "computer by itself. Add a cloud API key, or turn on "
+                                           "\"Allow local inference\" in Settings → AI model."}
     if provider == "xod":
         # Before anything else: the built-in engine is Apple-silicon-only.
         from app.services.local_engine import INTEL_MESSAGE, is_apple_silicon
@@ -192,6 +202,10 @@ def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> D
         update_env_variable("LLM_BASE_URL", base_url)
     from app.services.storage import set_setting
     set_setting(CHOSEN_BY_KEY, how)
+    if how == "you" and provider in inference_policy.LOCAL_PROVIDERS:
+        # Picking a local model yourself IS the opt-in (R11): record it, so
+        # the setting the person sees matches the behavior they chose.
+        inference_policy.set_allowed(True, source="user_model_choice")
     from app.services.local_servers import after_switch
     after_switch(provider)        # not the built-in engine any more: free its memory now
     return {"success": True, "provider": provider, "model": model}

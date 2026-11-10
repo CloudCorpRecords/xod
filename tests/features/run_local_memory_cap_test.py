@@ -233,6 +233,12 @@ async def amain():
     # ---------------------------------------------------------------- G: the wiring
     from app.services import llm as llm_mod
     from app.services.local_engine import local_engine
+    # R11 fixture note: part G drives local chats through the shared funnel.
+    # Under the cloud-first policy a fresh data dir defaults local inference
+    # OFF; this suite models an install that opted in, so the budget gate —
+    # the thing under test here — is what decides.
+    from app.services import inference_policy
+    inference_policy.set_allowed(True, source="test_fixture")
     svc = llm_mod.llm_service
     saved = (svc.get_available_tiers, svc._build_endpoint, local_engine.ensure_running)
     decision = {"allowed": False, "engine": "builtin", "model": "m", "est_gb": 7.0,

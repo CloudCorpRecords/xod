@@ -161,6 +161,15 @@ def handle_request(body: dict, view=None, serve_fn=None, my_id=None) -> dict:
     serving device, before the answer returns."""
     if not serve_enabled():
         raise BorrowRefused("this device does not serve borrowed inference")
+    # Cloud-first policy (services/inference_policy.py, R11): serving a LOCAL
+    # provider means running a model on this device. With local inference off
+    # that is refused, whoever asks; serving with this device's cloud key is
+    # unaffected (no local model is involved).
+    from app.services import inference_policy
+    if (body.get("provider") or "") in inference_policy.LOCAL_PROVIDERS \
+            and not inference_policy.allowed():
+        raise BorrowRefused("this device has local inference off; it does not run local "
+                            "models for family callers")
     view = view or family_registry.load_registry()
     record = _verify_request(body, view)
     if my_id and body.get("to") not in (None, "", my_id):
@@ -197,6 +206,13 @@ def borrow(server_ip: str, server_id: str, provider: str, model: str, messages,
     silently and never falls back silently."""
     if local_only():
         raise BorrowBlocked("this device is pinned to local-only inference; borrowing is off")
+    # Cloud-first policy (R11): device-routed inference is part of what the
+    # allow_local_inference setting gates. Off means this device does not
+    # route its inference to family devices at all.
+    from app.services import inference_policy
+    if not inference_policy.allowed():
+        raise BorrowBlocked("device-routed inference is off on this device "
+                            "(local inference is not allowed); borrowing is off")
     if not my_id:
         raise BorrowBlocked("this device has no family id to borrow under")
     identity = identity or family_registry.device_identity()
