@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## 1.1.1
+
+A fixes release. It also closes the gap 1.1.0 left open: the fixes that landed on main after 1.1.0 were never published, and because Xod updates itself from the published releases, installed copies had nothing to update to. 1.1.1 is that code, gated and published.
+
+**Family enrollment keeps its identity**
+- A long-lived Xod server could silently generate a second device identity after a keychain cache reset and overwrite the enrolled one. Now the durable identity store is re-read before concluding no identity exists, a corrupt or partial store is reported as unreadable instead of being replaced, and an identity another process already persisted is adopted. Enrollment identity survives restarts and cache resets.
+
+**Delivered family keys take effect without a restart**
+- When a family vault key bundle is applied, the running process now refreshes its settings snapshot, so delivered keys are visible to running steps and to /api/config right away. Before this fix, keys delivered to a device only took effect after a restart, and /api/config kept reporting no key until then.
+
+**Expired connection offers stay expired**
+- A Muse Connect offer that has expired now stays terminal. Before this fix, a hello arriving after the offer expired could still create a connection on the Xod side even though the Muse side had already refused it.
+
+**Checked before it shipped**
+- The release gate ran the candidate against the pristine 1.1.0 tree, suite for suite, with zero new failures: family key interop 49 of 49, pairing 18 of 18, family vault 41 of 41, cloud-first default 18 of 18, memory sync 27 of 27, Muse Connect 21 of 21 (20 of 20 on 1.1.0; the new check is the expiry case above), vault apply refresh 12 of 12 (a new suite for the fix above), inbox status 26 of 26, computer health 15 of 15, orchestrator 82 of 82, and the updater's version comparison check, which accepts 1.1.1 as newer than 1.1.0.
+- Fresh install verified live on the gate machine: the app boots into the needs_cloud_key setup state with local inference off, no local model server or model process is started, and the full startup chain imports and serves with numpy blocked entirely.
+- Startup weight did not grow: the always-on backend measured 132.8 MB RSS after boot on the gate machine against 132.7 MB for the 1.1.0 baseline measured the same way, and 125.8 MB in lightweight mode.
+
+**What this release does not claim**
+- Long-form autonomy is still Tier 6 MIXED and is not certified. Nothing in this release should be read as long-form being solved.
+- One gated fix is not in this release: the Tier 6 input-claims change (a step's declared input files must exist before its write counts) conflicts with a later rewrite of the code it touches and is being ported separately.
+- The Android companion for the pairing work is written but has not been compile-verified in an Android build yet, so no Android pairing claim ships with this release.
+- Carried from 1.1.0, unchanged: Windows copies still update manually (the NSIS self-update wedge); every build still re-asks for its Accessibility switch once after an update; the Mac build is not notarized and the Windows installer is not code-signed yet, so a first launch still needs the right-click Open and SmartScreen steps in the install notes; GitHub sign-in still cannot complete until the OAuth app is registered and its public client ID is saved in the panel.
+
 ## 1.1.0
 
 **Inbox status**
