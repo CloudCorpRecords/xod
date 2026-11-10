@@ -10,8 +10,11 @@ publish or apply anything when the registry view carries no trusted
 members. An unsigned or forged registry gets nothing.
 
 Shape:
-  - One encrypted bundle file beside the registry in the synced
-    space (family/vault.bundle.json). Ciphertext only, ever:
+  - One encrypted bundle file in the family synced space
+    (family/vault.bundle.json inside the space; see bundle_path()
+    for the ladder: the rdrive files root first, the registry's own
+    space — today a Google Drive folder — as the alternate root).
+    Ciphertext only, ever:
       {family, version, created_by, updated, recipients: [ids],
        wrapped: {device_id: sealed envelope of the bundle key},
        nonce, ciphertext}
@@ -44,7 +47,28 @@ Shape:
     gone and it cannot unwrap the new version. (What it already
     unwrapped into its own keystore cannot be remotely wiped — the
     design note says so plainly; provider-side rotation answers a
-    suspected compromise.)
+    suspected compromise.) rewrap_after_revocation() is the trigger
+    the revocation path calls so the re-wrap actually happens, and
+    status() flags any bundle that still wraps for a revoked device
+    until some trusted device with keys republishes.
+  - Enroll -> keys (R12): sync_keys() is the completion step a device
+    runs when its enrollment lands (and at startup): if this device
+    is a trusted recipient it fetches the bundle from the synced
+    space and applies it, ending in a presence-only has_key
+    read-back for the family default provider — no manual key
+    juggling, per the interop principle (2026-11-02).
+  - Session walls (the owner's family session rule, 2026-11-09): a
+    process that cannot reach its OS keystore from its own session
+    (SSH/headless on macOS: Keychain -25308; a Windows service/SSH
+    session: Credential Manager error 1312) never touches the
+    keystore directly — the device's OWN running Xod service, which
+    lives in the session that can, performs the keystore work.
+    Same-device processes use the loopback vault routes / sync_keys;
+    an enrolled requester holding its own identity uses the signed
+    family key channel (services/family_key_channel.py), where this
+    device's service unwraps and delivers, sealed to the requester,
+    after the registry + SSO + recipient checks. The trust boundary
+    is the family gate, not the GUI session.
 
 Nothing here prints, logs, or returns a key value: reports carry
 provider field names and presence booleans only.
@@ -67,6 +91,10 @@ BUNDLE_NAME = "vault.bundle.json"
 VERSION_SETTING = "family_vault_applied_version"
 LOCAL_ONLY_SETTING = "family_vault_local_only"
 PINNED_SETTING = "family_vault_pinned_fields"
+PATH_SETTING = "family_vault_path"
+# The family default brain's key field (OpenAI, gpt-6.1-terra): the
+# field sync_keys() verifies presence for in its has_key read-back.
+DEFAULT_PROVIDER_FIELD = "openai_api_key"
 _ADDRESS = "xod-family:{}"
 _AAD = "xod-family-vault|{}|{}"
 
@@ -88,11 +116,64 @@ The service now returns this as the typed keystore_unreachable
 state instead: honest about the cause, and actionable."""
 
 
-def bundle_path() -> Path:
+def _rdrive_files_root() -> Path:
+    return Path.home() / "Documents" / "rdrive" / "data" / "files"
+
+
+def _bundle_candidates() -> list:
+    """Ordered candidate homes for the bundle in the family synced
+    space — the family_rules ladder, adapted to the bundle: an
+    explicitly configured location (env, then setting) is the sole
+    candidate; otherwise the rdrive files root (each account folder's
+    family/ subfolder) comes first, and the space the registry lives
+    in (today a Google Drive folder; a plain synced folder works the
+    same way) is the alternate root."""
     env = os.environ.get("XOD_FAMILY_VAULT_PATH", "").strip()
     if env:
-        return Path(env).expanduser()
-    return family_registry.registry_path().parent / BUNDLE_NAME
+        return [Path(env).expanduser()]
+    saved = _setting(PATH_SETTING, "").strip()
+    if saved:
+        return [Path(saved).expanduser()]
+    out = []
+    files_root = _rdrive_files_root()
+    if files_root.is_dir():
+        for account in sorted(files_root.iterdir()):
+            if account.is_dir():
+                out.append(account / "family" / BUNDLE_NAME)
+    out.append(family_registry.registry_path().parent / BUNDLE_NAME)
+    return out
+
+
+def bundle_path() -> Path:
+    """Where the bundle is read from / written to: the first
+    candidate that already holds a bundle (an existing bundle is
+    never silently migrated to another space), else the first
+    candidate — so a fresh publish lands in the rdrive space when
+    this machine has one."""
+    candidates = _bundle_candidates()
+    for cand in candidates:
+        if cand.is_file():
+            return cand
+    return candidates[0]
+
+
+def bundle_home() -> dict:
+    """Which rung of the ladder the bundle resolved through, for the
+    Family screen and audits: env, setting, rdrive, or
+    registry-space. Presence-level: a space name and a path."""
+    path = bundle_path()
+    env = os.environ.get("XOD_FAMILY_VAULT_PATH", "").strip()
+    if env:
+        space = "env"
+    elif _setting(PATH_SETTING, "").strip():
+        space = "setting"
+    else:
+        try:
+            path.relative_to(_rdrive_files_root())
+            space = "rdrive"
+        except ValueError:
+            space = "registry-space"
+    return {"space": space, "path": str(path)}
 
 
 def _setting(name, default=""):
@@ -181,12 +262,20 @@ def status(view=None, my_id=None) -> dict:
     No key values, no lengths."""
     view = view or family_registry.load_registry()
     bundle = read_bundle()
+    revoked = set(view.get("revoked_by_registry") or [])
+    revoked |= {d["id"] for d in view.get("devices") or [] if d.get("status") == "revoked"}
     out = {"state": bundle["state"], "version": bundle.get("version"),
            "recipients": bundle.get("recipients") or [],
            "created_by": bundle.get("created_by"),
            "updated": bundle.get("updated"),
            "applied_version": int(_setting(VERSION_SETTING, "0") or 0),
            "local_only": local_only(),
+           "bundle_home": bundle_home(),
+           # Non-empty means a revocation has landed in the registry
+           # but no trusted device with keys has republished yet: the
+           # stored bundle still wraps for the removed device. The
+           # honest flag until rewrap_after_revocation clears it.
+           "wraps_revoked": sorted(set(bundle.get("recipients") or []) & revoked),
            "i_am_recipient": bool(my_id and my_id in (bundle.get("recipients") or [])),
            "trusted_recipients": [d["id"] for d in view.get("trusted_members") or []]}
     return out
@@ -314,3 +403,123 @@ def publish_from_keystore(my_id: str, view=None) -> dict:
     if not secrets:
         raise VaultError("this device holds no provider keys to share")
     return publish(secrets, my_id, view=view)
+
+
+# ------------------------------------------------------- enroll -> keys
+
+def _audit(kind: str, device_id: str, payload: dict) -> None:
+    """The family audit trail (field names and states only, never a
+    value). Evidence, never a reason to fail the flow."""
+    try:
+        from app.services import event_log
+        event_log.emit(kind, actor="family_vault",
+                       ids={"device": device_id}, payload=payload)
+    except Exception:
+        pass
+
+
+def _bundle_field_names(my_id: str, view, identity, path=None) -> list:
+    """The field NAMES the current bundle carries for this device,
+    via a read-only unwrap (nothing is written). [] when this device
+    cannot open its wrapped copy."""
+    bundle = read_bundle(path)
+    if bundle.get("state") != "ok" or my_id not in (bundle.get("recipients") or []):
+        return []
+    try:
+        identity = identity or family_registry.device_identity()
+        creator = family_registry.trusted_member(view, bundle.get("created_by") or "")
+        expect = creator["public_key"] if creator else None
+        key = _open_bundle_key(bundle["wrapped"][my_id], identity, my_id,
+                               expect_signer=expect)
+        secrets = _decrypt_payload(key, bundle.get("family"),
+                                   int(bundle.get("version") or 0), bundle)
+        return sorted(secrets)
+    except Exception:
+        return []
+
+
+def sync_keys(my_id: str = None, view=None, identity=None, path=None,
+              expect_field: str = DEFAULT_PROVIDER_FIELD) -> dict:
+    """Enroll -> keys, the completion step: when this device is a
+    trusted family member, fetch the bundle from the synced space
+    and apply it into this device's own keystore, then verify —
+    presence only — that the family default provider's key is now
+    held (has_key). Runs when enrollment lands and at startup; a
+    device that is not (yet) a trusted recipient gets an explicit
+    state, never a silent no-op and never key material. Never
+    raises: enrollment and startup callers take the state and move
+    on."""
+    try:
+        my_id = my_id or family_registry.my_device_id()
+        if not my_id:
+            out = {"state": "no_device_id",
+                   "message": "this device has no family device id yet "
+                              "(setting family_device_id)"}
+            _audit("family.vault_sync", "", out)
+            return out
+        try:
+            out = apply(my_id, view=view, identity=identity, path=path)
+        except VaultError as e:
+            out = {"state": "refused", "message": str(e)}
+        if out.get("state") in ("applied", "current"):
+            from app.services import secret_store
+            view = view or family_registry.load_registry()
+            fields = out.get("fields") or _bundle_field_names(
+                my_id, view, identity, path)
+            present = {f: bool(secret_store.stored(f)) for f in fields}
+            out["keys_present"] = present
+            out["has_key"] = bool(present.get(expect_field))
+        _audit("family.vault_sync", my_id,
+               {"state": out.get("state"), "version": out.get("version"),
+                "fields": sorted(out.get("keys_present") or {})})
+        return out
+    except Exception as e:
+        return {"state": "error",
+                "message": f"vault sync failed in this process ({type(e).__name__})"}
+
+
+def rewrap_after_revocation(revoked_id: str, my_id: str = None, view=None) -> dict:
+    """The revocation trigger: if the stored bundle still wraps for
+    the device that just left, republish from THIS device's keystore
+    — publish() mints a fresh bundle key for the current trusted set
+    only, so the removed device is wrapped out. Honest states when
+    this device cannot be the one to do it: not_needed (nothing
+    wraps for it), not_trusted, no_keys, keystore_unreachable
+    (another trusted device with keys must republish; status()
+    keeps flagging wraps_revoked until one does). Never raises."""
+    try:
+        my_id = my_id or family_registry.my_device_id()
+        if not my_id:
+            return {"state": "no_device_id",
+                    "message": "this device has no family device id yet"}
+        view = view or family_registry.load_registry()
+        bundle = read_bundle()
+        if bundle.get("state") != "ok" or revoked_id not in (bundle.get("recipients") or []):
+            return {"state": "not_needed",
+                    "message": "the stored bundle does not wrap for the removed device"}
+        if family_registry.trusted_member(view, my_id) is None:
+            return {"state": "not_trusted",
+                    "message": "this device is not a trusted family member; "
+                               "it cannot republish the vault"}
+        try:
+            out = publish_from_keystore(my_id, view=view)
+        except VaultError as e:
+            if "no provider keys" in str(e):
+                from app.services import secret_store
+                if not secret_store.health().get("readable", True):
+                    return {"state": "keystore_unreachable",
+                            "message": KEYSTORE_UNREACHABLE_MESSAGE}
+                return {"state": "no_keys",
+                        "message": "this device holds no provider keys to republish with"}
+            return {"state": "refused", "message": str(e)}
+        except Exception as e:
+            return {"state": "keystore_unreachable",
+                    "message": f"{KEYSTORE_UNREACHABLE_MESSAGE} ({type(e).__name__})"}
+        result = {"state": "rewrapped", "version": out.get("version"),
+                  "recipients": out.get("recipients")}
+        _audit("family.vault_rewrap", my_id,
+               {"revoked": revoked_id, **result})
+        return result
+    except Exception as e:
+        return {"state": "error",
+                "message": f"vault rewrap failed in this process ({type(e).__name__})"}
