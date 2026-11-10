@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import json
@@ -10,7 +12,13 @@ import hashlib
 import sqlite3
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
-import numpy as np
+# numpy is deliberately NOT imported at module level: it is imported lazily
+# inside the methods that use it (_fallback_semantic_vector,
+# generate_embedding, store_memory, search_memories). The light core ships
+# without numpy by design (featherweight always-on layer), so this module
+# must import cleanly where numpy is absent; where numpy is installed the
+# behavior is identical. The __future__ annotations import above keeps the
+# np.ndarray signature annotations from being evaluated at import time.
 import httpx
 
 from app.config import settings
@@ -39,6 +47,7 @@ class MemoryService:
         Produces normalized 768-dimensional float32 vectors.
         Ensures high cosine similarity for overlapping linguistic semantics even offline.
         """
+        import numpy as np
         vec = np.zeros(self.embedding_dim, dtype=np.float32)
         if not text:
             return vec
@@ -76,6 +85,7 @@ class MemoryService:
           2. OpenAI (/v1/embeddings) if api_key present
           3. Deterministic Semantic Vector Fallback (always works, 0 latency, 0 token cost)
         """
+        import numpy as np
         text_clean = text.strip().replace("\n", " ")[:3000]
         if not text_clean:
             return np.zeros(self.embedding_dim, dtype=np.float32), "empty"
@@ -129,6 +139,7 @@ class MemoryService:
         """
         Stores or surgically updates a long-term memory in SQLite vector storage.
         """
+        import numpy as np
         now = time.time()
         mem_id = f"mem_{uuid.uuid4().hex[:12]}"
         tag_str = ",".join([t.strip().lower() for t in tags]) if tags else ""
@@ -222,6 +233,7 @@ class MemoryService:
           - SQLite FTS5 Match (Exact keywords & identifiers)
           - Importance & Recency weighting
         """
+        import numpy as np
         if not query and query_vector is None:
             return self.list_memories(category=category, limit=limit)
 
