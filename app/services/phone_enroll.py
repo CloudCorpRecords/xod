@@ -197,6 +197,36 @@ def _try_auto_approve(device_id: str, record: Dict[str, Any],
             "control_paired": r.get("control_paired"), "member": r.get("member")}
 
 
+# ------------------------------------------------- vault follow-through
+
+def _vault_sync_hook() -> Dict[str, Any]:
+    """Enroll -> keys (R12): an enrollment completing on this device
+    is the trigger for this device's own vault sync — fetch the
+    bundle from the synced space and apply it, ending in the
+    has_key read-back family_vault.sync_keys reports. Best effort by
+    design: the enrollment stands either way, and the sync's typed
+    state rides along in the result for the panel to show."""
+    try:
+        from app.services import family_vault
+        return family_vault.sync_keys()
+    except Exception as e:
+        return {"state": "error", "message": f"vault sync unavailable ({type(e).__name__})"}
+
+
+def _vault_rewrap_hook(device_id: str) -> Dict[str, Any]:
+    """Revocation -> re-wrap (R12): a device leaving the family is
+    wrapped out of the vault bundle by whichever trusted device
+    with keys republishes first; the revoking device tries here,
+    and family_vault.status() keeps flagging wraps_revoked until
+    some device succeeds. Best effort, typed state, never blocks
+    the revocation."""
+    try:
+        from app.services import family_vault
+        return family_vault.rewrap_after_revocation(device_id)
+    except Exception as e:
+        return {"state": "error", "message": f"vault rewrap unavailable ({type(e).__name__})"}
+
+
 # ---------------------------------------------------------------- registry IO
 
 def _raw_path(path=None) -> Path:
@@ -420,7 +450,8 @@ def approve(device_id: str, path=None) -> Dict[str, Any]:
     existing = next((d for d in view.get("devices") or [] if d["id"] == device_id), None)
     if existing and existing.get("status") == "active" \
             and fr.trusted_member(view, device_id) is not None:
-        return {"ok": True, "state": "already_enrolled", "device_id": device_id}
+        return {"ok": True, "state": "already_enrolled", "device_id": device_id,
+                "vault_sync": _vault_sync_hook()}
     with _lock:
         st = _load()
         entry = (st.get("pending") or {}).get(device_id)
@@ -471,7 +502,8 @@ def approve(device_id: str, path=None) -> Dict[str, Any]:
             control = False
     _audit("family.enrolled", device_id, record_active.get("public_key") or "")
     return {"ok": True, "state": "enrolled", "device_id": device_id,
-            "control_paired": control, "member": member}
+            "control_paired": control, "member": member,
+            "vault_sync": _vault_sync_hook()}
 
 
 def deny(device_id: str) -> Dict[str, Any]:
@@ -515,7 +547,8 @@ def revoke(device_id: str, path=None) -> Dict[str, Any]:
             or fr.trusted_member(view2, device_id) is not None:
         return {"ok": False, "error": "the revocation did not verify on read-back"}
     _audit("family.revoked", device_id, rec.get("public_key") or "")
-    return {"ok": True, "state": "revoked", "device_id": device_id}
+    return {"ok": True, "state": "revoked", "device_id": device_id,
+            "vault_rewrap": _vault_rewrap_hook(device_id)}
 
 
 # ---------------------------------------------------------------- phone as approver
@@ -567,7 +600,8 @@ def apply_phone_approval(device_id: str, signature: str, approver_id: str, path=
         return {"ok": False, "error": "the phone's approval did not verify on read-back"}
     _observe_trust(view2)
     _audit("family.approved_by_phone", device_id, approver.get("public_key") or "")
-    return {"ok": True, "state": "enrolled", "device_id": device_id, "approved_by": approver_id}
+    return {"ok": True, "state": "enrolled", "device_id": device_id, "approved_by": approver_id,
+            "vault_sync": _vault_sync_hook()}
 
 
 # ---------------------------------------------------------------- gates + state

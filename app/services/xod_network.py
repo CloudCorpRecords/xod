@@ -20,6 +20,11 @@ it. It runs while you're signed in and the setting xod_findable isn't "off":
   POST /v1/family/inference a borrowed model call from a family member (services/family_inference.py):
                             same account (whois) AND signed with the caller's registry device key;
                             only trusted (signed, approved, unrevoked) members are served
+  POST /v1/family/keys      a family key request (services/family_key_channel.py): the same two
+                            locks plus the caller's signed SSO assertion and the vault
+                            recipient check; this device's service performs the keystore
+                            read/unwrap/delivery or the vault apply the caller's session
+                            cannot, sealed to the caller and audit-logged by field name
   POST /v1/phone/pair-offer a pairing offer for your phone, so another of your Xods can add it here (no second scan)
   GET/POST /v1/models       this Xod's model choices, and switching between them (services/remote_models.py)
 A handed task never runs by itself: it becomes an approval card on this computer (in the chat and on the phone), and
@@ -456,6 +461,30 @@ async def _start_beacon(ip: str) -> None:
         try:
             return await asyncio.to_thread(
                 family_inference.handle_request, body if isinstance(body, dict) else {},
+                my_id=family_registry.my_device_id() or None)
+        except PermissionError as e:
+            raise HTTPException(403, str(e))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    # Family key channel (services/family_key_channel.py): the same two locks as
+    # inference — Tailscale vouches the caller is this account's device, and the
+    # request body is signed with that device's registry key and carries its
+    # signed SSO assertion. This device's service does the keystore work its
+    # caller's session cannot (the family session rule, 2026-11-09).
+    @app.post("/v1/family/keys")
+    async def family_keys(request: Request) -> Dict[str, Any]:
+        who = await asyncio.to_thread(_caller, request.client.host)
+        if not who["same_account"]:
+            raise HTTPException(403, "Only your own devices can ask this Xod for family keys.")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Send JSON.")
+        from app.services import family_key_channel, family_registry
+        try:
+            return await asyncio.to_thread(
+                family_key_channel.handle_key_request, body if isinstance(body, dict) else {},
                 my_id=family_registry.my_device_id() or None)
         except PermissionError as e:
             raise HTTPException(403, str(e))

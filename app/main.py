@@ -894,6 +894,8 @@ async def _start_task_worker():
     from app.services import phone_mcp
     phone_mcp.start_bridge()                # Approvals/Crew questions to a paired Android phone, if one is paired
     asyncio.create_task(browser_sandbox_service.idle_loop())   # an unused sandbox browser closes itself (services/browser_sandbox.py)
+    from app.services import family_vault as _family_vault
+    asyncio.create_task(asyncio.to_thread(_family_vault.sync_keys))   # enroll -> keys: a device enrolled since last boot receives the family keys on startup; a typed no-op state for everyone else (services/family_vault.py)
 
 
 class ModelRef(BaseModel):
@@ -3406,6 +3408,25 @@ async def family_vault_apply():
         out = await asyncio.to_thread(family_vault.apply, my_id)
     except family_vault.VaultError as e:
         return {"success": False, "state": "refused", "message": str(e)}
+    return {"success": True, **out}
+
+
+@app.post("/api/family/vault/sync")
+async def family_vault_sync():
+    """Family vault, enroll -> keys (services/family_vault.py sync_keys):
+    the completion step a freshly enrolled device calls — fetch the bundle
+    from the family synced space, apply it into this device's own keystore,
+    and read back (presence only) that the family default provider's key
+    is held. This backend runs in the session that can reach the keystore,
+    so a headless caller asking over loopback gets the keystore work done
+    for it (the family session rule, 2026-11-09). Enrollment completion
+    and startup also run it in-process. Provider names and presence only."""
+    from app.services import family_registry, family_vault
+    my_id = family_registry.my_device_id()
+    if not my_id:
+        return {"success": False, "state": "no_device_id",
+                "message": "This device has no family device id yet (setting family_device_id)."}
+    out = await asyncio.to_thread(family_vault.sync_keys, my_id)
     return {"success": True, **out}
 
 
