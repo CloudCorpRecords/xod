@@ -1415,6 +1415,28 @@ def assemble_request(mission_id: str, subtask: Dict[str, Any]) -> str:
     return request
 
 
+def _browser_surface_plea(result: str, subtask: Dict[str, Any]) -> bool:
+    """The step's final pass ran on the browser surface and its report is
+    that surface's needs-input plea for the very tools this step's work
+    requires (AGE-28, re-grade run 3 T1A): the browser mission report's
+    own heading, or its request for terminal and file-writing access
+    "through the current browser interface". Only judged for steps that
+    declare file or run effects: a research step asking its user a
+    question is a genuine question, not a routing failure, and keeps
+    the normal verdict paths."""
+    if not result:
+        return False
+    if not any(e.get("kind") in ("create", "modify", "delete", "run")
+               for e in subtask.get("expected_effects") or []):
+        return False
+    if "I need something from you" in result and "browser" in result.lower():
+        return True
+    low = result.lower()
+    return ("current browser interface" in low
+            and ("terminal" in low or "file-writing" in low
+                 or "file writing" in low))
+
+
 def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) -> Dict[str, Any]:
     """What the queue decided about a finished subtask task, kept separate from
     what the agent claimed. The verdict comes from the task's final state,
@@ -1423,6 +1445,20 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
         return {"status": "failed", "claimed": "", "verified_status": "unverifiable",
                 "evidence": ["The task record for this step is gone, so its result cannot be checked."]}
     result = task.get("result") or ""
+    if _browser_surface_plea(result, subtask):
+        # The plea is not the step's work product and must not become
+        # its recorded claim: the step is failed on a routing defect in
+        # the machinery, named as such. The verdict-time re-check can
+        # still upgrade the step afterwards if its declared effects
+        # verify fresh on disk; what it can no longer do is carry a
+        # browser worker's request for tools as this step's result.
+        return {"status": "failed", "claimed": "", "verified_status": "contradicted",
+                "evidence": ["The step's final pass ran on the browser surface, which "
+                             "does not carry the tools this step's declared effects "
+                             "need, and its report asked for those tools instead of "
+                             "doing the work. That is a routing failure in the "
+                             "machinery, not the step's work product, so the plea "
+                             "is not recorded as the step's result."]}
     if task["status"] == "done":
         effects = subtask.get("expected_effects") or []
         files = [e for e in effects if e.get("kind") != "run"]

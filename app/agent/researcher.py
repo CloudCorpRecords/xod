@@ -119,6 +119,39 @@ _EXACT_OUTPUT_RE = re.compile(
     r"exactly the following|nothing else|no other text|just the number|only the number|"
     r"reply with only|respond with only|answer with only", re.I)
 
+# A mission step's assembled request declares the step's capability
+# contract in its own text (services/missions.py assemble_step writes
+# this line). An ordinary chat turn carries no such line.
+_DECLARED_CONTRACT_RE = re.compile(
+    r"Declared tools for this step \(its capability contract\):\s*(.+)")
+
+
+def _declared_contract_tools(query: str):
+    """The tool names a mission step's request declares as its
+    capability contract, [] for a contract that declares none, or None
+    when the request declares no contract at all."""
+    m = _DECLARED_CONTRACT_RE.search(query or "")
+    if not m:
+        return None
+    rest = m.group(1).strip()
+    if not rest or rest.lower() == "none":
+        return []
+    return [t.strip() for t in rest.split(",") if t.strip()]
+
+
+def _contract_blocks_browser_surface(query: str) -> bool:
+    """True when the request is a mission step whose declared contract
+    names no browser tool. The browser mission surface carries only
+    browser tools, so such a step can never be served there, whatever
+    its wording or a plan suggests (AGE-28, re-grade run 3 T1A: a
+    test-running step with a computer-tool contract was run as a
+    browser mission, and its record became that surface's plea for
+    terminal access). Routing must honor the contract, not the
+    phrasing."""
+    declared = _declared_contract_tools(query)
+    return declared is not None and not any(
+        t.startswith("browser_") for t in declared)
+
 
 class AgenticResearcher:
     """
@@ -818,6 +851,16 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
                 active_workspace_path=active_workspace_path,
                 max_tools=16
             )
+            if _contract_blocks_browser_surface(user_query):
+                # A mission step whose contract names no browser tool
+                # must not be handed the browser mission tool mid-loop
+                # either (AGE-28): the routing gate at _mission_request
+                # covers the turn's entry, this covers a later pass
+                # reaching for the surface switch as a tool.
+                available_candidate_tools = [
+                    t for t in available_candidate_tools
+                    if t["function"]["name"] != "browser_run_mission"
+                ]
 
             from app.agent.healing import fingerprint
             seen_calls = {fingerprint(t, (st.get("tool_args") or [{}])[i] if i < len(st.get("tool_args") or []) else {})
@@ -2473,6 +2516,13 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
                 return None
         except Exception:
             pass
+
+        # A mission step whose declared capability contract names no
+        # browser tool is never routed to the browser surface: that
+        # surface cannot carry the step's contracted tools, so a pass
+        # there can only end as a plea for them (AGE-28).
+        if _contract_blocks_browser_surface(query):
+            return None
 
         planned = [
             (t, (s.get("tool_args") or [{}])[i] if i < len(s.get("tool_args") or []) else {})
