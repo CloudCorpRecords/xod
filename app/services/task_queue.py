@@ -794,6 +794,13 @@ class TaskQueue:
                   (at if at is not None else time.time(), task_id))
         c.commit()
         c.close()
+        # The activity timer (services/liveness.py) reads the same genuine
+        # progress this clock records: work moved, so the timer resets.
+        try:
+            from app.services import liveness
+            liveness.work_progressed(task_id)
+        except Exception:
+            pass
 
     def _progress_at(self, task: Dict[str, Any]) -> float:
         """When this task last genuinely progressed. Legacy rows without a
@@ -857,6 +864,16 @@ class TaskQueue:
             if fields.get("stalled") and not old.get("stalled"):
                 event_log.emit("task.stalled", actor="task_queue", ids={"task_id": task_id},
                                payload={"reason": fields.get("stalled_reason") or note or ""})
+            # The activity timer (services/liveness.py): a task entering
+            # "working" is work in flight; leaving it ends the flight.
+            try:
+                from app.services import liveness
+                if "status" in fields and fields["status"] == "working" and old["status"] != "working":
+                    liveness.work_started(task_id)
+                elif "status" in fields and fields["status"] != "working" and old["status"] == "working":
+                    liveness.work_finished(task_id)
+            except Exception:
+                pass
 
     def list(self, limit: int = 60) -> List[Dict[str, Any]]:
         c = _conn()
