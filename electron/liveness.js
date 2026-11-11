@@ -1,5 +1,5 @@
 // The review half of Xod's activity timer (services/liveness.py is the
-// timer half, inside the backend). Rene's design, 2026-11-10: nothing
+// timer half, inside the backend). The design, settled 2026-11-10: nothing
 // here probes on a loop. The backend's own activity resets the timer;
 // this module reads the timer's ledger, and only when the ledger has
 // been stale past the window WITH work in flight (or activity that
@@ -21,7 +21,7 @@
 // `node --test electron/liveness.test.js` drives every path.
 
 const DEFAULTS = {
-  stallAfterSec: 45,        // Rene's window: nothing through in ~45 s with work in flight earns a review
+  stallAfterSec: 45,        // the stall window: nothing through in ~45 s with work in flight earns a review
   recentActivitySec: 165,   // no work in flight, but activity that stopped inside this window is still a stall, not idle
   standDownGraceSec: 120,   // a healthy review stands down this stall episode for this long
   maxRestarts: 3,           // restart budget per window (the crash-loop lesson)

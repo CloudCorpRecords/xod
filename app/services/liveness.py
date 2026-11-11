@@ -1,11 +1,11 @@
 """
-The activity timer at the heart of Xod's self-review (Rene's design,
+The activity timer at the heart of Xod's self-review (design settled
 2026-11-10, after the AGE-7 re-grade caught a total server wedge:
 hello unanswered for over five minutes, the main thread parked in
 open(), four worker threads parked on locks, the process alive with
 near-zero CPU and nothing anywhere that noticed).
 
-Rene's mechanism, in his words: it is not a separate prober program.
+The mechanism, as designed: it is not a separate prober program.
 Every time something comes through (a request, a job, a step, an
 event) a timer starts or resets. If the window passes and nothing has
 come through, the timer triggers a review of what is going on, and
