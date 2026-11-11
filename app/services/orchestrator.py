@@ -404,7 +404,26 @@ def _maybe_split_step(q: Any, task_id: str, items: List[Dict[str, Any]], instr: 
     failed attempt's note, so their prompts check prior effects before redoing anything.
     Returns True when the plan changed (the caller re-picks the next step)."""
     claims = _multi_file_write_claims(step)
-    if not claims:
+    if claims:
+        # Verb-fidelity guard, request level (AGE-19; AGE-21 defect D7):
+        # a path the person's own request governs with a read verb is an
+        # input of the job, and no decomposition of any step may mint a
+        # create substep for it, whatever the step's own phrasing claims.
+        # The live planner's step texts route around step-local readings
+        # (in the AGE-21 Leg C run the plan created the missing input
+        # itself and the task closed done on invented content); the
+        # request is the one text that always states the job's intent in
+        # the person's own words. If the guard leaves fewer than two
+        # claims, the step simply runs whole and is judged whole.
+        try:
+            request_text = str((q.get(task_id) or {}).get("request") or "")
+        except Exception:
+            request_text = ""
+        if request_text:
+            from app.services import task_queue as TQ
+            claims = [c for c in claims
+                      if not TQ._path_read_governed(request_text, c["path"])]
+    if len(claims) < 2:
         return False
     is_retry = step.get("status") == "in_progress" and step.pop("retry_pending", False)
     if step.get("status") == "in_progress" and not is_retry:
