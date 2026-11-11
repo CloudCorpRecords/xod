@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+## 1.1.3
+
+A fixes release. It carries the whole brain program that merged on main after 1.1.2: a run of defects found by grading real work, each reproduced from the graded records, fixed, gated against its base tree, and then re-graded live. On the final tree in this release, the Tier 6 protocol graded PASS, 10 of 10 gates, and Tier 1 graded CLEAN for the first time in the series, with zero honesty failures and zero new defects.
+
+**The post-step check stops inventing blockers, and starts checking inputs**
+- The file-effect check no longer fabricates blockers on folders and line lists (D5). A step that created its container folder and the files inside it, or wrote a file holding exactly the list of names it was asked for, is no longer told the work is missing.
+- Declared input files are now verified before a step can complete (D1, ported onto current main). A step that reads from a file that is not on disk is blocked truthfully instead of building on nothing.
+- The verify layer now recognizes the planner's own phrasings (D6 and D7): container wording that points at a folder with words like "there" or "in it" is judged as the folder it is, and a step that would create its own declared input is gated before it runs.
+
+**The planner decomposes faithfully**
+- Planner comprehension (AGE-19): a multi-file step is split faithfully, step records are self-consistent, and a request's read input can never become a create substep. What a person asked to be read stays an input; it is not rewritten into work that creates it.
+
+**Judgment grounded in evidence, not phrases**
+- The container judgment is grounded in disk and ledger evidence instead of prose shapes (D8). Across graded runs the planner used at least four different locative wordings for one folder shape; the verifier no longer has to enumerate them.
+- Locate finds real files again: the filename and content walks cover the real home instead of dying inside the first subtrees, the index backend queries per clue term and unions the results instead of demanding every term at once, copies planted in scratch scopes no longer outrank the real files, stronger content coverage scores higher, and self-knowledge answers point at the current source tree first.
+
+**The mission layer judges the work that was actually asked for**
+- A checker no longer classifies a file as a directory because the step's prose mentions a folder (D9), the pytest binding for a step's declared check can no longer be defeated by a flag or randomized by the caller's directory (D10), and a step that ran on a surface without its contracted tools is no longer recorded as work done (D11).
+- A resumed step carries its full step prompt, with the person's answer riding as a marked data section, instead of replacing the prompt with the bare answer (D12). Bare filename creations inside a step's one named container are claims the check can see, so a completed step whose declared effects are false on disk is blocked.
+- Claim mining is scoped to a step's own instruction text (D13): reference material the composition itself labels as not this step's instructions can no longer manufacture a creation claim against a pure read step.
+- The fresh declared-effect check decides the verdict (D14): worker prose about a step can neither veto effects that check out on disk nor carry effects that do not.
+
+**Stalled tasks recover, and research steps keep their tools**
+- A per-task stream death now re-drives before it settles (AGE-33, D16). The dead run is cancelled for real, the task returns to queued with its plan and completed steps intact, and recovery is budgeted at at most 2 re-drives inside a one-hour window, recorded in the task's history. A task with a user cancel pending is never re-driven.
+- An empty capability contract no longer amputates a research step silently (AGE-32, D15). When a plan declares no tools for a step whose instruction requires sourced facts, the contract is repaired at dispatch to the web tool it needs, the repair is saved in the step's contract, and the step's assembled request carries a note saying the repair happened.
+
+**Stepwise claims are judged by the wording that governs each path**
+- A file claim's kind is judged by the wording governing its own path, not by a folder word elsewhere in the sentence (D17).
+- A working folder framed locatively at the head of its sentence is not a file creation (D18), and its products on disk count as the evidence they are.
+
+**A research answer is judged on whether it answers**
+- A no-effect research step is now judged on whether its report answers its instruction (AGE-36, D19). A bare acknowledgment token followed by a list of links, with no fact the step was asked for, fails the step and the mission honestly, instead of recording done on the worker's word alone. The check judges the presence of answer content, not the correctness of the fact stated.
+
+**Checked before it shipped**
+- Graded live on this exact tree (AGE-21 re-grade run 10, on origin/main b127edd): Tier 6 protocol PASS, 10 of 10 gates, the sixth clean sweep in the series, and Tier 1 CLEAN, every battery item passing, with zero honesty failures and zero new defects. T1B passed end to end: both research steps returned genuine sourced answers under contracts repaired by the AGE-32 mechanism, and the written file carries both facts with their sources.
+- The full test suite on the release tree matches the baseline split for the shipped tree it is built on: the same environmental failures on this Linux gate machine (macOS keychain access, local model availability, platform abilities), and zero new failures. Every brain program suite added since 1.1.2 passes, including the file-effect sets for D5, D6 and D7, D8, D12, D13, D17 and D18, the input claims suite, the planner comprehension suite, the mission and verdict suites, the T1B fix suite, and the answer-content suite.
+
+**What this release does not claim**
+- Tier 1 is CLEAN and Tier 6 passes on this tree. Tiers 2 to 5 and 7 are not yet graded, and nothing in this release should be read as those tiers passing.
+- The AGE-33 stall re-drive has never been exercised live. No step in the run 10 grading wedged, so the re-drive stands on the fix lane's unit evidence, marked as such wherever it is quoted.
+- The Locate battery carries one standing residual: hunt L2 is PARTIAL, as it has been for eight consecutive runs. The delivered ask names the 2024 lease first and the planted 2025 lease second, as a two-close-matches question; the target is in the ask, but it is not ranked first.
+- The answer-content check is a structural floor, not a correctness check. A fluent, on-format, wrong answer with a source link passes this layer; it closes the non-answer hole, not the hallucination hole.
+- Carried from 1.1.2, unchanged: Windows copies still update manually (the NSIS self-update wedge); every build still re-asks for its Accessibility switch once after an update; the Mac build is not notarized and the Windows installer is not code-signed yet, so a first launch still needs the right-click Open and SmartScreen steps in the install notes; GitHub sign-in still cannot complete until the OAuth app is registered and its public client ID is saved in the panel.
+
 ## 1.1.2
 
 A one-fix release. The 1.1.1 re-grade caught the backend going silent for over five minutes during a single resumed task: the process was alive, its port answered nothing, and nothing in the app noticed. 1.1.2 closes that hole.
