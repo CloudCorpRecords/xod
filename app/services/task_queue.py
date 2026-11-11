@@ -430,6 +430,31 @@ def _path_framed_as_container(text: str, p: Path) -> bool:
             continue
         if len(p.parts) < len(q.parts) and q.parts[:len(p.parts)] == p.parts:
             return True
+    # Locative fronting with disk evidence (D18, AGE-21 re-grade run 7):
+    # a step that opens a sentence by placing itself in its folder
+    # ("In <folder>, create subfolders and move PDF files to pdfs, ...")
+    # frames the path as the place the work happens, in the grammar of
+    # the sentence before any verb; the create verb that follows governs
+    # the subfolders, not the folder. The claim parser above still mints
+    # a claim for the folder from that verb, because kind there is judged
+    # by any effect verb in the path's sentence and the container
+    # branches decided by bare creation filenames cannot see this step's
+    # creations (its products are subfolders and moves, named without
+    # extensions, and its shell moves record no write_file ops for the
+    # recorded-effects branch). The fronting alone proves nothing, the
+    # D8 lesson: the folder is framed only when the destination
+    # subfolders the fronted sentence names ("to pdfs", "to images")
+    # are on disk as directories directly inside it, which is the
+    # organize work the step exists to do. An empty folder, or one
+    # holding only loose files, proves nothing and falls through.
+    for s in re.split(r"\.(?=\s|$)|[!?\n]", text or ""):
+        if not re.match(r"\s*(?:phase\s+\d+\s*:\s*)?(?:in|inside|within)\s+"
+                        + re.escape(str(p)) + r"\s*,", s, re.I):
+            continue
+        dests = [tok for tok in re.findall(r"\bto\s+([A-Za-z0-9_][\w\-]*)\b", s)
+                 if tok != p.name and tok.lower() not in ("the", "a", "an")]
+        if dests and all((p / tok).is_dir() for tok in set(dests)):
+            return True
     # Anaphoric framing (D6, AGE-21 re-grade): the planner's live steps
     # carry the containment in a locative anaphor instead. "Create
     # <folder> if needed. Create marker-1.txt, marker-2.txt, and
