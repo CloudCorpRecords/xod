@@ -643,6 +643,59 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
     return claims
 
 
+def _bare_inside_claims(text: str) -> List[Dict[str, Any]]:
+    """Creations a text declares by bare filename inside a folder it
+    names by path, resolved to claims: [{kind: "write", path:
+    container / name, content: None, content_lines: None, target:
+    "file"}]. The claim parser above claims only paths, so a step
+    that names its working folder and its input by path and its
+    output by bare name ("Work only inside /abs/job. Read
+    /abs/job/seed-input.txt and create copy.txt with exactly the
+    same contents") produces no claim for its one declared effect:
+    the folder's sentences carry no governing effect verb and the
+    input is read-governed. Verification then had nothing to say
+    when the effect never landed (D12, AGE-21 re-grade run 4 Leg C:
+    copy.txt never created and no layer objected). The bare creation
+    filenames resolve against the text's one container: a mentioned
+    path another mentioned path sits inside, a path a sentence
+    calls a folder or directory beside its name, or a path the
+    framing test reads as the container. Zero or several candidates
+    means the text names no single working folder and nothing is
+    resolved: the conservative reading, as everywhere in this
+    parser. A candidate that exists on disk as a file cannot be
+    the folder the bare names land in."""
+    bare = _bare_creation_filenames(text or "")
+    if not bare:
+        return []
+    mentioned = _mentioned_paths(text or "")
+    if not mentioned:
+        return []
+    sentences = re.split(r"\.(?=\s|$)|[!?\n]", text or "")
+    candidates: List[Path] = []
+    for p in mentioned:
+        inside = any(len(p.parts) < len(q.parts) and q.parts[:len(p.parts)] == p.parts
+                     for q in mentioned if q != p)
+        named_folder = any(str(p) in s and re.search(r"\b(directory|folder)\b", s, re.I)
+                           for s in sentences)
+        if inside or named_folder or _path_framed_as_container(text or "", p):
+            candidates.append(p)
+    if len(candidates) != 1:
+        return []
+    container = candidates[0]
+    try:
+        if container.exists() and not container.is_dir():
+            return []
+    except OSError:
+        return []
+    out: List[Dict[str, Any]] = []
+    for tok in dict.fromkeys(bare):
+        if tok == container.name:
+            continue
+        out.append({"kind": "write", "path": container / tok, "content": None,
+                    "content_lines": None, "target": "file"})
+    return out
+
+
 # ------------------------------------------------------------ input-effect claims
 # A step can declare a file as its INPUT ("read the file X and create Y from
 # it"). Write and delete claims are verified against the disk; inputs were
@@ -2070,7 +2123,9 @@ class TaskQueue:
         a test file collects at least one test, a .json parses); (5) provenance:
         when this task used the write tools at all, a claimed file no tool call
         from this task touched is not its artifact, whoever put it there;
-        (6) a file the request itself declares as an input must be on disk.
+        (6) a file the request itself declares as an input must be on disk;
+        (2b) creations the request declares by bare filename inside the
+        folder it names must be on disk as files.
         The
         agent has reported tasks done without calling a single file tool; this
         check trusts the disk, the type and the write boundary, not the report."""
@@ -2121,8 +2176,10 @@ class TaskQueue:
             elif want == "present" and not p.exists():
                 problems.append(f"{p.name} should be on disk but is missing")
         file_claims = _claimed_file_effects(task.get("request") or "")
+        claim_problem_paths: set = set()
         for claim in file_claims:
             p = claim["path"]
+            _claim_n = len(problems)
             if claim["kind"] == "delete":
                 if p.exists():
                     problems.append(f"the task asked for {p.name} to be deleted, but it is still on disk")
@@ -2182,6 +2239,29 @@ class TaskQueue:
                             f"Provenance: {p.name} is on disk, but no tool call from "
                             f"this task wrote it; this task's files came through the "
                             f"write tools, and {p.name} did not")
+            if len(problems) > _claim_n:
+                claim_problem_paths.add(os.path.normcase(str(p)))
+        # (2b) bare-filename creations (D12): a step whose declared
+        # effect is a bare filename inside its named working folder
+        # has no claim above, so its absence passed silently. Those
+        # effects are claims of the same force, checked the same way.
+        # When the container's own claim already produced a problem,
+        # the step already blocks on the container (the D8 shapes pin
+        # that single reason), and this layer stays silent.
+        _claimed_paths = {os.path.normcase(str(c["path"])) for c in file_claims}
+        for _bc in _bare_inside_claims(task.get("request") or ""):
+            _bp = _bc["path"]
+            if os.path.normcase(str(_bp)) in _claimed_paths:
+                continue
+            if os.path.normcase(str(_bp.parent)) in claim_problem_paths:
+                continue
+            if not _bp.is_file():
+                problems.append(f"the task asked for {_bp.name} to be created, "
+                                f"but it is not on disk")
+            else:
+                _type_problem = _file_type_problem(_bp)
+                if _type_problem:
+                    problems.append(_type_problem)
         # (3) run effects the request declares: the command is executed with
         # an argv list (never a shell) and its exit code must be the required
         # one. A contradicted run is a problem exactly like a missing file,
