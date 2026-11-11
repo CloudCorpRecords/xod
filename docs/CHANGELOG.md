@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 1.1.2
+
+A one-fix release. The 1.1.1 re-grade caught the backend going silent for over five minutes during a single resumed task: the process was alive, its port answered nothing, and nothing in the app noticed. 1.1.2 closes that hole.
+
+**A wedged backend gets reviewed, then restarted**
+- Xod now keeps an activity timer inside the app itself. Every request the server processes, every event it emits, and every task starting, progressing or finishing resets the timer, kept as a small ledger on disk: the process id, the last activity and what it was, and the work in flight with each item's last genuine progress time. If the process wedges, the ledger stops advancing, and that staleness next to the named in-flight work is the signal.
+- When the ledger has been stale for 45 seconds with work in flight, the desktop shell reviews the backend before acting: is the process alive, does its hello answer, what are the threads doing. A backend that answers is left alone; a long quiet step is not a wedge. A backend that is dead or silent is restarted through the shell's own stop and start, and only after the review saves its evidence: a stack capture of the frozen process, the ledger copy, and the recent server and event log tails, kept in the data folder's liveness-incidents directory.
+- Restarts are budgeted so a backend that cannot stay up cannot spin the machine: at most 3 restarts inside a 10 minute window, with 60, 120 and 240 second backoff between them, then the review holds and logs that a person should look. The count survives a shell restart. An idle Xod with nothing in flight is never reviewed and never restarted.
+
+**Checked before it shipped**
+- The watchdog was fired live on a scratch copy on the grading machine, with a real stepwise task mid-run and the server process frozen solid. The review declared the stall at 47 seconds stale, the restart went out at 55 seconds, and hello answered again 10 seconds later: 56.9 seconds from wedge to recovered. The task plan read back identical to its pre-wedge snapshot, and the resumed task finished its step and produced its files.
+- The full test suite on the merged tree matches the shipped 1.1.1 baseline file for file: the same 13 suites fail on both trees, all environmental on the gate machine (macOS keychain access, local model availability, platform abilities), and the new activity-ledger suite passes. The shell's review logic passes its 13 state machine checks, 18 of 18 together with the pre-existing shell tests.
+- Nothing else is in this release: the watchdog merge on top of 1.1.1, with no other code touched.
+
+**What this release does not claim**
+- Long-form autonomy is still Tier 6 MIXED and is not certified. The re-grade's headline defect stands open: a step's post-step file check can still block on a claim the disk does not support (D5), and this release does not fix it. A restart recovers a wedged run; it does not make the run's own checks truthful.
+- The review lives in the desktop shell, so desktop installs are covered. The headless node build writes the same activity ledger but has no shell to review it; teaching that node's service manager the same review is follow-up work.
+- Quitting the app with the keep-the-server-running option still leaves that backend unsupervised, the same posture that mode has always had.
+- The re-grade's wedge was reproduced by freezing the process, which matches its observed shape (alive, silent, zero progress). The original freeze's exact internal cause was not identified there and is not claimed fixed here. What is fixed is that the silence is now noticed, evidenced, and recovered from on its own.
+- Carried from 1.1.1, unchanged: Windows copies still update manually (the NSIS self-update wedge); every build still re-asks for its Accessibility switch once after an update; the Mac build is not notarized and the Windows installer is not code-signed yet, so a first launch still needs the right-click Open and SmartScreen steps in the install notes; GitHub sign-in still cannot complete until the OAuth app is registered and its public client ID is saved in the panel.
+
 ## 1.1.1
 
 A fixes release. It also closes the gap 1.1.0 left open: the fixes that landed on main after 1.1.0 were never published, and because Xod updates itself from the published releases, installed copies had nothing to update to. 1.1.1 is that code, gated and published.
