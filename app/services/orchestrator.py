@@ -1300,6 +1300,42 @@ async def run_stepwise(q: Any, task_id: str) -> None:
             n_live = sum(1 for i in items if i["status"] != "cancelled")
             k = next((n for n, i in enumerate([i for i in items if i["status"] != "cancelled"], 1) if i["id"] == step["id"]), 0)
             q._progress(task_id, f"• Step {k}/{n_live}: {step['text'][:150]}")
+            from app.services import task_queue as TQ
+            gate_problems = TQ._supplied_input_problems(task["request"], step["text"])
+            if gate_problems:
+                # The step claims as its output a file the task itself
+                # declared as a supplied input, and that input is not on
+                # disk: running the step would let the plan invent its
+                # own input and complete on the invention (Tier 6 Leg C,
+                # defect D7). Block before it runs, with the declared-
+                # input layer's truthful problem and the same waiting
+                # machinery a failed verification uses; when the person
+                # supplies the file and answers, the gate passes and the
+                # step runs for real.
+                step["status"] = "blocked"
+                step["blocker"] = "; ".join(gate_problems)
+                step["finished_at"] = time.time()
+                pending_after = [i for i in items if i["status"] == "pending"]
+                has_explicit_dag = any(i.get("independent") or i.get("depends_on")
+                                       for i in pending_after)
+                if has_explicit_dag:
+                    blocked_ids = {step["id"], k}
+                    for rem in pending_after:
+                        deps = set(rem.get("depends_on") or [])
+                        if not rem.get("independent") and (not deps or (deps & blocked_ids)):
+                            rem["status"] = "blocked"
+                            rem["blocker"] = f"blocked by step {k}: {step['blocker'][:160]}"
+                            rem["finished_at"] = time.time()
+                            blocked_ids.add(rem["id"])
+                    save_plan(task_id, items, instr)
+                    if any(i["status"] == "pending" for i in items):
+                        q._progress(task_id, f"✗ Step {k} blocked ({step['blocker'][:100]}); "
+                                             f"continuing independent steps")
+                        continue
+                step["waiting"] = True
+                save_plan(task_id, items, instr)
+                _pause_blocked_on_person(q, task_id, items, step, k, gate_problems)
+                return
             began = time.time()
             mark = _mission_mark()
             prompt = _step_prompt(task, items, instr, step, prior_ops)

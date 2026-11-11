@@ -350,6 +350,10 @@ def _enumerated_lines(qualifier: str, body: str) -> Optional[List[str]]:
     return items
 
 
+_ANAPHORIC_CONTAINER = re.compile(r"\b(there|in it)\b", re.I)
+_BARE_FILENAME = re.compile(r"(?<![\w./\-])([A-Za-z0-9_][\w.\-]*\.[A-Za-z0-9]{1,10})\b")
+
+
 def _path_framed_as_container(text: str, p: Path) -> bool:
     """The request's own words use this path as a container: a sentence that
     names the path also speaks of working inside it, or another path the
@@ -371,6 +375,28 @@ def _path_framed_as_container(text: str, p: Path) -> bool:
         except Exception:
             continue
         if len(p.parts) < len(q.parts) and q.parts[:len(p.parts)] == p.parts:
+            return True
+    # Anaphoric framing (D6, AGE-21 re-grade): the planner's live steps
+    # carry the containment in a locative anaphor instead. "Create
+    # <folder> if needed. Create marker-1.txt, marker-2.txt, and
+    # marker-3.txt there with exactly ..." (Leg A), "Create <folder> if
+    # needed, then create a.txt there containing exactly ..." (the load
+    # jobs), "Create <folder> if needed. In it, create marker-1.txt ..."
+    # (AGE-7's Leg A): no sentence naming the path says inside or within,
+    # and no second full path sits inside the folder, so both tests above
+    # miss it and the folder claim stays a file claim. The tell is the
+    # combination the live texts share: the folder is the text's only
+    # path, some sentence joins a creation verb to the anaphor, and the
+    # files are named bare. A plain file ask ("create the file at <path>
+    # containing exactly ...") has no anaphor and no bare filenames, so
+    # the true squatting case still blocks with its true reason.
+    mentioned = _mentioned_paths(text or "")
+    if len(mentioned) == 1 and os.path.normcase(str(mentioned[0])) == os.path.normcase(str(p)):
+        sentences = re.split(r"\.(?=\s|$)|[!?\n]", text or "")
+        anaphoric_create = any(_ANAPHORIC_CONTAINER.search(s) and _EFFECT_VERB.search(s)
+                               for s in sentences)
+        bare = [tok for tok in _BARE_FILENAME.findall(text or "") if tok != p.name]
+        if anaphoric_create and bare:
             return True
     return False
 
@@ -628,6 +654,112 @@ def _claimed_input_effects(request: str) -> List[Path]:
                 inputs.append(p)
                 break
     return inputs
+
+
+# ------------------------------------------------------- supplied-input claims
+# _claimed_input_effects judges one text at a time and, by design, never
+# checks a path that same text claims as an output. Decomposition breaks
+# that containment (Tier 6 Leg C, defect D7, AGE-21 re-grade): the
+# original request declares seed-input.txt as the file to READ ("read
+# the file <seed> and create copy.txt containing exactly its contents"),
+# but the executed plan contains a substep claiming seed-input.txt as
+# its own output, so no executed text ever declares it an input, the
+# worker invents its contents, and the task completes. Whether an input
+# is protected cannot depend on how the plan happens to decompose the
+# ask, so supplied inputs are extracted from the ORIGINAL request with
+# clause-level verb attachment: a path is supplied when a clause of the
+# request attaches a read verb to it and no clause attaches a
+# create/write/delete verb to it. That attachment is the request's own
+# framing, and it separates the two cases the layer must not confuse:
+# "read the file X and create Y" declares X supplied although a create
+# verb shares its sentence, while "create X, then read X and create Y
+# from it" frames X as an intermediate the plan itself makes (and a
+# same-file rewrite, "create X ... after reading X", is claimed as an
+# output first, matching the output-wins rule above).
+_CLAUSE_SPLIT = re.compile(r",|\band\b|\bthen\b|;", re.I)
+
+
+def _clause_objects(clause: str, paths: List[Path]) -> List[Path]:
+    """The paths a clause actually names as its objects: a path that is a
+    proper prefix of another path named in the same clause is the
+    container riding along inside its file's path, not an object."""
+    named = [q for q in paths if str(q) in clause]
+    return [q for q in named
+            if not any(q != r and len(q.parts) < len(r.parts)
+                       and r.parts[:len(q.parts)] == q.parts for r in named)]
+
+
+def _verb_object(clause: str, match: "re.Match[str]", objects: List[Path]) -> Optional[Path]:
+    """The object a verb occurrence governs: the first object path at or
+    after the verb ("read the file X", "copy X to Y" both name their
+    source first), or the clause's only object when the path rides in
+    front of the verb."""
+    after = [q for q in objects if clause.find(str(q), match.end()) >= 0]
+    if after:
+        return after[0]
+    return objects[0] if len(objects) == 1 else None
+
+
+def _declared_supplied_inputs(request: str) -> List[Path]:
+    """Files the request declares as inputs it will be supplied with, as
+    opposed to intermediates the plan itself creates (see the section
+    note above). Conservative in the same directions as
+    _claimed_input_effects: no optional phrasing, no negation, and any
+    creation framing in the request wins over the read framing."""
+    text = _strip_reference_lines(request or "")
+    text = "\n".join(l for l in text.splitlines() if not _RUN_RE.search(l))
+    paths = _mentioned_paths(text)
+    if not paths:
+        return []
+    supplied: List[Path] = []
+    sentences = re.split(r"\.(?=\s|$)|[!?\n]", text)
+    for p in paths:
+        read = created = False
+        for s in sentences:
+            if str(p) not in s:
+                continue
+            for clause in _CLAUSE_SPLIT.split(s):
+                objects = _clause_objects(clause, paths)
+                if p not in objects:
+                    continue
+                for m in _EFFECT_VERB.finditer(clause):
+                    if _verb_object(clause, m, objects) == p:
+                        created = True
+                for m in _DELETE_VERB.finditer(clause):
+                    if _verb_object(clause, m, objects) == p:
+                        created = True
+                for m in _READ_VERB.finditer(clause):
+                    if _verb_object(clause, m, objects) != p:
+                        continue
+                    if _NEGATION.search(clause) or _OPTIONAL_INPUT.search(clause):
+                        continue
+                    read = True
+        if read and not created:
+            supplied.append(p)
+    return supplied
+
+
+def _supplied_input_problems(task_request: str, step_text: str) -> List[str]:
+    """Ways a step conflicts with the task's declared supplied inputs,
+    judged against the state before the step runs: the step claims as a
+    write target a file the task's own request declares as a supplied
+    input, and that input is not on disk. The input must exist as
+    supplied; it is not the plan's to create, so a step that would
+    create it is blocked with the declared-input layer's own problem
+    string, and both shapes of the defect (the direct step and the
+    decomposed one) surface the same truthful block. A step that merely
+    consumes an intermediate the original request itself creates is not
+    a conflict: that path is plan-made by the request's own framing and
+    never enters the supplied set."""
+    supplied = _declared_supplied_inputs(task_request or "")
+    if not supplied:
+        return []
+    claimed = {os.path.normcase(str(c["path"]))
+               for c in _claimed_file_effects(step_text or "")
+               if c.get("kind") == "write"}
+    return [f"the task reads from {p.name}, but it is not on disk"
+            for p in supplied
+            if os.path.normcase(str(p)) in claimed and not p.exists()]
 
 
 # ------------------------------------------------------------- run-effect claims
