@@ -31,6 +31,26 @@ observation), reproduced and pinned here:
   seed-input.txt, but it is not on disk"), never on the false one
   ("the task asked for seed-input.txt to be created").
 
+  AGE-21 addendum (the re-grade on 3bd6a99, defect D7): both defects
+  recurred live before this fix landed, and the run's lesson was that
+  fixes verified against inferred phrasings get routed around. The
+  verbatim case below therefore submits the AGE-21 leg C request text
+  itself (task-a8ff666b9a, quoted in the re-grade evidence; only the
+  scratch path root is substituted), with a planner that reproduces
+  the live planner's demonstrated transform for this request: its
+  Phase 2 text survives verbatim in the record ("Phase 2: Create
+  <after> containing exactly T6C-AFTER."), phases keep request order,
+  verbs capitalized, bare file names expanded to full paths; Phase 1
+  is that same transform (the parent item itself was replaced by its
+  substeps in the saved plan, so it does not survive verbatim). In
+  the AGE-21 run the decomposition created the missing seed with
+  invented content and the task closed done; here the step must block
+  truthfully and the seed must never be created. A second case pins
+  the request-level split guard against a create-from phrasing of the
+  same phase: decomposition still may not mint a create substep for
+  the request's read input. The blocked-record case uses the AGE-21
+  gate 6 result text verbatim as the worker's report.
+
 Run: .venv/bin/python tests/task_inbox/run_planner_comprehension_test.py
 """
 import asyncio, json, os, re, sys, tempfile, time, uuid
@@ -114,7 +134,7 @@ def seam_checks():
 
 # --------------------------------------------------------------------- fakes
 STEP_RE = re.compile(r"YOUR STEP NOW \(step \d+ of \d+\):\n(.+?)\n\nDo only this step", re.S)
-READ_CREATE_RE = re.compile(r"read the file (\S+) and create (\S+)")
+READ_CREATE_RE = re.compile(r"read the file (\S+) and create (\S+)", re.I)
 ONE_FILE_RE = re.compile(r"Create exactly one file: (\S+)")
 WRITE_RE = re.compile(r"Create the file (\S+) containing exactly this: (\S+)")
 JOB = {}
@@ -151,8 +171,9 @@ class FakeResearcher:
             if w:
                 _record_write(w.group(1), b"WRONG-CONTENTS")
                 yield {"type": "content", "content":
-                       "Phase 1 is complete. I created the file and verified "
-                       "its contents exactly match what was asked."}
+                       "Phase 1 is complete. I verified that jobA2 is a directory "
+                       "and all three marker files already contain exactly the "
+                       "requested text. No files needed rewriting."}
                 return
         rc = READ_CREATE_RE.search(step)
         if rc:
@@ -311,6 +332,93 @@ async def case_completed_record(q):
           (s1.get("result") or "")[:160])
 
 
+def verbatim_request(job, seed):
+    """The AGE-21 leg C request, verbatim but for the scratch root."""
+    return (f"Do this file job in exactly these phases, one phase at a time. "
+            f"Work only inside the folder {job}. Phase 1: read the file {seed} "
+            f"and create copy.txt containing exactly its contents. "
+            f"Phase 2: create after.txt containing exactly T6C-AFTER.")
+
+
+async def live_style_planner(request):
+    """The live planner's demonstrated transform of the leg C request
+    (see the docstring): phases in request order, verbs capitalized,
+    bare names expanded to full paths."""
+    seed, copy, after = JOB["seed"], JOB["copy"], JOB["after"]
+    return [f"Phase 1: Read the file {seed} and create {copy} containing exactly its contents.",
+            f"Phase 2: Create {after} containing exactly T6C-AFTER."]
+
+
+async def create_from_planner(request):
+    """The same phases with phase 1 phrased create-from: the step text
+    alone claims the seed as a create's object; only the request still
+    states plainly that the seed is read."""
+    seed, copy, after = JOB["seed"], JOB["copy"], JOB["after"]
+    return [f"Phase 1: Create {copy} containing exactly the contents of {seed}.",
+            f"Phase 2: Create {after} containing exactly T6C-AFTER."]
+
+
+async def case_leg_c_verbatim_missing(q):
+    print("e2e: the AGE-21 leg C shape, verbatim request, seed missing")
+    d = TMP / "work" / f"jobc21-{uuid.uuid4().hex[:4]}"
+    d.mkdir(parents=True)
+    seed, copy, after = d / "seed-input.txt", d / "copy.txt", d / "after.txt"
+    JOB.update({"seed": seed, "copy": copy, "after": after})
+    FakeResearcher.mode = "honest"
+    governed = getattr(TQ, "_path_read_governed", lambda t, p: False)
+    check("verbatim: the request itself governs the seed with a read verb",
+          governed(verbatim_request(d, seed), seed))
+    O.planner = live_style_planner
+    try:
+        ack = O.submit(verbatim_request(d, seed))
+        tid = ack["task_id"]
+        t = await wait_status(q, tid, ("waiting", "failed", "done"))
+    finally:
+        O.planner = fake_planner
+    items, _, _ = O.load_plan(tid)
+    s1 = items[0]
+    blocker = s1.get("blocker") or ""
+    check("verbatim: the task does not close done on an invented input",
+          t["status"] == "waiting", f"status={t['status']}")
+    check("verbatim: the plan is the two phases, no substeps",
+          len(items) == 2 and not any(i.get("substep_of") for i in items),
+          json.dumps([i["text"][:60] for i in items]))
+    check("verbatim: no substep creates the input",
+          not any(i["text"].startswith("Create exactly one file:") and str(seed) in i["text"]
+                  for i in items),
+          json.dumps([i["text"][:60] for i in items]))
+    check("verbatim: the seed was never created",
+          not seed.exists() and not copy.exists())
+    check("verbatim: phase 1 blocks on the true input premise",
+          s1["status"] == "blocked" and "the task reads from" in blocker
+          and "seed-input" in blocker, blocker[:200])
+    check("verbatim: phase 2 never ran", items[1]["status"] == "pending" and not after.exists())
+
+
+async def case_create_from_guard(q):
+    print("e2e: a create-from phrasing still cannot mint a create substep for the input")
+    d = TMP / "work" / f"jobcf-{uuid.uuid4().hex[:4]}"
+    d.mkdir(parents=True)
+    seed, copy, after = d / "seed-input.txt", d / "copy.txt", d / "after.txt"
+    JOB.update({"seed": seed, "copy": copy, "after": after})
+    FakeResearcher.mode = "honest"
+    O.planner = create_from_planner
+    try:
+        ack = O.submit(verbatim_request(d, seed))
+        tid = ack["task_id"]
+        t = await wait_status(q, tid, ("waiting", "failed", "done"))
+    finally:
+        O.planner = fake_planner
+    items, _, _ = O.load_plan(tid)
+    check("create-from: the plan keeps the two phases, no substeps",
+          len(items) == 2 and not any(i.get("substep_of") for i in items),
+          json.dumps([i["text"][:60] for i in items]))
+    check("create-from: the seed was never created by decomposition",
+          not seed.exists())
+    check("create-from: the task does not close done",
+          t["status"] in ("waiting", "failed"), f"status={t['status']}")
+
+
 async def main():
     seam_checks()
     q = TQ.task_queue = TQ.TaskQueue()
@@ -318,6 +426,8 @@ async def main():
     try:
         await case_leg_c_faithful(q)
         await case_leg_c_missing_seed(q)
+        await case_leg_c_verbatim_missing(q)
+        await case_create_from_guard(q)
         await case_blocked_record(q)
         await case_completed_record(q)
     finally:
