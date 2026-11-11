@@ -1473,11 +1473,6 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
                                  "A step that could not run for a missing input or a "
                                  "missing tool is recorded blocked, not done, and no "
                                  "other flow is substituted for it."]}
-        signal = _incompletion_signal(result)
-        if signal:
-            return {"status": "failed", "claimed": result, "verified_status": "contradicted",
-                    "evidence": [f"The step's own report admits it did not finish: \"{signal}\" "
-                                 "A report of incompletion cannot be verified."]}
         leak_hit = _content_leak_for_subtask(subtask)
         if leak_hit:
             leak_path, leak = leak_hit
@@ -1519,6 +1514,26 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
             evidence.append(f"The mission re-ran the declared check itself: '{e.get('command', '')}' "
                             f"from {cwd} exited with code {e.get('expect_exit', 0)}, "
                             "the code the plan required.")
+        # The incompletion screen (D14, AGE-31): worker prose is
+        # evidence about the work, never a veto over effects the
+        # verdict itself positively re-verifies. A step whose declared
+        # run effects were just re-executed above and exited as
+        # required is decided by that re-execution: its report's
+        # admission that it could not verify in its own environment
+        # (re-grade run 5 T1A, the worker's shell had no pytest) is a
+        # statement about the worker's tooling, and the re-run
+        # supersedes it with fact. Where the step declares no run for
+        # the verdict to re-execute, the screen keeps its force: file
+        # effects in this path are checked types-only (the queue's
+        # finish check owns their existence), so the report's own
+        # admission remains a deciding signal there, and a step with
+        # no declared effects is judged on its report and the evidence
+        # its task carries, as before.
+        signal = None if runs else _incompletion_signal(result)
+        if signal:
+            return {"status": "failed", "claimed": result, "verified_status": "contradicted",
+                    "evidence": [f"The step's own report admits it did not finish: \"{signal}\" "
+                                 "A report of incompletion cannot be verified."]}
         if not evidence:
             # Positive-evidence standard (fix round 6, Lane D): a step
             # with no file effects verifies only when its task carries
@@ -1550,9 +1565,26 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
             # T1A: step 2 was contradicted for a sample.txt that a doubled
             # plan's parallel step landed afterwards), so the verdict is
             # composed from a fresh check of the declared effects, never
-            # from the recorded text. The step's own admissions and any
-            # planner instruction text on disk are not timing artifacts
-            # and still block verification, checked fresh here as well.
+            # from the recorded text. Planner instruction text on disk is
+            # not a timing artifact and still blocks verification, checked
+            # fresh here as well.
+            #
+            # D14 (AGE-31): the incompletion prose screen no longer sits
+            # in this branch. The fresh check below re-verifies every
+            # declared effect (existence, dictated content, type, and
+            # runs re-executed), so it decides: a step whose effects
+            # verify is verified whatever its report admits (re-grade
+            # run 5 T1A step 3 admitted it could not verify in its own
+            # shell while the pinned run effect passed here), and a step
+            # whose effects do not verify fails on the fresh problems,
+            # the true reasons, not on its wording. Run 4 and run 5
+            # graded the identical step opposite ways on the worker's
+            # phrasing alone while this screen sat ahead of the check;
+            # prose is evidence about the work, never a veto over
+            # checkable effects. The screen keeps its force where no
+            # declared effects exist to check (the branch below) and in
+            # the done-task path for steps the verdict does not itself
+            # re-verify.
             blocked = _blocked_signal(claimed)
             if blocked:
                 return {"status": "blocked", "claimed": claimed.strip(),
@@ -1560,12 +1592,6 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
                         "evidence": [f"The step reported itself blocked: \"{blocked}\" "
                                      "A step that could not run for a missing input or a "
                                      "missing tool is recorded blocked, not done."]}
-            signal = _incompletion_signal(claimed.strip())
-            if signal:
-                return {"status": "failed", "claimed": claimed.strip(),
-                        "verified_status": "contradicted",
-                        "evidence": [f"The step's own report admits it did not finish: \"{signal}\" "
-                                     "A report of incompletion cannot be verified."]}
             leak_hit = _content_leak_for_subtask(subtask)
             if leak_hit:
                 leak_path, leak = leak_hit
