@@ -354,6 +354,22 @@ _ANAPHORIC_CONTAINER = re.compile(r"\b(there|in it)\b", re.I)
 _BARE_FILENAME = re.compile(r"(?<![\w./\-])([A-Za-z0-9_][\w.\-]*\.[A-Za-z0-9]{1,10})\b")
 
 
+def _bare_creation_filenames(text: str) -> List[str]:
+    """Bare filenames a step's creation sentences name: the files the
+    step says it makes, named without a path (the lookbehind in
+    _BARE_FILENAME keeps the tails of full paths out). A sentence whose
+    only effect verb is a deletion verb names files to remove, not
+    creations, and does not count."""
+    out: List[str] = []
+    for s in re.split(r"\.(?=\s|$)|[!?\n]", text or ""):
+        if not _EFFECT_VERB.search(s):
+            continue
+        if _DELETE_VERB.search(s) and not re.search(r"\b(create|write|save|make)\b", s, re.I):
+            continue
+        out.extend(_BARE_FILENAME.findall(s))
+    return out
+
+
 def _path_framed_as_container(text: str, p: Path) -> bool:
     """The request's own words use this path as a container: a sentence that
     names the path also speaks of working inside it, or another path the
@@ -362,7 +378,10 @@ def _path_framed_as_container(text: str, p: Path) -> bool:
     the folder with no directory wording attached, so the claim parser
     cannot tell it apart from a file claim; the framing in the words is
     what tells, and a directory on disk at that path is then the effect
-    the step asked for (D5 container shape, AGE-7 re-grade)."""
+    the step asked for (D5 container shape, AGE-7 re-grade). Since D8
+    the words are not the only evidence consulted: the disk-evidence
+    branch below lets the step's own named files, present inside the
+    folder, prove the framing directly."""
     for s in re.split(r"\.(?=\s|$)|[!?\n]", text or ""):
         if str(p) in s and re.search(r"\b(inside|within)\b", s, re.I):
             return True
@@ -392,6 +411,22 @@ def _path_framed_as_container(text: str, p: Path) -> bool:
     # the true squatting case still blocks with its true reason.
     mentioned = _mentioned_paths(text or "")
     if len(mentioned) == 1 and os.path.normcase(str(mentioned[0])) == os.path.normcase(str(p)):
+        # Disk-evidence framing (D8, AGE-21 re-grade run 2): the fourth
+        # locative in three graded runs ("in that folder") matched none
+        # of the branches above or below, because the verifier
+        # enumerates prose while the planner generates it. When the
+        # folder is the text's only path and every bare filename the
+        # step's creation sentences name is on disk as a file directly
+        # inside it, the disk itself proves the folder was the working
+        # container, whatever locative the planner chose; no phrase
+        # list is consulted. The conjunction is the conservative part:
+        # an empty folder, a folder holding unrelated files, or one
+        # missing some of the named files proves nothing and falls
+        # through, and a plain file ask names no bare creation files
+        # at all, so the true squatting case is untouched.
+        bare = [tok for tok in _bare_creation_filenames(text or "") if tok != p.name]
+        if bare and all((p / tok).is_file() for tok in set(bare)):
+            return True
         sentences = re.split(r"\.(?=\s|$)|[!?\n]", text or "")
         anaphoric_create = any(_ANAPHORIC_CONTAINER.search(s) and _EFFECT_VERB.search(s)
                                for s in sentences)
@@ -399,6 +434,24 @@ def _path_framed_as_container(text: str, p: Path) -> bool:
         if anaphoric_create and bare:
             return True
     return False
+
+
+def _recorded_write_inside(text: str, p: Path, written_paths: set) -> bool:
+    """The step's own recorded effects prove the container: the path is
+    the step text's only mentioned path, and the activity log for this
+    task shows a file effect landing strictly inside it during this
+    step. A step that wrote its files into this directory was working
+    in its container, whatever words it used to say so; the ledger
+    outranks the prose (D8). The only-path guard keeps the judgment
+    about this path: a text naming several paths does not get a folder
+    claim satisfied by writes that may belong to another part of it."""
+    if not written_paths:
+        return False
+    mentioned = _mentioned_paths(text or "")
+    if len(mentioned) != 1 or os.path.normcase(str(mentioned[0])) != os.path.normcase(str(p)):
+        return False
+    prefix = os.path.normcase(str(p)) + os.sep
+    return any(w.startswith(prefix) for w in written_paths)
 
 
 def _path_mentioned(sentence: str, p: Path) -> bool:
@@ -1955,6 +2008,7 @@ class TaskQueue:
             entries = []
         expect: Dict[str, str] = {}
         written_by_tool: set = set()
+        written_paths: set = set()
         touched: set = set()
         for e in entries:
             if not e.get("ok"):
@@ -1966,12 +2020,16 @@ class TaskQueue:
                         touched.add(os.path.normcase(str(op[key])))
                 if kind == "write_file":
                     written_by_tool.add(os.path.normcase(str(op.get("path"))))
+                    written_paths.add(os.path.normcase(str(op.get("path"))))
                     expect[str(op.get("path"))] = "file"
                 elif kind in ("restore_file", "remove_created"):
+                    written_paths.add(os.path.normcase(str(op.get("path"))))
                     expect[str(op.get("path"))] = "file"
                 elif kind == "untrash":
                     expect[str(op.get("path"))] = "absent"
                 elif kind in ("move_back", "remove_copy"):
+                    written_paths.add(os.path.normcase(
+                        str(op.get("now_at") or op.get("to_hint"))))
                     expect[str(op.get("now_at") or op.get("to_hint"))] = "present"
                 elif kind == "remove_empty_dir":
                     expect[str(op.get("path"))] = "present"
@@ -2004,6 +2062,15 @@ class TaskQueue:
                         # inside (its files named by bare names): that is
                         # the effect the step asked for. Reporting it as
                         # not on disk would state the opposite of the disk.
+                        pass
+                    elif p.is_dir() and _recorded_write_inside(
+                            task.get("request") or "", p, written_paths):
+                        # The step's recorded file effects landed inside
+                        # this directory during the step: the directory
+                        # is the container the step worked in, proven by
+                        # the ledger rather than by the step's wording
+                        # (D8). A directory the step never wrote into
+                        # gets no such credit and still blocks below.
                         pass
                     elif p.is_dir():
                         problems.append(f"the task asked for {p.name} to be created as a file, "
