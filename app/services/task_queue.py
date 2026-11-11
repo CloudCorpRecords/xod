@@ -663,21 +663,31 @@ def _bare_inside_claims(text: str) -> List[Dict[str, Any]]:
     means the text names no single working folder and nothing is
     resolved: the conservative reading, as everywhere in this
     parser. A candidate that exists on disk as a file cannot be
-    the folder the bare names land in."""
-    bare = _bare_creation_filenames(text or "")
+    the folder the bare names land in.
+
+    Claims come from the step's own words only: the delivered-inputs
+    reference sections are stripped before mining, exactly as in
+    every other claim layer. Those sections carry the mission goal
+    and earlier steps' results, whose creation language names files
+    this step never promised; mining them resolved a bare name
+    against whatever container the reference text happened to name
+    and failed a completed pure-read step on a false absence (D13,
+    AGE-30, re-grade run 5 T1D)."""
+    text = _strip_reference_lines(text or "")
+    bare = _bare_creation_filenames(text)
     if not bare:
         return []
-    mentioned = _mentioned_paths(text or "")
+    mentioned = _mentioned_paths(text)
     if not mentioned:
         return []
-    sentences = re.split(r"\.(?=\s|$)|[!?\n]", text or "")
+    sentences = re.split(r"\.(?=\s|$)|[!?\n]", text)
     candidates: List[Path] = []
     for p in mentioned:
         inside = any(len(p.parts) < len(q.parts) and q.parts[:len(p.parts)] == p.parts
                      for q in mentioned if q != p)
         named_folder = any(str(p) in s and re.search(r"\b(directory|folder)\b", s, re.I)
                            for s in sentences)
-        if inside or named_folder or _path_framed_as_container(text or "", p):
+        if inside or named_folder or _path_framed_as_container(text, p):
             candidates.append(p)
     if len(candidates) != 1:
         return []
@@ -2175,6 +2185,13 @@ class TaskQueue:
                 problems.append(f"{p.name} was deleted during the task but is still on disk")
             elif want == "present" and not p.exists():
                 problems.append(f"{p.name} should be on disk but is missing")
+        # The framing judgments below read the step's own words: the
+        # request with its delivered-inputs reference sections stripped,
+        # the same text every claim layer parses. Reference material the
+        # step was handed (the mission goal, earlier steps' results) is
+        # evidence about the work, never a source of claims or of the
+        # prose those judgments read (AGE-30).
+        own_text = _strip_reference_lines(task.get("request") or "")
         file_claims = _claimed_file_effects(task.get("request") or "")
         claim_problem_paths: set = set()
         for claim in file_claims:
@@ -2188,7 +2205,7 @@ class TaskQueue:
                     if not p.is_dir():
                         problems.append(f"the task asked for {p.name} to be created, but it is not on disk")
                 elif not p.is_file():
-                    if p.is_dir() and _path_framed_as_container(task.get("request") or "", p):
+                    if p.is_dir() and _path_framed_as_container(own_text, p):
                         # The path is on disk as a directory and the step's
                         # own words frame it as the container it worked
                         # inside (its files named by bare names): that is
@@ -2196,7 +2213,7 @@ class TaskQueue:
                         # not on disk would state the opposite of the disk.
                         pass
                     elif p.is_dir() and _recorded_write_inside(
-                            task.get("request") or "", p, written_paths):
+                            own_text, p, written_paths):
                         # The step's recorded file effects landed inside
                         # this directory during the step: the directory
                         # is the container the step worked in, proven by
@@ -2249,7 +2266,7 @@ class TaskQueue:
         # the step already blocks on the container (the D8 shapes pin
         # that single reason), and this layer stays silent.
         _claimed_paths = {os.path.normcase(str(c["path"])) for c in file_claims}
-        for _bc in _bare_inside_claims(task.get("request") or ""):
+        for _bc in _bare_inside_claims(own_text):
             _bp = _bc["path"]
             if os.path.normcase(str(_bp)) in _claimed_paths:
                 continue
