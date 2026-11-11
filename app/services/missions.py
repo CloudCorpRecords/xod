@@ -1295,6 +1295,101 @@ def _contract_tool_problem(subtask: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+# ------------------------------------------------- capability repair (AGE-32)
+# D15 (AGE-32, re-grade run 6 T1B): the plan declared tools: [] for
+# both research subtasks, and no layer validated the declared contract
+# against the capability the step's own instruction requires. The
+# file-effect gates judge declared effects, and a research step
+# declares none, so the empty contract passed every gate; the steps
+# ran under a contract naming no research capability, honestly
+# reported they had no research access, and were recorded done on
+# non-answers, with the mission's goal unreachable from that point.
+# The capability a step needs is judged from what the step itself
+# declares: its run effects (a command must run) and its instruction's
+# own demands (a step that must report sourced facts with their URLs
+# must be able to research). Where a declared contract cannot serve a
+# declared need, assembly repairs the contract by adding the
+# capability's canonical tool, and the repair is recorded both in the
+# step's saved contract and in its assembled request. A contract that
+# already serves the step's needs is untouched, a step that declares
+# no contract at all is untouched (no contract line is rendered for
+# it and dispatch-time tool selection governs), and a step whose
+# instruction declares no capability need (a pure reasoning step) is
+# never force-fed tools. File effects keep their established gate:
+# _contract_tool_problem fails such a step at assembly rather than
+# dispatching it unequipped.
+
+_RESEARCH_TOOLS = ("web.run", "web_search", "tavily_search", "you_search",
+                   "web_scrape")
+_RUN_TOOLS = ("computer_run_command", "computer_start_job")
+_RESEARCH_GATHER_RE = re.compile(
+    r"\b(?:research|find|look(?:ing)? up|search(?:ing)? for|investigate|gather)\b", re.I)
+_SOURCE_RE = re.compile(r"\bsources?\b", re.I)
+_URL_RE = re.compile(r"\burls?\b", re.I)
+
+
+def _instruction_needs_research(subtask: Dict[str, Any]) -> bool:
+    """The step's own text demands externally sourced facts with
+    attribution: a gathering verb, plus a source and its URL to
+    report. The attribution demand is judged on the instruction, and
+    the gathering verb must be the instruction's own or the title's
+    imperative: a write step titled "Write research file" whose
+    instruction places the sources it was handed next to their claims
+    declares no research need, because nothing in it gathers anything
+    (its title's "research" names the artifact, not an action). A
+    step reading local files or reasoning over delivered inputs may
+    say "find", but it does not require a source name and a URL for
+    facts it must fetch from outside."""
+    text = str(subtask.get("instruction", ""))
+    title = str(subtask.get("title", "")).strip()
+    gather = (_RESEARCH_GATHER_RE.search(text)
+              or re.match(r"(?:research|find|look up|search|investigate|gather)\b",
+                          title, re.I))
+    return bool(gather and _SOURCE_RE.search(text) and _URL_RE.search(text))
+
+
+def _capability_contract_repair(subtask: Dict[str, Any]) -> Optional[Tuple[List[str], str]]:
+    """(repaired tools, repair note) when the step's declared contract
+    cannot serve a capability the step itself declares, else None.
+    Only a declared contract is judged: tools None means the plan
+    declared no contract for this step."""
+    contract = subtask.get("contract") or {}
+    tools = contract.get("tools")
+    if tools is None:
+        return None
+    declared = [str(t) for t in tools if str(t).strip()]
+    canon = set(declared) | {_canonical_tool_name(t) for t in declared}
+    added: List[str] = []
+    needs: List[str] = []
+    # A step declaring file effects is a producing step: its contract
+    # is judged by the file-effect gates, and naming the artifact in
+    # its instruction ("place each source name and URL next to its
+    # claim" in a step writing research.md) is placement of work it
+    # was handed, not a research need. The research repair is for
+    # steps whose whole job is gathering, which declare no effects.
+    has_file_effects = any(e.get("kind") in ("create", "modify", "delete")
+                           for e in subtask.get("expected_effects") or [])
+    if (not has_file_effects
+            and _instruction_needs_research(subtask)
+            and not any(n in _RESEARCH_TOOLS or n.startswith("browser_") for n in canon)):
+        added.append("web.run")
+        needs.append("research (its instruction requires sourced facts, "
+                     "with the source name and URL reported)")
+    if (any(e.get("kind") == "run" for e in subtask.get("expected_effects") or [])
+            and not any(n in _RUN_TOOLS for n in canon)):
+        added.append("computer_run_command")
+        needs.append("running a command (it declares a run effect)")
+    if not added:
+        return None
+    note = (f"Assembly note: this step's capability contract was repaired before "
+            f"its task was created. The plan declared tools: "
+            f"{', '.join(declared) or 'none'}, which cannot serve what this step "
+            f"requires: {' and '.join(needs)}. Added to the contract: "
+            f"{', '.join(added)}. The repair is recorded in the step's saved "
+            f"contract as well as here.")
+    return declared + added, note
+
+
 def assemble_step(mission_id: str, subtask: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
     """Assembles one subtask's task text under its capability contract
     (fix round 6, BOARD-001 Design 1). Returns (request, delivery,
@@ -1796,7 +1891,21 @@ class MissionRunner:
                 return True   # another driver already recorded this step's outcome
             sub = stored
         if not sub.get("task_id"):
+            # Capability repair (AGE-32): a declared contract that
+            # cannot serve the capability this step itself declares is
+            # repaired before assembly renders it, and the repaired
+            # contract is what gets saved, so the executed contract of
+            # record is the one that can serve the step.
+            repair_note = None
+            repair = _capability_contract_repair(sub)
+            if repair:
+                new_tools, repair_note = repair
+                contract = {**(sub.get("contract") or {}), "tools": new_tools}
+                _save_subtask(sub["id"], contract=contract)
+                sub = {**sub, "contract": contract}
             request, delivery, input_problem = assemble_step(mission_id, sub)
+            if repair_note:
+                request = request + "\n\n" + repair_note
             problem = (_empty_declared_content_problem(sub)
                        or _contract_tool_problem(sub)
                        or _write_tool_problem(sub, request)
