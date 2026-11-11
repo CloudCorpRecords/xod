@@ -499,6 +499,72 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
     return claims
 
 
+# ------------------------------------------------------------ input-effect claims
+# A step can declare a file as its INPUT ("read the file X and create Y from
+# it"). Write and delete claims are verified against the disk; inputs were
+# not modeled at all, so a step whose input never existed could still
+# complete on invented output (Tier 6 leg C, defect D1: copy.txt held the
+# invented string "content from step 1" because seed-input.txt was never on
+# disk, and nothing in the judgment chain ever asked whether it existed).
+# Input claims are extracted conservatively, on purpose: a false input
+# claim blocks honest steps, so this fires only on explicit read wording in
+# a sentence that names the path, never on optional phrasing ("if it
+# exists"), and never for a path the request itself claims as an output.
+_READ_VERB = re.compile(
+    r"\b(?:read|reading|reads|copy|copying|summari[sz]e|summari[sz]ing|"
+    r"open|opening|load|loading|parse|parsing|extract|extracting)\b", re.I)
+_OPTIONAL_INPUT = re.compile(
+    r"\bif (?:it |the file |the folder )?(?:exists|is present|is there)\b"
+    r"|\bif present\b|\boptional\b", re.I)
+
+
+def _mentioned_paths(text: str) -> List[Path]:
+    """Paths a request text names, with the same shape guards the claim
+    parser uses (kept beside it so the two never read paths differently)."""
+    paths: List[Path] = []
+    for m in _PATH_RE.finditer(text):
+        if m.start() and text[m.start() - 1] in "/:":
+            continue   # the tail of a longer path or a URL, not a path of its own
+        if (m.start() and len(m.group(0)) > 1 and m.group(0)[1] == ":"
+                and text[m.start() - 1].isalnum()):
+            continue   # a drive-letter shape inside a word (the "p:/" of a URL)
+        raw = m.group(0).rstrip(".,;:)`")
+        if raw not in ("", "~", "/"):
+            paths.append(Path(os.path.expanduser(raw)))
+    named = _NAMED_INSIDE_RE.search(text)
+    if named:
+        paths.append(Path.home() / named.group(2) / named.group(1))
+    return list(dict.fromkeys(paths))
+
+
+def _claimed_input_effects(request: str) -> List[Path]:
+    """Files the request declares as inputs to read from: paths named in a
+    read-shaped sentence that are not themselves claimed write or delete
+    targets."""
+    text = _strip_reference_lines(request or "")
+    text = "\n".join(l for l in text.splitlines() if not _RUN_RE.search(l))
+    claimed = {os.path.normcase(str(c["path"]))
+               for c in _claimed_file_effects(request or "")}
+    inputs: List[Path] = []
+    sentences = re.split(r"[.!?\n]", text)
+    for p in _mentioned_paths(text):
+        if os.path.normcase(str(p)) in claimed:
+            continue
+        for i, s in enumerate(sentences):
+            if not _path_mentioned(s, p):
+                continue
+            # The sentence split breaks on the dots inside a path itself,
+            # so the words that qualify the mention ("if it exists") often
+            # land in the next fragment; judge the mention on the fragment
+            # joined with the one after it.
+            window = s + ("." + sentences[i + 1] if i + 1 < len(sentences) else "")
+            if (_READ_VERB.search(window) and not _NEGATION.search(window)
+                    and not _OPTIONAL_INPUT.search(window)):
+                inputs.append(p)
+                break
+    return inputs
+
+
 # ------------------------------------------------------------- run-effect claims
 # A run effect proves produced code works, not just that it exists (H4
 # remainder, hardening round 2026-10-30: a mission's pytest file whose 5
@@ -1678,7 +1744,9 @@ class TaskQueue:
         file must be the artifact its type promises (fix round 6: a .py compiles,
         a test file collects at least one test, a .json parses); (5) provenance:
         when this task used the write tools at all, a claimed file no tool call
-        from this task touched is not its artifact, whoever put it there. The
+        from this task touched is not its artifact, whoever put it there;
+        (6) a file the request itself declares as an input must be on disk.
+        The
         agent has reported tasks done without calling a single file tool; this
         check trusts the disk, the type and the write boundary, not the report."""
         from app.services import activity
@@ -1784,6 +1852,15 @@ class TaskQueue:
             problem = _check_run_claim(claim)
             if problem:
                 problems.append(problem)
+        # (6) declared inputs (Tier 6 defect D1): a file the request names
+        # as its input must be on disk. The layers above judge claimed
+        # outputs only, so a step could satisfy every output check with
+        # invented content while its declared input never existed. An
+        # input that was never there means the output was not derived
+        # from it, whatever the output looks like.
+        for p in _claimed_input_effects(task.get("request") or ""):
+            if not p.exists():
+                problems.append(f"the task reads from {p.name}, but it is not on disk")
         seen, out = set(), []
         for pr in problems:
             if pr not in seen:

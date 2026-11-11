@@ -1139,7 +1139,14 @@ def _self_report_problem(step_text: str, report: str) -> Optional[str]:
         if want and got != want:
             return f"exact reply mismatch: expected {want!r}, got {got[:120]!r}"
     if TQ._claimed_file_effects(step_text) or TQ._claimed_run_effects(step_text, []):
-        return None
+        # Judged by the disk, unless a declared input is missing: then the
+        # disk has nothing honest to judge the output against, and the
+        # report's own words are evidence again. Without this, a step that
+        # admits its input file is missing still completes, because the
+        # output claim silences the report and the disk check never models
+        # inputs (Tier 6 leg C, defect D1).
+        if all(p.exists() for p in TQ._claimed_input_effects(step_text)):
+            return None
     report = norm_report
     # An empty "couldn't ...: Nothing" section of a confirmed/inferred/unknown report is not an admission (live S5).
     report = re.sub(r"(?:could not|couldn't|can't|cannot|unable to)\s+[\w ,/]{0,40}?[:*]+\s*\**\s*(?:nothing|none|n/?a|-|—)\b\.?",
