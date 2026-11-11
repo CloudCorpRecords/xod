@@ -316,11 +316,59 @@ def _run_effect_problem(eff: Dict[str, Any]) -> Optional[str]:
     return _tq._check_run_claim(claim)
 
 
+_FILE_LIKE_SUFFIX_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,9}$")
+
+
+def _effect_is_directory(subtask: Dict[str, Any], eff: Dict[str, Any]) -> bool:
+    """Whether THIS create effect's target is a directory: the step's own
+    words must present the effect's path itself as the directory being
+    created. A folder the step merely works inside ("in the requested
+    folder", "in the proof directory") is the container, not the
+    artifact. The looser test this replaces (any mention of the words
+    directory or folder anywhere in the step) misclassified T1B's
+    research.md step at every layer at once (AGE-26, re-grade run 3):
+    the rendered task told the worker to create a directory at the
+    file's path, the task layer parsed that as a directory claim, and
+    the fresh check required is_dir() of a file, so the file the task
+    had verifiably written was reported not on disk while the product's
+    own ledger recorded the writes. A target whose basename carries a
+    file suffix (.md, .py, .txt) is a file whatever the surrounding
+    prose says; an extensionless target is a directory only when the
+    directory wording governs it: it names the effect's own path, or it
+    is the creation the step's single create effect performs (and the
+    wording does not place that creation inside another folder)."""
+    raw = str(eff.get("path", "") or "")
+    base = raw.rstrip("/").rsplit("/", 1)[-1]
+    if not base or _FILE_LIKE_SUFFIX_RE.search(base):
+        return False
+    words = f"{subtask.get('title', '')} {subtask.get('instruction', '')}"
+    if not re.search(r"\b(directory|folder)\b", words, re.I):
+        return False
+    creates = [e for e in subtask.get("expected_effects") or []
+               if e.get("kind") in ("create", "modify")]
+    if len(creates) == 1 and re.search(
+            r"\bcreat\w*\b(?:(?! in the | inside | into ).)*\b(directory|folder)\b",
+            words, re.I):
+        return True
+    p = os.path.expanduser(raw)
+    for target in {p, base}:
+        if not target:
+            continue
+        esc = re.escape(target)
+        if re.search(r"\b(directory|folder)\b\s+(?:at\s+|named\s+|called\s+)?"
+                     + esc + r"(?![\w/])", words, re.I):
+            return True
+        if re.search(esc + r"\s+(directory|folder)\b", words, re.I):
+            return True
+    return False
+
+
 def _declares_directory(subtask: Dict[str, Any]) -> bool:
-    """The plan's own words call this create step a directory step (the
-    same test render_request uses when it words the step's task)."""
-    words = f"{subtask.get('title', '')} {subtask.get('instruction', '')}".lower()
-    return bool(re.search(r"\b(directory|folder)\b", words))
+    """The plan's own words call one of this step's create effects a
+    directory creation (the same test render_request uses when it words
+    the step's task). Per effect: see _effect_is_directory."""
+    return any(e.get("kind") == "create" and _effect_is_directory(subtask, e)
+               for e in subtask.get("expected_effects") or [])
 
 
 def _fresh_effect_problems(subtask: Dict[str, Any], types_only: bool = False) -> List[str]:
@@ -353,7 +401,7 @@ def _fresh_effect_problems(subtask: Dict[str, Any], types_only: bool = False) ->
                 problems.append(f"the task asked for {p.name} to be deleted, "
                                 "but it is still on disk")
             continue
-        if kind == "create" and _declares_directory(subtask):
+        if kind == "create" and _effect_is_directory(subtask, eff):
             if not p.is_dir() and not types_only:
                 problems.append(f"the task asked for {p.name} to be created, "
                                 "but it is not on disk")
@@ -1041,8 +1089,7 @@ def render_request(subtask: Dict[str, Any]) -> str:
             verb = "Create" if eff["kind"] == "create" else "Write"
             lines.append(f"{verb} the file at {p} with exact text: {content.strip()}")
         elif eff["kind"] == "create":
-            words = f"{subtask.get('title', '')} {subtask['instruction']}".lower()
-            if re.search(r"\b(directory|folder)\b", words):
+            if _effect_is_directory(subtask, eff):
                 lines.append(f"Create the directory at {p}.")
             else:
                 lines.append(f"Create the file at {p}." + (f" Its contents should be:\n{content}" if content else ""))
@@ -1150,7 +1197,7 @@ def _effect_tools(subtask: dict, eff: dict):
     kind = (eff.get("kind") or "").strip().lower()
     if kind == "delete":
         return _DELETE_TOOLS, "delete"
-    if kind == "create" and _declares_directory(subtask):
+    if kind == "create" and _effect_is_directory(subtask, eff):
         return _DIR_WRITE_TOOLS, "create the directory"
     if kind == "modify":
         return _FILE_WRITE_TOOLS + _EDIT_TOOLS, "write the file"
