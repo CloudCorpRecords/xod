@@ -1621,6 +1621,30 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
                 "verified_status": "contradicted",
                 "evidence": [f"Checked on disk: {p}" for p in problems]
                             or ["Checked on disk: the claimed effects were not true."]}
+    if task["status"] == "failed" and "stopped making progress" in result:
+        # D16 (AGE-33, re-grade run 6 T1B): the task's agent stream died
+        # mid-step inside a healthy server; the queue re-drove it within
+        # its recovery budget and then stopped it with this result. The
+        # stop is a verdict about the run, not the work: where the step
+        # declares effects, the fresh declared-effect check decides
+        # whether the step's deliverable landed before the stream died
+        # (in the graded run research.md was on disk, written by the
+        # step itself, while its mission failed on the stop). A step
+        # whose effects do not verify fresh keeps the failed verdict
+        # below with its true reason, and a deliverable carrying planner
+        # instruction text is never upgraded.
+        if (subtask.get("expected_effects")
+                and not _content_leak_for_subtask(subtask)):
+            fresh = _fresh_effect_problems(subtask)
+            if not fresh:
+                return {"status": "done", "claimed": "",
+                        "verified_status": "verified",
+                        "evidence": ["The step's task stopped making progress and Xod "
+                                     "stopped it, but a fresh check at verdict time "
+                                     "found every declared effect of this step true "
+                                     "on disk: the work landed before the task's "
+                                     "stream died, so the step is verified on its "
+                                     "effects rather than failed on its run."]}
     return {"status": "failed", "claimed": result, "verified_status": "failed",
             "evidence": ["The task failed before its result could be verified: "
                          + (result.strip()[-300:] or "no report was left")]}

@@ -169,6 +169,17 @@ CANCEL_GRACE_SEC = 30
 STALL_THRESHOLD_SEC = 600
 STALL_RECOVER_SEC = 2 * STALL_THRESHOLD_SEC
 WATCHDOG_INTERVAL_SEC = 30
+# Per-task stall recovery (AGE-33, re-grade run 6 T1B): a task's agent
+# stream can die mid-step inside a healthy server, a surface the
+# process-level wedge watchdog (AGE-18) cannot see. Before the watchdog
+# settles such a task as failed, it re-drives it: the dead run is
+# cancelled and the task queued again, under the same budget discipline
+# as AGE-18 (bounded attempts inside a window, then a hold: here the
+# hold is the honest stop itself). At most STALL_RECOVER_MAX_ATTEMPTS
+# re-drives inside STALL_RECOVER_WINDOW_SEC; a task that wedges again
+# after every re-drive is stopped with the true reason, never spun.
+STALL_RECOVER_MAX_ATTEMPTS = 2
+STALL_RECOVER_WINDOW_SEC = 3600
 
 
 def _conn() -> sqlite3.Connection:
@@ -1262,6 +1273,7 @@ class TaskQueue:
         self._running_id: Optional[str] = None
         self._cancel_requested: set = set()
         self._cancel_at: Dict[str, float] = {}
+        self._stall_recoveries: Dict[str, List[float]] = {}
         self._escalations: Dict[str, asyncio.Task] = {}
         self._watchdog: Optional[asyncio.Task] = None
         self._last_stream_meta: Dict[str, Dict[str, Any]] = {}
@@ -1892,33 +1904,111 @@ class TaskQueue:
             return f"Stalled: no progress for {mins} minute{'s' if mins != 1 else ''}"
         return f"Stalled: no progress for {int(quiet_sec)} seconds"
 
+    async def _redrive(self, task_id: str, now: float) -> bool:
+        """Cancels a stalled task's dead run and queues the task again,
+        without settling it (AGE-33). The cancel machinery is
+        _force_stop's, mirrored: the hung run is cancelled for real (a
+        hung await never sees a flag), its tool children are swept, and
+        the row goes back to queued with its plan intact, so a stepwise
+        task resumes at its in-flight step and a plain task starts its
+        request again from the current disk state, exactly as start()
+        resumes interrupted tasks after a restart. The caller owns the
+        attempt budget (STALL_RECOVER_MAX_ATTEMPTS inside
+        STALL_RECOVER_WINDOW_SEC, recorded here per attempt); past the
+        budget the watchdog settles the task as failed instead. The
+        progress clock restarts with the re-drive: only genuine
+        progress moves it, and a re-driven task must get a fresh stall
+        window or the watchdog would re-flag it before it can run."""
+        t = self.get(task_id)
+        if not t or t["status"] != "working":
+            return False
+        was_running = (task_id == self._running_id and self._worker is not None
+                       and not self._worker.done())
+        worker = self._worker if was_running else None
+        if worker is not None:
+            worker.cancel()  # a hung await never sees the cancel flag; cancel the worker itself
+            try:
+                await asyncio.wait_for(asyncio.shield(worker), timeout=5)
+            except BaseException:
+                pass
+            self._running_id = None
+        else:
+            # An orchestrated task runs in the orchestrator's pool, in its own asyncio task.
+            from app.services import orchestrator
+            run = orchestrator._pool.get(task_id)
+            if run is not None and not run.done() and run is not asyncio.current_task():
+                run.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(run), timeout=5)
+                except BaseException:
+                    pass
+        await self._sweep_tool_children(task_id)
+        esc = self._escalations.pop(task_id, None)
+        if esc is not None and esc is not asyncio.current_task() and not esc.done():
+            esc.cancel()
+        attempts = [ts for ts in self._stall_recoveries.get(task_id, [])
+                    if now - ts < STALL_RECOVER_WINDOW_SEC]
+        attempts.append(now)
+        self._stall_recoveries[task_id] = attempts
+        self._update(task_id, status="queued", stalled=0, stalled_reason=None,
+                     next_action=None, waiting_kind=None, waiting_detail=None,
+                     pending_json=None, now="Recovering: re-running after a stall",
+                     note=(f"Stalled with no progress inside a healthy server; Xod "
+                           f"cancelled the dead run and queued this task again "
+                           f"(recovery attempt {len(attempts)} of "
+                           f"{STALL_RECOVER_MAX_ATTEMPTS})"))
+        c = _conn()
+        c.execute("UPDATE tasks SET last_progress_at = ? WHERE id = ?", (now, task_id))
+        c.commit()
+        c.close()
+        if worker is not None and self._wake is not None:
+            if worker.done():
+                self._worker = asyncio.create_task(self._loop())  # only restart a worker that was running
+            else:
+                asyncio.create_task(self._respawn_worker(worker))
+        self._kick()
+        return True
+
     async def run_watchdog(self, now: Optional[float] = None,
                            stall_sec: Optional[float] = None,
                            recover_sec: Optional[float] = None) -> Dict[str, List[str]]:
         """One watchdog pass over working tasks, on the progress clock.
         Past stall_sec with no progress: flag the task stalled (flag and
         reason on the task dict, a history entry, and the now-text). Past
-        recover_sec: auto-recover through the same force path as
-        recover_stuck (worker cancelled, task failed with the honest
-        reason, worker restarted if it died)."""
+        recover_sec: re-drive the task first (AGE-33: cancel the dead
+        run, queue it again) while its recovery budget lasts, and only
+        settle it as failed, through the same force path as
+        recover_stuck, once the budget is spent or a cancel is pending
+        (worker cancelled, task failed with the honest reason, worker
+        restarted if it died)."""
         now = time.time() if now is None else now
         stall_sec = STALL_THRESHOLD_SEC if stall_sec is None else stall_sec
         recover_sec = STALL_RECOVER_SEC if recover_sec is None else recover_sec
         c = _conn()
         rows = c.execute("SELECT * FROM tasks WHERE status = 'working'").fetchall()
         c.close()
-        stalled, recovered = [], []
+        stalled, recovered, redriven = [], [], []
         for r in rows:
             t = _row(r)
             quiet = now - self._progress_at(t)
             if quiet >= recover_sec:
                 mins = int(quiet // 60)
+                attempts = [ts for ts in self._stall_recoveries.get(t["id"], [])
+                            if now - ts < STALL_RECOVER_WINDOW_SEC]
+                self._stall_recoveries[t["id"]] = attempts
+                cancel_pending = (t["id"] in self._cancel_requested
+                                  or t["id"] in self._cancel_at)
+                if (not cancel_pending and len(attempts) < STALL_RECOVER_MAX_ATTEMPTS
+                        and await self._redrive(t["id"], now)):
+                    redriven.append(t["id"])
+                    continue
                 if await self._force_stop(
                         t["id"], status="failed",
                         note=f"Stopped by Xod's watchdog: no progress for {mins} minutes",
                         now_text="Stopped (it hung)",
                         result="This task stopped making progress, so Xod stopped it. Retry it from the inbox."):
                     recovered.append(t["id"])
+                    self._stall_recoveries.pop(t["id"], None)
             elif quiet >= stall_sec:
                 reason = self._quiet_text(quiet)
                 if t.get("stalled_reason") != reason:
@@ -1926,7 +2016,7 @@ class TaskQueue:
                 stalled.append(t["id"])
             elif t.get("stalled"):
                 self._update(t["id"], stalled=0, stalled_reason=None)
-        return {"stalled": stalled, "recovered": recovered}
+        return {"stalled": stalled, "recovered": recovered, "redriven": redriven}
 
     async def _watchdog_loop(self) -> None:
         """The periodic watchdog. It runs as its own coroutine, not inside

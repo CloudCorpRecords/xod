@@ -18,9 +18,11 @@ Covered here, against isolated queues and databases like the sibling suites:
       minutes" now-text), while a task emitting progress is not
   (c) cancel notes and other _update pokes do NOT reset the progress clock
       (regression for the masking bug): stuck() still sees the task
-  (d) past twice the stall threshold the watchdog auto-recovers the task
-      (worker cancelled, task failed with the honest reason) and the queue
-      still processes the next task
+  (d) past twice the stall threshold the watchdog re-drives the task
+      (worker cancelled, task queued again) under a bounded budget
+      (AGE-33), and once the budget is spent it settles the task as
+      failed with the honest reason; the queue still processes the
+      next task
 
 Run: .venv/bin/python tests/task_inbox/run_task_watchdog_test.py
 """
@@ -188,6 +190,11 @@ async def main():
           f"fixed={fixed} status={(qt or {}).get('status')}")
 
     # ------------------------------------------------- (d) auto-recovery at 2x
+    # AGE-33 semantics: past the recover threshold the watchdog first
+    # re-drives the task (cancel the dead run, queue it again) under a
+    # bounded budget; only when the budget is spent does it settle the
+    # task as failed. This case hangs on every run, so it must burn
+    # the whole budget before the honest stop lands.
     print("== (d) auto-recovery past twice the threshold ==", flush=True)
     TQ.DB_PATH = MAIN_DB
     RS.AgenticResearcher = _HangResearcher
@@ -197,11 +204,26 @@ async def main():
     if hasattr(q, "_touch_progress"):
         check("(d) watchdog recovery entry point exists", hasattr(q, "run_watchdog"))
         q._touch_progress(t3["id"], at=time.time() - 5000)
-        await q.run_watchdog(stall_sec=60, recover_sec=120)
+        r = await q.run_watchdog(stall_sec=60, recover_sec=120)
+        t_now = q.get(t3["id"])
+        check("(d) first recovery pass re-drives the wedged task, not fails it",
+              t_now and t_now["status"] in ("queued", "working")
+              and t3["id"] in (r.get("redriven") or []),
+              f"status={t_now and t_now['status']} r={r}")
+        # Burn the remaining budget: the re-driven run hangs identically.
+        for _ in range(3):
+            w = await wait_for(q, t3["id"], ("working",), timeout=10)
+            if not w or w["status"] != "working":
+                break
+            q._touch_progress(t3["id"], at=time.time() - 5000)
+            await q.run_watchdog(stall_sec=60, recover_sec=120)
+            if (q.get(t3["id"]) or {}).get("status") == "failed":
+                break
     else:
         check("(d) watchdog recovery entry point exists", False, "no _touch_progress/run_watchdog")
     dead = await wait_for(q, t3["id"], ("failed", "cancelled", "done"), timeout=10)
-    check("(d) no-progress task is auto-recovered as failed", dead and dead["status"] == "failed",
+    check("(d) no-progress task is auto-recovered as failed once the re-drive budget is spent",
+          dead and dead["status"] == "failed",
           f"status={dead and dead['status']}")
     check("(d) failure says honestly that it stopped making progress",
           "progress" in str((dead or {}).get("result") or "").lower()
