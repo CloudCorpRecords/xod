@@ -76,18 +76,29 @@ FOUND_THRESHOLD = 30.0      # a candidate needs at least this to be named at all
 # kind match 55, a name-plus-year match 95 or more). Below the floor the
 # honest answers are a single candidate at or above it, or not_found.
 ASK_FLOOR = 40.0
-MAX_WALK_ENTRIES = 30000    # hard bounds so a hunt can never wedge
+MAX_WALK_ENTRIES = 600000   # hard bounds so a hunt can never wedge
 MAX_WALK_DEPTH = 9
 MAX_CONTENT_FILES = 6000
 MAX_CONTENT_BYTES = 512 * 1024
-MAX_CONTENT_ENTRIES = 30000   # entries the content route will look at, total
+MAX_CONTENT_ENTRIES = 600000  # entries the content route will look at, total
+# The walk budgets used to be 30,000 entries, calibrated on small test
+# trees. The measured production home holds about 560,000 entries under
+# the noise rules, so a 30,000-entry budget died inside whichever subtrees
+# sorted first (a Go module cache and the Documents rig scratch took most
+# of it in fix round 6's own measurements) and seven of the ten graded
+# forest targets were never traversed at all (AGE-25). The caps now sit
+# above a realistic home and bind only on pathological trees; wall-clock
+# deadlines bound the time instead. A walk that hits either bound reports
+# itself partial, and locate() says so instead of implying full coverage.
 # Wall-clock budgets: a hunt must finish on its own, never by watchdog.
 # The content route gets tens of seconds; the whole hunt stays under about
 # a minute. Both are parameters on locate()/content_search() so tests can
 # shrink them. Prevention, not thread-killing: only regular files are ever
 # opened and every read is capped, so no single file can block past a check.
 CONTENT_ROUTE_DEADLINE_S = 30.0
+FILENAME_ROUTE_DEADLINE_S = 30.0
 HUNT_DEADLINE_S = 55.0
+SPOTLIGHT_RAW_CAP = 20000  # unioned per-term index hits kept before prioritizing
 
 NOISE_DIRS = {
     "Library", "Caches", "node_modules", ".git", ".venv", "venv", "__pycache__",
@@ -158,6 +169,7 @@ STOPWORDS = {
     "please", "me", "where", "is", "it", "i", "need", "want", "looking",
     "look", "search", "show", "get", "can", "you", "about", "containing",
     "contains", "inside", "there", "was", "were", "this", "last", "not",
+    "and", "or",
 }
 
 # Instruction frame: the requester's own phrasing about how to answer or
@@ -340,20 +352,36 @@ class SpotlightBackend:
         terms = clues.name_tokens + clues.purpose_terms + clues.content_words
         if clues.year:
             terms = terms + [str(clues.year)]
+        terms = list(dict.fromkeys(t for t in terms if len(t) > 1))
         if not terms:
             return []
-        query = " ".join(terms[:6])
+        # One mdfind query per clue term, unioned. The old shape joined
+        # the first six terms into a single query, and mdfind treats a
+        # multi-word query as AND: a file entered the pool only if its
+        # indexed text contained every one of those words. Graded targets
+        # whose text lacked a single expansion word (a lease PDF with no
+        # "landlord", a W2 with no "employer") were invisible to the index
+        # route even though the index held them (AGE-25). A single term
+        # matches names and content alike, so the union keeps every file
+        # the AND query found and adds the ones it silently dropped.
         found: List[str] = []
+        seen_paths: Set[str] = set()
         for root in roots:
-            try:
-                out = subprocess.run(["/usr/bin/mdfind", "-onlyin", root, query],
-                                     capture_output=True, text=True, timeout=20)
+            for term in terms:
+                if len(found) >= SPOTLIGHT_RAW_CAP:
+                    break
+                try:
+                    out = subprocess.run(["/usr/bin/mdfind", "-onlyin", root, term],
+                                         capture_output=True, text=True, timeout=20)
+                except Exception:
+                    continue
                 for line in (out.stdout or "").splitlines():
                     line = line.strip()
-                    if line and line not in found:
+                    if line and line not in seen_paths:
+                        seen_paths.add(line)
                         found.append(line)
-            except Exception:
-                continue
+                        if len(found) >= SPOTLIGHT_RAW_CAP:
+                            break
         # The index returns hits in its own order, which is volume order,
         # not relevance order: prioritize before the cap cuts, so the cap
         # keeps the strongest hits instead of the first ones.
@@ -361,22 +389,29 @@ class SpotlightBackend:
         return found[:SPOTLIGHT_ROUTE_CAP]
 
 
-def _walk(roots: Sequence[str], want_dirs: bool = False):
+def _walk(roots: Sequence[str], want_dirs: bool = False,
+          deadline_at: Optional[float] = None,
+          state: Optional[Dict[str, Any]] = None):
     """Bounded walk yielding (path, is_dir). Noise folders are never entered,
     but a folder is yielded before its own noise children are skipped, so a
     repo checkout full of .git and node_modules is still findable itself.
 
     Breadth-interleaved, not depth-first (fix round 6, Lane C): the old
     depth-first walk let a few fat subtrees (a Go module cache took
-    18,618 of the 30,000-entry budget on the measured home; build logs
-    and backup bundles took most of the rest) drain the shared budget
+    18,618 of the then-30,000-entry budget on the measured home; build
+    logs and backup bundles took most of the rest) drain the shared budget
     before the walk ever descended into the folders hunts actually
     target, so routes reported full hit counts while the target tree
     was never walked at all. Here a directory's entries are yielded
     when it expands and its subdirectories queue behind every other
     pending directory, so the budget buys every subtree's shallow
     levels before any subtree's depths. Entries are name-sorted per
-    directory, which also makes the walk order reproducible."""
+    directory, which also makes the walk order reproducible.
+
+    deadline_at bounds the walk in wall-clock time (checked between
+    directory expansions); when the walk stops early, for the entry cap
+    or the deadline, state["truncated"] is set so the caller can report
+    partial coverage instead of implying the tree was fully walked."""
     from collections import deque
     seen = 0
     queue = deque()
@@ -384,6 +419,11 @@ def _walk(roots: Sequence[str], want_dirs: bool = False):
         if root and os.path.isdir(root):
             queue.append((root, 0))
     while queue:
+        if deadline_at is not None and time.monotonic() > deadline_at:
+            if state is not None:
+                state["truncated"] = True
+                state["truncated_reason"] = "deadline"
+            return
         dirpath, depth = queue.popleft()
         try:
             with os.scandir(dirpath) as it:
@@ -411,11 +451,17 @@ def _walk(roots: Sequence[str], want_dirs: bool = False):
             for d in (kept if descend else []):
                 seen += 1
                 if seen > MAX_WALK_ENTRIES:
+                    if state is not None:
+                        state["truncated"] = True
+                        state["truncated_reason"] = "entry cap"
                     return
                 yield (os.path.join(dirpath, d), True)
         for name in files:
             seen += 1
             if seen > MAX_WALK_ENTRIES:
+                if state is not None:
+                    state["truncated"] = True
+                    state["truncated_reason"] = "entry cap"
                 return
             yield (os.path.join(dirpath, name), False)
         if descend:
@@ -428,7 +474,8 @@ def _walk(roots: Sequence[str], want_dirs: bool = False):
                     continue
 
 
-def filename_search(clues: Clues, roots: Sequence[str]) -> List[str]:
+def filename_search(clues: Clues, roots: Sequence[str],
+                    stats: Optional[Dict[str, Any]] = None) -> List[str]:
     """Fallback 1: paths whose name or parent folders carry any clue term.
 
     Every matching path in the bounded walk is collected first, then the
@@ -437,18 +484,29 @@ def filename_search(clues: Clues, roots: Sequence[str]) -> List[str]:
     walk order, so on a home tree with thousands of files matching a
     common term by folder name alone, the walk filled the cap on noise
     before it ever reached the target's tree and the target never entered
-    the candidate pool at all."""
+    the candidate pool at all.
+
+    The walk carries a wall-clock deadline of its own (it previously
+    relied on the entry cap alone); when the walk stops early, stats
+    records partial coverage so locate() can say the search was partial
+    rather than imply the whole tree was covered."""
     terms = set(clues.name_tokens) | set(clues.purpose_terms) | set(clues.content_words)
     if clues.year:
         terms.add(str(clues.year))
     found: List[str] = []
-    for path, is_dir in _walk(roots, want_dirs=True):
+    walk_state: Dict[str, Any] = {}
+    deadline_at = time.monotonic() + FILENAME_ROUTE_DEADLINE_S
+    for path, is_dir in _walk(roots, want_dirs=True, deadline_at=deadline_at,
+                              state=walk_state):
         if is_dir and not clues.want_folder:
             continue
         low = path.lower()
         name = os.path.basename(low)
         if not terms or any(t in name or t in low for t in terms):
             found.append(path)
+    if stats is not None and walk_state.get("truncated"):
+        stats["partial"] = True
+        stats["partial_reason"] = walk_state.get("truncated_reason", "")
     found.sort(key=lambda p: _pool_priority(p, clues))
     return found[:FILENAME_ROUTE_CAP]
 
@@ -802,6 +860,21 @@ def score_candidate(path: str, clues: Clues, content_hits: Set[str]) -> Tuple[fl
         score += 4
         why.append(f"contents mention '{word}'")
 
+    # Full content coverage: a file whose contents mention EVERY strong
+    # word the person used is a different class of evidence from a file
+    # that mentions one or two of them, but the ladder above flattens both
+    # into the same capped total. The graded soup hunt (AGE-25) was lost
+    # exactly there: the target recipe's contents cover all the words
+    # given, while noise files matching a single word plus a name
+    # substring ranked above it and filled the candidate cut. Total
+    # coverage across at least three strong words earns a flat bonus on
+    # the scale of the exact-name bonus; partial coverage earns nothing
+    # extra, so a file that merely talks about one aspect of the thing
+    # cannot ride it.
+    if len(strong_words) >= 3 and len(strong) == len(strong_words):
+        score += 40
+        why.append("its contents mention every word you gave")
+
     # Found-threshold kind discipline. Credit that is not name identity
     # (purpose terms in the name or path, content words) cannot carry a
     # candidate over the found threshold in either of these shapes:
@@ -1014,7 +1087,14 @@ def _self_knowledge_result(request: str, clues: Clues,
     target: Optional[Path] = None
     label = ""
     if "changelog" in tokens:
-        for base in (paths["github"], paths["source"]):
+        # The source tree is canonical: the source-folder pin above names
+        # Documents/xod as where Xod lives, so its changelog is the
+        # project's changelog. The GitHub clone is a second checkout that
+        # goes stale between pulls; checking it first delivered a weeks
+        # old copy while the live tree's changelog sat untouched (AGE-25,
+        # graded R2 partial). The clone remains the fallback for a
+        # machine where only the clone exists.
+        for base in (paths["source"], paths["github"]):
             for rel in ("docs/CHANGELOG.md", "CHANGELOG.md", "docs/CHANGELOG", "CHANGELOG"):
                 p = base / rel
                 if p.is_file():
@@ -1093,6 +1173,10 @@ def _exclusion_key(part: str) -> Optional[str]:
         return "build-logs"
     if p == ".cache" or p.startswith("caches") or p.startswith("cache-"):
         return "cache"
+    if p == "tmp":
+        return "tmp"
+    if p == "scratch":
+        return "scratch"
     return None
 
 
@@ -1105,15 +1189,37 @@ _EXCLUSION_WAIVERS = {
     "packages": {"node_modules", "venv", "packages"},
     "build-logs": {"build", "logs", "buildlogs"},
     "cache": {"cache", "caches"},
+    "tmp": {"tmp"},
+    "scratch": {"scratch"},
 }
+
+
+def _scope_parts(path: str) -> List[str]:
+    """The path segments scope rules judge, with the system scratch root
+    (/tmp, /private/tmp) dropped: it prefixes every temp-planted path
+    and is not itself a scope."""
+    parts = [p for p in path.replace("\\", "/").split("/") if p]
+    if parts and parts[0] == "tmp":
+        return parts[1:]
+    if parts[:2] == ["private", "tmp"]:
+        return parts[2:]
+    return parts
 
 
 def _excluded_scope(path: str, clues: Clues) -> Optional[str]:
     """The path segment that makes this path a build/cache/archive copy,
-    else None. Waived per segment when a clue term names that scope."""
+    else None. Waived per segment when a clue term names that scope.
+
+    A folder literally named "tmp" or "scratch" inside a user tree is
+    scratch space by convention: on the graded home they held only
+    earlier test rigs' planted copies of the hunted files (rig forests
+    under Documents/*/tmp, t1mini fixture budgets under */scratch),
+    which tied or outranked the real files and pushed them out of the
+    candidate cut (AGE-25). The system scratch root itself is not a
+    scope (see _scope_parts)."""
     terms = (set(_distinctive_name_tokens(clues)) | set(clues.purpose_terms)
              | set(clues.content_words))
-    for part in [p for p in path.replace("\\", "/").split("/") if p]:
+    for part in _scope_parts(path):
         key = _exclusion_key(part)
         if key is None:
             continue
@@ -1136,7 +1242,7 @@ def _junk_pair(a: Dict[str, Any], b: Dict[str, Any], clues: Clues) -> bool:
     def _junky(p: str) -> bool:
         if _is_cache_scoped(p, clues):
             return True
-        return any(_exclusion_key(seg) for seg in p.replace("\\", "/").split("/") if seg)
+        return any(_exclusion_key(seg) for seg in _scope_parts(p))
 
     return _junky(str(a.get("path") or "")) and _junky(str(b.get("path") or ""))
 
@@ -1209,8 +1315,15 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
         except Exception as e:
             tried.append({"route": "spotlight", "terms": terms, "hits": 0, "error": str(e)[:120]})
 
-    fn_hits = filename_search(clues, roots)
-    tried.append({"route": "filename", "terms": clues.name_tokens + clues.purpose_terms, "hits": len(fn_hits)})
+    fn_stats: Dict[str, Any] = {}
+    fn_hits = filename_search(clues, roots, stats=fn_stats)
+    fn_tried: Dict[str, Any] = {"route": "filename",
+                                "terms": clues.name_tokens + clues.purpose_terms,
+                                "hits": len(fn_hits),
+                                "partial": bool(fn_stats.get("partial"))}
+    if fn_stats.get("partial"):
+        fn_tried["partial_reason"] = fn_stats.get("partial_reason", "")
+    tried.append(fn_tried)
     add(fn_hits, "filename")
 
     content_hits: Dict[str, Set[str]] = {}
@@ -1239,6 +1352,7 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
 
     scored: List[Dict[str, Any]] = []
     folder_children: Dict[str, List[Tuple[float, str]]] = {}
+    scored_words: Dict[str, Set[str]] = {}
     excluded_scoped = 0
     for path, hits_words in pool.items():
         if not os.path.exists(path):
@@ -1257,6 +1371,11 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
         if not is_dir and path not in content_hits and routes_by_path.get(path) == {"spotlight"}:
             probe = {w for w in (set(clues.content_words) | set(clues.name_tokens) | set(clues.purpose_terms)) if len(w) > 2}
             words_here = _content_hits_for(path, probe)
+        if not is_dir:
+            # The exact word set the scorer judges this file by, kept so
+            # the eligibility gates below reason over the same evidence
+            # (route hits plus the index-only probe), never a subset.
+            scored_words[path] = set(words_here)
         score, why = score_candidate(path, clues, words_here if not is_dir else set())
         cand = _candidate_dict(path, score, why)
         if cand:
@@ -1357,13 +1476,79 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
         result["message"] = ("Nothing matched well enough to name. Tried: " +
                              "; ".join(f"{t['route']} ({t['hits']} hits)" for t in tried) + ".")
         for t in tried:
-            if t.get("route") == "content" and t.get("partial"):
-                result["message"] += (f" The content search was partial ({t.get('partial_reason', '')}), "
+            if t.get("partial"):
+                result["message"] += (f" The {t['route']} search was partial ({t.get('partial_reason', '')}), "
                                        "so more matches may exist than were seen.")
         return result
 
     if not top:
         return _not_found([])
+
+    # Distinctive-token absence (AGE-25, graded N1): when the hunt names
+    # the target with three or more distinctive tokens and one of them
+    # matches nothing in the name-anchored evidence (see below), the
+    # thing described is most likely absent, and weak-identity
+    # candidates are generic-word coincidences, not contenders.
+    # The graded shape: a "quarterly board deck about zebrafish" hunt
+    # asked between two unrelated files that matched only "board",
+    # while "zebrafish" matched nothing on the machine. Such candidates
+    # are checked-and-rejected, so the hunt lands on honest not_found.
+    name_id_tokens = [t for t in _distinctive_name_tokens(clues) if len(t) > 1]
+    unmatched_tokens: List[str] = []
+    if len(name_id_tokens) >= 3:
+        # Presence is name-anchored: a token counts as seen when some
+        # pooled file is NAMED with it, or when the scored contents of a
+        # file whose name already carries one of the hunt's tokens
+        # contain it. Unanchored contents cannot establish presence: a
+        # document that merely quotes the hunt's words (the grading
+        # harness's own scripts contain the hunt prompts verbatim) would
+        # otherwise fake presence for every token and keep the gate off
+        # exactly where it is needed.
+        present: Set[str] = set()
+        idset = set(name_id_tokens)
+        for p in pool:
+            stem_tokens = set(tokens_of(os.path.splitext(
+                os.path.basename(p))[0].lower()))
+            present |= stem_tokens
+            if stem_tokens & idset:
+                present |= scored_words.get(p, set())
+        unmatched_tokens = [t for t in name_id_tokens if t not in present]
+
+    def _weak_identity(cand: Dict[str, Any]) -> Optional[str]:
+        """Why this candidate is a generic-word coincidence rather than
+        the thing described, or None when it holds up. Three shapes:
+        it covers less than half the hunt's tokens; it misses a token
+        that name-anchored evidence proves exists elsewhere (so it is
+        not even the best available explanation of the description);
+        or it is a code file with no name identity at all, the shape of
+        a file that merely quotes the hunt's words (source files carry
+        every request they have ever logged or been tested against).
+        Folder candidates are exempt: a folder has no contents for the
+        scorer to read, so its identity is its name and path alone, and
+        coverage rules built on content evidence cannot judge it (the
+        R1 rig shape: a folder named exactly "xod" is the canonical
+        answer to where the Xod source code lives, and the remaining
+        tokens describe what the folder holds, not its name)."""
+        if not unmatched_tokens or cand.get("is_folder"):
+            return None
+        stem = os.path.splitext(str(cand.get("name") or ""))[0].lower()
+        stem_tokens = set(tokens_of(stem))
+        hits_here = scored_words.get(cand["path"], set())
+        matched = {t for t in name_id_tokens if t in stem_tokens or t in hits_here}
+        if len(matched) * 2 < len(name_id_tokens):
+            return (f"it matches only part of the name, and nothing found "
+                    f"anywhere matches '{unmatched_tokens[0]}'")
+        missed = [t for t in name_id_tokens
+                  if t not in matched and t not in unmatched_tokens]
+        if missed:
+            return (f"it does not match '{missed[0]}', which other files "
+                    f"do match, and nothing found anywhere matches "
+                    f"'{unmatched_tokens[0]}'")
+        if cand.get("kind") == "code" and not (stem_tokens & idset):
+            return (f"it is a code file whose name matches none of the "
+                    f"words, and nothing found anywhere matches "
+                    f"'{unmatched_tokens[0]}'")
+        return None
 
     # The floor, the kind-mismatch block, and the partial-name block,
     # applied before the ask gate: a candidate is presentable only if it
@@ -1381,6 +1566,9 @@ def locate(request: str, extra: Optional[Dict[str, Any]] = None,
                     and not has_name_identity(cand, clues))
                 or cand["score"] < ASK_FLOOR
                 or partial_name_only(cand, clues)):
+            rejected.append(cand)
+        elif (gate_reason := _weak_identity(cand)) is not None:
+            cand["why"] = list(cand.get("why") or []) + [gate_reason]
             rejected.append(cand)
         else:
             eligible.append(cand)

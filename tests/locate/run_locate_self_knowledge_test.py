@@ -14,9 +14,13 @@ Written failing-first against main 09e7df9. The four observed failures:
   B  "Find the changelog file for the Xod project" (graded R2) ranked
      ~/Documents/GitHub/xod/docs/CHANGELOG.md first and STILL asked,
      because a copy lives under an _archive-xod-worktrees tree. It must
-     resolve found with that GitHub path, no ask. B2 repeats the shape on a
-     synthetic tree (a live project changelog shadowed by an _archive
-     copy) so the exclusion is covered anywhere.
+     resolve found, no ask. Since AGE-25 the canonical copy is the
+     source tree's (~/Documents/xod/docs/CHANGELOG.md, the tree A names
+     as the source folder); the GitHub clone's copy is the fallback for
+     a machine where only the clone exists, because the clone goes
+     stale between pulls and the graded run marked it partial. B2 repeats
+     the shape on a synthetic tree (a live project changelog shadowed by
+     an _archive copy) so the exclusion is covered anywhere.
   C  A find whose only candidates are junk-class files (two identical
      Kotlin cache .tab files under */app/build/* caches, matched on the
      weak tokens 'to'/'source') produced a "two close matches" ask
@@ -100,13 +104,18 @@ def main():
         print(f"SKIP  A: {src} does not exist on this machine")
 
     # ---- B: Xod's changelog, real home ---------------------------------
-    changelog = home / "Documents" / "GitHub" / "xod" / "docs" / "CHANGELOG.md"
+    # The source tree is canonical (the same tree section A names as the
+    # source folder), so its changelog wins; the GitHub clone is a second
+    # checkout that goes stale between pulls and is only the fallback.
+    changelog = home / "Documents" / "xod" / "docs" / "CHANGELOG.md"
+    if not changelog.is_file():
+        changelog = home / "Documents" / "GitHub" / "xod" / "docs" / "CHANGELOG.md"
     if changelog.is_file():
         res = loc.locate(R2, roots=[str(home)], index_backend=EmptyIndex(),
                          content_deadline_s=5, hunt_deadline_s=30)
         check("B: changelog hunt resolves found, not ask",
               res["status"] == "found", str(res)[:300])
-        check("B: top candidate is the GitHub clone's docs/CHANGELOG.md",
+        check("B: top candidate is the canonical docs/CHANGELOG.md",
               bool(res["candidates"]) and res["candidates"][0]["path"] == str(changelog),
               str(res["candidates"][:2]))
     else:

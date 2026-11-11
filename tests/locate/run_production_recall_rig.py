@@ -148,17 +148,19 @@ def build_noise():
     folder the R hunts target.
 
     Scale is a production condition, not decoration: the filename and
-    content routes share a bounded walk (MAX_WALK_ENTRIES = 30,000),
-    and a real home holds far more entries than that, so the walks
-    spend their whole budget in whichever subtrees come first and may
-    never reach a target tree at all. The first version of this rig
-    built 6,200 files, the caps never bound, and it graded 12/12 —
-    the old rig's blind spot reproduced. The noise trees here hold
-    ~36,000 entries and sort before "xod-locate-forest" in directory
-    order, the shape a lived-in home presents. (The production Mac's
-    exact directory order is not reproduced and does not need to be:
-    what re-run 5 measured is the outcome, caps binding before the
-    forest, and that is the condition under test.)"""
+    content routes share a bounded walk, and a real home holds far more
+    entries than any small fixture, so a walk budget spent in whichever
+    subtrees come first may never reach a target tree at all. The first
+    version of this rig built 6,200 files, the caps never bound, and it
+    graded 12/12 — the old rig's blind spot reproduced. The noise trees
+    here hold ~36,000 entries and sort before "xod-locate-forest" in
+    directory order, the shape a lived-in home presents. (The AGE-25
+    walk budgets now sit above this fixture, so the rig grades recall
+    under first-subtree order pressure; the true-scale condition, a
+    ~560,000-entry home against the walk, is covered by the Mac probe
+    in the AGE-25 report. The production Mac's exact directory order
+    is not reproduced and does not need to be: what re-run 5 measured
+    is the outcome, caps binding before the forest.)"""
     jobs = []
     for tree in ("a-noise", "archive-deep", "Library"):
         for d in range(60):
