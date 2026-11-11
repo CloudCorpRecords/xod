@@ -197,6 +197,115 @@ def _incompletion_signal(claimed: Any) -> Optional[str]:
     return None
 
 
+# ------------------------------------------------------- answer content
+# D19 (AGE-36, re-grade run 8 T1B): the AGE-32 repair gave the Everest
+# research step working web access and the step used it, but its claimed
+# result was a link list headed by a bare token, with no temperature
+# value, no units and no context in it, and the verdict recorded it done
+# and unverifiable on absence of contradiction. The write step then
+# landed a research.md that itself states the Everest value remains to
+# be verified, and the mission completed with half its goal missing.
+# Access was repaired; what no layer judged was whether the report
+# answers the step. The judgment here is structural, in the style of
+# the screens above: it applies only where the step's own instruction
+# demands a sourced fact (the _instruction_needs_research test, judged
+# on the step's own instruction and title, never on delivered reference
+# sections), and it asks what the claimed result carries outside its
+# citations. Citations and bare URLs are pointers to an answer, not the
+# answer; link text is citation text, so a list of links carries no
+# answer content however its titles read. What remains must contain at
+# least one answer statement: a clause of at least four words that
+# states something (it carries a value, a digit, or a finite reporting
+# verb), and that is not itself an admission that the fact is missing
+# or unverified. A bare acknowledgment token, a link list, and prose
+# whose only statements say the fact remains to be verified all leave
+# no answer statement, so the step fails with that true reason, in the
+# same disposition the incompletion screen gives a report that admits
+# it did not finish (failed, contradicted): the step was not blocked
+# by a missing input or tool (it had its access and used it), it
+# reported, and what it reported does not answer its instruction. A
+# step whose instruction demands no sourced fact (pure reasoning, a
+# summary over delivered inputs) is never judged here, and a step with
+# declared effects keeps its effect based verdicts; this check is for
+# the no-effect step whose report is the whole of its work.
+
+_ANSWER_CITATION_RE = re.compile(r"\[[^\]]*\]\(\s*[^)\s]+[^)]*\)")
+_ANSWER_URL_RE = re.compile(r"(?:https?://|www\.)[^\s)\]]+", re.I)
+_ANSWER_VERB_RE = re.compile(
+    r"\b(?:is|are|was|were|has|have|had|reports?|reported|stands?|stood|"
+    r"measures?|measured|averages?|averaged|reaches|reached|equals?|"
+    r"contains?|contained|shows?|showed|indicates?|indicated|lists?|"
+    r"listed|provides?|provided|records?|recorded|numbers?|numbered|"
+    r"totals?|sits?|sat)\b", re.I)
+_ANSWER_MISSING_RES = (
+    r"\bunverified\b",
+    r"\bto be (?:verified|confirmed|checked)\b",
+    r"\bnot (?:yet )?(?:been )?(?:verified|confirmed)\b",
+    r"\bdid not (?:provide|include|report|contain|give|state|specify)\b",
+    r"\bno (?:sourced )?(?:value|fact|answer|figure|data|information) "
+    r"(?:was )?(?:provided|reported|found|available)\b",
+    r"\bcould not be (?:verified|confirmed)\b",
+    r"\bneeds? to be (?:verified|confirmed)\b",
+)
+
+
+def _has_answer_statement(prose: str) -> bool:
+    """True when prose outside any citation carries an answer
+    statement (see the D19 note above): a clause of at least four
+    words, carrying a digit or a finite reporting verb, that does not
+    itself say the demanded fact is missing or unverified."""
+    for line in prose.splitlines():
+        line = re.sub(r"^\s*(?:[-*+]|\d+[.)])\s+", "", line)
+        if line.lstrip().startswith("#"):
+            continue
+        for clause in re.split(r"[.!?;\n]", line):
+            s = clause.strip(" \t*#>`\"'")
+            if not s:
+                continue
+            low = s.lower()
+            if any(re.search(p, low) for p in _ANSWER_MISSING_RES):
+                continue
+            if _incompletion_signal(s):
+                continue
+            words = re.findall(r"[^\W_]+(?:[-'][^\W_]+)*", s, flags=re.UNICODE)
+            if len(words) < 4:
+                continue
+            if re.search(r"\d", s) or _ANSWER_VERB_RE.search(s):
+                return True
+    return False
+
+
+def _sourced_answer_problem(subtask: Dict[str, Any], claimed: Any) -> Optional[str]:
+    """The reason a no-effect step's claimed result is not the sourced
+    fact its own instruction demands, or None when the report carries
+    the answer (or the step demands no sourced fact). Judged on the
+    step's own text only, via _instruction_needs_research; the claimed
+    result is judged on what it carries, never on wording specific to
+    any one run."""
+    if not _instruction_needs_research(subtask):
+        return None
+    if not claimed or not isinstance(claimed, str) or not claimed.strip():
+        return ("The step's instruction requires a sourced fact (the fact, with its "
+                "source name and URL reported), but its report was empty, so it "
+                "contains no answer to that instruction. An empty report is not "
+                "done on absence of contradiction.")
+    if not _ANSWER_URL_RE.search(claimed):
+        return ("The step's instruction requires a sourced fact (the fact, with its "
+                "source name and URL reported), but its report names no source URL, "
+                "so the fact it states is not the sourced fact its instruction "
+                "required.")
+    prose = _ANSWER_URL_RE.sub(" ", _ANSWER_CITATION_RE.sub(" ", claimed))
+    if _has_answer_statement(prose):
+        return None
+    return ("The step's instruction requires a sourced fact (the fact, with its "
+            "source name and URL reported), but its report contains no answer "
+            "statement: outside its source links and citations there is no "
+            "statement of the fact it was asked to report, only links, an "
+            "acknowledgment, or a statement that the fact remains unverified. "
+            "A report with no answer content is not done on absence of "
+            "contradiction.")
+
+
 # ------------------------------------------------------- blocked signal
 # Fix round 6 (BOARD-001, Lane D): a worker that reports it could not
 # run for a missing input or a missing tool is not "done", and it is
@@ -1629,6 +1738,20 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
             return {"status": "failed", "claimed": result, "verified_status": "contradicted",
                     "evidence": [f"The step's own report admits it did not finish: \"{signal}\" "
                                  "A report of incompletion cannot be verified."]}
+        if not effects:
+            # D19 (AGE-36): a no-effect step whose own instruction
+            # demands a sourced fact is judged on whether its report
+            # carries the answer (see _sourced_answer_problem). This
+            # sits after the blocked and incompletion screens, so an
+            # honest report of a missing input, a missing tool, or a
+            # failure to finish keeps its established disposition, and
+            # before the absence-of-contradiction closing below, which
+            # is exactly the disposition it replaces for this shape.
+            answer_problem = _sourced_answer_problem(subtask, result)
+            if answer_problem:
+                return {"status": "failed", "claimed": result,
+                        "verified_status": "contradicted",
+                        "evidence": [answer_problem]}
         if not evidence:
             # Positive-evidence standard (fix round 6, Lane D): a step
             # with no file effects verifies only when its task carries

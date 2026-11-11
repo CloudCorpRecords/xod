@@ -208,11 +208,29 @@ class FakeQueue:
 
 
 DONE = {"status": "done", "result": "All done."}
+# The two research steps report genuine sourced answers, not the bare
+# DONE acknowledgment: since AGE-36 (D19) a no-effect step whose
+# instruction demands a sourced fact is judged on whether its report
+# carries the answer, and a bare acknowledgment is a non-answer that
+# fails the step and stops the mission before the write step. These
+# fakes state each fact with its source name and URL, as the steps'
+# instructions require.
+RESEARCH1 = {"status": "done",
+             "result": "NASA Science reports that Jupiter has 295 moons in the "
+                       "count it lists, and the count may change as discoveries "
+                       "are confirmed. Source: NASA Science, "
+                       "https://science.nasa.gov/jupiter/jupiter-moons/"}
+RESEARCH2 = {"status": "done",
+             "result": "Encyclopaedia Britannica reports that the summit "
+                       "temperature averages about -36 degrees Celsius in the "
+                       "warmest month and varies with weather. Source: "
+                       "Encyclopaedia Britannica, "
+                       "https://www.britannica.com/place/Mount-Everest"}
 
 
 async def case_d15_dispatch():
     print("== D15: the run 6 plan through the runner ==", flush=True)
-    q = FakeQueue([DONE, DONE, DONE])
+    q = FakeQueue([RESEARCH1, RESEARCH2, DONE])
     runner = M.MissionRunner(queue=q, ask=FakeAsk([json.dumps(PLAN)]),
                              poll_sec=0.01)
     m = M.create_mission(GOAL)
@@ -335,7 +353,7 @@ async def case_d16_mission_end_to_end():
     plan3 = dict(PLAN["subtasks"][2])
     plan = {"subtasks": [dict(PLAN["subtasks"][0], tools=["web.run"]),
                          dict(PLAN["subtasks"][1], tools=["web.run"]), plan3]}
-    q = FakeQueue([DONE, DONE, write_step])
+    q = FakeQueue([RESEARCH1, RESEARCH2, write_step])
     runner = M.MissionRunner(queue=q, ask=FakeAsk([json.dumps(plan)]),
                              poll_sec=0.01)
     m = M.create_mission(GOAL)
