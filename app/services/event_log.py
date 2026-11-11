@@ -95,6 +95,11 @@ def emit(kind: str, actor: str = "", ids: Optional[Dict[str, Any]] = None,
     """Appends one event. Returns the record, or None when the write failed (the
     failure is logged, never raised: observability must not break the work)."""
     global _seq, _appends
+    try:   # the activity timer (services/liveness.py): an event came through
+        from app.services import liveness
+        liveness.touch("event", str(kind))
+    except Exception:
+        pass
     try:
         with _lock:
             if _seq is None:

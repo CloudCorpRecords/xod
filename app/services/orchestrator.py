@@ -1702,6 +1702,17 @@ def _claim_next() -> Optional[str]:
                   (time.time(), r["id"])).rowcount
     c.commit()
     c.close()
+    if n:
+        # The activity timer (services/liveness.py): this claim is the
+        # moment a stepwise task enters "working", and it bypasses
+        # task_queue._update (the claim is a direct SQL update so two
+        # pools cannot take the same task), so the timer hears about
+        # the flight here, at the transition itself.
+        try:
+            from app.services import liveness
+            liveness.work_started(r["id"])
+        except Exception:
+            pass
     return r["id"] if n else None
 
 

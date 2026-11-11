@@ -78,6 +78,11 @@ async def local_only_guard(request, call_next):
     if (origin == "null" or request.headers.get("sec-fetch-site") == "cross-site") and not oauth_return:
         return JSONResponse({"detail": "Cross-site request blocked."}, status_code=403)
     response = await call_next(request)
+    try:   # the activity timer (services/liveness.py): a request came through and was processed
+        from app.services import liveness
+        liveness.touch("request", request.url.path)
+    except Exception:
+        pass
     for k, v in _SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
     return response
@@ -841,6 +846,11 @@ def _announce_server() -> None:
 @app.on_event("startup")
 async def _start_task_worker():
     _announce_server()
+    try:   # the activity timer (services/liveness.py): this process's ledger starts now, under its own pid
+        from app.services import liveness
+        liveness.touch("boot")
+    except Exception:
+        pass
     from app.services.task_queue import task_queue
     from app.services.doctor import doctor
     task_queue.start()
