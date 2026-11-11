@@ -55,6 +55,8 @@ jobs:
         run: python tests/smoke/run_mcp_import_test.py
       - name: Sentinel - the safety check on every action
         run: python tests/smoke/run_sentinel_test.py
+      - name: The activity timer's ledger (services/liveness.py)
+        run: python tests/smoke/run_liveness_ledger_test.py
       - name: Goals and the morning brief (scripted model)
         run: python tests/smoke/run_goals_test.py
       - name: The team and Xod's page - tiers, subagents side by side, approvals history, reminders (scripted models)

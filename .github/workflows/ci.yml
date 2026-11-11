@@ -58,6 +58,7 @@ jobs:
           python tests/smoke/run_job_autofill_test.py
           python tests/smoke/run_tailor_test.py
           python tests/smoke/run_engine_watchdog_test.py
+          python tests/smoke/run_liveness_ledger_test.py
           python tests/smoke/run_agent_mail_chat_test.py
           python tests/smoke/run_home_post_test.py
           python tests/smoke/run_local_servers_test.py
