@@ -318,8 +318,61 @@ _PATH_RE = re.compile(r"(?:~|/|[A-Za-z]:[\\/])[^\s\"'<>|`]+")
 _NAMED_INSIDE_RE = re.compile(r"file named ([^\s/]+?) inside the ([^\s/]+?) folder", re.I)
 _FOLDER_NAMED_RE = re.compile(r"folder named ([^\s/(]+)", re.I)
 _FILE_NAMED_RE = re.compile(r"file named ([^\s/]+)", re.I)
-_EXACT_CONTENT_RE = re.compile(r"(?:contents? (?:are|is) exactly this|containing exactly|exact text)[^:]*:\s*(.+)", re.I | re.S)
+_EXACT_CONTENT_RE = re.compile(r"(?:contents? (?:are|is) exactly this|containing exactly|exact text)([^:]*):\s*(.+)", re.I | re.S)
 _RUN_RE = re.compile(r"Run exactly this command from the directory (.+?) and require exit code (-?\d+): (.+)$")
+
+
+def _enumerated_lines(qualifier: str, body: str) -> Optional[List[str]]:
+    """The lines an aggregate exact-content ask enumerates, or None when the
+    captured text is not a line enumeration. An ask of the shape "containing
+    exactly five lines, in order: a.txt, b.txt, and c.txt" dictates the lines
+    a.txt, b.txt, c.txt, one per line; the enumeration's own punctuation
+    (quotes, commas, the closing "and", the sentence period) is prose, not
+    content. Reading the raw enumeration as the expected content compares
+    the file against a string it could never equal and contradicts honest
+    work in both trailing-newline shapes (D5, AGE-7 re-grade). Only a
+    qualifier that speaks of lines, and items that are single tokens, are
+    read this way; anything else keeps the literal reading."""
+    if not re.search(r"\blines?\b", qualifier or "", re.I):
+        return None
+    text = (body or "").strip().rstrip(".")
+    if not text:
+        return None
+    items: List[str] = []
+    for part in text.split(","):
+        item = part.strip().strip("\"'`").strip()
+        item = re.sub(r"^and\s+", "", item).strip().strip("\"'`").strip()
+        items.append(item)
+    if len(items) < 2:
+        return None
+    if any(not it or re.search(r"\s", it) for it in items):
+        return None
+    return items
+
+
+def _path_framed_as_container(text: str, p: Path) -> bool:
+    """The request's own words use this path as a container: a sentence that
+    names the path also speaks of working inside it, or another path the
+    request names sits inside it. A step that names its working folder by
+    path and the files inside it by bare names produces a lone claim for
+    the folder with no directory wording attached, so the claim parser
+    cannot tell it apart from a file claim; the framing in the words is
+    what tells, and a directory on disk at that path is then the effect
+    the step asked for (D5 container shape, AGE-7 re-grade)."""
+    for s in re.split(r"\.(?=\s|$)|[!?\n]", text or ""):
+        if str(p) in s and re.search(r"\b(inside|within)\b", s, re.I):
+            return True
+    for m in _PATH_RE.finditer(text or ""):
+        raw = m.group(0).rstrip(".,;:)`")
+        if not raw or raw in ("~", "/"):
+            continue
+        try:
+            q = Path(os.path.expanduser(raw))
+        except Exception:
+            continue
+        if len(p.parts) < len(q.parts) and q.parts[:len(p.parts)] == p.parts:
+            return True
+    return False
 
 
 def _path_mentioned(sentence: str, p: Path) -> bool:
@@ -354,7 +407,8 @@ def _strip_reference_lines(text: str) -> str:
 
 def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
     """File effects the request itself explicitly asks for:
-    [{kind: "write" or "delete", path: Path, content: exact text or None}]."""
+    [{kind: "write" or "delete", path: Path, content: exact text or None,
+    content_lines: the enumerated lines of an aggregate ask, or None}]."""
     text = request or ""
     # Run-effect lines are the run gate's vocabulary, not file claims: the
     # paths and words inside a declared command are not file promises.
@@ -379,9 +433,14 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
         if folder and fname:
             paths.append(Path.home() / folder.group(1) / fname.group(1))
     content = None
+    content_lines = None
     cm = _EXACT_CONTENT_RE.search(text)
     if cm:
-        content = cm.group(1).split("\n")[0].strip() or None
+        raw_content = cm.group(2).split("\n")[0].strip() or None
+        if raw_content is not None:
+            content_lines = _enumerated_lines(cm.group(1), raw_content)
+            if content_lines is None:
+                content = raw_content
     claims: List[Dict[str, Any]] = []
     sentences = re.split(r"\.(?=\s|$)|[!?\n]", text)
     for p in dict.fromkeys(paths):
@@ -417,6 +476,7 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
                         target = "directory"
                         break
             claims.append({"kind": kind, "path": p, "content": content if kind == "write" else None,
+                           "content_lines": content_lines if kind == "write" else None,
                            "target": target})
     # A write claim whose path is only the container of a sibling write
     # claim (a proper path prefix: "create proof.txt inside /abs/dir" names
@@ -1673,14 +1733,31 @@ class TaskQueue:
                     if not p.is_dir():
                         problems.append(f"the task asked for {p.name} to be created, but it is not on disk")
                 elif not p.is_file():
-                    problems.append(f"the task asked for {p.name} to be created, but it is not on disk")
-                elif claim.get("content") is not None:
+                    if p.is_dir() and _path_framed_as_container(task.get("request") or "", p):
+                        # The path is on disk as a directory and the step's
+                        # own words frame it as the container it worked
+                        # inside (its files named by bare names): that is
+                        # the effect the step asked for. Reporting it as
+                        # not on disk would state the opposite of the disk.
+                        pass
+                    elif p.is_dir():
+                        problems.append(f"the task asked for {p.name} to be created as a file, "
+                                        f"but a directory is on disk at that path")
+                    else:
+                        problems.append(f"the task asked for {p.name} to be created, but it is not on disk")
+                elif claim.get("content") is not None or claim.get("content_lines"):
                     try:
                         actual = p.read_bytes() if p.stat().st_size <= 1_000_000 else None
                     except Exception:
                         actual = None
-                    if actual is not None and actual != claim["content"].encode("utf-8"):
-                        problems.append(f"{p.name} does not contain exactly what the task asked for")
+                    if actual is not None:
+                        lines = claim.get("content_lines")
+                        if lines:
+                            joined = "\n".join(lines).encode("utf-8")
+                            if actual not in (joined, joined + b"\n"):
+                                problems.append(f"{p.name} does not contain exactly what the task asked for")
+                        elif actual != claim["content"].encode("utf-8"):
+                            problems.append(f"{p.name} does not contain exactly what the task asked for")
                 if claim["kind"] != "delete" and claim.get("target") != "directory" and p.is_file():
                     type_problem = _file_type_problem(p)
                     if type_problem:
