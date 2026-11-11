@@ -381,6 +381,68 @@ def _path_mentioned(sentence: str, p: Path) -> bool:
     return bool(p.stem and re.search(rf"\b{re.escape(p.stem)}\b", sentence))
 
 
+def _mention_pos(sentence: str, p: Path) -> int:
+    """Where `sentence` mentions path `p` (full path, then file name, then
+    stem), or -1. Mirrors the representations _path_mentioned accepts."""
+    idx = sentence.find(str(p))
+    if idx >= 0:
+        return idx
+    if p.name:
+        idx = sentence.find(p.name)
+        if idx >= 0:
+            return idx
+    if p.stem:
+        m = re.search(rf"\b{re.escape(p.stem)}\b", sentence)
+        if m:
+            return m.start()
+    return -1
+
+
+def _read_governed_in_sentence(sentence: str, p: Path) -> bool:
+    """The sentence's mention of `p` is governed by a read verb: within
+    the clause that names the path (the text since the last clause
+    separator: a comma, a semicolon, "and" or "then"), the verb nearest
+    the mention is a read verb (_READ_VERB: read, copy, open, ...) and
+    no effect or delete verb precedes it in that clause. Such a mention
+    makes the path an input of the sentence, not an effect it promises:
+    "read the file X and create Y" promises Y and reads X, and "create
+    Y, then read X" still promises only Y. Judging a path by any effect
+    verb anywhere in its sentence turned X into a write claim, and the
+    orchestrator then split the step and minted a "Create exactly one
+    file: X" substep for a file the step only reads (Tier 6 leg C,
+    AGE-19). The clause bound is what keeps "create a copy of the
+    template at Y" honest: there the read verb sits in the create's own
+    clause, before the path, and the path stays the create's claim."""
+    pos = _mention_pos(sentence, p)
+    if pos < 0:
+        return False
+    start = 0
+    for sep in (",", ";"):
+        idx = sentence.rfind(sep, 0, pos)
+        if idx >= 0:
+            start = max(start, idx + 1)
+    for m in re.finditer(r"\s+(?:and|then)\s+", sentence[:pos]):
+        start = max(start, m.end())
+    verbs: Dict[int, str] = {}
+    for m in _DELETE_VERB.finditer(sentence, start, pos):
+        verbs[m.start()] = "delete"
+    for m in _EFFECT_VERB.finditer(sentence, start, pos):
+        verbs.setdefault(m.start(), "effect")
+    for m in _READ_VERB.finditer(sentence, start, pos):
+        verbs.setdefault(m.start(), "read")
+    if not verbs:
+        return False
+    ordered = [verbs[k] for k in sorted(verbs)]
+    return ordered[-1] == "read" and all(c == "read" for c in ordered)
+
+
+def _path_read_governed(text: str, p: Path) -> bool:
+    """Any sentence of `text` mentions `p` under a governing read verb."""
+    sentences = re.split(r"\.(?=\s|$)|[!?\n]", text or "")
+    return any(_path_mentioned(s, p) and _read_governed_in_sentence(s, p)
+               for s in sentences)
+
+
 # The delivered-inputs reference fence (fix round 6): missions wrap
 # the inputs they deliver to a step between these markers, and claim
 # parsing strips them, exactly as it strips run-effect lines: a claim
@@ -448,11 +510,14 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
         for s in sentences:
             if not _path_mentioned(s, p) or _NEGATION.search(s):
                 continue
+            if _read_governed_in_sentence(s, p):
+                continue   # this sentence reads the path; it does not promise it
             if _DELETE_VERB.search(s):
                 kind = "delete"
             elif _EFFECT_VERB.search(s):
                 kind = "write"
-        if kind is None and len(paths) == 1 and not _NEGATION.search(text):
+        if kind is None and len(paths) == 1 and not _NEGATION.search(text) \
+                and not _path_read_governed(text, p):
             if _DELETE_VERB.search(text):
                 kind = "delete"
             elif _EFFECT_VERB.search(text):

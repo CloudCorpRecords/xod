@@ -370,6 +370,15 @@ def _multi_file_write_claims(step: Dict[str, Any]) -> List[Dict[str, Any]]:
     from app.services import task_queue as TQ
     claims = [c for c in TQ._claimed_file_effects(str(step.get("text") or ""))
               if c.get("kind") == "write" and c.get("target") == "file"]
+    # Verb-fidelity guard (AGE-19): a path the step's own words govern with
+    # a read verb is an input of the step, never one of its artifacts, so it
+    # must not be minted into a "Create exactly one file" substep (Tier 6
+    # leg C: a "read seed-input.txt" phase became a create substep for the
+    # seed). The claim parser already keeps such paths out of write claims;
+    # the rule is enforced again at this seam, where substeps are built,
+    # whatever produced the claim.
+    claims = [c for c in claims
+              if not TQ._path_read_governed(str(step.get("text") or ""), c["path"])]
     seen, out = set(), []
     import os
     for c in claims:
@@ -1207,6 +1216,24 @@ def _final_report(items: List[Dict[str, Any]]) -> str:
     return "\n".join(lines) + _flag_section(items)
 
 
+def _blocked_step_result(report: Optional[str], problems: List[str]) -> str:
+    """The stored record of a step that verification blocked. The record
+    speaks in the verified voice first (the step did not check out, and
+    why); the worker's own report is kept below it, attributed as the
+    step's unverified account, never presented as the step's result.
+    Before this, the raw report was stored as the result and the status
+    was set to blocked beside it, so one step record carried two
+    incompatible accounts (AGE-7 gate 6: a blocked step whose result
+    claimed "Phase 1 is complete... verified their contents exactly
+    match"). A completed step's result stays the worker's report, which
+    verification has then sustained."""
+    head = "Did not check out: " + "; ".join(problems)
+    body = (report or "").strip()
+    if body:
+        return head + "\n\nThe step's own report (not sustained by verification):\n" + body
+    return head
+
+
 async def run_stepwise(q: Any, task_id: str) -> None:
     """The background execution of one orchestrated task, from wherever its plan stands."""
     task = q.get(task_id)
@@ -1372,7 +1399,10 @@ async def run_stepwise(q: Any, task_id: str) -> None:
                 pass
             cleaned_report, plan_update_directive = _extract_plan_update(report or "")
             res_cap = 6000 if _is_large_context() else 4000
-            step["result"] = (cleaned_report or "")[:res_cap]
+            if problems:
+                step["result"] = _blocked_step_result(cleaned_report, problems)[:res_cap]
+            else:
+                step["result"] = (cleaned_report or "")[:res_cap]
             step["finished_at"] = time.time()
             _log_slow_step(task_id, step, k, began, blocked=bool(problems))
             if problems:
