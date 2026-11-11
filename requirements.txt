@@ -72,7 +72,7 @@ pyobjc-core==12.2.2; sys_platform == "darwin"
 pyobjc-framework-Cocoa==12.2.2; sys_platform == "darwin"
 pyobjc-framework-Quartz==12.2.2; sys_platform == "darwin"
 pyobjc-framework-CoreText==12.2.2; sys_platform == "darwin"            # ApplicationServices
-pyobjc-framework-ApplicationServices==12.2.2; sys_platform == "darwin"
+pyobjc-framework-ApplicationServices==13.0; sys_platform == "darwin"
 pyobjc-framework-CoreLocation==12.2.2; sys_platform == "darwin"            # where this Mac is (This Mac: places nearby)
 pyobjc-framework-MapKit==12.2.2; sys_platform == "darwin"                 # Apple Maps search, no key
 comtypes==1.4.14; sys_platform == "win32"               # Windows UI Automation card watcher (services/muse_backends.py)
