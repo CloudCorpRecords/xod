@@ -365,6 +365,30 @@ _ANAPHORIC_CONTAINER = re.compile(r"\b(there|in it)\b", re.I)
 _BARE_FILENAME = re.compile(r"(?<![\w./\-])([A-Za-z0-9_][\w.\-]*\.[A-Za-z0-9]{1,10})\b")
 
 
+_FILE_LIKE_SUFFIX_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,9}$")
+
+
+def _directory_wording_governs(sentence: str, p: Path) -> bool:
+    """The directory or folder wording in `sentence` governs path `p`
+    itself: the wording names the path as its object ("directory at
+    <path>", "folder <path>") or the path names the wording ("<path>
+    folder"). Wording that merely appears in the same sentence,
+    governing a different path, does not govern this one: in "create
+    the folder if needed, then create <folder>/part-1.txt", the word
+    folder belongs to the container, and the file the sentence creates
+    at its own path stays a file (D17, AGE-21 re-grade run 7 Leg B).
+    This is the stepwise claim parser's analogue of the mission
+    layer's per-effect kind judgment (D9, missions._effect_is_directory):
+    kind is judged per path by the wording that governs that path."""
+    esc = re.escape(str(p))
+    if re.search(r"\b(directory|folder)\b\s+(?:at\s+|named\s+|called\s+)?"
+                 + esc + r"(?![\w/])", sentence, re.I):
+        return True
+    if re.search(esc + r"\s+(directory|folder)\b", sentence, re.I):
+        return True
+    return False
+
+
 def _bare_creation_filenames(text: str) -> List[str]:
     """Bare filenames a step's creation sentences name: the files the
     step says it makes, named without a path (the lookbehind in
@@ -614,20 +638,32 @@ def _claimed_file_effects(request: str) -> List[Dict[str, Any]]:
                 kind = "write"
         if kind:
             target = "file"
-            if kind == "write":
+            if kind == "write" and not _FILE_LIKE_SUFFIX_RE.search(p.name):
                 # A claim whose own words call the target a directory or folder is
                 # a directory claim: a directory can never satisfy a file check.
                 # (Hardening round 2026-10-30: a mission step that created its
                 # project directory exactly as asked was contradicted because the
-                # check required is_file() on the directory path.) The sentence
-                # must name this path itself, not merely mention it by name: a
-                # sentence that names the file while calling its container a
-                # directory ("a file proof.txt inside the new directory") would
-                # otherwise turn the file's claim into a directory claim and
-                # contradict work that is on disk (mission-0d528a2c13).
+                # check required is_file() on the directory path.) The wording
+                # must govern this path itself, not merely appear in its
+                # sentence: a sentence that names the file while calling its
+                # container a directory ("a file proof.txt inside the new
+                # directory") would otherwise turn the file's claim into a
+                # directory claim and contradict work that is on disk
+                # (mission-0d528a2c13). The same misjudgment in the other
+                # direction blocked Leg B Phase 1 in re-grade run 7 (D17,
+                # AGE-34): "create the folder if needed, then create
+                # <folder>/part-1.txt" made part-1.txt a directory claim, so
+                # the check demanded is_dir() of a file that sat exact on
+                # disk and reported it "not on disk"; the file-target
+                # branches that consult the disk and the recorded effects
+                # never ran for that claim. A target whose basename carries
+                # a file suffix (.txt, .md, .py) is a file whatever the
+                # surrounding prose says, the mission layer's D9 rule; an
+                # extensionless target is a directory only when the
+                # directory wording governs it (_directory_wording_governs).
                 for sent in sentences:
                     if (str(p) in sent and not _NEGATION.search(sent)
-                            and re.search(r"\b(directory|folder)\b", sent, re.IGNORECASE)):
+                            and _directory_wording_governs(sent, p)):
                         target = "directory"
                         break
             claims.append({"kind": kind, "path": p, "content": content if kind == "write" else None,
