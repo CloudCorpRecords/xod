@@ -3,8 +3,9 @@
 // normal browser. Closing the window leaves Xod running in the tray (the menu bar on a Mac), so tasks,
 // routines and the phone link keep working; the server is stopped when the app quits.
 const { app, BrowserWindow, Menu, Tray, Notification, nativeImage, shell, session, dialog, systemPreferences, globalShortcut, ipcMain } = require("electron");
-const { spawn, spawnSync } = require("child_process");
+const { spawn, spawnSync, execFile } = require("child_process");
 const { isOwnServer } = require("./own_server");
+const { LivenessReview } = require("./liveness");
 const fs = require("fs");
 const http = require("http");
 const net = require("net");
@@ -33,6 +34,8 @@ const PY = PACKAGED
 const PREFERRED_PORT = Number(process.env.XOD_PORT || 8000);
 
 let server = null;          // the Python process we started (null if we attached to a running one)
+let adoptedPid = null;      // the pid of a server we attached to (its hello names it), for the liveness review
+let livenessRestarting = false;   // a review-ordered restart is in flight: the exit it causes is expected, not an error
 let appUrl = "";
 let splash = null;
 let mainWindow = null;
@@ -194,6 +197,7 @@ async function startServer() {
   // throwaway folder) would show someone else's settings and none of your keys, so Xod starts its own on a free port.
   const existing = await get(`http://127.0.0.1:${PREFERRED_PORT}/api/cli/hello`);
   if (existing && existing.status === 200 && isOwnServer(existing.body, DATA_DIR, app.getVersion())) {
+    try { adoptedPid = JSON.parse(existing.body).pid || null; } catch (e) { adoptedPid = null; }
     return `http://127.0.0.1:${PREFERRED_PORT}`;
   }
   await ensurePythonEnv();
@@ -219,7 +223,7 @@ async function startServer() {
   try { fs.closeSync(logFd); } catch (e) { /* the child holds its own copy */ }
   server.on("exit", (code) => {
     server = null;
-    if (!quitting) {
+    if (!quitting && !livenessRestarting) {
       dialog.showErrorBox("Xod stopped", `The Xod server exited (code ${code}).\n\n${logTail()}`);
       app.quit();
     }
@@ -256,6 +260,150 @@ function stopServer() {
     p.once("exit", () => { clearTimeout(t); done(); });
     try { p.kill("SIGTERM"); } catch (e) { clearTimeout(t); done(); }
   });
+}
+
+// ---- The activity timer's review (the timer itself is services/liveness.py) ----
+// The backend resets the timer with its own activity and keeps the ledger at
+// DATA_DIR/activity.json. This supervisor reads the ledger every few seconds;
+// when it has been stale past the window with work in flight, LivenessReview
+// (electron/liveness.js) diagnoses before it decides: evidence into
+// DATA_DIR/liveness-incidents/, a restart only for a backend the review finds
+// dead or wedged, through the stop/start above, under a budget with backoff
+// and a hold. It runs here, in the shell, because the wedge it exists for
+// parks the backend's own process (AGE-7: main thread in open(), workers on
+// locks); the shell is the part of Xod that survives that and already owns
+// the backend's lifecycle.
+let livenessTimer = null;
+let livenessBusy = false;
+
+function livenessLog(msg) {
+  try {
+    const line = `${new Date().toISOString()} ${msg}\n`;
+    fs.appendFileSync(path.join(DATA_DIR, "logs", "liveness.log"), line);
+  } catch (e) { /* the incident records carry the same facts; logging never blocks supervision */ }
+  console.log(msg);
+}
+
+function tailFile(p, bytes = 65536) {
+  try {
+    const st = fs.statSync(p);
+    const fd = fs.openSync(p, "r");
+    const buf = Buffer.alloc(Math.min(bytes, st.size));
+    fs.readSync(fd, buf, 0, buf.length, st.size - buf.length);
+    fs.closeSync(fd);
+    return buf.toString("utf8");
+  } catch (e) { return ""; }
+}
+
+const livenessIo = {
+  now: () => Date.now() / 1000,
+  readLedger: () => {
+    try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "activity.json"), "utf8")); }
+    catch (e) { return null; }
+  },
+  expectedPid: () => (server && server.pid) || adoptedPid || null,
+  processAlive: (pid) => {
+    try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; }
+  },
+  helloAnswers: async () => {
+    if (!appUrl) return false;
+    const r = await get(`${appUrl}/api/cli/hello`, 5000);
+    return !!r && r.status === 200 && isOwnServer(r.body, DATA_DIR, app.getVersion());
+  },
+  captureEvidence: async (ctx) => {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const dir = path.join(DATA_DIR, "liveness-incidents", `${stamp}-${ctx.pid || "nopid"}`);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "incident.json"), JSON.stringify(ctx, null, 2));
+      try { fs.copyFileSync(path.join(DATA_DIR, "activity.json"), path.join(dir, "ledger.json")); } catch (e) {}
+      const serverLog = tailFile(path.join(DATA_DIR, "logs", "desktop-server.log"));
+      if (serverLog) fs.writeFileSync(path.join(dir, "server-log-tail.txt"), serverLog);
+      const events = tailFile(path.join(DATA_DIR, "event_log.jsonl"));
+      if (events) fs.writeFileSync(path.join(dir, "event-log-tail.txt"), events);
+      if (ctx.pid && ctx.process_alive) {
+        const stackPath = path.join(dir, "stack.txt");
+        if (process.platform === "darwin") {
+          // The same tool the AGE-7 re-grade sampled the wedge with.
+          await new Promise((resolve) => {
+            execFile("/usr/bin/sample", [String(ctx.pid), "3", "-file", stackPath],
+                     { timeout: 20000 }, () => resolve());
+          });
+        } else if (process.platform === "win32") {
+          try {
+            const out = spawnSync("powershell", ["-NoProfile", "-Command",
+              `Get-Process -Id ${Number(ctx.pid)} | Format-List *`], { timeout: 15000 });
+            fs.writeFileSync(stackPath, String(out.stdout || "") + String(out.stderr || ""));
+          } catch (e) { fs.writeFileSync(stackPath, `process info unavailable: ${e}`); }
+        } else {
+          try { fs.writeFileSync(stackPath, fs.readFileSync(`/proc/${ctx.pid}/status`, "utf8")); }
+          catch (e) { fs.writeFileSync(stackPath, `stack capture unavailable on this platform: ${e}`); }
+        }
+      }
+      return dir;
+    } catch (e) {
+      livenessLog(`liveness: evidence capture failed (${e}); the restart decision is unaffected`);
+      return null;
+    }
+  },
+  recordIncident: (dir, rec) => {
+    if (!dir) return;
+    try {
+      const p = path.join(dir, "incident.json");
+      const cur = JSON.parse(fs.readFileSync(p, "utf8"));
+      fs.writeFileSync(p, JSON.stringify({ ...cur, ...rec }, null, 2));
+    } catch (e) { /* the incident record is evidence, never a blocker */ }
+  },
+  restart: async (ctx) => {
+    livenessRestarting = true;
+    try {
+      if (server) {
+        await stopServer();          // SIGTERM, then the whole group is force-killed: a wedged server cannot linger
+      } else if (ctx.pid) {
+        // A server we attached to leads its own session (detached spawn), so
+        // the group kill takes the wedged process and anything it started.
+        try { process.kill(-ctx.pid, "SIGKILL"); }
+        catch (e) { try { process.kill(ctx.pid, "SIGKILL"); } catch (e2) { /* already gone */ } }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      const url = await startServer();
+      if (url && url !== appUrl) {
+        appUrl = url;
+        if (typeof mainWindow !== "undefined" && mainWindow && !mainWindow.isDestroyed()) mainWindow.loadURL(appUrl);
+      }
+      return !!url;
+    } catch (e) {
+      livenessLog(`liveness: restart action failed: ${e && e.message || e}`);
+      return false;
+    } finally {
+      livenessRestarting = false;
+    }
+  },
+  log: (msg) => livenessLog(msg),
+  loadState: () => {
+    try { return JSON.parse(fs.readFileSync(path.join(DATA_DIR, "liveness_state.json"), "utf8")); }
+    catch (e) { return {}; }
+  },
+  saveState: (state) => {
+    try { fs.writeFileSync(path.join(DATA_DIR, "liveness_state.json"), JSON.stringify(state, null, 2)); }
+    catch (e) { /* a lost budget record restarts the count, never the machine */ }
+  },
+};
+
+function startLiveness() {
+  if (livenessTimer) return;
+  const review = new LivenessReview(livenessIo);
+  livenessTimer = setInterval(async () => {
+    if (livenessBusy || quitting) return;
+    livenessBusy = true;
+    try { await review.tick(); } catch (e) { livenessLog(`liveness: review tick failed: ${e && e.message || e}`); }
+    livenessBusy = false;
+  }, 5000);
+  livenessTimer.unref();
+}
+
+function stopLiveness() {
+  if (livenessTimer) { clearInterval(livenessTimer); livenessTimer = null; }
 }
 
 // ------------------------------------------------------------------ security
@@ -527,6 +675,7 @@ app.whenReady().then(async () => {
   if (!HEADLESS) showSplash();
   try {
     appUrl = await startServer();
+    startLiveness();          // the activity timer's review supervises the backend from here (see LivenessReview)
     createTray();
     if (HEADLESS) {
       // No window was ever made, so there is nothing to show or to keep hidden: the
@@ -558,6 +707,7 @@ app.on("activate", () => showWindow());
 app.on("window-all-closed", () => { if (!prefs.background || !tray) app.quit(); });
 app.on("before-quit", (e) => {
   quitting = true;
+  stopLiveness();
   if (!server) return;
   e.preventDefault();               // quit once the server is down (stopServer), then for real
   stopServer().then(() => app.quit());
