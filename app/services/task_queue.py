@@ -955,9 +955,21 @@ def _is_disqualified_python(path: str) -> bool:
 
 
 def _python_can_pytest(py: str) -> bool:
+    """Whether this interpreter itself can import pytest, measured in
+    isolation: the probe runs with -I (no PYTHONPATH, no user site, no
+    current-directory entry on sys.path) from the interpreter's own
+    directory. Unisolated, the probe answers a different question: a
+    pytest.py in the caller's working directory (this repo's own root
+    carries one, the pytest_shim entry point) makes every interpreter
+    look pytest-capable, which is one way the run-effect binding went
+    unstable across runs (AGE-27): resolution trusted the bundle
+    interpreter on one machine layout and the run then died with
+    "No module named pytest" on another."""
     try:
-        proc = subprocess.run([py, "-c", "import pytest"], capture_output=True,
-                              timeout=_PYTEST_PROBE_TIMEOUT_SEC)
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        proc = subprocess.run([py, "-I", "-c", "import pytest"], capture_output=True,
+                              timeout=_PYTEST_PROBE_TIMEOUT_SEC,
+                              cwd=os.path.dirname(os.path.abspath(py)), env=env)
         return proc.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
@@ -1002,8 +1014,18 @@ def _provision_pytest_venv(cwd: Path) -> Optional[str]:
 def _resolve_pytest_python(cwd: Path):
     """(interpreter, why_not) for a pytest run from cwd: the first
     candidate that can import pytest, in the order project venv, task
-    venv, the app's own interpreter, freshly provisioned task venv.
-    (None, why) when no interpreter here can run pytest."""
+    venv, the app's own interpreter, the system python3/python the
+    search path offers (each probed in path order, so a bundled or
+    stub interpreter that cannot run pytest is passed over, not
+    trusted), freshly provisioned task venv. (None, why) when no
+    interpreter here can run pytest.
+
+    The system scan is what the plan's own word "python3" means: the
+    interpreter a terminal on this machine would run. Binding a
+    test run to the app's bundled interpreter alone made the binding
+    unstable across runs (AGE-27): the same-shaped effect verified in
+    one run, when resolution happened to engage, and failed in the
+    next on an interpreter with no pytest, when it did not."""
     candidates = []
     for name in (".venv", "venv", ".xod-test-venv"):
         py = _venv_python(Path(cwd) / name)
@@ -1012,22 +1034,73 @@ def _resolve_pytest_python(cwd: Path):
     own = sys.executable
     if own and not _is_disqualified_python(own):
         candidates.append(own)
+    seen = set(candidates)
     for py in candidates:
         if not _is_disqualified_python(py) and _python_can_pytest(py):
             return py, ""
+    try:
+        from app.services.agent_clis import search_path
+        path_val = search_path()
+    except Exception:
+        path_val = os.environ.get("PATH", "")
+    for entry in path_val.split(os.pathsep):
+        if not entry:
+            continue
+        for name in ("python3", "python", "python3.exe", "python.exe"):
+            cand = os.path.join(entry, name)
+            if cand in seen or _is_disqualified_python(cand):
+                continue
+            seen.add(cand)
+            if os.path.isfile(cand) and _python_can_pytest(cand):
+                return cand, ""
     py = _provision_pytest_venv(cwd)
     if py:
         return py, ""
-    return None, ("no venv in the project, no app interpreter and no provisioned "
-                  "task venv here can run pytest")
+    return None, ("no venv in the project, no app or system interpreter and "
+                  "no provisioned task venv here can run pytest")
+
+
+# Interpreter flags that may sit between the interpreter and -m in a
+# pinned run command. -X and -W additionally consume the token after
+# them (or carry it joined: -Xdev, -Wignore).
+_PY_FLAGS_NO_VALUE = {"-B", "-E", "-I", "-O", "-OO", "-P", "-R", "-S",
+                      "-b", "-d", "-i", "-q", "-s", "-u", "-v", "-x"}
+_PY_FLAGS_WITH_VALUE = {"-X", "-W"}
+
+
+def _module_run_index(argv: List[str]) -> Optional[int]:
+    """The index of "-m" in a "python [flags] -m module ..." argv, or
+    None when the argv is not a module run. Interpreter flags between
+    the interpreter and -m are skipped: the planner pins commands like
+    "python3 -B -m pytest ..." (AGE-27, re-grade run 3 T1A), and a
+    detector that only accepts -m in slot 1 never sees such a run as a
+    test run at all, so no interpreter resolution happens and the run
+    falls back to whatever interpreter the app itself runs on."""
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "-m":
+            return i
+        if tok in _PY_FLAGS_WITH_VALUE:
+            i += 2
+            continue
+        if tok in _PY_FLAGS_NO_VALUE or (
+                len(tok) > 2 and tok[:2] in _PY_FLAGS_WITH_VALUE):
+            i += 1
+            continue
+        return None
+    return None
 
 
 def _is_pytest_invocation(argv: List[str]) -> bool:
-    """A "pythonX -m pytest ..." run whose interpreter this layer must
+    """A "pythonX [flags] -m pytest ..." run whose interpreter this layer must
     resolve: a bare interpreter name always; an absolute path only
     when it names the disqualified Xcode stub (a pinned interpreter
     anywhere else is the plan's own choice and runs verbatim)."""
-    if len(argv) < 3 or argv[1] != "-m" or argv[2] != "pytest":
+    if len(argv) < 3:
+        return False
+    mi = _module_run_index(argv)
+    if mi is None or mi + 1 >= len(argv) or argv[mi + 1] != "pytest":
         return False
     if os.path.basename(argv[0]).lower() in ("python", "python3", "python.exe", "python3.exe"):
         return os.path.sep not in argv[0] or _is_disqualified_python(argv[0])
@@ -1082,7 +1155,9 @@ def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
         if head in ("python", "python3"):
             argv = [active_py, *argv[1:]]
         elif head == "pytest" and not shutil.which("pytest", path=path_val):
-            argv = [active_py, "-m", "pytest", *argv[1:]]
+            py, _why_not = _resolve_pytest_python(cwd_path)
+            argv = [py or active_py, "-m", "pytest", *argv[1:]]
+            ran_with = py
     try:
         proc = subprocess.run(argv, cwd=str(cwd), shell=False, capture_output=True,
                               text=True, timeout=RUN_TIMEOUT_SEC, env=env)
