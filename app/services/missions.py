@@ -306,6 +306,144 @@ def _sourced_answer_problem(subtask: Dict[str, Any], claimed: Any) -> Optional[s
             "contradiction.")
 
 
+# ------------------------------------------------------- discovery content
+# D22 (AGE-39, Tier 2 grade T2C): a no-effect step whose whole work is a
+# discovery (inspect candidate files, identify the one matching a stated
+# criterion, report it and the value it carries) had no answer-content
+# judgment at all. The D19 judgment is scoped to research instructions
+# (a source and its URL to report), which a discovery instruction does
+# not demand, and the incompletion screen did not fire on the graded
+# admission ("I can't identify the matching file or its code"), so the
+# step recorded done and unverifiable on a report that admits the
+# discovery never happened, and the mission consumed the non-discovery
+# downstream. The judgment here mirrors D19 in scope and disposition:
+# it applies only where the step's own instruction and title demand a
+# discovery (candidate inspection, a stated selection criterion, and a
+# report of the identified file), judged on that text only, never on
+# delivered inputs or reference sections (the D13 rule), and a report
+# that does not make the discovery fails with that true reason, in the
+# disposition the incompletion screen and D19 give a report whose
+# content defeats verification (failed, contradicted). Blocked stays
+# reserved for a missing input or tool, which the blocked screen ahead
+# of this check in the composition still decides first. A plain read
+# of a named file, a pure reasoning step, and a research step are not
+# discovery steps and are never judged here.
+
+_DISCOVERY_ADMISSION_RES = (
+    r"\b(?:can't|cannot|can not|could not|couldn't|unable to|not able to|"
+    r"did not|didn't|do not|don't) (?:identify|determine|find|locate|"
+    r"tell|say which)\b",
+    r"\bno (?:matching )?file (?:was|has been) (?:identified|found|"
+    r"located|determined)\b",
+    r"\bmatching file (?:was|has) not (?:been )?(?:identified|found|located)\b",
+    r"\bnot (?:yet )?(?:identified|determined)\b",
+)
+_DISCOVERY_FILE_RE = re.compile(
+    r"(?:[A-Za-z0-9_.\-]+/)*[A-Za-z0-9_\-]+\.[A-Za-z0-9]{1,10}\b")
+_DISCOVERY_MARKER_RE = re.compile(
+    r"\bmatch(?:ing|es|ed)?\b|\bidentif\w*\b|\bfound\b|\bselected\b|"
+    r"\bchosen\b|\bis the (?:one|file)\b|\bwhose\b|\bfirst line\b|"
+    r"\breads\b|\bbegins with\b|\bstarts with\b|"
+    r"\b(?:file|path)\s*[:=]", re.I)
+_DISCOVERY_VALUE_LABEL_RE = re.compile(
+    r"\b(?:code|value|reference|result|text|contents?)\b[^.\n]{0,30}?"
+    r"\b(?:is|:|=)\s*[`'\"]?([A-Za-z0-9][\w\-]*)", re.I)
+_DISCOVERY_VALUE_STOPWORDS = {"the", "a", "an", "file", "matching", "in",
+                              "of", "is", "was", "it", "this", "that"}
+
+
+def _instruction_needs_discovery(subtask: Dict[str, Any]) -> bool:
+    """The step's own text demands a discovery: inspect candidate
+    files, select the one matching a stated criterion, and report the
+    identified file. Judged on the instruction and title only."""
+    text = str(subtask.get("instruction", ""))
+    title = str(subtask.get("title", "")).strip()
+    both = f"{title}\n{text}".lower()
+    inspect = (re.search(r"\b(?:list|inspect|examine|search|scan|check)\b", both)
+               and re.search(r"\b(?:files?|folder|directory|inbox|candidates?)\b", both))
+    selection = (re.search(r"\bmatching file\b|\bunique file\b|\bfile whose\b|"
+                           r"\bfile that\b|\bfile which\b|\bone whose\b|"
+                           r"\bwhich file\b|\bidentify the\b|\bfind the file\b", both)
+                 or re.match(r"(?:find|identify|locate|discover)\b", title, re.I))
+    report = re.search(r"\b(?:report|identify|name|state|give)\b", both)
+    return bool(inspect and selection and report)
+
+
+def _discovery_prefix(instruction: str) -> Optional[str]:
+    """The quoted literal prefix the instruction selects on (for
+    example 'CODE:'), or None when it names no such prefix."""
+    m = re.search(r"['\"]([A-Za-z][A-Za-z0-9 _\-]*:)['\"]", instruction)
+    return m.group(1) if m else None
+
+
+def _discovery_value_present(claimed: str, prefix: Optional[str]) -> bool:
+    """The report carries the discovered value: the selected prefix
+    with a value after it, or a labelled statement of the value."""
+    if prefix and re.search(re.escape(prefix) + r"\s*[^\s,;`'\"]", claimed):
+        return True
+    for m in _DISCOVERY_VALUE_LABEL_RE.finditer(claimed):
+        if m.group(1).lower() not in _DISCOVERY_VALUE_STOPWORDS:
+            return True
+    return False
+
+
+def _discovery_answer_problem(subtask: Dict[str, Any],
+                              claimed: Any) -> Optional[str]:
+    """The reason a no-effect discovery step's claimed result is not
+    the discovery its own instruction demands, or None when the report
+    makes the discovery (or the step demands none). An explicit
+    admission that the target was not identified is a non-discovery
+    whatever else the report lists; a listing of candidates is not an
+    identification, because no statement in it names one file as the
+    one matching the stated criterion."""
+    if not _instruction_needs_discovery(subtask):
+        return None
+    demand = ("The step's instruction requires a discovery (inspect the "
+              "candidate files, identify the one matching the stated "
+              "criterion, and report it with the value it carries)")
+    if not claimed or not isinstance(claimed, str) or not claimed.strip():
+        return (demand + ", but its report was empty, so no discovery was "
+                "reported at all. An empty report is not done on absence "
+                "of contradiction.")
+    text = claimed.replace("\u2019", "'")
+    for sentence in re.split(r"[.\n]", text):
+        low = sentence.lower()
+        if any(re.search(p, low) for p in _DISCOVERY_ADMISSION_RES):
+            return (demand + f", but its report admits the discovery was "
+                    f"not made: \"{sentence.strip()[:160]}\" A report that "
+                    "the matching file was not identified does not "
+                    "identify it, so the discovery this step exists to "
+                    "make did not happen. It is not done on absence of "
+                    "contradiction.")
+    identified = False
+    # Clauses split on sentence boundaries only: a full stop inside a
+    # file path (directive.txt) is not a boundary, so the split is on
+    # a stop followed by whitespace, or on ; ! ? and newlines.
+    for clause in re.split(r"(?:[;!?\n]|\.\s+)", text):
+        if _DISCOVERY_FILE_RE.search(clause) and _DISCOVERY_MARKER_RE.search(clause):
+            identified = True
+            break
+    if not identified:
+        return (demand + ", but its report does not identify the matching "
+                "file: no statement in it names a file as the one matching "
+                "the stated criterion, only (at most) a listing of the "
+                "candidates it inspected. A listing is not a discovery, "
+                "so the discovery this step exists to make was not made. "
+                "It is not done on absence of contradiction.")
+    instruction = str(subtask.get("instruction", ""))
+    prefix = _discovery_prefix(instruction)
+    if (prefix and re.search(r"\bfollowing\b|\bexact text\b|\bvalue\b",
+                             instruction, re.I)
+            and not _discovery_value_present(text, prefix)):
+        return (demand + ", but although its report names a file it does "
+                f"not report the discovered value its instruction requires "
+                f"(the exact text following '{prefix}'), so the discovery "
+                "is incomplete: the file is named but the value it was "
+                "inspected for is not reported. It is not done on absence "
+                "of contradiction.")
+    return None
+
+
 # ------------------------------------------------------- blocked signal
 # Fix round 6 (BOARD-001, Lane D): a worker that reports it could not
 # run for a missing input or a missing tool is not "done", and it is
@@ -1930,6 +2068,19 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
                 return {"status": "failed", "claimed": result,
                         "verified_status": "contradicted",
                         "evidence": [answer_problem]}
+            # D22 (AGE-39): a no-effect step whose own instruction
+            # demands a discovery is judged on whether its report
+            # actually identifies the target (see
+            # _discovery_answer_problem), for the same reason and in
+            # the same place: the research scope above does not cover
+            # a discovery instruction, so without this the closing
+            # branch below would record an admitted non-discovery done
+            # on absence of contradiction.
+            discovery_problem = _discovery_answer_problem(subtask, result)
+            if discovery_problem:
+                return {"status": "failed", "claimed": result,
+                        "verified_status": "contradicted",
+                        "evidence": [discovery_problem]}
         if not evidence:
             # Positive-evidence standard (fix round 6, Lane D): a step
             # with no file effects verifies only when its task carries
