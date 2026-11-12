@@ -13,7 +13,9 @@ Covered:
     - a declared input that cannot be delivered (a missing file)
       stops the step at assembly with a typed reason, zero tasks made
     - a step whose declared tools exclude the tool its file effect
-      needs fails at assembly, zero tasks made
+      needs is repaired at dispatch and dispatched equipped
+      (AGE-38; this expectation supersedes the round 6 one, see
+      case_tools_exclude_effect)
   Lane B (artifact provenance + type validation, Design 2)
     - a test file that compiles but collects zero tests (a docstring
       wrapping prose) cannot verify its subtask at the verdict layer
@@ -172,6 +174,17 @@ async def case_missing_declared_input():
 
 
 async def case_tools_exclude_effect():
+    # AGE-38 (D21) superseded this case's round 6 expectation. Round 6
+    # pinned that a step whose contract excludes the tool its file
+    # effect needs fails at assembly with zero tasks made. AGE-38
+    # extends the AGE-32 dispatch repair to exactly that shape (the
+    # Tier 2 grade's T2C step 2: a create effect paired with a
+    # contract that cannot write it, stopped terminally), so the
+    # contract is repaired with the canonical serving tool, the
+    # repair is recorded in the saved contract and in the request,
+    # and the step is dispatched equipped instead of stopped. The
+    # case now pins the repaired behaviour; every other round 6
+    # expectation in this suite is unchanged.
     subs = [sub("Write the output", "Write the output file",
                 [{"kind": "create", "path": wp("contract/out.txt"), "content": None}],
                 tools=["computer_read_file"])]
@@ -180,12 +193,16 @@ async def case_tools_exclude_effect():
     await runner.drive(m["id"])
     m = M.get_mission(m["id"])
     s = m["subtasks"][0]
-    check("A tools: no task was created when the contract excludes the write tool",
-          len(q.created) == 0, str(len(q.created)))
-    check("A tools: the step failed at assembly naming the capability gap",
-          s["status"] == "failed"
-          and any(("tool" in e.lower() or "capabilit" in e.lower()) for e in s["evidence"]),
-          str(s))
+    check("A tools: the step is dispatched after its contract is repaired",
+          len(q.created) == 1, str(len(q.created)))
+    check("A tools: the saved contract carries the canonical write tool",
+          (s["contract"] or {}).get("tools") == ["computer_read_file", "computer_write_file"],
+          str(s["contract"]))
+    check("A tools: the repair is recorded in the step's request",
+          bool(q.created) and "contract was repaired" in q.created[0]["request"],
+          str(q.created[:1]))
+    check("A tools: the step completes instead of failing at assembly",
+          s["status"] == "done", str(s))
 
 
 # --------------------------------------------------------------------- Lane B

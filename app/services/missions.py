@@ -1427,6 +1427,20 @@ def _contract_tool_problem(subtask: Dict[str, Any]) -> Optional[str]:
 # never force-fed tools. File effects keep their established gate:
 # _contract_tool_problem fails such a step at assembly rather than
 # dispatching it unequipped.
+#
+# D21 (AGE-38, Tier 2 grade T2C step 2): that last sentence was the
+# whole story for file-effect steps, and it is the defect. The plan
+# paired a create effect for chosen.txt with a contract of
+# computer_manage_file only, a tool that cannot write the file;
+# assembly stopped the step, no repair ran (this repair by design
+# left a step declaring file effects untouched), and the mission
+# failed. The repair now covers that excluded shape as well: a step
+# declaring file effects whose contract includes none of the tools
+# that could serve an effect (the _effect_tools mapping both gates
+# judge against) gets the canonical serving tool added, recorded
+# exactly as the AGE-32 repairs are recorded. _contract_tool_problem
+# still runs after the repair, so a step the repair cannot serve
+# still fails at assembly rather than dispatching unequipped.
 
 _RESEARCH_TOOLS = ("web.run", "web_search", "tavily_search", "you_search",
                    "web_scrape")
@@ -1488,6 +1502,21 @@ def _capability_contract_repair(subtask: Dict[str, Any]) -> Optional[Tuple[List[
             and not any(n in _RUN_TOOLS for n in canon)):
         added.append("computer_run_command")
         needs.append("running a command (it declares a run effect)")
+    # File effects (AGE-38): an effect whose serving tools are all
+    # absent from the contract gets the canonical serving tool, the
+    # first tool in the _effect_tools mapping for that effect. An
+    # effect the contract already serves, by a declared name or by
+    # an alias that canonicalizes to a serving tool, is untouched,
+    # and a step whose effects are all served gains nothing here.
+    for eff in subtask.get("expected_effects") or []:
+        if eff.get("kind") not in ("create", "modify", "delete"):
+            continue
+        needed, what = _effect_tools(subtask, eff)
+        if any(n in canon or n in added for n in needed):
+            continue
+        added.append(needed[0])
+        needs.append(f"{what} {eff.get('path', '')} "
+                     f"(it declares a {eff.get('kind')} effect)")
     if not added:
         return None
     note = (f"Assembly note: this step's capability contract was repaired before "
