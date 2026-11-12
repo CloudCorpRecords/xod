@@ -177,13 +177,21 @@ _INCOMPLETION_RES = (
 )
 
 
-def _incompletion_signal(claimed: Any) -> Optional[str]:
+def _incompletion_signal(claimed: Any, exempt_objects=None) -> Optional[str]:
     """The sentence of a subtask report that admits the step did not
     finish, or None. A subtask whose own words say the work is not
     complete, or name a test failure, cannot be verified no matter what
     the disk check found. Zero-count success phrasing ("5 passed,
     0 failed", "no failures") is a success report, not an admission, and
-    is neutralised before scanning so clean reports do not trip this."""
+    is neutralised before scanning so clean reports do not trip this.
+
+    `exempt_objects` (D23, AGE-40) names deliverables the plan assigns
+    to OTHER steps of the same mission: a create/write/run admission
+    whose only named object is one of those ("I did not create
+    summary.txt", said by the step whose job was to compute the total
+    the NEXT step writes) states the step's scope, not its own
+    incompletion, and is not a signal. Every other admission shape,
+    and every call without exemptions, is judged exactly as before."""
     if not claimed or not isinstance(claimed, str):
         return None
     text = re.sub(r"\b0 (?:failed|failures|errors)\b", "0", claimed, flags=re.I)
@@ -191,10 +199,80 @@ def _incompletion_signal(claimed: Any) -> Optional[str]:
     for sentence in re.split(r"[.\n]", text):
         low = sentence.lower()
         if any(re.search(p, low) for p in _INCOMPLETION_RES):
+            if (exempt_objects
+                    and not any(re.search(p, low) for p in _NON_OBJECT_INCOMPLETION_RES)
+                    and not (re.search(r"\bfail", low)
+                             and re.search(r"\b(pytest|test suite|tests?|collection)\b", low))
+                    and _sibling_scope_admission(low, exempt_objects)):
+                continue
             return sentence.strip()[:160]
         if re.search(r"\bfail", low) and re.search(r"\b(pytest|test suite|tests?|collection)\b", low):
             return sentence.strip()[:160]
     return None
+
+
+# The incompletion shapes that never name a creatable object, plus the
+# complete/finish verb forms: a sentence matching any of these is an
+# admission about the step itself and is never scope-exempt (D23).
+_NON_OBJECT_INCOMPLETION_RES = (
+    r"\bnot (?:yet )?(?:complete|completed|finished|done)\b",
+    r"\bincomplete\b",
+    r"\bpartially (?:complete|completed|finished|done)\b",
+    r"\b(?:could not|couldn't|unable to|failed to) (?:complete|finish)\b",
+    r"\bdid not (?:complete|finish)\b",
+    r"\bcollection error\b",
+)
+
+_OBJECT_ADMISSION_RES = (
+    re.compile(r"\b(?:could not|couldn't|unable to|failed to) (?:create|write|run|make)\b"),
+    re.compile(r"\bdid not (?:create|write|run)\b"),
+)
+
+
+def _sibling_scope_admission(low: str, exempt_objects) -> bool:
+    """True when the (lowercased) sentence's admission is a
+    create/write/run statement whose named object is one of
+    `exempt_objects` (basenames of deliverables the plan assigns to
+    other steps). The sentence split above breaks on the dots inside a
+    file name, so the object token can arrive truncated ("`summary"
+    for summary.txt): a token matches a basename exactly, as its stem,
+    or as the basename's dotted prefix."""
+    for rx in _OBJECT_ADMISSION_RES:
+        m = rx.search(low)
+        if not m:
+            continue
+        rest = low[m.end():].strip()
+        if not rest:
+            return False
+        name = rest.split()[0].strip("`'\".,;:()[]").rsplit("/", 1)[-1]
+        if not name:
+            return False
+        return any(name == b or b.startswith(name + ".")
+                   or os.path.splitext(b)[0] == name
+                   for b in exempt_objects)
+    return False
+
+
+def _sibling_effect_names(subtask: Dict[str, Any]) -> set:
+    """Basenames of the file effects the plan assigns to the OTHER
+    steps of this step's mission, less any name this step itself
+    declares (D23, AGE-40): the objects a report may truthfully say
+    this step did not create, because creating them is a sibling
+    step's declared work."""
+    own = {os.path.basename(str(e.get("path", "")))
+           for e in subtask.get("expected_effects") or [] if e.get("path")}
+    names = set()
+    try:
+        siblings = list_subtasks(subtask.get("mission_id") or "")
+    except Exception:
+        return set()
+    for s in siblings:
+        if s.get("id") == subtask.get("id"):
+            continue
+        for e in s.get("expected_effects") or []:
+            if e.get("path"):
+                names.add(os.path.basename(str(e["path"])))
+    return names - own
 
 
 # ------------------------------------------------------- answer content
@@ -2049,7 +2127,17 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
         # admission remains a deciding signal there, and a step with
         # no declared effects is judged on its report and the evidence
         # its task carries, as before.
-        signal = None if runs else _incompletion_signal(result)
+        # D23 (AGE-40): the screen judges the step against its own
+        # assignment, so a create/write/run admission naming a
+        # deliverable the plan assigns to a sibling step is exempt:
+        # in the Tier 2 re-grade's T2B the adapted step's honest
+        # report ended "I did not create summary.txt", which is true
+        # and correct (summary.txt is step 2's declared effect), and
+        # once the declared-input layer stopped failing the task at
+        # the queue, this screen alone stood between that report and
+        # the mission completing.
+        signal = None if runs else _incompletion_signal(
+            result, exempt_objects=_sibling_effect_names(subtask))
         if signal:
             return {"status": "failed", "claimed": result, "verified_status": "contradicted",
                     "evidence": [f"The step's own report admits it did not finish: \"{signal}\" "

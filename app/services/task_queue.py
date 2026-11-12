@@ -841,7 +841,76 @@ def _claimed_input_effects(request: str) -> List[Path]:
                     and not _OPTIONAL_INPUT.search(window)):
                 inputs.append(p)
                 break
+    # D23 (AGE-40): a step the planner adapted at assembly (AGE-37) is
+    # judged on the inputs the adaptation left it, not on the file the
+    # adaptation replaced. The adapted request carries the record of
+    # that replacement in its own text (see _adaptation_replaced_inputs)
+    # and names the replaced file in read-shaped sentences precisely
+    # because the record explains the swap; holding the step to the
+    # replaced file failed a correctly adapted, honestly reported step
+    # in the Tier 2 re-grade's T2B while the candidate the adaptation
+    # delivered sat on disk. The exclusion covers exactly the recorded
+    # replacement and nothing else: every other input the request
+    # names is judged as before, and an unadapted request carries no
+    # record, so the T1N judgment is untouched.
+    replaced = _adaptation_replaced_inputs(text)
+    if replaced:
+        inputs = [p for p in inputs
+                  if os.path.normcase(os.path.expanduser(str(p)))
+                  not in replaced]
     return inputs
+
+
+# D23 (AGE-40): the adaptation record an adapted step's request carries,
+# written by missions.py from the plan's adaptations entry in exactly
+# two places: the adapted instruction's opening paragraph ("Adaptation
+# (plan v2): the declared file X could not be read, so this step was
+# adapted before any task was created. ... Use the candidate file Y
+# instead of the missing one ...") and the assembly note appended to
+# the request ("Assembly note: this step was adapted (plan v2) before
+# its task was created. The plan declared the file X as an input, but
+# it could not be read. ... The one plausible candidate, Y, is
+# delivered instead; ..."). A replaced file is read off that record
+# only when the record is complete: the adaptation marker, a
+# declared-file statement naming the missing file, and a
+# candidate-delivery statement naming a different file delivered in
+# its place. A marker alone, or a record whose "candidate" is the
+# missing file itself, replaces nothing, so prose that merely mentions
+# an adaptation earns no exclusion.
+_ADAPT_MARKER = "adapted (plan v2)"
+_ADAPT_DECLARED_RES = (
+    re.compile(r"[Tt]he plan declared the file (\S+?) as an input, "
+               r"but it could not be read"),
+    re.compile(r"the declared file (\S+?) could not be read, so this "
+               r"step was adapted"),
+)
+_ADAPT_DELIVERED_RES = (
+    re.compile(r"[Tt]he one plausible candidate, (\S+?), is delivered "
+               r"instead"),
+    re.compile(r"[Uu]se the candidate file (\S+?) instead of the "
+               r"missing one"),
+)
+
+
+def _adaptation_replaced_inputs(text: str) -> set:
+    """The normalized paths an adaptation recorded in `text` replaced,
+    judged on the same fence-stripped text the claim layers mine.
+    Empty unless the full record is present (see above)."""
+    if _ADAPT_MARKER not in text:
+        return set()
+    missing = None
+    for rx in _ADAPT_DECLARED_RES:
+        m = rx.search(text)
+        if m:
+            missing = m.group(1)
+            break
+    if not missing:
+        return set()
+    for rx in _ADAPT_DELIVERED_RES:
+        m = rx.search(text)
+        if m and m.group(1) != missing:
+            return {os.path.normcase(os.path.expanduser(missing))}
+    return set()
 
 
 # ------------------------------------------------------- supplied-input claims
