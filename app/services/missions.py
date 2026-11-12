@@ -1528,6 +1528,155 @@ def _capability_contract_repair(subtask: Dict[str, Any]) -> Optional[Tuple[List[
     return declared + added, note
 
 
+# ------------------------------------------------- input adaptation (AGE-37)
+# D20 (AGE-37, Tier 2 grade T2B): the plan declared the goal-named
+# file sales.csv as a file input for step 1. Assembly stopped the
+# step before any task was created because the file could not be
+# read, and that stop was terminal: no re-plan, no adapted step, no
+# discovery step ever happened, although sales-2025.csv (columns
+# item,amount, honest total 12) sat in the same folder. The mission
+# failed in 0.0s having made only the planning call. The stop itself
+# is honest; the defect is that it is the end of the road.
+#
+# The adaptation surface, at that same assembly point: when a step's
+# declared file input cannot be delivered, the folder the file was
+# declared in is listed from disk, and a candidate is plausible only
+# on evidence: a regular file in that same folder, of the same type
+# (same suffix), whose stem is the declared stem or extends it at a
+# name boundary (sales-2025 for sales: the dated or versioned sibling
+# a folder actually holds). Exactly one plausible candidate adapts
+# the step: the candidate is delivered in place of the missing file,
+# the discrepancy is named in the step's instruction and in an
+# assembly note in its request, and the change is recorded as plan
+# version 2 in the mission's plan of record (the plan_json the
+# runner already maintains, with an adaptations entry holding the
+# original instruction and inputs, the folder contents the decision
+# saw, and the candidate's first line), as well as in the step's
+# saved contract. The missing file and its contents are never
+# invented. No candidate, or more than one plausible candidate, is
+# not adapted: the original assembly stop stands and the mission
+# fails honestly. At most one adaptation is spent per mission, so
+# an adapted step that still cannot be delivered is not adapted
+# again, and no later step is adapted either.
+
+def _plausible_file_candidates(missing: Path) -> Tuple[List[Path], List[str]]:
+    """(plausible candidates, the folder's entry names) for a missing
+    declared file input, read from disk at adaptation time."""
+    folder = missing.parent
+    try:
+        entries = sorted(folder.iterdir(), key=lambda p: p.name)
+    except OSError:
+        return [], []
+    names = [e.name for e in entries]
+    suffix = missing.suffix.lower()
+    if not suffix:
+        return [], names
+    stem = missing.stem.lower()
+    out: List[Path] = []
+    for e in entries:
+        if e == missing or not e.is_file():
+            continue
+        if e.suffix.lower() != suffix:
+            continue
+        cs = e.stem.lower()
+        if (cs == stem or cs.startswith(stem + "-")
+                or cs.startswith(stem + "_") or cs.startswith(stem + " ")):
+            out.append(e)
+    return out, names
+
+
+def _file_input_adaptation(subtask: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], str, Dict[str, Any]]]:
+    """(adapted subtask, assembly note, adaptation record) when the
+    step declares exactly one file input that cannot be read and
+    its folder holds exactly one plausible candidate for it, else
+    None. Pure with respect to the mission store: the caller records
+    the adaptation and enforces the one-per-mission bound."""
+    contract = subtask.get("contract") or {}
+    inputs = list(contract.get("inputs") or [])
+    missing_idx: Optional[int] = None
+    missing_ref = ""
+    for i, d in enumerate(inputs):
+        if not isinstance(d, dict) or d.get("source") != "file":
+            continue
+        ref = str(d.get("ref") or "")
+        if not ref:
+            continue
+        try:
+            Path(os.path.expanduser(ref)).read_text(
+                encoding="utf-8", errors="replace")
+        except OSError:
+            if missing_idx is not None:
+                return None   # more than one undeliverable input: not this surface
+            missing_idx, missing_ref = i, ref
+    if missing_idx is None:
+        return None
+    missing = Path(os.path.expanduser(missing_ref))
+    candidates, names = _plausible_file_candidates(missing)
+    if len(candidates) != 1:
+        return None
+    cand = candidates[0]
+    try:
+        cand_text = cand.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    first_line = (cand_text.splitlines() or [""])[0][:200]
+    folder_names = ", ".join(names) if names else "nothing"
+    adapted_instruction = (
+        str(subtask.get("instruction") or "")
+        + f" Adaptation (plan v2): the declared file {missing} could not be "
+          f"read, so this step was adapted before any task was created. The "
+          f"folder {missing.parent} contains: {folder_names}. Use the "
+          f"candidate file {cand} instead of the missing one; its first line "
+          f"is: {first_line}. Name the discrepancy in your report (the "
+          f"declared file name, and the candidate's actual columns if they "
+          f"differ from the ones the original instruction names), and if the "
+          f"columns differ, work from the candidate's actual columns.")
+    new_inputs = [dict(d) if isinstance(d, dict) else d for d in inputs]
+    new_inputs[missing_idx] = {"source": "file", "ref": str(cand)}
+    adapted = {**subtask, "instruction": adapted_instruction,
+               "contract": {**contract, "inputs": new_inputs}}
+    note = (f"Assembly note: this step was adapted (plan v2) before its task "
+            f"was created. The plan declared the file {missing} as an input, "
+            f"but it could not be read. The folder was listed from disk: "
+            f"{folder_names}. The one plausible candidate, {cand}, is "
+            f"delivered instead; its first line is: {first_line}. The missing "
+            f"file was not invented. The adaptation is recorded in the "
+            f"mission plan (version 2) and in this step's saved contract and "
+            f"instruction as well as here.")
+    record = {"step": int(subtask.get("idx") or 0) + 1,
+              "missing": str(missing), "candidate": str(cand),
+              "folder_contents": names, "candidate_first_line": first_line,
+              "original_instruction": str(subtask.get("instruction") or ""),
+              "original_inputs": inputs}
+    return adapted, note, record
+
+
+def _record_plan_adaptation(mission_id: str, sub: Dict[str, Any],
+                            adapted: Dict[str, Any], record: Dict[str, Any]) -> None:
+    """Records an adaptation the way the plan machinery records any
+    plan change: the mission's plan of record moves to version 2
+    with the adapted step in place and an adaptations entry holding
+    the evidence and the original, and the step's saved contract and
+    instruction become the adapted ones."""
+    mission = get_mission(mission_id)
+    plan = (mission or {}).get("plan")
+    if isinstance(plan, dict):
+        plan = json.loads(json.dumps(plan))
+        subs = plan.get("subtasks") or []
+        idx = int(sub.get("idx") or 0)
+        if 0 <= idx < len(subs) and isinstance(subs[idx], dict):
+            entry = dict(subs[idx])
+            entry["instruction"] = adapted.get("instruction")
+            entry["inputs"] = (adapted.get("contract") or {}).get("inputs") or []
+            subs[idx] = entry
+            plan["subtasks"] = subs
+        plan["version"] = 2
+        plan.setdefault("adaptations", []).append(record)
+        _save_mission(mission_id, plan=plan)
+    _save_subtask(sub["id"], contract=adapted.get("contract") or {},
+                  instruction=adapted.get("instruction") or "")
+
+
 def assemble_step(mission_id: str, subtask: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]], Optional[str]]:
     """Assembles one subtask's task text under its capability contract
     (fix round 6, BOARD-001 Design 1). Returns (request, delivery,
@@ -2058,6 +2207,24 @@ class MissionRunner:
             request, delivery, input_problem = assemble_step(mission_id, sub)
             if repair_note:
                 request = request + "\n\n" + repair_note
+            # Input adaptation (AGE-37): a declared file input that
+            # cannot be delivered is not the end of the road when
+            # the folder itself holds exactly one plausible
+            # candidate for it. At most one adaptation per mission:
+            # a plan that already carries an adaptation record has
+            # spent it, and the assembly stop then stands as before.
+            if input_problem:
+                plan_now = (get_mission(mission_id) or {}).get("plan") or {}
+                if not plan_now.get("adaptations"):
+                    adaptation = _file_input_adaptation(sub)
+                    if adaptation:
+                        adapted_sub, adaptation_note, record = adaptation
+                        _record_plan_adaptation(mission_id, sub, adapted_sub, record)
+                        sub = adapted_sub
+                        request, delivery, input_problem = assemble_step(mission_id, sub)
+                        if repair_note:
+                            request = request + "\n\n" + repair_note
+                        request = request + "\n\n" + adaptation_note
             problem = (_empty_declared_content_problem(sub)
                        or _contract_tool_problem(sub)
                        or _write_tool_problem(sub, request)
