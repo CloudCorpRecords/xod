@@ -1,6 +1,6 @@
 # Release process: a release is shipped when the launcher delivers it
 
-Directive (Rene, 2026-11-13): every release goes through the launcher, and installed
+Directive (2026-11-13): every release goes through the launcher, and installed
 copies pull it automatically. A release that is only published on GitHub is not shipped.
 It is shipped when a previous-version install has pulled it through the launcher and
 come back reporting the new version. This file is the gate. No step is optional, and
@@ -9,7 +9,7 @@ the steps run in order.
 ## Why this gate exists
 
 In November 2026 the fleet quietly stopped updating. Releases v1.1.0 to v1.1.3 were
-published correctly, but the machines Rene actually uses never landed them: the Mac
+published correctly, but the machines in daily use never landed them: the Mac
 stayed on a 1.0.2 bundle whose updater staged newer apps in its cache that were never
 installed, and the Razer's backend was hand-carried onto a 1.0.0 shell, so the shell
 (the part that checks for updates) and the backend (the part that reports the version)
