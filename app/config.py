@@ -64,14 +64,53 @@ def load_synced_settings() -> Settings:
 
 settings = load_synced_settings()
 
+# Whether that snapshot was built while the OS key store could not be read.
+# load_synced_settings reads every key once, at import; if the store's unlock
+# prompt outlives the startup timeout (keychain.KEYRING_TIMEOUT), each read
+# lands empty and the snapshot says "no keys" even for keys that exist. Until
+# now nothing refreshed it, so the model picker and the Settings key cards
+# showed every keyed provider missing for the life of the process while
+# /api/secrets/health read green (field failure 2026-11-14: keys present in
+# the vault, picker empty). maybe_heal_secrets() closes that gap; the read
+# paths that serve the snapshot call it.
+try:
+    from app.services import keychain as _keychain
+    _secrets_stale = _keychain.problem() is not None
+except Exception:
+    _secrets_stale = False
+
 
 def reload_secrets() -> dict:
     """Reads the Keychain again (after macOS said no, or the prompt went unseen) and puts the keys back in use."""
+    global _secrets_stale
     from app.services import keychain, secret_store
     keychain.reset_cache()
     for field in secret_store.SECRET_FIELDS:
         setattr(settings, field, secret_store.get(field))
-    return secret_store.health()
+    health = secret_store.health()
+    _secrets_stale = not health["readable"]
+    return health
+
+
+def maybe_heal_secrets() -> bool:
+    """Refreshes the settings snapshot when it was built during a key store
+    outage and the store answers now. Called from the read paths that serve
+    the snapshot (setup_wizard.saved_keys, GET /api/config, GET /api/secrets),
+    so a keychain prompt answered seconds after launch heals the picker and
+    the key cards on its own: no restart, nobody pressing Try again. While
+    the store still doesn't answer, the snapshot is left alone; the check is
+    one cached problem() read while stale and free once healed."""
+    global _secrets_stale
+    if not _secrets_stale:
+        return False
+    from app.services import keychain
+    try:
+        if keychain.problem() is not None:
+            return False
+    except Exception:
+        return False
+    reload_secrets()
+    return not _secrets_stale
 
 def update_env_variable(key: str, value: str):
     """Updates a setting. API keys go to the Keychain only; other settings to SQLite and .env."""

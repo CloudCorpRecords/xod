@@ -477,6 +477,8 @@ async def onepassword_link(req: OnePasswordLink):
 @app.get("/api/secrets")
 async def secrets_list():
     """Which keys are saved (masked), and which come from 1Password."""
+    from app.config import maybe_heal_secrets
+    await asyncio.to_thread(maybe_heal_secrets)   # keep the settings snapshot in step with the live vault read below
     from app.services import secret_store
     return {"keys": await asyncio.to_thread(secret_store.status), **secret_store.health()}
 
@@ -2233,6 +2235,8 @@ async def chat_endpoint(request: ChatRequest):
 @app.get("/api/config")
 async def get_config():
     """Returns safe masked configuration and status."""
+    from app.config import maybe_heal_secrets
+    await asyncio.to_thread(maybe_heal_secrets)   # a snapshot built during a key store outage heals itself first
     key = settings.trustmrr_api_key
     masked_key = ""
     if key:

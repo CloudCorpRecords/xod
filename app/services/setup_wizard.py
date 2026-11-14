@@ -106,7 +106,8 @@ KEY_ORDER = ("anthropic", "openai", "gemini", "openrouter", "groq", "fireworks")
 
 def saved_keys() -> List[str]:
     """Cloud providers with an API key saved, best first."""
-    from app.config import settings
+    from app.config import maybe_heal_secrets, settings
+    maybe_heal_secrets()   # a snapshot built during a key store outage heals itself before it is read
     return [p for p in KEY_ORDER if (getattr(settings, f"{p}_api_key", "") or "").strip()]
 
 
