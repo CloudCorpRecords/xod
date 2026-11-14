@@ -5132,8 +5132,10 @@ def select_tools_for_query(query: str, persona: str = "ultimate_researcher", max
             tools = [t for t in tools if t["function"]["name"] not in _bops.TOOL_NAMES] + _bops.tool_definitions()
     except Exception as e:
         logger.warning(f"browser-ops tools not offered: {e}")
-    from app.services import packs
+    from app.services import packs, workers as _workers
     tools = [t for t in tools if packs.tool_allowed(t["function"]["name"])]   # add-ons that are off stay hidden
+    if _workers.envelope.get() == "read_only":
+        tools = [t for t in tools if _workers.allowed(t["function"]["name"]) is None]
     try:
         from app.services.mcp_client import mcp_hub
         tools = tools + mcp_hub.tools_for_query(query)
