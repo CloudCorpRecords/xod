@@ -865,8 +865,20 @@ def _step_prompt(task: Dict[str, Any], items: List[Dict[str, Any]], instructions
                      "restart may have been stopped by it, so its effect may be missing.")
     if retrying:
         found = step["note"].split(": ", 1)[1]
+        from app.services import workers as _W
+        ops_ev = [{"tool": "computer_read_file" if "read" in o.lower() else ("computer_write_file" if "write" in o.lower() else "computer_list_directory"),
+                   "ok": True, "summary": o} for o in (prior_ops or [])]
+        unread_items, unwritten_deliv = _W.remaining_brief_items(step["text"], ops_ev)
+        rem_note = ""
+        if unread_items:
+            rem_note += f" Remaining unread items from your step: {', '.join(unread_items[:20])}."
+        if unwritten_deliv:
+            rem_note += f" Deliverables not yet written: {', '.join(unwritten_deliv[:10])}."
         parts.append("\nYou already attempted this step once and checking found: " + found + "."
-                     + (" Establish the real outcome as above." if prior_ops else " Do it now for real, using your tools."))
+                     + (" Establish the real outcome as above." if prior_ops else " Do it now for real, using your tools.")
+                     + rem_note
+                     + (" Complete every remaining item and deliverable above; do not stop with an incomplete report."
+                        if (rem_note or "incomplete" in found.lower() or "Not finished yet" in found) else ""))
     parts.append(f"\nYOUR STEP NOW (step {k} of {len(live)}):\n{step['text']}")
     tail = ("\nDo only this step, using your tools. Then reply with a short report of what you did "
             "and what you found. If you cannot do it, say exactly what blocks it.")

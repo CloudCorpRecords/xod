@@ -22,6 +22,7 @@ synthesis: its parent gets ONE result, with every worker's failure itemized insi
 import asyncio
 import contextvars
 import json
+import os
 import re
 import logging
 import sqlite3
@@ -179,10 +180,115 @@ _EMPTY_RE = re.compile(r"^\W*(?:nothing|none|n/?a|no(?:thing)? (?:was )?(?:confi
 
 _LIST_TOOLS = {"computer_list_directory", "computer_directory_tree", "computer_find_files", "fs_list_workspace_files"}
 _CONTENT_READ_TOOLS = {"computer_read_file", "fs_read_workspace_file"}
+_WRITE_TOOLS = {"computer_write_file", "computer_edit_file", "fs_write_workspace_file", "fs_edit_workspace_file"}
 _CONTENTS_DEMAND_RE = re.compile(
     r"\b(first line|contents?|inside|read the files?|inspect.*lines?|whose.*starts with|whose.*reads)\b",
     re.I,
 )
+_FILE_REF_RE = re.compile(
+    r"(?<![A-Za-z0-9_/:])([A-Za-z0-9_./\\:-]+\.(?:txt|md|json|csv|py|js|ts|tsx|jsx|log|yaml|yml|toml|html|xml|sql|sh|bat|ps1))\b"
+)
+_WRITE_CONTEXT_RE = re.compile(
+    r"\b(?:write|save|create|output|record|deliver|produce|generate|written)\b[^.\n]{0,60}$",
+    re.I,
+)
+_INCOMPLETE_CHECKPOINT_RE = re.compile(
+    r"(?:^|\n)\s*(?:The model stopped:|\*\*Paused after |\*\*Not finished yet:)|Say \*\*continue\*\*|"
+    r"\b(?:is|remains|left)\s+incomplete\b|\bwritten,?\s+but\s+(?:it\s+is\s+)?incomplete\b|"
+    r"\b(?:if you(?:'d like| want) me to|would you like me to)\s+(?:continue|finish|fix|complete)\b",
+    re.I,
+)
+MAX_CONTINUATIONS = 2
+
+
+def remaining_brief_items(brief_or_goal: str, evidence: List[Dict[str, Any]], report: str = "") -> Tuple[List[str], List[str]]:
+    """Return (unread_items, unwritten_deliverables) named in the brief/goal or discovered
+    in directory listings that have not yet been read or written."""
+    text = brief_or_goal or ""
+    outcome_idx = text.find("OUTCOME WANTED:")
+    source_items: List[str] = []
+    deliverables: List[str] = []
+    seen_targets: set = set()
+
+    for m in _FILE_REF_RE.finditer(text):
+        raw = m.group(1).strip("'\"`.,;:")
+        if not raw or "://" in text[max(0, m.start() - 8):m.start() + 4]:
+            continue
+        # Strip leading drive-less punctuation; keep basename for matching too
+        base = os.path.basename(raw.replace("\\", "/"))
+        if not base or base in seen_targets or raw in seen_targets:
+            continue
+        before = text[max(0, m.start() - 70):m.start()]
+        after = text[m.end():min(len(text), m.end() + 30)]
+        is_deliverable = bool(_WRITE_CONTEXT_RE.search(before)) or bool(
+            re.match(r"\s+(?:is|are)\s+written\b", after, re.I)
+        ) or (outcome_idx != -1 and m.start() > outcome_idx)
+        seen_targets.add(raw)
+        seen_targets.add(base)
+        if is_deliverable:
+            deliverables.append(raw)
+        else:
+            source_items.append(raw)
+
+    # Also pick up concrete filenames listed in directory-listing evidence if the brief asks to inspect/read files.
+    if _CONTENTS_DEMAND_RE.search(text) or re.search(r"\b(?:shard|files?|sources?|entries|directory|folder)\b", text, re.I):
+        for e in evidence or []:
+            if e.get("tool") in _LIST_TOOLS and e.get("ok", True):
+                for m in _FILE_REF_RE.finditer(str(e.get("summary") or "")):
+                    cand = m.group(1).strip("'\"`.,;:")
+                    base = os.path.basename(cand.replace("\\", "/"))
+                    if base and base not in seen_targets and cand not in seen_targets:
+                        seen_targets.add(cand)
+                        seen_targets.add(base)
+                        source_items.append(cand)
+
+    read_blobs = []
+    write_blobs = []
+    for e in evidence or []:
+        t = e.get("tool")
+        blob = f"{e.get('summary') or ''} {e.get('args') or ''}".replace("\\", "/")
+        if t in _CONTENT_READ_TOOLS and e.get("ok", True):
+            read_blobs.append(blob)
+        elif t in _WRITE_TOOLS and e.get("ok", True):
+            write_blobs.append(blob)
+    report_norm = (report or "").replace("\\", "/")
+
+    unread_items: List[str] = []
+    for item in source_items:
+        norm = item.replace("\\", "/")
+        base = os.path.basename(norm)
+        if any(norm in b or base in b for b in read_blobs):
+            continue
+        if read_blobs and (norm in report_norm or base in report_norm) and not _INCOMPLETE_CHECKPOINT_RE.search(report or ""):
+            continue
+        unread_items.append(item)
+
+    unwritten_deliverables: List[str] = []
+    for deliv in deliverables:
+        norm = deliv.replace("\\", "/")
+        base = os.path.basename(norm)
+        if os.path.isabs(deliv) and os.path.exists(deliv):
+            continue
+        if any(norm in b or base in b for b in write_blobs):
+            continue
+        unwritten_deliverables.append(deliv)
+
+    return unread_items, unwritten_deliverables
+
+
+def _is_incomplete_checkpoint(eval_why: Optional[str], report: str,
+                               unread_items: List[str], unwritten_deliverables: List[str]) -> bool:
+    """True when a turn ended on a self-declared incomplete checkpoint or left concrete
+    brief items / deliverables unattempted rather than hitting a hard tool error."""
+    if unwritten_deliverables:
+        return True
+    if _INCOMPLETE_CHECKPOINT_RE.search(report or ""):
+        return True
+    if eval_why and "answered from directory listing/filenames alone" in eval_why:
+        return True
+    if unread_items and eval_why and "incomplete" in eval_why.lower():
+        return True
+    return False
 
 
 def _contents_without_read(task: str, evidence: List[Dict[str, Any]]) -> bool:
@@ -270,10 +376,14 @@ def _queued_steers(worker_id: str) -> List[Dict[str, Any]]:
 async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
     """One agent turn. Returns 'done', or 'interrupted' when an urgent steer cut it short."""
     async def consume():
+        call_args: Dict[str, Any] = {}
         async for ev in agent(prompt, wid):
             while wid in _frozen:          # test hook: a frozen worker makes no progress at all
                 await asyncio.sleep(0.2)
             t = ev.get("type")
+            if t == "tool_call" and ev.get("id"):
+                call_args[ev["id"]] = ev.get("args")
+                continue
             if t == "content":
                 piece = ev.get("content", "")
                 sink["content"].append(piece if isinstance(piece, str) else json.dumps(piece))
@@ -282,6 +392,8 @@ async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
                 ok = not (isinstance(data, dict) and (data.get("error") or data.get("success") is False))
                 entry = {"tool": ev.get("name"), "ok": ok,
                          "summary": (json.dumps(data, default=str) if not isinstance(data, str) else data)[:600]}
+                if ev.get("id") and ev["id"] in call_args:
+                    entry["args"] = call_args[ev["id"]]
                 (sink["evidence"] if ok else sink["failures"]).append(entry)
             elif t == "error":
                 err = ev.get("content") or ev.get("error") or ev.get("message") or "worker error"
@@ -381,6 +493,7 @@ async def _run(wid: str, brief: str, env: str, needs: Optional[List[str]] = None
             _save(wid, last_activity=f"holding {need}")
         prompt = brief
         turns = 0
+        continuations = 0
         while True:
             turns += 1
             sink["content"] = []
@@ -400,6 +513,43 @@ async def _run(wid: str, brief: str, env: str, needs: Optional[List[str]] = None
                     _emit("steer.applied", {"id": wid, "parent_id": ""}, steer_id=s)
             if not pending:
                 if state == "done":
+                    turn_report = "".join(sink["content"]).strip()
+                    if not sink.get("error") and turn_report:
+                        turn_res = {
+                            "outcome": "done",
+                            "report": turn_report,
+                            "evidence": sink["evidence"],
+                            "failures": sink["failures"],
+                        }
+                        eval_out, eval_why, _ = _evaluate_worker_result(
+                            _task_from_brief(brief), "done", turn_res, check_report=True,
+                        )
+                        unread_items, unwritten_deliverables = remaining_brief_items(
+                            brief, sink["evidence"], turn_report,
+                        )
+                        if ((eval_out == "failed" or unwritten_deliverables)
+                                and _is_incomplete_checkpoint(eval_why, turn_report, unread_items, unwritten_deliverables)
+                                and continuations < MAX_CONTINUATIONS
+                                and time.time() < deadline - 5):
+                            continuations += 1
+                            parts = [brief, "\n\nWHAT YOU REPORTED SO FAR:\n" + turn_report[:3000]]
+                            rem_lines = []
+                            if unread_items:
+                                rem_lines.append("- Remaining unread files/items from your brief: " + ", ".join(unread_items[:20]))
+                            if unwritten_deliverables:
+                                rem_lines.append("- Deliverables named in your brief not yet written: " + ", ".join(unwritten_deliverables[:10]))
+                            if eval_why:
+                                rem_lines.append(f"- Why the previous turn was incomplete: {eval_why}")
+                            parts.append(
+                                "\n\nCONTINUATION REQUIRED (do not stop with 'Not finished yet' or 'incomplete'):\n"
+                                + "\n".join(rem_lines)
+                                + "\nComplete these remaining items and write any remaining deliverables now using your tools, "
+                                "then return a complete final report."
+                            )
+                            prompt = "\n".join(parts)
+                            _save(wid, last_activity=f"continuing remaining brief items ({continuations}/{MAX_CONTINUATIONS})",
+                                  last_activity_at=time.time())
+                            continue
                     break
                 continue
             # A follow-up: a fresh turn with the new instruction, keeping what it found so far.
