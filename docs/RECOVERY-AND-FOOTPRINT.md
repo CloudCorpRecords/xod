@@ -24,7 +24,9 @@ to main.js, executed after the verdict; a test pins that property, because
 the release gate's archive walk follows literal imports and this one import
 is what makes the gate prove the whole app graph.
 
-On every packaged launch it:
+On every packaged launch it (the one deliberate bypass is the
+XOD_BOOTSTRAP_OFF environment variable, a support escape hatch; unpackaged
+source runs also pass straight through to main.js):
 
 1. Parses app.asar and walks every relative import reachable from the entry
    point, with Node's resolution order. This is the check_asar.py algorithm
@@ -32,13 +34,20 @@ On every packaged launch it:
    fixture and on the real shipped 1.1.3 archive (both name the miss at
    main.js line 8).
 2. Compares the installed version against KNOWN_BROKEN_VERSIONS (["1.1.3"]).
+   Version strings are normalized first (a leading "v" and build metadata
+   are stripped), and a package whose version cannot be read at all is
+   treated as unproven and routed to repair, never cleared as healthy.
 3. Healthy: loads main.js at once. The check is local only; there is no
    network on the launch path.
 4. Broken: never loads main.js. It repairs through the same channel
    updater.js uses (GitHub latest release for CloudCorpRecords/xod, the
    platform artifact, SHA256SUMS.txt checksum verification), verifies the
-   staged replacement with the same walk before anything is replaced, and
-   swaps it in only after the staged copy passes. On macOS the swap reuses
+   staged replacement before anything is replaced, and swaps it in only
+   after the staged copy passes. The staged verification matches the
+   artifact: an app bundle is verified with the same walk, while on Windows
+   the staged artifact is the NSIS installer itself, which carries no
+   app.asar to walk; its verification is the checksum match against
+   SHA256SUMS.txt, which also pins its version. On macOS the swap reuses
    the updater's proven shape: a waiter script moves the new bundle in once
    the bootstrap process has quit, keeping the old bundle until the new one
    verifies in place, and restoring it if the move fails. On Windows the
@@ -59,8 +68,11 @@ Platforms: the decision and repair logic is platform-independent and fully
 fixture-tested on this Linux VM; the macOS staging and swap are built from
 the same primitives updater.js runs in production and are proven the first
 time the fixed build is cold-launched on a Mac under the AGE-49 gate. The
-Windows adapter is design-level: implemented against the updater's installer
-hand-off, exercised in tests only through its staging seam.
+Windows adapter is design-level on real hardware, but its whole pipeline
+(fetch, download, checksum, installer staging, hand-off) runs end to end in
+the test suite through the real platform io; an earlier build fed the
+installer into the asar walk and so failed every Windows repair, which is
+exactly the gap that end-to-end coverage now closes.
 
 Standalone mode (support and rescue): `node bootstrap.js check <Xod.app>`
 prints the verdict; `repair` runs the same pipeline against an installed
@@ -81,17 +93,27 @@ classifies every item:
 - current: the installed app in the applications folder and its data folder.
   Untouchable.
 - stale-safe (the only class cleanup removes), each with positive evidence:
-  a duplicate app copy of a version that stays represented by a kept copy;
-  a clean git checkout whose every commit is in the canonical repo (with
-  the HEAD tree size and commit count recorded as evidence); the app's
-  scratch folders; its disposable outputs (logs, test runs); an exact byte
-  duplicate of a kept file; anything already in the Trash (except a checkout
-  that fails the equivalence checks, which stays a hold even there).
-- hold, with the reason printed: the only or kept copy of a version; unique
-  commits; uncommitted changes; a linked worktree; a folder a launch agent
-  runs from (a live dependency); the canonical repo itself; a database
-  backup; model weights whose removal forces a re-download; a separate
-  product (Xod Partner, by bundle id); a symlink; or no redundancy evidence.
+  a duplicate app copy whose version AND build match a kept copy with
+  identical bundle contents (same files at the same sizes), and which no
+  launch agent references; a clean git checkout whose every commit is in
+  the canonical repo, counting commits reachable only from the reflog and
+  with no gitignored files present (with the HEAD tree size and commit
+  count recorded as evidence); the app's scratch folders; its disposable
+  outputs (logs, test runs); an exact byte duplicate of a kept file;
+  anything already in the Trash (except a checkout that fails the
+  equivalence checks, which stays a hold even there). Any check the doctor
+  cannot complete (an unreadable canonical repo, an unreadable bundle)
+  resolves to a hold, never to stale-safe.
+- hold, with the reason printed: the only or kept copy of a version; a
+  bundle whose identity or version could not be read; unique commits,
+  including reflog-only ones; uncommitted changes; gitignored files; a
+  linked worktree; a folder or app copy a launch agent runs from (a live
+  dependency, matched wherever the path stands in the agent's command,
+  including env assignments and quoted strings); the canonical repo
+  itself; a database backup; model weights whose removal forces a
+  re-download; a separate product (Xod Partner, by bundle id); a symlink
+  (including a symlinked bundle and a symlinked data child; cleanup never
+  follows or removes one); or no redundancy evidence.
 
 Cleanup is a dry run unless --yes is passed, removes only the stale-safe
 class, and reports measured bytes per item and in total.
@@ -160,6 +182,19 @@ This branch is an input to the single integration line, not a parallel line.
 - Doctor tests (tests/smoke/run_xod_doctor_test.py): 27/27, covering one of
   each census shape, the no-canonical-repo hold, and clean dry-run/apply
   semantics (exactly the stale-safe set removed, measured bytes equal).
+- Round 6 independent review fixes (2026-11-14): an external review of this
+  branch found, and this branch then fixed with red/green tests, a Windows
+  repair path that could never complete, a checkout equivalence check that
+  passed vacuously when the canonical repo could not be read, reflog-only
+  commits and gitignored files invisible to the checkout checks, app
+  duplicates judged on the version string alone, symlinks classified as
+  removable under data folders and inside containers, launch agent
+  references missed in env assignments and quoted strings, and a
+  known-broken version gate that unrecognized version strings slipped
+  past. After the fixes: bootstrap tests 16/16, the existing electron
+  suites 18/18, doctor tests 42/42, and testdelta over all four suites
+  against the pre-fix tree reports NO-REGRESSION (19 fixes, 0 regressions).
+  Full record in the lane report RECOVERY-REVIEW-FIX-2026-11-14.md.
 - Doctor CLI exercised end to end (--json inventory and a dry-run clean) on
   a fixture home.
 - Fleet gate note: the treeman and gitcleanplan local builds currently fail
