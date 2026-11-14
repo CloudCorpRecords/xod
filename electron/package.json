@@ -12,7 +12,7 @@
     "type": "git",
     "url": "https://github.com/CloudCorpRecords/xod.git"
   },
-  "main": "main.js",
+  "main": "bootstrap.js",
   "private": true,
   "license": "MIT",
   "scripts": {
