@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit review configuration for CloudCorpRecords/xod.
+# Spec: ~/workspace/control-plane/REVIEWERS.md (path filters over the app,
+# desktop shell, and test trees; reviews request changes on major findings).
+language: "en-US"
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches: []
+path_filters:
+  - "app/**"
+  - "electron/**"
+  - "tests/**"
