@@ -97,6 +97,41 @@ PAUSE_WEDGE_THRESHOLD_SEC = 600
 PAUSE_RESUME_WINDOW_SEC = 600
 
 
+# --------------------------------------- transient declared file inputs
+# Cluster 5 (2026-11-14, from the Tier 3 live grade T3-L2,
+# LIVE-GRADES-2026-11-13.md): the probe planted feed-a.txt present
+# and feed-b.txt absent, appearing at +40s, to exercise the Tier 3
+# assertion "a transient fault in the middle source is retried
+# alone". The planner declared feed-b.txt as a file input of the
+# merge step, correctly: the goal stated both feeds as present, and
+# the plan prompt's own rule is to declare a file input whenever a
+# step's work depends on it. Assembly then stopped the step before
+# any task was created and that stop was terminal, so the transient
+# was never exercised and the assertion graded UNKNOWN. As with
+# AGE-37 below, the stop itself is honest; the defect is that it is
+# the end of the road for a source that is only transiently absent.
+#
+# The remedy sits at that same assembly point and is bounded. When
+# a step's declared file input cannot be read and the AGE-37
+# adaptation does not apply, assembly is retried for that step
+# alone over DECLARED_FILE_RETRY_WINDOW_SEC, polling the declared
+# files from disk. The step still never starts on an undelivered
+# input: a task is created only once every declared input is
+# actually delivered into the request, exactly as before. If the
+# window expires and the input still cannot be read, the original
+# assembly stop stands unchanged and the mission fails honestly;
+# nothing is fabricated and no substitute is invented by this
+# surface (substitution remains the AGE-37 adaptation's, tried
+# first, on its own evidence rules). The window is sized from the
+# graded probe: the source appeared 40 seconds into the run while
+# assembly was reached within the first 8, so the window must
+# comfortably exceed the ~35 seconds assembly had to wait; 90
+# seconds is a little over twice that, and stays far below the
+# 600 second scale this module already treats as a wedge.
+DECLARED_FILE_RETRY_WINDOW_SEC = 90.0
+DECLARED_FILE_RETRY_POLL_SEC = 2.0
+
+
 # ------------------------------------------------------- verdict integrity
 # Fix round 1 (2026-10-31, from the Tier 1 baseline): a mission closed
 # "done" with every subtask "verified" while the subtasks' own reports said
@@ -1867,6 +1902,26 @@ def _file_input_adaptation(subtask: Dict[str, Any]) -> Optional[Tuple[Dict[str, 
     return adapted, note, record
 
 
+def _unreadable_declared_file_inputs(subtask: Dict[str, Any]) -> List[str]:
+    """The refs of the step's declared file inputs that cannot be
+    read from disk right now, in declaration order. Empty when every
+    declared file input is deliverable (or none is declared)."""
+    contract = subtask.get("contract") or {}
+    out: List[str] = []
+    for d in contract.get("inputs") or []:
+        if not isinstance(d, dict) or d.get("source") != "file":
+            continue
+        ref = str(d.get("ref") or "")
+        if not ref:
+            continue
+        try:
+            Path(os.path.expanduser(ref)).read_text(
+                encoding="utf-8", errors="replace")
+        except OSError:
+            out.append(ref)
+    return out
+
+
 def _record_plan_adaptation(mission_id: str, sub: Dict[str, Any],
                             adapted: Dict[str, Any], record: Dict[str, Any]) -> None:
     """Records an adaptation the way the plan machinery records any
@@ -2316,10 +2371,17 @@ class MissionRunner:
     def __init__(self, queue: Any = None, ask: Optional[Callable] = None, poll_sec: float = 1.0,
                  pause_threshold_sec: float = PAUSE_WEDGE_THRESHOLD_SEC,
                  pause_resume_window_sec: float = PAUSE_RESUME_WINDOW_SEC,
-                 clock: Optional[Callable[[], float]] = None):
+                 clock: Optional[Callable[[], float]] = None,
+                 file_input_retry_window_sec: float = DECLARED_FILE_RETRY_WINDOW_SEC,
+                 file_input_retry_poll_sec: float = DECLARED_FILE_RETRY_POLL_SEC):
         self._queue = queue
         self._ask = ask or _default_ask
         self.poll_sec = poll_sec
+        # Transient declared-file retry knobs (cluster 5; see the
+        # DECLARED_FILE_RETRY_WINDOW_SEC note at the top of this
+        # module). Injectable so tests can run the window short.
+        self.file_input_retry_window_sec = file_input_retry_window_sec
+        self.file_input_retry_poll_sec = file_input_retry_poll_sec
         # Pause supervision knobs (fix round 5): how long a subtask's
         # task may sit waiting before the one automatic resume, how
         # long a post-resume wait may sit before the honest failure,
@@ -2417,6 +2479,61 @@ class MissionRunner:
             if not await self._run_subtask(mission_id, current):
                 return   # paused on a waiting task; a later drive resumes
 
+    async def _retry_transient_file_inputs(
+            self, mission_id: str, sub: Dict[str, Any],
+            request: str, delivery: List[Dict[str, Any]],
+            input_problem: Optional[str]) -> Tuple[str, List[Dict[str, Any]], Optional[str], Optional[str]]:
+        """Bounded re-assembly for a step stopped only by a declared
+        file input that cannot be read (cluster 5; see the
+        DECLARED_FILE_RETRY_WINDOW_SEC note). Polls the declared
+        files from disk and re-assembles this step alone until every
+        declared input is deliverable or the window expires. Returns
+        (request, delivery, input_problem, retry_note): on recovery
+        the problem is cleared and the note names the wait, so the
+        step's request records that its input arrived late; on
+        expiry the original request, delivery and problem are
+        returned unchanged, so the honest assembly stop stands
+        exactly as before. A problem that is not (or not only) an
+        unreadable declared file input is returned at once: this
+        surface retries one thing, a transiently absent source."""
+        missing = _unreadable_declared_file_inputs(sub)
+        if not input_problem or not missing:
+            return request, delivery, input_problem, None
+        window = max(0.0, float(self.file_input_retry_window_sec))
+        poll = max(0.01, float(self.file_input_retry_poll_sec))
+        started = time.monotonic()
+        while time.monotonic() - started < window:
+            await asyncio.sleep(min(poll, window - (time.monotonic() - started)))
+            if _unreadable_declared_file_inputs(sub):
+                continue
+            new_request, new_delivery, new_problem = assemble_step(mission_id, sub)
+            if new_problem:
+                # The files arrived but assembly now stops on a
+                # different ground: that stop is the honest one.
+                return new_request, new_delivery, new_problem, None
+            waited = time.monotonic() - started
+            logger.warning(
+                f"Mission {mission_id}: step {int(sub.get('idx') or 0) + 1} "
+                f"({sub.get('title')}) had declared file input(s) "
+                f"{', '.join(missing)} unreadable at first assembly; "
+                f"deliverable after {waited:.0f}s of bounded retry, "
+                "the step now starts with its inputs delivered")
+            note = (f"Assembly note: this step's declared file input "
+                    f"{', '.join(missing)} could not be read when the step was "
+                    f"first assembled. Assembly was retried for this step alone "
+                    f"for {waited:.0f} seconds (bounded at "
+                    f"{window:.0f} seconds), the file was then readable, and "
+                    f"its actual contents are delivered above as the declared "
+                    f"input. Nothing was substituted or invented during the "
+                    f"wait.")
+            return new_request, new_delivery, None, note
+        logger.warning(
+            f"Mission {mission_id}: step {int(sub.get('idx') or 0) + 1} "
+            f"({sub.get('title')}) declared file input(s) "
+            f"{', '.join(missing)} still unreadable after the bounded "
+            f"{window:.0f}s assembly retry; the assembly stop stands")
+        return request, delivery, input_problem, None
+
     async def _run_subtask(self, mission_id: str, sub: Dict[str, Any]) -> bool:
         """Works one subtask to a recorded outcome. False means the mission
         paused because the subtask's task is waiting on the user."""
@@ -2464,6 +2581,21 @@ class MissionRunner:
                         if repair_note:
                             request = request + "\n\n" + repair_note
                         request = request + "\n\n" + adaptation_note
+            # Transient declared file inputs (cluster 5): the stop
+            # still stands when the adaptation does not apply, but a
+            # declared source that is only transiently absent gets
+            # one bounded assembly retry for this step alone before
+            # the stop becomes the step's recorded failure. The step
+            # never starts undelivered: recovery means every declared
+            # input was actually read into the request.
+            if input_problem:
+                (request, delivery, input_problem,
+                 retry_note) = await self._retry_transient_file_inputs(
+                     mission_id, sub, request, delivery, input_problem)
+                if retry_note:
+                    if repair_note:
+                        request = request + "\n\n" + repair_note
+                    request = request + "\n\n" + retry_note
             problem = (_empty_declared_content_problem(sub)
                        or _contract_tool_problem(sub)
                        or _write_tool_problem(sub, request)
