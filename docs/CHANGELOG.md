@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.5
+
+A fix for the self-check itself, one day after 1.1.4.
+
+- In 1.1.4, the launch check could not read the app's own package from inside the packaged app: the runtime's archive-aware file layer intercepts the package's path, so the check threw on a healthy, verified install, judged it broken, and started a repair whose own check of the downloaded copy failed in exactly the same way. The installs were never corrupt; the check was reading through the wrong layer. The check now reads the package through the runtime's unpatched file module (original-fs), so the verdict inside the app is the verdict the release gate sees.
+- The release process gained the proof this failure was missing: the launch check and the repair must now be exercised from inside the packaged app on the built artifact before a release is called verified, not only from the command line. A new standing test (electron/bootstrap-electron.test.js) runs the check inside a packaged process and fails on the 1.1.4 behavior.
+- Everything else is unchanged from 1.1.4: a healthy install starts at once with no network on the launch path, a broken one never loads broken code, and a repair that cannot complete leaves the installed copy exactly as it was.
+
 ## Unreleased
 
 ## 1.1.4
