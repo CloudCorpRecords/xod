@@ -127,6 +127,17 @@ def run_activate(run_id: str, task_id: str) -> None:
     _emit("run.started", run_id=run_id, task_id=task_id)
 
 
+def last_completed_result(routine_id: str) -> Optional[Dict[str, Any]]:
+    """The most recent finished, non-failed run that reported something: what the previous
+    check saw, for delivery into the next watch task (live grade 2026-11-13, Tier 7 attempt 2).
+    A failed run reported no contents, so it is never offered as the previous check."""
+    with _conn() as c:
+        rows = c.execute("SELECT * FROM routine_runs WHERE routine_id = ? AND finished_at IS NOT NULL "
+                         "AND outcome IN ('changed', 'no_change', 'done') AND excerpt IS NOT NULL AND excerpt != '' "
+                         "ORDER BY finished_at DESC, started_at DESC LIMIT 1", (routine_id,)).fetchall()
+    return dict(rows[0]) if rows else None
+
+
 def run_superseded(run_id: str, note: str) -> None:
     """A queued run that will never start (its routine was turned off first) still reaches a
     terminal, truthful state instead of sitting open forever. 'superseded' is not a failure:

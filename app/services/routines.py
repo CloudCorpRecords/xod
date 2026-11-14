@@ -156,11 +156,31 @@ def steps_from(origin: str) -> List[str]:
     return steps[:MAX_STEPS]
 
 
+PRIOR_CONTENTS_MAX = 2000   # chars of the previous check's report carried into a watch task
+
+
 def compose_request(r: Dict[str, Any]) -> str:
     text = r["instructions"].strip()
     if (r.get("kind") or "task") == "watch":
         from app.services import delivery
         text += delivery.WATCH_PROTOCOL
+        # Grade fix, Tier 7 cluster 4 (live grade 2026-11-13, attempt 2): run-over-run state
+        # reached the framework (result hashes) but never the watch task, so an instruction
+        # asking the model to compare against "what you saw on the previous check" failed
+        # every cycle, honestly, and cost the routine its enabled state. The task now gets
+        # the previous completed check's reported contents, bounded, labelled with the hash
+        # the framework already tracks for that result.
+        try:
+            prior = delivery.last_completed_result(r["id"])
+        except Exception:
+            prior = None
+        if prior and (prior.get("excerpt") or "").strip():
+            contents = prior["excerpt"].strip()
+            if len(contents) > PRIOR_CONTENTS_MAX:
+                contents = contents[:PRIOR_CONTENTS_MAX] + "\n[prior contents truncated]"
+            text += (f"\n\n(What you found on the previous check of this watch "
+                     f"(result hash {prior.get('result_hash') or 'unknown'}) follows. If your instructions "
+                     f"ask you to compare against the previous check, compare against this:\n{contents}\n)")
     if r["steps"]:
         text += (f"\n\n(This is my saved routine \"{r['name']}\". Steps that worked last time, as a guide; "
                  "pages and files may have changed since, so check as you go:\n"
