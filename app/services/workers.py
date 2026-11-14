@@ -267,6 +267,10 @@ async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
                 entry = {"tool": ev.get("name"), "ok": ok,
                          "summary": (json.dumps(data, default=str) if not isinstance(data, str) else data)[:600]}
                 (sink["evidence"] if ok else sink["failures"]).append(entry)
+            elif t == "error":
+                err = ev.get("content") or ev.get("error") or ev.get("message") or "worker error"
+                sink["failures"].append({"tool": None, "ok": False, "summary": str(err)[:600]})
+                sink["error"] = True
             elif t == "status":
                 _save(wid, last_activity_at=time.time(), last_activity=str(ev.get("content", ""))[:200], stalled_reason=None)
                 continue
@@ -287,6 +291,48 @@ async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
     except asyncio.CancelledError:
         run.cancel()
         raise
+
+
+def _task_from_brief(brief: str) -> str:
+    if "JOB:\n" in (brief or ""):
+        return brief.split("JOB:\n", 1)[1].split("\n\nOUTCOME WANTED:", 1)[0].strip()
+    return brief or ""
+
+
+def _evaluate_worker_result(task: str, outcome: str, r: Dict[str, Any],
+                            check_report: bool = True) -> Tuple[str, Optional[str], Optional[str]]:
+    """Canonical worker outcome evaluation shared by _run (before persisting terminal
+    state to the workers table) and coordinate (for reconciliation)."""
+    why_failed = r.get("why_failed")
+    caveat = r.get("caveat")
+    if outcome != "done":
+        return outcome, why_failed, caveat
+    meta = {"xod_self_check", "memory_search", "memory_list", "notebook_search", None}
+    # Interchangeable sources count as one: a search provider that failed is covered by one that answered.
+    group = lambda t: "search" if t in ("web_search", "tavily_search", "you_search") else t
+    ok_groups = {group(e.get("tool")) for e in r.get("evidence") or []}
+    # A step the envelope refused ran nothing: it is not a source that failed.
+    refused = [f for f in r.get("failures") or [] if "permission envelope" in str(f.get("summary") or "")]
+    unread = [f for f in r.get("failures") or [] if f.get("tool") not in meta and group(f.get("tool")) not in ok_groups
+              and f not in refused]
+    report = r.get("report") or ""
+    if not report.strip():
+        return "failed", why_failed or "the worker returned no report", None
+    if r.get("failures") and not r.get("evidence"):
+        return "failed", why_failed, None
+    if unread:
+        return "failed", f"{unread[0]['tool']} failed and never succeeded: {unread[0]['summary'][:200]}", None
+    if check_report:
+        admitted, caveat = judge_report(task, report)
+        if admitted:
+            return "failed", admitted, None
+    elif caveat is None:
+        _, caveat = judge_report(task, report)
+    if refused:
+        note = "; ".join(sorted({f"it wanted {f.get('tool')}, which a read-only worker can't use (nothing was run)"
+                                 for f in refused}))
+        caveat = f"{caveat}; {note}" if caveat else note
+    return "done", None, caveat
 
 
 async def _run(wid: str, brief: str, env: str, needs: Optional[List[str]] = None) -> None:
@@ -362,6 +408,8 @@ async def _run(wid: str, brief: str, env: str, needs: Optional[List[str]] = None
         except Exception:
             pass
     report = "".join(sink["content"]).strip()
+    if sink.get("error") and outcome == "done":
+        outcome = "failed"
     if outcome == "done" and not report:
         outcome = "failed"
         sink["failures"].append({"tool": None, "ok": False, "summary": "the worker returned no report"})
@@ -370,6 +418,12 @@ async def _run(wid: str, brief: str, env: str, needs: Optional[List[str]] = None
         outcome = "failed"         # the watchdog already stopped it; keep its honest reason
         sink["failures"].append({"tool": None, "ok": False, "summary": cur["stalled_reason"]})
     result = {"outcome": outcome, "report": report, "evidence": sink["evidence"], "failures": sink["failures"]}
+    outcome, why_failed, caveat = _evaluate_worker_result(_task_from_brief(brief), outcome, result, check_report=True)
+    result["outcome"] = outcome
+    if why_failed:
+        result["why_failed"] = why_failed
+    if caveat:
+        result["caveat"] = caveat
     _save(wid, state=outcome, finished_at=time.time(), result_json=result)
     w = get(wid)
     _emit("worker.result", w, outcome=outcome, report=report[:300], failures=len(sink["failures"]), evidence=len(sink["evidence"]))
@@ -549,37 +603,19 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
         w = got.get(wid) or {}
         r = w.get("result") or {}
         state = w.get("shown_state") or w.get("state")
-        outcome = r.get("outcome") or state
-        why_failed = None
-        meta = {"xod_self_check", "memory_search", "memory_list", "notebook_search", None}
-        # Interchangeable sources count as one: a search provider that failed is covered by one that answered.
-        group = lambda t: "search" if t in ("web_search", "tavily_search", "you_search") else t
-        ok_groups = {group(e.get("tool")) for e in r.get("evidence") or []}
-        # A step the envelope refused ran nothing: it is not a source that failed. The worker's answer stands or falls
-        # on what it did read, and the refusal is passed on (live, final count h3: a research worker tried a command,
-        # was refused, and the refusal alone failed its sourced answer and then the whole task).
-        refused = [f for f in r.get("failures") or [] if "permission envelope" in str(f.get("summary") or "")]
-        unread = [f for f in r.get("failures") or [] if f.get("tool") not in meta and group(f.get("tool")) not in ok_groups
-                  and f not in refused]
-        if outcome == "done" and r.get("failures") and not r.get("evidence"):
-            outcome = "failed"     # every source it tried failed: its "answer" rests on nothing
-        elif outcome == "done" and unread:
-            # A source it tried never answered (live S5: a missing file's worker still "reported"). An unread
-            # source is reported as unread, never as an answer (spec ladder, Tier 4).
-            outcome, why_failed = "failed", f"{unread[0]['tool']} failed and never succeeded: {unread[0]['summary'][:200]}"
-        caveat = None
-        if outcome == "done" and not (r.get("failures") and not r.get("evidence")) and not unread:
-            # A worker whose own report says it could not do the job is a failed check, however politely it says so
-            # (live S5). One whose job is answered, confirmed with a linked source, and that only lists more it could
-            # have checked, is done with a caveat (live P1 count g1: "Confirmed: 1991, according to Codecademy" plus
-            # "Not finished yet: read a second source" failed the whole task).
-            admitted, caveat = judge_report(s["task"], r.get("report") or "")
-            if admitted:
-                outcome, why_failed = "failed", admitted
-            if outcome == "done" and refused:
-                note = "; ".join(sorted({f"it wanted {f.get('tool')}, which a read-only worker can't use (nothing was run)"
-                                         for f in refused}))
-                caveat = f"{caveat}; {note}" if caveat else note
+        outcome = state if state in ("done", "failed", "interrupted") else (r.get("outcome") or state)
+        why_failed = r.get("why_failed")
+        caveat = r.get("caveat")
+        if outcome == "done":
+            # A worker already terminal 'done' in the workers table is reconciled on
+            # tool-evidence failures only; it is not demoted to 'failed' over prose.
+            table_terminal_done = (w.get("state") == "done" and r.get("outcome") == "done")
+            outcome, why_failed, caveat = _evaluate_worker_result(
+                s["task"], outcome, r, check_report=not table_terminal_done,
+            )
+            if outcome != w.get("state") and w.get("id"):
+                _save(wid, state=outcome, result_json={**r, "outcome": outcome,
+                                                       **({"why_failed": why_failed} if why_failed else {})})
         entry = {"id": wid, "task": s["task"], "outcome": outcome, "report": r.get("report", ""),
                  "evidence": r.get("evidence", []), "failures": r.get("failures", []),
                  **({"caveat": caveat} if caveat else {})}
