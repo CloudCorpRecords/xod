@@ -61,6 +61,10 @@ def check(name, ok, detail=""):
     results.append((name, bool(ok)))
     print(f"  {'PASS' if ok else 'FAIL'} {name}" + (f"  [{detail}]" if detail and not ok else ""), flush=True)
 
+
+def _norm_path(p) -> str:
+    return os.path.normpath(str(p)).replace("\\", "/") if p is not None else ""
+
 S = TMP / "xod-t2-scratch"
 S.mkdir(parents=True, exist_ok=True)
 (S / "sales-2025.csv").write_text("item,amount\npens,3\nbooks,4\nmugs,5\n")
@@ -189,17 +193,17 @@ def case_age37_unit():
         check("adaptation is offered for the T2B step", a is not None)
         if a:
             adapted, note, record = a
-            refs = [d.get("ref") for d in adapted["contract"]["inputs"] if d.get("source") == "file"]
+            refs = [_norm_path(d.get("ref")) for d in adapted["contract"]["inputs"] if d.get("source") == "file"]
             check("the candidate delivered is sales-2025.csv from the same folder",
-                  refs == [f"{S}/sales-2025.csv"], str(refs))
+                  refs == [_norm_path(S / "sales-2025.csv")], str(refs))
             check("the adapted instruction names the discrepancy and the actual columns",
                   "sales.csv" in adapted["instruction"] and "sales-2025.csv" in adapted["instruction"]
                   and "item,amount" in adapted["instruction"], adapted["instruction"][:400])
             check("the assembly note is evidence based (folder contents, first line)",
                   "sales-2025.csv" in note and "item,amount" in note and "not invented" in note, note[:300])
             check("the adaptation record holds the original and the evidence",
-                  record.get("missing") == f"{S}/sales.csv"
-                  and record.get("candidate") == f"{S}/sales-2025.csv"
+                  _norm_path(record.get("missing")) == _norm_path(S / "sales.csv")
+                  and _norm_path(record.get("candidate")) == _norm_path(S / "sales-2025.csv")
                   and "sales-2025.csv" in (record.get("folder_contents") or []), str(record))
     # Negative controls run on both trees when the helper exists; on base
     # they are recorded as passing controls (no adaptation exists there
@@ -268,10 +272,10 @@ async def case_t2b_runner():
     check("the plan of record moved to version 2 with one adaptation recorded",
           plan.get("version") == 2 and len(plan.get("adaptations") or []) == 1, str(plan.get("version")) + " " + str(plan.get("adaptations")))
     check("step 1's saved contract delivers the candidate, not the missing file",
-          any(d.get("ref") == f"{S}/sales-2025.csv" for d in (subs[0]["contract"] or {}).get("inputs") or []),
+          any(_norm_path(d.get("ref")) == _norm_path(S / "sales-2025.csv") for d in (subs[0]["contract"] or {}).get("inputs") or []),
           str(subs[0]["contract"]))
     check("step 1's input delivery is the candidate file",
-          any(d.get("ref") == f"{S}/sales-2025.csv" for d in subs[0].get("input_delivery") or []),
+          any(_norm_path(d.get("ref")) == _norm_path(S / "sales-2025.csv") for d in subs[0].get("input_delivery") or []),
           str(subs[0].get("input_delivery")))
     check("the adapted request carries the assembly adaptation note",
           len(q.created) >= 1 and "adapted (plan v2)" in q.created[0]["request"])
