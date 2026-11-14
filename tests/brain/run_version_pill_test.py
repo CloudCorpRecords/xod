@@ -1,6 +1,6 @@
 """AGE-48: the running version in the top bar.
 
-Rene directive 2026-11-13: the top bar (Xod logo, Needs you, the five
+Product directive 2026-11-13: the top bar (Xod logo, Needs you, the five
 surfaces) showed no version anywhere, so a wrong, old launch was
 invisible until something broke. The version pill existed only inside
 Settings (div id xodVersion, rendered by js/updates.js pill() from
