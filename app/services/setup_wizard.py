@@ -224,10 +224,10 @@ async def quick() -> Dict[str, Any]:
 
     def add(group: str, provider: str, model: str, label: str, **extra):
         out.append({"group": group, "provider": provider, "model": model, "label": label,
-                    "current": provider == cur_p and (model == cur_m or provider in CLOUD_DEFAULTS), **extra})
+                    "current": provider == cur_p and model == cur_m, **extra})
 
     for p in s["cloud_keys"]:
-        m = cur_m if p == cur_p and cur_m else CLOUD_DEFAULTS[p]
+        m = CLOUD_DEFAULTS[p]
         add("Online", p, m, f"{PROVIDER_NAMES.get(p, p)} · {m.split('/')[-1]}")
     for m in s["ollama"]["models"]:
         add("Ollama", "ollama", m, m)

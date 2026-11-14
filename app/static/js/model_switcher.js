@@ -9,7 +9,7 @@ function toggleModelSwitcher() {
 }
 document.addEventListener("click", (e) => {
   const p = document.getElementById("modelSwitcherPanel");
-  if (p && !p.classList.contains("hidden") && !e.target.closest("#modelSwitcherPanel, #modelSwitcherBtn")) p.classList.add("hidden");
+  if (p && !p.classList.contains("hidden") && !e.target.closest("#modelSwitcherPanel, #modelSwitcherBtn, #statusBrainSwitchBtn")) p.classList.add("hidden");
 });
 
 async function loadModelSwitcher() {

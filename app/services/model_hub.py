@@ -26,7 +26,7 @@ VISION_CATALOG: List[Dict[str, Any]] = [
     {"name": "gemma3:4b", "label": "Gemma 3 4B", "size_gb": 3.3, "blurb": "Google's small model that also sees. Good at photos."},
     {"name": "gemma3:12b", "label": "Gemma 3 12B", "size_gb": 8.1, "blurb": "Sees and chats; can be the only model on a 16 GB GPU."},
 ]
-CLOUD_DEFAULTS = {"anthropic": "claude-opus-5-5", "openai": "gpt-4o", "gemini": "gemini-2.5-flash", "groq": "llama-3.3-70b-versatile",
+CLOUD_DEFAULTS = {"anthropic": "claude-opus-5-5", "openai": "gpt-6.1-terra", "gemini": "gemini-2.5-flash", "groq": "llama-3.3-70b-versatile",
                   "openrouter": "meta-llama/llama-3.3-70b-instruct", "fireworks": "accounts/fireworks/models/glm-5p3-flash"}
 CLOUD_SEES = {"anthropic", "openai", "gemini", "openrouter"}
 
@@ -73,7 +73,7 @@ async def all_models() -> Dict[str, Any]:
     for prov, field in (("anthropic", "anthropic_api_key"), ("openai", "openai_api_key"), ("gemini", "gemini_api_key"),
                         ("groq", "groq_api_key"), ("openrouter", "openrouter_api_key"), ("fireworks", "fireworks_api_key")):
         if getattr(settings, field, ""):
-            mid = settings.llm_model if settings.llm_provider == prov else CLOUD_DEFAULTS[prov]
+            mid = CLOUD_DEFAULTS[prov]
             out.append({"provider": prov, "server": prov.title(), "base_url": "", "model": mid, "where": "online", "size_gb": None,
                         "tools": True, "vision": prov in CLOUD_SEES, "thinking": None, "context": None, "online": True})
     seeing = await vision.model()

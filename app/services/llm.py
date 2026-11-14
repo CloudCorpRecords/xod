@@ -9,6 +9,7 @@ import logging
 from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple, Callable
 from app.config import settings
 from app.services import ollama_context
+from app.services.model_hub import CLOUD_DEFAULTS
 
 logger = logging.getLogger("llm")
 
@@ -583,7 +584,7 @@ class LLMService:
             base_url = "https://api.openai.com/v1"
             api_key, key_profile_name = self._cloud_key("openai", key_profile_id)
             api_key = api_key or "missing"
-            m = model or "gpt-4o"
+            m = model or CLOUD_DEFAULTS["openai"]
         elif provider == "gemini":
             base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
             api_key, key_profile_name = self._cloud_key("gemini", key_profile_id)
@@ -659,7 +660,7 @@ class LLMService:
         if self._tier_key_ready("gemini"):
             cloud_options.append({"provider": "gemini", "model": "gemini-2.5-flash", "label": "Google Gemini"})
         if self._tier_key_ready("openai"):
-            cloud_options.append({"provider": "openai", "model": "gpt-4o", "label": "OpenAI GPT-4o"})
+            cloud_options.append({"provider": "openai", "model": CLOUD_DEFAULTS["openai"], "label": "OpenAI GPT-6.1 Terra"})
         if self._tier_key_ready("groq"):
             cloud_options.append({"provider": "groq", "model": "llama-3.3-70b-versatile", "label": "Groq Ultra-Fast"})
         if self._tier_key_ready("openrouter"):

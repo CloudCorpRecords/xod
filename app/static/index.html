@@ -176,7 +176,7 @@
             <div class="text-[10px] uppercase tracking-wider text-zinc-500">Brain</div>
             <div class="flex items-center gap-2 mt-1.5">
               <span id="statusBrainMirror" class="flex-1 min-w-0 truncate text-zinc-300">…</span>
-              <button onclick="toggleStatusDetail();goSurface('settings')" class="px-2 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-zinc-200 shrink-0" title="The model picker lives in Settings, under Brain.">Change in Settings</button>
+              <button id="statusBrainSwitchBtn" onclick="toggleStatusDetail();goSurface('settings');if(document.getElementById('modelSwitcherPanel').classList.contains('hidden'))toggleModelSwitcher()" class="px-2 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-zinc-200 shrink-0" title="Switch the model answering your chats.">Switch model</button>
             </div>
           </div>
           <div class="mt-3 pt-3 border-t border-white/[0.05]">
