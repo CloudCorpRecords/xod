@@ -595,6 +595,20 @@ def _step_goal(goal: str) -> str:
     return after.strip() or q
 
 
+def _remaining_from_log(goal: str, log: List[Dict[str, Any]], content: str = "") -> Tuple[List[str], List[str]]:
+    from app.services import workers as _W
+    ev = [
+        {"tool": e.get("name"), "ok": not e.get("failed"), "summary": e.get("out") or "", "args": e.get("args") or {}}
+        for e in (log or [])
+    ]
+    return _W.remaining_brief_items(goal, ev, content)
+
+
+def _admits_incomplete(content: str) -> bool:
+    from app.services import workers as _W
+    return bool(_W._INCOMPLETE_CHECKPOINT_RE.search(content or ""))
+
+
 async def done_check(goal: str, log: List[Dict[str, Any]], final: str, kind: str = "computer") -> Dict[str, Any]:
     if not log:
         return {"done": False, "missing": "Nothing has been run yet. Do the job with the tools.", "needs_person": False}
@@ -896,7 +910,27 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                    "summary": ("✓ Works: " + str(verdict.get("proof") or "the steps succeeded")[:120]) if verdict.get("done") else
                               ("Needs you: " + str(verdict.get("why") or "")[:120]) if verdict.get("needs_person") else
                               ("Not yet: " + str(verdict.get("missing") or "")[:120])}
+            unread_items, unwritten_deliverables = _remaining_from_log(goal, log, content)
+            self_inc = _admits_incomplete(content)
             if verdict.get("done") or verdict.get("needs_person"):
+                if (verdict.get("done") and not verdict.get("needs_person")
+                        and (unread_items or unwritten_deliverables or self_inc)
+                        and checks < MAX_CHECKS and step < MAX_STEPS - 1):
+                    checks += 1
+                    rem_parts = []
+                    if unread_items:
+                        rem_parts.append("Read/inspect remaining items: " + ", ".join(unread_items[:20]) + ".")
+                    if unwritten_deliverables:
+                        rem_parts.append("Write remaining deliverables: " + ", ".join(unwritten_deliverables[:10]) + ".")
+                    if self_inc and not rem_parts:
+                        rem_parts.append("Finish the remaining work instead of stopping with an incomplete notice.")
+                    left = " ".join(rem_parts)
+                    if content.strip():
+                        draft = content
+                    yield {"type": "status", "content": f"Not done yet: {left[:120]}"}
+                    convo.append({"role": "assistant", "content": content})
+                    convo.append({"role": "user", "content": f"(Note from Xod, not from the person) Not finished: {left} Keep going with the tools."})
+                    continue
                 answer = content
                 if verdict.get("needs_person") and verdict.get("why") and not verdict.get("done"):
                     left = str(verdict.get("why"))
@@ -904,6 +938,10 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 break
             checks += 1
             left = str(verdict.get("missing") or "")
+            if unread_items:
+                left = (left + " " if left else "") + "Remaining unread items: " + ", ".join(unread_items[:20]) + "."
+            if unwritten_deliverables:
+                left = (left + " " if left else "") + "Unwritten deliverables: " + ", ".join(unwritten_deliverables[:10]) + "."
             if checks > MAX_CHECKS:
                 answer = content
                 stopped = f"**Not finished yet:** {left or 'it never proved it works'}. Say **continue** and I'll keep going."

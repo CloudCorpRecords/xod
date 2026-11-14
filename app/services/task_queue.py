@@ -2626,6 +2626,11 @@ class TaskQueue:
                 problems.append(f"model stream error: {'; '.join(stream_errors)}")
             elif re.search(r"(?:^|\n)\s*(?:The model stopped:|\*\*Paused after |\*\*Not finished yet:)", report or ""):
                 problems.append(f"the worker stopped before finishing ({(report or '').splitlines()[0][:160]})")
+            else:
+                from app.services import orchestrator as _O
+                _own_prob = _O._self_report_problem(task["request"], report)
+                if _own_prob and ("incomplete" in _own_prob.lower() or "not finished" in _own_prob.lower() or "continue" in _own_prob.lower()):
+                    problems.append(_own_prob)
             fatal_key_err = any(
                 re.search(r"missing api key for|no api key (?:configured|set|saved) for", p, re.I)
                 for p in problems
