@@ -27,7 +27,7 @@ jobs:
 
   python:
     name: Python checks
-    runs-on: macos-14   # Apple silicon, like the people running Xod
+    runs-on: macos-15   # Apple silicon, like the people running Xod (macos-14 retired by GitHub 2026-11-02; the job was cancelled at scheduling on every run since)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
