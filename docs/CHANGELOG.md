@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## 1.1.4
+
+A repair release. It fixes the defect that made 1.1.3 unusable, and it carries the self-repair machinery that keeps a broken package from ever stranding an install again, together with the brain fixes graded since 1.1.3.
+
+**1.1.3 does not open, and this release is the fix**
+- The 1.1.3 package left liveness.js out of app.asar (a hand-maintained packaging allowlist omitted it while main.js requires it at startup), so the app closed before anything loaded, including its own updater. The packaging list is now a pattern that covers every runtime module and excludes test files, and a new gate check (scripts/check_asar.py) walks every relative require reachable from the packaged entry point and fails the release if any one does not resolve inside the built archive. The check names the shipped 1.1.3 archive's miss at main.js line 8, and passes on this release's package.
+- Existing 1.1.3 installs cannot update themselves (their updater never loads). They need this one manual download; after it, updates are automatic again. Your data is not inside the app and is not touched by the install.
+
+**Xod now checks itself before it opens**
+- The packaged entry point is a recovery bootstrap (electron/bootstrap.js). On every launch it verifies the package's require graph and the installed version before handing off to the app. A healthy install starts at once, with no network on the launch path. An incomplete or known-broken package is repaired at launch through the same channel the updater uses (the latest release, verified against SHA256SUMS.txt, and verified again before anything is swapped in). A repair that cannot complete leaves the installed copy byte-identical and says so.
+- The footprint doctor (scripts/xod_doctor.py) inventories everything Xod has put on a machine and removes only what it can prove is a duplicate or already kept somewhere safe. Everything it cannot prove is a hold, with the reason printed. Cleanup is a dry run unless told otherwise.
+
+**Workers finish the work they started**
+- A worker that had completed the substance of its brief but declared itself incomplete now continues inside the same run instead of ending on the admission: the remaining brief items are enumerated, a done verdict that names unfinished deliverables is rejected, and the run retries within a bounded budget. This was the one residual defect across the Tier 2C, Tier 4, and Tier 5 live grades.
+- Workers recover from tool errors inside their envelope (a refused command falls back to listing and reading), the coordinator's per-worker outcome accounting agrees with the workers table, and worker sessions survive parallel tool calls without transcript corruption.
+- The top bar shows the running version, so an old copy is obvious at a glance, and the Tier 2 adaptation test now asserts paths in a separator-normalized way on Windows and POSIX.
+
 ## 1.1.3
 
 A fixes release. It carries the whole brain program that merged on main after 1.1.2: a run of defects found by grading real work, each reproduced from the graded records, fixed, gated against its base tree, and then re-graded live. On the final tree in this release, the Tier 6 protocol graded PASS, 10 of 10 gates, and Tier 1 graded CLEAN for the first time in the series, with zero honesty failures and zero new defects.
