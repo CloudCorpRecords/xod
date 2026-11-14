@@ -177,6 +177,22 @@ _SOURCE_RE = re.compile(r"\]\((?:https?://|/)[^)\s]+\)|https?://\S+")
 _EMPTY_RE = re.compile(r"^\W*(?:nothing|none|n/?a|no(?:thing)? (?:was )?(?:confirmed|found))\b", re.I)
 
 
+_LIST_TOOLS = {"computer_list_directory", "computer_directory_tree", "computer_find_files", "fs_list_workspace_files"}
+_CONTENT_READ_TOOLS = {"computer_read_file", "fs_read_workspace_file"}
+_CONTENTS_DEMAND_RE = re.compile(
+    r"\b(first line|contents?|inside|read the files?|inspect.*lines?|whose.*starts with|whose.*reads)\b",
+    re.I,
+)
+
+
+def _contents_without_read(task: str, evidence: List[Dict[str, Any]]) -> bool:
+    """True when a contents-demanding task only ran directory/filename listings with no file read."""
+    if not _CONTENTS_DEMAND_RE.search(task or ""):
+        return False
+    used = {e.get("tool") for e in evidence or []}
+    return bool(used & _LIST_TOOLS) and not bool(used & _CONTENT_READ_TOOLS)
+
+
 def judge_report(task: str, report: str) -> Tuple[Optional[str], Optional[str]]:
     """(admission, caveat) for a finished worker's report. An admission fails the worker. A report that also
     has a Confirmed section with a linked source is done: the admission becomes its caveat, kept for the
@@ -322,6 +338,11 @@ def _evaluate_worker_result(task: str, outcome: str, r: Dict[str, Any],
         return "failed", why_failed, None
     if unread:
         return "failed", f"{unread[0]['tool']} failed and never succeeded: {unread[0]['summary'][:200]}", None
+    if _contents_without_read(task, r.get("evidence") or []):
+        # A contents-demanding task answered from directory listings or filenames alone, with no
+        # successful content read, is a failure even when the report reads confidently
+        # (tree/fix-worker-tool-recovery: the T2C and Tier 4 L1 give-up shape).
+        return "failed", "answered from directory listing/filenames alone without reading file contents", None
     if check_report:
         admitted, caveat = judge_report(task, report)
         if admitted:

@@ -78,8 +78,10 @@ def check_result(tool: str, args: Dict[str, Any], result: Any) -> Dict[str, Any]
     if not isinstance(result, dict):
         return {"ok": False, "problem": "error", "detail": "the tool returned nothing usable"}
 
-    # Commands: the exit code is the truth.
+    # Commands: the exit code is the truth (unless refused/failed before running).
     if tool == "computer_run_command":
+        if result.get("outside_envelope") or (result.get("success") is False and _error_text(result)):
+            return {"ok": False, "problem": "error", "detail": _error_text(result) or "command failed"}
         if result.get("status") == "timeout":
             return {"ok": False, "problem": "error", "detail": f"command timed out: {result.get('stderr', '')[-300:]}"}
         if result.get("exit_code") not in (0, None):
@@ -130,6 +132,10 @@ def check_result(tool: str, args: Dict[str, Any], result: Any) -> Dict[str, Any]
 # ---------------------------------------------------------------------- 2. classifying errors
 # (kind, pattern, hint). First match wins, so specific kinds come before generic ones.
 _KINDS: List[Tuple[str, str, str]] = [
+    ("outside_envelope", r"outside this worker's permission envelope|outside_envelope",
+     "This tool is outside the worker's read-only permission envelope; nothing ran. Switch to an allowed in-envelope read, list, or search tool."),
+    ("not_regular_file", r"not a regular file|is a directory|\beisdir\b",
+     "The target path is a directory, not a file. Use computer_list_directory or fs_list_workspace_files on it, then read the files inside."),
     ("blocked", r"captcha|bot check|are you a robot|access denied|forbidden|\b403\b|cloudflare",
      "The site is blocking automated access. Don't try to get around it: use a different source, or ask the user to take over."),
     ("missing_key", r"api[ _-]?key|requires_api_key|unauthori[sz]ed|\b401\b|not configured|no token",
@@ -148,7 +154,7 @@ _KINDS: List[Tuple[str, str, str]] = [
      "Network problem. Retry once after a moment; check the address."),
     ("not_found", r"\b404\b|not found|no such file|does not exist|enoent|isn't installed|unknown (model|tool)",
      "Something referenced doesn't exist. Correct the path/URL/name (check spelling), or search for the right one."),
-    ("bad_args", r"missing|required|invalid|keyerror|typeerror|valueerror|expected|must be|unexpected keyword",
+    ("bad_args", r"missing|required|invalid|keyerror|typeerror|valueerror|expected|must be|unexpected keyword|\bneeds\b",
      "The tool was called with wrong or missing arguments. Call it again with corrected arguments matching its schema."),
 ]
 TRANSIENT = {"browser_down", "model_unavailable", "memory", "rate_limit", "timeout", "network"}
@@ -203,17 +209,85 @@ class Repairer:
         self.candidates = [t["function"]["name"] for t in candidate_tools]
 
     def _tools_for_prompt(self, tool: str) -> List[Dict[str, Any]]:
+        from app.services import workers as _workers
         names = [tool] + [n for n in self.candidates if n != tool and n not in SIDE_EFFECT_TOOLS][:8]
         if tool in SEARCH_TOOLS or tool in READ_TOOLS:
             names += [n for n in ("web_search", "tavily_search", "web_scrape") if n not in names and n in self.defs]
+        if _workers.envelope.get() == "read_only":
+            for n in ("computer_list_directory", "computer_read_file", "computer_find_files",
+                      "fs_list_workspace_files", "fs_read_workspace_file", "web_search", "web_scrape"):
+                if n not in names and n in self.defs:
+                    names.append(n)
         out = []
         for n in names:
+            if n != tool and _workers.allowed(n) is not None:
+                continue
             d = self.defs.get(n)
             if d:
                 out.append({"name": n, "description": (d.get("description") or "")[:220],
                             "parameters": list((d.get("parameters") or {}).get("properties", {}).keys()),
                             "required": (d.get("parameters") or {}).get("required", [])})
         return out
+
+    @staticmethod
+    def _extract_paths(text: str) -> List[str]:
+        if not text:
+            return []
+        raw = re.findall(r'(?:[A-Za-z]:[\\/]|/)[^\s\'"`;|&<>]+', text)
+        return [p.rstrip(".,;:)") for p in raw]
+
+    def _deterministic_fix(self, tool: str, args: Dict[str, Any], result: Dict[str, Any],
+                           kind: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        from app.services import workers as _workers
+        allowed = lambda n: n in self.defs and n not in SIDE_EFFECT_TOOLS and _workers.allowed(n) is None
+
+        # 1. Reading a directory as a file -> switch to listing that directory.
+        if tool in FILE_READ_TOOLS and kind["kind"] == "not_regular_file":
+            path = (args or {}).get("filepath") or (args or {}).get("path") or ""
+            if path and allowed("computer_list_directory"):
+                return {"action": "switch", "tool_name": "computer_list_directory",
+                        "tool_args": {"path": path},
+                        "reason": "target is a directory; listing directory contents instead"}
+            if allowed("fs_list_workspace_files"):
+                return {"action": "switch", "tool_name": "fs_list_workspace_files",
+                        "tool_args": {"directory": path} if path else {},
+                        "reason": "target is a directory; listing workspace files instead"}
+
+        # 2. Missing filepath on computer_read_file -> recover from 'path' arg or user_query.
+        if tool == "computer_read_file" and kind["kind"] == "bad_args" and not (args or {}).get("filepath"):
+            alt = (args or {}).get("path")
+            if alt and allowed("computer_read_file"):
+                return {"action": "retry", "tool_name": "computer_read_file",
+                        "tool_args": {"filepath": alt},
+                        "reason": "passing path as filepath"}
+            for p in self._extract_paths(self.user_query):
+                if os.path.isfile(p) and allowed("computer_read_file"):
+                    return {"action": "retry", "tool_name": "computer_read_file",
+                            "tool_args": {"filepath": p},
+                            "reason": "using target file path from request"}
+                if os.path.isdir(p) and allowed("computer_list_directory"):
+                    return {"action": "switch", "tool_name": "computer_list_directory",
+                            "tool_args": {"path": p},
+                            "reason": "listing target directory from request"}
+
+        # 3. Outside read-only envelope -> nothing ran; switch to an in-envelope read/list tool.
+        if isinstance(result, dict) and result.get("outside_envelope"):
+            blob = " ".join(str(v) for v in (args or {}).values() if v) + " " + (self.user_query or "")
+            paths = self._extract_paths(blob)
+            for p in paths:
+                if os.path.isfile(p) and allowed("computer_read_file"):
+                    return {"action": "switch", "tool_name": "computer_read_file",
+                            "tool_args": {"filepath": p},
+                            "reason": "switching from out-of-envelope tool to computer_read_file"}
+                if os.path.isdir(p) and allowed("computer_list_directory"):
+                    return {"action": "switch", "tool_name": "computer_list_directory",
+                            "tool_args": {"path": p},
+                            "reason": "switching from out-of-envelope tool to computer_list_directory"}
+            if paths and allowed("computer_list_directory"):
+                return {"action": "switch", "tool_name": "computer_list_directory",
+                        "tool_args": {"path": os.path.dirname(paths[0]) or paths[0]},
+                        "reason": "switching from out-of-envelope tool to computer_list_directory"}
+        return None
 
     async def _ask_model(self, tool: str, args: Dict[str, Any], detail: str, kind: Dict[str, str],
                          history: List[Dict[str, Any]], think: bool = False) -> Dict[str, Any]:
@@ -263,10 +337,14 @@ class Repairer:
                 yield {"type": "status", "content": f"🩺 {fixed}"}
 
             # 2. Decide the next call.
-            if cur_tool in SIDE_EFFECT_TOOLS:
+            outside_env = isinstance(cur_result, dict) and cur_result.get("outside_envelope")
+            if cur_tool in SIDE_EFFECT_TOOLS and not outside_env:
                 # Never re-run something that may have half-happened; report instead.
                 break
-            if kind["kind"] in TRANSIENT and not same_retry_used and cur_tool not in NO_BLIND_RETRY and \
+            det = self._deterministic_fix(cur_tool, cur_args, cur_result, kind)
+            if det is not None:
+                nxt = det
+            elif kind["kind"] in TRANSIENT and not same_retry_used and cur_tool not in NO_BLIND_RETRY and \
                     (fixed or kind["kind"] in ("timeout", "network", "rate_limit")):
                 same_retry_used = True
                 nxt = {"action": "retry", "tool_name": cur_tool, "tool_args": cur_args, "reason": "retrying after the fix", "same": True}
@@ -281,8 +359,9 @@ class Repairer:
                 break
             new_tool, new_args = nxt["tool_name"], nxt.get("tool_args") or {}
             fp = fingerprint(new_tool, new_args)
-            if new_tool not in self.defs or (new_tool in SIDE_EFFECT_TOOLS) or (fp in seen and not nxt.get("same")):
-                history.append({"rejected": new_tool, "why": "unknown/side-effect tool or a repeat"})
+            from app.services import workers as _workers
+            if new_tool not in self.defs or (new_tool in SIDE_EFFECT_TOOLS) or _workers.allowed(new_tool) is not None or (fp in seen and not nxt.get("same")):
+                history.append({"rejected": new_tool, "why": "unknown/side-effect/disallowed tool or a repeat"})
                 break
             seen.add(fp)
             rid = f"{call_id}_fix{attempt}"
