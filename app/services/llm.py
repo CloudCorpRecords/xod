@@ -462,6 +462,55 @@ def plain_error(info: Dict[str, Any], status: Optional[int] = None, body: str = 
     return f"{who} answered with an error ({status}): {str(said or body).strip()[:200]}"
 
 
+def reconcile_tool_transcript(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Ensure every assistant tool_call_id has exactly one following tool response
+    and drop any orphaned/duplicate tool messages before sending to the model API."""
+    if not messages:
+        return []
+    out: List[Dict[str, Any]] = []
+    i = 0
+    n = len(messages)
+    while i < n:
+        m = messages[i]
+        role = m.get("role")
+        tcs = m.get("tool_calls") if role == "assistant" else None
+        if role == "assistant" and isinstance(tcs, list) and tcs:
+            out.append(m)
+            j = i + 1
+            by_id: Dict[str, Dict[str, Any]] = {}
+            while j < n and messages[j].get("role") == "tool":
+                tm = messages[j]
+                tid = tm.get("tool_call_id")
+                if tid and tid not in by_id:
+                    by_id[tid] = tm
+                j += 1
+            for tc in tcs:
+                tid = tc.get("id") if isinstance(tc, dict) else None
+                if not tid:
+                    continue
+                if tid in by_id:
+                    out.append(by_id[tid])
+                else:
+                    fn = (tc.get("function") or {}).get("name") or ""
+                    out.append({
+                        "role": "tool",
+                        "tool_call_id": tid,
+                        "name": fn,
+                        "content": json.dumps({
+                            "success": False,
+                            "error": "Tool call did not execute or its response was lost before the next turn.",
+                        }),
+                    })
+            i = j
+        elif role == "tool":
+            # Orphaned tool message with no preceding assistant tool_calls turn.
+            i += 1
+        else:
+            out.append(m)
+            i += 1
+    return out
+
+
 class LLMService:
     def __init__(self):
         pass
@@ -1112,7 +1161,7 @@ class LLMService:
         }
         payload: Dict[str, Any] = {
             "model": info["model"],
-            "messages": messages,
+            "messages": reconcile_tool_transcript(messages),
             **({"temperature": temperature} if _temperature_ok(info) else {}),
             _budget_key(info): max_tokens
         }
@@ -1307,7 +1356,7 @@ class LLMService:
         }
         payload = {
             "model": info["model"],
-            "messages": messages,
+            "messages": reconcile_tool_transcript(messages),
             **({"temperature": temperature} if _temperature_ok(info) else {}),
             _budget_key(info): max_tokens,
             "stream": True
@@ -1478,7 +1527,7 @@ class LLMService:
         }
         payload: Dict[str, Any] = {
             "model": info["model"],
-            "messages": messages,
+            "messages": reconcile_tool_transcript(messages),
             **({"temperature": temperature} if _temperature_ok(info) else {}),
             _budget_key(info): max_tokens,
             "stream": True

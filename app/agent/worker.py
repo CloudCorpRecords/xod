@@ -915,7 +915,9 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             convo.append({"role": "user", "content": f"(Note from Xod, not from the person) Not finished: {left} Keep going with the tools."})
             continue
 
-        convo.append({"role": "assistant", "content": content or "", "tool_calls": calls})
+        all_turn_calls = list(calls)
+        convo.append({"role": "assistant", "content": content or "", "tool_calls": all_turn_calls})
+        answered_ids = set()
         # Pieces handed to subagents in this reply run at the same time (services/team.py).
         handoffs = [(i, tc) for i, tc in enumerate(calls[:6]) if tc.get("function", {}).get("name") == "team_delegate"
                     and "team_delegate" in allowed]
@@ -938,6 +940,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             subs += len(jobs)
             for (i, tc), a, r in zip(handoffs, jobs, results):
                 cid = tc.get("id") or f"work_{step}_{i}"
+                answered_ids.add(cid)
                 log.append({"name": "team_delegate", "args": a, "fp": _fp("team_delegate", a), "failed": not r.get("success"),
                             "out": (r.get("summary") or r.get("error") or "")[-3000:], "exit": None, "new": True})
                 from app.services import agent_log
@@ -955,11 +958,15 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             if not isinstance(args, dict):
                 args = {}
             cid = tc.get("id") or f"work_{step}_{i}"
+            answered_ids.add(cid)
             if name not in allowed:
                 res: Any = {"success": False, "error": f"{name} isn't a tool here. Use one of: {', '.join(sorted(allowed))}."}
             else:
                 yield {"type": "tool_call", "name": name, "args": args, "id": cid}
-                res = refused(name, args) or await execute_tool(name, args)
+                try:
+                    res = refused(name, args) or await execute_tool(name, args)
+                except Exception as e:
+                    res = {"success": False, "error": f"{name} failed: {e}"}
                 yield {"type": "tool_result", "name": name, "id": cid, "summary": _summary(name, res), "data": res}
                 decisive_hits.append((name, res))
             out = _out(res)
@@ -973,6 +980,21 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             if isinstance(res, dict) and res.get("needs_approval"):
                 held = res
                 break
+        for tc in all_turn_calls:
+            tid = tc.get("id")
+            if tid and tid not in answered_ids:
+                tc_name = (tc.get("function") or {}).get("name") or ""
+                convo.append({
+                    "role": "tool",
+                    "tool_call_id": tid,
+                    "name": tc_name,
+                    "content": json.dumps({
+                        "success": False,
+                        "error": "Skipped: parallel tool call cap in one turn or paused for approval.",
+                    }),
+                })
+                answered_ids.add(tid)
+        convo[:] = llm_service.reconcile(convo) if hasattr(llm_service, "reconcile") else __import__("app.services.llm", fromlist=["reconcile_tool_transcript"]).reconcile_tool_transcript(convo)
         _shrink(convo)
         if held:
             # The safety check (or a connected app) wants the person's OK: stop here, with the card showing.

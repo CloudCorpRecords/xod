@@ -235,25 +235,35 @@ async def run_subagent(label: str, task: str, tier: str, execute_tool: Callable,
             report = content.strip() or "It gave no answer."
             break
         convo.append({"role": "assistant", "content": content or "", "tool_calls": calls})
+        answered_ids = set()
         for i, tc in enumerate(calls[:3]):
             name = tc.get("function", {}).get("name", "")
             try:
                 args = json.loads(tc.get("function", {}).get("arguments") or "{}")
             except ValueError:
                 args = {}
-            cid = f"{label}_{step}_{i}"
+            cid = tc.get("id") or f"{label}_{step}_{i}"
+            answered_ids.add(cid)
             if name not in allowed:
                 res: Any = {"success": False, "error": f"{name} isn't one of your tools."}
             else:
                 emit({"type": "subagent_tool_call", "agent_id": label, "name": name, "args": args, "id": cid})
-                res = worker.refused(name, args) or await execute_tool(name, args)
+                try:
+                    res = worker.refused(name, args) or await execute_tool(name, args)
+                except Exception as e:
+                    res = {"success": False, "error": f"{name} failed: {e}"}
                 emit({"type": "subagent_tool_result", "agent_id": label, "name": name, "id": cid, "summary": worker._summary(name, res), "data": res})
             log.append({"name": name, "args": args, "fp": worker._fp(name, args), "failed": worker._failed(res), "out": worker._out(res)[-2000:],
                         "exit": res.get("exit_code") if isinstance(res, dict) else None, "new": True})
-            convo.append({"role": "tool", "tool_call_id": tc.get("id") or cid, "name": name, "content": json.dumps(res, default=str)[:3000]})
+            convo.append({"role": "tool", "tool_call_id": cid, "name": name, "content": json.dumps(res, default=str)[:3000]})
             if isinstance(res, dict) and res.get("needs_approval"):
                 report = f"Stopped at a step that needs the person's OK: {res.get('message') or name}"
                 break
+        for tc in calls:
+            tid = tc.get("id")
+            if tid and tid not in answered_ids:
+                convo.append({"role": "tool", "tool_call_id": tid, "name": (tc.get("function") or {}).get("name") or "",
+                              "content": json.dumps({"success": False, "error": "Skipped: parallel tool call cap in one turn or paused for approval."})})
         if report:
             break
         worker._shrink(convo)

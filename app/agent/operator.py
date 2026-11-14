@@ -423,6 +423,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             break
         convo.append({"role": "assistant", "content": content or "", "tool_calls": calls})
         seen = set()
+        answered_ids = set()
         for i, tc in enumerate(calls[:4]):
             name = tc.get("function", {}).get("name", "")
             raw = tc.get("function", {}).get("arguments") or "{}"
@@ -431,6 +432,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             except ValueError:
                 args = {}
             cid = tc.get("id") or f"op_{step}_{i}"
+            answered_ids.add(cid)
             same = (name, json.dumps(args, sort_keys=True, default=str))
             if same in seen:
                 # The same call twice in one reply (small models do this) would add the reminder twice.
@@ -471,6 +473,11 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 pendings.append(res)
             body = json.dumps(res, default=str)[:4000] if not isinstance(res, str) else res[:4000]
             convo.append({"role": "tool", "tool_call_id": cid, "content": body})
+        for tc in calls[4:]:
+            tid = tc.get("id")
+            if tid and tid not in answered_ids:
+                convo.append({"role": "tool", "tool_call_id": tid,
+                              "content": json.dumps({"success": False, "error": "Skipped: parallel tool call cap in one turn."})})
         if waiting:
             break
     if waiting:
