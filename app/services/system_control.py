@@ -54,6 +54,40 @@ def _tidy_output(text: str) -> str:
         return text
     return re.sub(r"\n{3,}", "\n\n", "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").split("\n"))).strip("\n") + "\n"
 
+_FIRST_LINE_READ_BYTES = 1024
+_FIRST_LINE_MAX_CHARS = 200
+
+
+def _first_line_preview(path: str) -> Optional[str]:
+    """The first line of a text file, read for a directory listing, or None.
+
+    A discovery step ("find the file whose first line starts with X") used to
+    die at the listing: the worker listed the folder, saw names and sizes
+    only, and reported it could not identify the file, because the one fact
+    the task turned on, each candidate's first line, was not in the listing
+    and it never went on to read the candidates (Tier 2 item T2C, three
+    grades running). The listing now carries the first line of every text
+    file, so identifying a file by its opening content is something the
+    listing itself supports. Binary content (a NUL byte, or bytes that do
+    not decode as UTF-8) gets no preview; an empty file gets none either.
+    Only the first bytes are read, so a large file costs no more than a
+    small one."""
+    try:
+        with open(path, "rb") as fh:
+            chunk = fh.readline(_FIRST_LINE_READ_BYTES)
+    except Exception:
+        return None
+    if not chunk or b"\x00" in chunk:
+        return None
+    try:
+        text = chunk.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    lines = text.splitlines()
+    if not lines:
+        return None
+    return lines[0].rstrip("\r")[:_FIRST_LINE_MAX_CHARS]
+
 class SystemControlService:
     """
     Dedicated background computer control and telemetry service for Xod AI.
@@ -1703,13 +1737,21 @@ class SystemControlService:
                                 "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime))
                             })
                         else:
-                            files.append({
+                            item = {
                                 "name": entry.name,
                                 "path": entry.path,
                                 "size_bytes": st.st_size,
                                 "extension": Path(entry.name).suffix.lower(),
                                 "modified": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(st.st_mtime))
-                            })
+                            }
+                            try:
+                                if entry.is_file():
+                                    preview = _first_line_preview(entry.path)
+                                    if preview is not None:
+                                        item["first_line"] = preview
+                            except Exception:
+                                pass
+                            files.append(item)
                     except Exception:
                         pass
 
