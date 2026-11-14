@@ -24,6 +24,16 @@ interrupted is simply watched while the queue re-runs it.
 Deliberate limits of v1: subtasks run sequentially (there is one task queue
 and one browser), on this machine only, with no bus. Usage and cost are not
 tracked here; the report says so until a usage ledger exists to read from.
+
+One exception to sequential execution (grade fix cluster 2, Tier 5): a
+subtask whose plan carries structured "delegate" worker briefs does not run
+as one self-executing task at all. MissionRunner hands the briefs to
+workers.coordinate, which spawns one read-only worker per brief in
+parallel, records every worker in the workers table, and aggregates their
+results (failures itemized, never dropped from the denominator) into the
+step's result. A subtask whose instruction calls for delegation in prose
+but whose plan carries no structured briefs fails honestly at dispatch,
+naming that gap: the parent never quietly does the delegated work itself.
 """
 import asyncio
 import hashlib
@@ -177,7 +187,8 @@ _INCOMPLETION_RES = (
 )
 
 
-def _incompletion_signal(claimed: Any, exempt_objects=None) -> Optional[str]:
+def _incompletion_signal(claimed: Any, exempt_objects=None,
+                         step_scope_count: Optional[int] = None) -> Optional[str]:
     """The sentence of a subtask report that admits the step did not
     finish, or None. A subtask whose own words say the work is not
     complete, or name a test failure, cannot be verified no matter what
@@ -191,7 +202,20 @@ def _incompletion_signal(claimed: Any, exempt_objects=None) -> Optional[str]:
     summary.txt", said by the step whose job was to compute the total
     the NEXT step writes) states the step's scope, not its own
     incompletion, and is not a signal. Every other admission shape,
-    and every call without exemptions, is judged exactly as before."""
+    and every call without exemptions, is judged exactly as before.
+
+    `step_scope_count` (grade fix cluster 2, Tier 5) is the size of
+    THIS step's own enumerated scope (the graded shard step's six
+    files, from its "01-06" range or its "six files" phrasing). An
+    incompletion sentence that attributes the incompletion to a
+    quantified scope strictly LARGER than that ("the 40-file sweep
+    remains incomplete", said by the step that checked its six) is a
+    statement about the mission's scope, not this step's: the step is
+    judged on its own scope, and the mission's completeness is judged
+    by its later steps and its finish, not by conscripting step 1's
+    report into a verdict on all 40 files. A first-person admission
+    ("I could not complete...", "I did not finish...") is never
+    scope-exempt, whatever numbers it names."""
     if not claimed or not isinstance(claimed, str):
         return None
     text = re.sub(r"\b0 (?:failed|failures|errors)\b", "0", claimed, flags=re.I)
@@ -204,6 +228,8 @@ def _incompletion_signal(claimed: Any, exempt_objects=None) -> Optional[str]:
                     and not (re.search(r"\bfail", low)
                              and re.search(r"\b(pytest|test suite|tests?|collection)\b", low))
                     and _sibling_scope_admission(low, exempt_objects)):
+                continue
+            if step_scope_count and _mission_scope_admission(low, step_scope_count):
                 continue
             return sentence.strip()[:160]
         if re.search(r"\bfail", low) and re.search(r"\b(pytest|test suite|tests?|collection)\b", low):
@@ -273,6 +299,100 @@ def _sibling_effect_names(subtask: Dict[str, Any]) -> set:
             if e.get("path"):
                 names.add(os.path.basename(str(e["path"])))
     return names - own
+
+
+# ------------------------------------------------------- delegation + step scope
+# Grade fix cluster 2 (Tier 5, live grade 2026-11-13, mission-c797b09d0b):
+# the planner authored exactly the right delegation shape in prose (seven
+# shard-range steps, each instructing "Delegate these six files to three
+# parallel workers, assigning each worker a disjoint pair and a brief
+# covering only that pair"), and execution diverged completely: 0 rows in
+# the workers table, step 1's own task read its six shards itself, and its
+# report was then failed for admitting the whole 40-file mission was
+# incomplete. Root causes, all in this module's path: validate_plan kept
+# only title/instruction/effects/inputs/tools, so a plan carried NO
+# structured fan-out the executor could act on (the prose was the whole of
+# it); MissionRunner created exactly one ordinary queue task per subtask
+# and never called workers.coordinate (the only writer of workers rows
+# for fan-outs, reached by plain tasks through orchestrator._run_parallel
+# on a structured {"parallel": [...]} plan step, a path mission tasks
+# never take: queue.create is called here with no mode, so the task is not
+# stepwise); and the one delegate-flavoured tool a step agent can be
+# offered, team_delegate (app/agent/worker.py), is offered only when
+# team.team_on() finds more than one distinct brain, writes team subagent
+# logs rather than workers rows, and its own note tells the agent "Small
+# jobs: just do them yourself" - nothing in the path made it call it.
+# The fix: the plan schema carries structured "delegate" briefs (below,
+# in validate_plan and PLAN_PROMPT), MissionRunner executes them through
+# workers.coordinate (see _delegated_outcome), and a step that calls for
+# delegation without structured briefs fails honestly instead of being
+# silently self-executed.
+
+_DELEGATION_CALL_RE = re.compile(
+    r"\bdelegat\w*\b|\bparallel workers\b|\bworkers in parallel\b", re.I)
+_SCOPE_UNITS = r"(?:files?|shards?|items?|records?|pages?|documents?|sources?)"
+_NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                 "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+                 "eleven": 11, "twelve": 12}
+
+
+def _delegation_briefs(subtask: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The structured worker briefs a subtask's plan carries, from its
+    stored capability contract (where _plan records them) or, for a
+    plan dict in hand, from the subtask itself. Briefs without a task
+    text are not briefs."""
+    contract = subtask.get("contract") or {}
+    briefs = contract.get("delegate") or subtask.get("delegate") or []
+    if not isinstance(briefs, list):
+        return []
+    return [b for b in briefs
+            if isinstance(b, dict) and str(b.get("task") or "").strip()]
+
+
+def _calls_for_delegation(subtask: Dict[str, Any]) -> bool:
+    """True when the step's own instruction calls for delegated
+    parallel workers, in words. Judged on the instruction only, never
+    on the title (a step titled "Delegate parallel shard reads" whose
+    instruction is "Collect shard totals from workers and report them"
+    is a collection step, the T5-D shape, not a delegation call) and
+    never on delivered inputs (the mission goal is reference material)."""
+    return bool(_DELEGATION_CALL_RE.search(subtask.get("instruction") or ""))
+
+
+def _step_scope_count(subtask: Dict[str, Any]) -> Optional[int]:
+    """The size of this step's own enumerated scope, when its title or
+    instruction enumerates one: an item range ("shards 01-06" -> 6) or
+    a counted unit phrase ("these six files" -> 6). None when the step
+    enumerates no scope, in which case no scope exemption applies."""
+    text = f"{subtask.get('title') or ''} {subtask.get('instruction') or ''}".lower()
+    m = re.search(r"\b(\d{1,3})\s*[-–]\s*(\d{1,3})\b", text)
+    if m:
+        lo, hi = int(m.group(1)), int(m.group(2))
+        if hi >= lo:
+            return hi - lo + 1
+    m = re.search(r"\b(\d+|" + "|".join(_NUMBER_WORDS) + r")\s+"
+                  + _SCOPE_UNITS + r"\b", text)
+    if m:
+        tok = m.group(1)
+        return int(tok) if tok.isdigit() else _NUMBER_WORDS[tok]
+    return None
+
+
+def _mission_scope_admission(low: str, step_scope_count: int) -> bool:
+    """True when an (already lowercased) incompletion sentence
+    attributes its incompletion to a quantified scope strictly larger
+    than this step's own scope ("the 40-file sweep remains incomplete"
+    from a six-file step). A first-person or complete/finish admission
+    is the step talking about itself and is never mission-scoped."""
+    if re.search(r"\b(?:could not|couldn't|unable to|failed to) "
+                 r"(?:complete|finish)\b", low):
+        return False
+    if re.search(r"\bdid not (?:complete|finish)\b", low):
+        return False
+    for m in re.finditer(r"\b(\d+)\s*[- ]\s*" + _SCOPE_UNITS + r"\b", low):
+        if int(m.group(1)) > step_scope_count:
+            return True
+    return False
 
 
 # ------------------------------------------------------- answer content
@@ -1412,12 +1532,13 @@ Break it into a short list of subtasks the agent can do one at a time, in order.
 - "expected_effects": the files this subtask will create, modify or delete, so the result can be checked on disk afterwards. Each effect is {{"kind": "create", "path": "/absolute/path", "content": null}} where kind is "create", "modify" or "delete", path is absolute or starts with ~/, and content is the exact file contents ONLY when the job dictates them word for word, otherwise null. An effect can instead prove that produced code works: {{"kind": "run", "command": "a single command line", "cwd": "/absolute/path", "expect_exit": 0}} where command is one plain command with no shell chaining, pipes or redirection, cwd is the directory the command runs from, and expect_exit (which defaults to 0) is the exit code that counts as success. If a subtask changes no files (looking something up, answering, deciding), expected_effects is [].
 - "inputs": what this subtask must be given to work. Each input is {{"source": "goal"}} (the mission goal itself, which carries any evidence pack or brief the user supplied), {{"source": "prior_step", "ref": "1"}} (the reported result of an earlier step, by its number), or {{"source": "file", "ref": "/absolute/path"}} (a file whose contents the step needs). The goal is always delivered; declare prior_step or file inputs whenever the step's work depends on them. A step whose declared input cannot be delivered never starts.
 - "tools": the tools this subtask needs, by their exact names (for example "computer_write_file" for a step that writes a file, "computer_read_file" for one that only reads, "computer_manage_file" or "fs_create_folder" for a step that creates a directory, "computer_manage_file" for one that deletes a file). Do not invent tool names. A step whose declared file effects need a tool its "tools" list leaves out never starts.
+- "delegate": when a subtask's work is several independent read-only pieces that should be done by parallel workers (for example a sweep of many files split into ranges), do NOT leave the delegation as a sentence in the instruction. Give the subtask a "delegate" list of at least two worker briefs, each {{"task": "the one piece this worker does, with every path and detail it needs", "outcome": "what this worker must report", "facts": [], "constraints": []}}. The briefs must be disjoint: each worker gets only its own piece, never the whole job and never another worker's piece, and each brief must be fully self-contained because the worker sees nothing else. Workers run read-only in parallel, so a delegated subtask declares no expected_effects: put any file writing in its own later subtask that consumes the workers' combined result through a prior_step input. A subtask whose instruction says to delegate but that carries no "delegate" list never starts.
 - When a subtask creates a test file or an executable artifact, give it a "run" effect that runs what it made: run the test file with the project's test runner, or invoke the artifact harmlessly, with cwd set to the directory the subtask creates the file in. Creating a file is not proof it works; the run is the proof.
 - When a subtask researches a fact across sources, its instruction must require ranking primary sources (the official record, the issuing authority) over secondary coverage, must state that a syndicated reprint is not an independent confirmation, and must forbid presenting a figure sourced only to secondary coverage as established: if no primary source can be reached, the step reports that plainly instead of settling for the secondary figure.
 - When a subtask must inspect several sources and say what each one is, write it as a classification (name every candidate with its kind), not as a search for one matching file; and when a discovery subtask's next step needs the identified file's contents, its instruction must require reading the identified file itself, not only identifying it from a listing preview.
 
-Between 2 and 8 subtasks. Later subtasks may rely on earlier ones; nothing runs at the same time.
-Reply with JSON only: {{"subtasks": [{{"title": "...", "instruction": "...", "expected_effects": [], "inputs": [{{"source": "goal"}}], "tools": []}}]}}"""
+Between 2 and 8 subtasks. Later subtasks may rely on earlier ones; subtasks run one at a time in order, and the workers inside one delegated subtask run at the same time.
+Reply with JSON only: {{"subtasks": [{{"title": "...", "instruction": "...", "expected_effects": [], "inputs": [{{"source": "goal"}}], "tools": [], "delegate": []}}]}}"""
 
 
 class PlanRejected(Exception):
@@ -1575,9 +1696,72 @@ def validate_plan(raw: Any) -> Tuple[Optional[Dict[str, Any]], List[str]]:
                 problems.append(f"{where}: tools must be a list of tool names")
             else:
                 clean_tools = [t.strip() for t in raw_tools]
+        # Structured delegation (grade fix cluster 2, Tier 5): the
+        # fan-out a step calls for is carried as data the executor can
+        # act on, not as a sentence in the instruction. Workers are
+        # read-only (workers.spawn refuses any other envelope), so a
+        # delegated step declares no file effects of its own, and its
+        # briefs must be disjoint: two identical briefs are one worker
+        # counted twice, the exact denominator fraud T5-B forbids.
+        clean_delegate: List[Dict[str, Any]] = []
+        raw_delegate = s.get("delegate")
+        if raw_delegate is not None:
+            if not isinstance(raw_delegate, list) or len(raw_delegate) > 8:
+                problems.append(f"{where}: delegate must be a list of at most 8 worker briefs")
+                raw_delegate = []
+            elif 0 < len(raw_delegate) < 2:
+                problems.append(f"{where}: delegate needs at least two worker briefs; "
+                                f"one worker is not parallel delegation")
+                raw_delegate = []
+            seen_briefs: set = set()
+            for j, b in enumerate(raw_delegate if isinstance(raw_delegate, list) else []):
+                bwhere = f"{where} worker brief {j + 1}"
+                if not isinstance(b, dict):
+                    problems.append(f"{bwhere}: must be an object with a task")
+                    continue
+                btask = b.get("task")
+                if not isinstance(btask, str) or not btask.strip():
+                    problems.append(f"{bwhere}: task must be a non-empty string")
+                    continue
+                btask = btask.strip()
+                if len(btask) > 2000:
+                    problems.append(f"{bwhere}: task is over 2000 characters")
+                    continue
+                if btask in seen_briefs:
+                    problems.append(f"{bwhere}: worker briefs must be disjoint; "
+                                    f"this brief repeats an earlier one verbatim")
+                    continue
+                seen_briefs.add(btask)
+                boutcome = b.get("outcome")
+                if boutcome is not None and not isinstance(boutcome, str):
+                    problems.append(f"{bwhere}: outcome must be a string")
+                    continue
+                clean_lists: Dict[str, List[str]] = {}
+                bad_list = False
+                for key in ("facts", "constraints"):
+                    vals = b.get(key)
+                    if vals is None:
+                        clean_lists[key] = []
+                    elif (isinstance(vals, list) and len(vals) <= 12
+                          and all(isinstance(v, str) and v.strip() for v in vals)):
+                        clean_lists[key] = [v.strip() for v in vals]
+                    else:
+                        problems.append(f"{bwhere}: {key} must be a list of strings")
+                        bad_list = True
+                if bad_list:
+                    continue
+                clean_delegate.append({"task": btask,
+                                       "outcome": (boutcome or "").strip(),
+                                       "facts": clean_lists["facts"],
+                                       "constraints": clean_lists["constraints"]})
+            if clean_delegate and clean_effects:
+                problems.append(f"{where}: a delegated step declares no expected_effects "
+                                f"(its workers run read-only); put the file writing in "
+                                f"its own later step")
         out.append({"title": str(title).strip(), "instruction": str(instruction).strip(),
                     "expected_effects": clean_effects,
-                    "inputs": clean_inputs, "tools": clean_tools})
+                    "inputs": clean_inputs, "tools": clean_tools,
+                    "delegate": clean_delegate})
     if problems:
         return None, problems
     # A merged double plan (the baseline's interleaved 1,1,2,2,3,3) repeats
@@ -2401,7 +2585,8 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
         # the queue, this screen alone stood between that report and
         # the mission completing.
         signal = None if runs else _incompletion_signal(
-            result, exempt_objects=_sibling_effect_names(subtask))
+            result, exempt_objects=_sibling_effect_names(subtask),
+            step_scope_count=_step_scope_count(subtask))
         if signal:
             return {"status": "failed", "claimed": result, "verified_status": "contradicted",
                     "evidence": [f"The step's own report admits it did not finish: \"{signal}\" "
@@ -2589,10 +2774,15 @@ class MissionRunner:
     def __init__(self, queue: Any = None, ask: Optional[Callable] = None, poll_sec: float = 1.0,
                  pause_threshold_sec: float = PAUSE_WEDGE_THRESHOLD_SEC,
                  pause_resume_window_sec: float = PAUSE_RESUME_WINDOW_SEC,
-                 clock: Optional[Callable[[], float]] = None):
+                 clock: Optional[Callable[[], float]] = None,
+                 worker_timeout: Optional[float] = None):
         self._queue = queue
         self._ask = ask or _default_ask
         self.poll_sec = poll_sec
+        # Delegated steps (grade fix cluster 2): the per-step budget for
+        # workers.coordinate; None keeps the workers module's own
+        # WORKER_TIMEOUT_SEC. Injectable so tests run the fan-out fast.
+        self.worker_timeout = worker_timeout
         # Pause supervision knobs (fix round 5): how long a subtask's
         # task may sit waiting before the one automatic resume, how
         # long a post-resume wait may sit before the honest failure,
@@ -2661,7 +2851,8 @@ class MissionRunner:
                       "expected_effects, contract, status) VALUES (?,?,?,?,?,?,?,?)",
                       (f"msub-{uuid.uuid4().hex[:10]}", mission["id"], i, s["title"], s["instruction"],
                        json.dumps(s["expected_effects"]),
-                       json.dumps({"inputs": s.get("inputs") or [], "tools": s.get("tools")}),
+                       json.dumps({"inputs": s.get("inputs") or [], "tools": s.get("tools"),
+                                   "delegate": s.get("delegate") or []}),
                        "pending"))
         c.commit()
         c.close()
@@ -2689,6 +2880,105 @@ class MissionRunner:
                 return
             if not await self._run_subtask(mission_id, current):
                 return   # paused on a waiting task; a later drive resumes
+
+    async def _delegated_outcome(self, mission_id: str, sub: Dict[str, Any],
+                                 briefs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Executes one delegated subtask through workers.coordinate
+        (grade fix cluster 2, Tier 5) and returns its outcome in the
+        same shape _outcome_from_task returns for a task-backed step.
+
+        The step is judged on ITS OWN scope: the denominator is this
+        step's authored briefs, nothing else. Every brief becomes one
+        worker row (parented on a coordinator row parented on this
+        subtask), the workers run in parallel under the read-only
+        envelope (T5-C), a failed worker stays in the denominator and
+        fails the step rather than vanishing (T5-B), and the step's
+        claimed result is the coordinator's rendered aggregation of
+        the workers' reports. There is no self-execution fallback: a
+        step that calls for delegation but carries no usable briefs,
+        or whose fan-out does not spawn every authored worker, fails
+        here saying exactly that."""
+        def _failed(evidence: List[str], claimed: str = "") -> Dict[str, Any]:
+            return {"status": "failed", "claimed": claimed,
+                    "verified_status": "failed", "evidence": evidence}
+
+        if not briefs:
+            return _failed([
+                f"Dispatch stopped this step before any task was created: subtask "
+                f"\"{sub.get('title', '')}\" calls for delegated parallel workers in its "
+                f"instruction, but its plan carries no structured worker briefs (a "
+                f"\"delegate\" list), so there is nothing for the executor to spawn. "
+                f"The step was NOT carried out by the parent itself: self-executing a "
+                f"step that was planned as delegated would hide the non-delegation. "
+                f"Re-plan the step with one disjoint brief per worker."])
+        if len(briefs) < 2:
+            return _failed([
+                f"Dispatch stopped this step before any worker was spawned: subtask "
+                f"\"{sub.get('title', '')}\" carries only {len(briefs)} worker brief(s); "
+                f"parallel delegation needs at least two disjoint briefs. The step was "
+                f"not self-executed instead."])
+        tasks = [str(b.get("task") or "").strip() for b in briefs]
+        if len(set(tasks)) != len(tasks):
+            return _failed([
+                f"Dispatch stopped this step before any worker was spawned: subtask "
+                f"\"{sub.get('title', '')}\" carries duplicate worker briefs; briefs must "
+                f"be disjoint, so one worker's work is never counted twice. The step "
+                f"was not self-executed instead."])
+        if sub.get("expected_effects"):
+            return _failed([
+                f"Dispatch stopped this step before any worker was spawned: subtask "
+                f"\"{sub.get('title', '')}\" is delegated but declares file effects; "
+                f"delegated workers run read-only (the T5-C envelope) and cannot "
+                f"perform them. The write belongs in its own later step."])
+        from app.services import workers as W
+        job = f"{sub.get('title', '')}: {sub.get('instruction', '')}".strip(": ").strip()
+        kwargs: Dict[str, Any] = {}
+        if self.worker_timeout is not None:
+            kwargs["timeout"] = self.worker_timeout
+        # A fan-out interrupted by a restart keeps the briefs its
+        # workers already finished (the orchestrator's own rule for
+        # its fan-outs, mirrored here): only unfinished briefs re-run.
+        try:
+            prev = [w for w in W.list_workers(sub["id"])
+                    if w["role"] == "coordinator"
+                    and w["state"] in ("interrupted", "running")]
+            if prev:
+                kwargs["reuse_from"] = prev[-1]["id"]
+        except Exception:
+            pass
+        try:
+            result = await W.coordinate(sub["id"], job, briefs, **kwargs)
+        except Exception as e:
+            return _failed([
+                f"Delegated execution for subtask \"{sub.get('title', '')}\" failed "
+                f"inside workers.coordinate: {e}. No result is claimed for this step."])
+        rows = result.get("workers") or []
+        if len(rows) != len(briefs):
+            return _failed([
+                f"Delegated execution for subtask \"{sub.get('title', '')}\" spawned "
+                f"{len(rows)} worker(s) for {len(briefs)} authored brief(s); a fan-out "
+                f"that does not spawn every authored worker is a failed delegation, "
+                f"not a step the parent quietly finishes itself."],
+                claimed=W.render_result(result))
+        done_n = sum(1 for w in rows if w.get("outcome") == "done")
+        evidence = [
+            f"Delegated execution: coordinator {result.get('coordinator')} spawned "
+            f"{len(rows)} worker(s) for this step through workers.coordinate; "
+            f"{done_n}/{len(rows)} done. The workers are recorded as rows in the "
+            f"workers table: {', '.join(str(w.get('id')) for w in rows)}."]
+        for f in result.get("failures") or []:
+            evidence.append(f"Worker did not deliver: {f.get('task')}: "
+                            f"{f.get('outcome')} ({f.get('why')})")
+        rendered = W.render_result(result)
+        if result.get("outcome") == "done":
+            return {"status": "done", "claimed": rendered,
+                    "verified_status": "verified" if result.get("evidence") else "unverifiable",
+                    "evidence": evidence}
+        return _failed(evidence + [
+            f"The delegated outcome was \"{result.get('outcome')}\": {done_n} of "
+            f"{len(rows)} workers delivered, so this step's own scope is not "
+            f"complete. The failed workers stay in the count above; the step is "
+            f"recorded failed, never done on a partial fan-out."], claimed=rendered)
 
     async def _run_subtask(self, mission_id: str, sub: Dict[str, Any]) -> bool:
         """Works one subtask to a recorded outcome. False means the mission
@@ -2763,6 +3053,32 @@ class MissionRunner:
                     self._finish(mission_id,
                                  reason=f"Step {sub['idx'] + 1} ({sub['title']}) failed: "
                                         + outcome["evidence"][0])
+                return True
+            # Delegated steps (grade fix cluster 2, Tier 5): a subtask
+            # whose plan carries structured worker briefs, or whose
+            # instruction calls for delegation at all, never becomes a
+            # single self-executing queue task. It runs through
+            # workers.coordinate (or fails honestly there when the
+            # briefs are missing or unusable), with the workers table
+            # as its evidence.
+            briefs = _delegation_briefs(sub)
+            if briefs or _calls_for_delegation(sub):
+                outcome = await self._delegated_outcome(mission_id, sub, briefs)
+                _save_subtask(sub["id"], status=outcome["status"],
+                              claimed=outcome["claimed"],
+                              verified_status=outcome["verified_status"],
+                              evidence=outcome["evidence"],
+                              started_at=time.time(), finished_at=time.time())
+                _repair_finished_verdict(mission_id)
+                if outcome["status"] in ("failed", "blocked"):
+                    mission = get_mission(mission_id)
+                    if not mission["continue_on_failure"]:
+                        for rest in list_subtasks(mission_id):
+                            if rest["status"] in ("pending", "queued"):
+                                _save_subtask(rest["id"], status="skipped")
+                        self._finish(mission_id,
+                                     reason=f"Step {sub['idx'] + 1} ({sub['title']}) failed: "
+                                            + outcome["evidence"][0])
                 return True
             task = self.queue.create(request,
                                      title=f"{sub['title']} (mission step {sub['idx'] + 1})",
