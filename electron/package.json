@@ -34,11 +34,8 @@
       "buildResources": "build"
     },
     "files": [
-      "main.js",
-      "mode.js",
-      "updater.js",
-      "own_server.js",
-      "preload.js",
+      "*.js",
+      "!*.test.js",
       "splash.html",
       "build/icon.png",
       "package.json"
