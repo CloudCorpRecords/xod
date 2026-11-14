@@ -353,6 +353,53 @@ def _has_answer_statement(prose: str) -> bool:
     return False
 
 
+def _instruction_demands_primary_ranking(subtask: Dict[str, Any]) -> bool:
+    """The step's own text demands primary-over-secondary ranking: a
+    primary source or record is named, and secondary coverage, a
+    ranking verb, or the issuing authority is named with it."""
+    both = (str(subtask.get("title", "")) + "\n"
+            + str(subtask.get("instruction", ""))).lower()
+    if not re.search(r"\bprimary\b", both):
+        return False
+    return bool(re.search(r"\bsecondary\b|\brank\w*\b|\bprefer\w*\b|"
+                          r"\bover\b[^.\n]{0,30}\bsecondary\b|"
+                          r"\bauthorit\w*\b|\bofficial record", both))
+
+
+def _primary_ranking_problem(subtask: Dict[str, Any],
+                             claimed: Any) -> Optional[str]:
+    """The reason a report is not the primary-ranked answer its own
+    instruction demands, or None when it ranks (or the step demands
+    no ranking). Fix wave cluster 3 (Tier 4 grade T4-L2): the live
+    research settled for secondary-source counts its own text flagged
+    as not verified against the primary authorities, and no layer
+    judged the ranking. Two deterministic failures: the report itself
+    flags its answer unverified against the primary authority, or it
+    never names a primary source at all, so the demanded ranking is
+    absent from the answer."""
+    if not _instruction_demands_primary_ranking(subtask):
+        return None
+    if not claimed or not isinstance(claimed, str):
+        return None
+    low = claimed.lower()
+    if (re.search(r"\bnot (?:yet )?(?:been )?verified against\b", low)
+            or re.search(r"\bunverified\b", low)):
+        return ("The step's instruction requires ranking primary sources "
+                "over secondary coverage, but its report flags its own "
+                "answer as unverified against the primary authority: it "
+                "settled for secondary-source figures and labelled them "
+                "unverified instead of establishing the fact from a "
+                "primary source. A secondary figure its own report calls "
+                "unverified is not the primary-ranked answer its "
+                "instruction required.")
+    if "primary" not in low:
+        return ("The step's instruction requires ranking primary sources "
+                "over secondary coverage, but its report names no primary "
+                "source at all: the ranking its instruction demanded is "
+                "absent, and secondary coverage alone does not satisfy it.")
+    return None
+
+
 def _sourced_answer_problem(subtask: Dict[str, Any], claimed: Any) -> Optional[str]:
     """The reason a no-effect step's claimed result is not the sourced
     fact its own instruction demands, or None when the report carries
@@ -374,6 +421,9 @@ def _sourced_answer_problem(subtask: Dict[str, Any], claimed: Any) -> Optional[s
                 "required.")
     prose = _ANSWER_URL_RE.sub(" ", _ANSWER_CITATION_RE.sub(" ", claimed))
     if _has_answer_statement(prose):
+        ranking_problem = _primary_ranking_problem(subtask, claimed)
+        if ranking_problem:
+            return ranking_problem
         return None
     return ("The step's instruction requires a sourced fact (the fact, with its "
             "source name and URL reported), but its report contains no answer "
@@ -430,10 +480,48 @@ _DISCOVERY_VALUE_STOPWORDS = {"the", "a", "an", "file", "matching", "in",
                               "of", "is", "was", "it", "this", "that"}
 
 
+_CLASS_SOURCE_RE = re.compile(
+    r"registry|blog|wire|reprint|syndicat\w*|primary|secondary|"
+    r"press release|filing|archive|news article|announcement", re.I)
+
+
+def _instruction_needs_classification(subtask: Dict[str, Any]) -> bool:
+    """The step's own text demands a multi-source classification, not
+    a single-target discovery: inspect several sources and say what
+    each one IS (the registry extract, the company blog, a wire
+    reprint), judged on the instruction and title only. An explicit
+    single-target criterion (the matching file, the unique file, the
+    file whose first line ...) always wins: that step is a discovery
+    even when its text also names source kinds. Fix wave cluster 3
+    (Tier 4 grade T4-L1): the AGE-39 discovery judgment fired on a
+    classify-all-sources step and demanded the one statement that
+    step must not make (a single matching file), killing the mission
+    before its adjudication could run."""
+    text = str(subtask.get("instruction", ""))
+    title = str(subtask.get("title", "")).strip()
+    both = f"{title}\n{text}".lower()
+    if re.search(r"\bmatching file\b|\bunique file\b|\bfile whose\b|"
+                 r"\bwhich file\b|\bone whose\b", both):
+        return False
+    gather = (re.search(r"\b(?:list|inspect|examine|read|check|scan|search)\b", both)
+              and re.search(r"\b(?:sources?|files?|candidates?|extracts?)\b", both))
+    if not gather:
+        return False
+    signal = (re.search(r"\bclassif\w*\b", both)
+              or re.search(r"\bany\b[^.\n]{0,40}\breprint\b", both)
+              or re.search(r"\b(?:each|all|every) sources?\b", both)
+              or re.search(r"\bidentify the\b[^.\n]{0,100}(?:,| and | or )", both))
+    return bool(signal)
+
+
 def _instruction_needs_discovery(subtask: Dict[str, Any]) -> bool:
     """The step's own text demands a discovery: inspect candidate
     files, select the one matching a stated criterion, and report the
-    identified file. Judged on the instruction and title only."""
+    identified file. Judged on the instruction and title only. A
+    multi-source classification step is not a discovery (see
+    _instruction_needs_classification)."""
+    if _instruction_needs_classification(subtask):
+        return False
     text = str(subtask.get("instruction", ""))
     title = str(subtask.get("title", "")).strip()
     both = f"{title}\n{text}".lower()
@@ -554,6 +642,61 @@ def _successful_read_files(task: Optional[Dict[str, Any]]) -> set:
         except Exception:
             pass
     return reads
+
+
+_CLASS_MARKER_RE = re.compile(
+    r"\bis (?:a|an|the)\b|\bclassified as\b|\bcounts as\b|\breprint of\b|"
+    r"\bnot (?:an? )?independent\b|\bindependent source\b|"
+    r"\bofficial record\b|\boriginal (?:record|filing|announcement)\b", re.I)
+
+
+def _classification_answer_problem(subtask: Dict[str, Any],
+                                   claimed: Any) -> Optional[str]:
+    """The reason a multi-source classification step's claimed result
+    is not the classification its own instruction demands, or None
+    when the report classifies the candidates (or the step demands no
+    classification). A classification must classify: at least two
+    candidates each named with what it is (its source kind, its
+    independence, its provenance). A bare listing of the candidates
+    classifies none of them, and one classified source leaves the
+    rest unclassified, so both fail with that true reason, in the
+    same disposition as the discovery judgment."""
+    if not _instruction_needs_classification(subtask):
+        return None
+    demand = ("The step's instruction requires a classification (inspect "
+              "the sources and say, for each candidate, what kind of "
+              "source it is)")
+    if not claimed or not isinstance(claimed, str) or not claimed.strip():
+        return (demand + ", but its report was empty, so no source was "
+                "classified at all. An empty report is not done on "
+                "absence of contradiction.")
+    text = claimed.replace("\u2019", "'")
+    for sentence in re.split(r"[.\n]", text):
+        low = sentence.lower()
+        if any(re.search(p, low) for p in _DISCOVERY_ADMISSION_RES):
+            return (demand + f", but its report admits the classification "
+                    f"was not made: \"{sentence.strip()[:160]}\" It is not "
+                    "done on absence of contradiction.")
+    classified: set = set()
+    for clause in re.split(r"(?:[;!?\n]|\.\s+)", text):
+        if not _CLASS_MARKER_RE.search(clause):
+            continue
+        files = _DISCOVERY_FILE_RE.findall(clause)
+        if files:
+            classified.update(f.lower() for f in files)
+        else:
+            m = _CLASS_SOURCE_RE.search(clause)
+            if m:
+                classified.add("kind:" + m.group(0).lower().split()[0])
+    if len(classified) < 2:
+        return (demand + ", but its report does not classify the "
+                "candidates: fewer than two sources are named with what "
+                "they are (their kind, independence, or provenance), so "
+                "at most a listing of the candidates it inspected. A "
+                "listing is not a classification, so the classification "
+                "this step exists to make was not made. It is not done "
+                "on absence of contradiction.")
+    return None
 
 
 def _discovery_answer_problem(subtask: Dict[str, Any],
@@ -1270,6 +1413,8 @@ Break it into a short list of subtasks the agent can do one at a time, in order.
 - "inputs": what this subtask must be given to work. Each input is {{"source": "goal"}} (the mission goal itself, which carries any evidence pack or brief the user supplied), {{"source": "prior_step", "ref": "1"}} (the reported result of an earlier step, by its number), or {{"source": "file", "ref": "/absolute/path"}} (a file whose contents the step needs). The goal is always delivered; declare prior_step or file inputs whenever the step's work depends on them. A step whose declared input cannot be delivered never starts.
 - "tools": the tools this subtask needs, by their exact names (for example "computer_write_file" for a step that writes a file, "computer_read_file" for one that only reads, "computer_manage_file" or "fs_create_folder" for a step that creates a directory, "computer_manage_file" for one that deletes a file). Do not invent tool names. A step whose declared file effects need a tool its "tools" list leaves out never starts.
 - When a subtask creates a test file or an executable artifact, give it a "run" effect that runs what it made: run the test file with the project's test runner, or invoke the artifact harmlessly, with cwd set to the directory the subtask creates the file in. Creating a file is not proof it works; the run is the proof.
+- When a subtask researches a fact across sources, its instruction must require ranking primary sources (the official record, the issuing authority) over secondary coverage, must state that a syndicated reprint is not an independent confirmation, and must forbid presenting a figure sourced only to secondary coverage as established: if no primary source can be reached, the step reports that plainly instead of settling for the secondary figure.
+- When a subtask must inspect several sources and say what each one is, write it as a classification (name every candidate with its kind), not as a search for one matching file; and when a discovery subtask's next step needs the identified file's contents, its instruction must require reading the identified file itself, not only identifying it from a listing preview.
 
 Between 2 and 8 subtasks. Later subtasks may rely on earlier ones; nothing runs at the same time.
 Reply with JSON only: {{"subtasks": [{{"title": "...", "instruction": "...", "expected_effects": [], "inputs": [{{"source": "goal"}}], "tools": []}}]}}"""
@@ -2283,6 +2428,15 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
             # a discovery instruction, so without this the closing
             # branch below would record an admitted non-discovery done
             # on absence of contradiction.
+            # Cluster 3 (Tier 4 grade T4-L1): a multi-source
+            # classification step is judged on whether its report
+            # classifies the candidates, never on the single-target
+            # discovery standard below.
+            classification_problem = _classification_answer_problem(subtask, result)
+            if classification_problem:
+                return {"status": "failed", "claimed": result,
+                        "verified_status": "contradicted",
+                        "evidence": [classification_problem]}
             discovery_problem = _discovery_answer_problem(subtask, result, task)
             if discovery_problem:
                 return {"status": "failed", "claimed": result,
