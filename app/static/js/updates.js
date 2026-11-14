@@ -61,7 +61,47 @@
     banner();
   };
 
+  // AGE-48: the top-bar pill, rendered from this same state (no second
+  // checker, no new endpoint). The running version, plus a green dot and
+  // the word Current when it is the latest release, the newer version
+  // named when one is out, and the plain version alone while a check is
+  // still running or its result is unknown. Version number plus one
+  // status word; no sentences in the top bar.
+  function topPill() {
+    const el = document.getElementById("xodVersionTop");
+    if (!el) return;
+    if (!st || !st.current) {
+      el.classList.add("hidden");
+      el.classList.remove("flex");
+      return;
+    }
+    let dot = "", word = "";
+    if (st.state === "uptodate") {
+      dot = "bg-emerald-400";
+      word = "Current";
+    } else if (["available", "ready", "manual", "downloading", "installing"].includes(st.state) && st.latest) {
+      dot = "bg-amber-400";
+      word = `${esc(st.latest)} is out`;
+    }
+    el.innerHTML = (dot ? `<span class="size-1.5 rounded-full ${dot} shrink-0"></span>` : "")
+      + `<span>${esc(st.current)}</span>`
+      + (word ? `<span class="text-zinc-500">${word}</span>` : "");
+    el.classList.remove("hidden");
+    el.classList.add("flex");
+  }
+
+  // The top-bar pill's click: the existing Settings panel, scrolled to
+  // its Updates section, where Check now and the policy switch live.
+  function openSettings() {
+    if (window.openSettingsPanel) openSettingsPanel();
+    requestAnimationFrame(() => {
+      const el = document.getElementById("updatesSection");
+      if (el) el.scrollIntoView({ block: "start" });
+    });
+  }
+
   function pill() {
+    topPill();
     const host = document.getElementById("xodVersion");
     if (!host || !st) return;
     const s = st.state;
@@ -187,7 +227,7 @@
       render(await serverStatus(false));
     }
   }
-  window.XodUpdates = { state: () => st, check: () => act("check"), install: () => act("install"), _render: render };
+  window.XodUpdates = { state: () => st, check: () => act("check"), install: () => act("install"), openSettings, _render: render };
   setTimeout(boot, 1200);
   setInterval(pill, 60000);   // keeps "checked 5 min ago" fresh
 })();

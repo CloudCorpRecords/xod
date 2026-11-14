@@ -157,6 +157,11 @@
       </button>
       <div class="xod-mascot xod-mascot--small" data-mood="idle" title="Hi, I'm Xod"></div>
       <span class="xod-wordmark">Xod</span>
+      <!-- AGE-48: the running version at a glance, next to the name, so a
+           wrong old launch is obvious without opening Settings. Rendered
+           by js/updates.js (topPill) from the same /api/update state as
+           the Settings pill; the click goes to Settings, Updates. -->
+      <button id="xodVersionTop" onclick="if(window.XodUpdates) XodUpdates.openSettings()" class="hidden items-center gap-1.5 px-2 py-1 rounded-full border border-white/[0.08] text-[12px] text-zinc-300 hover:bg-surface-700 transition-colors" title="Version and updates"></button>
       <!-- Phase 1: the status line — face plus ONE human sentence,
            visible from every surface. -->
       <div class="relative">
@@ -362,7 +367,7 @@
           <i data-lucide="chevron-right" class="size-4 text-zinc-600 shrink-0"></i>
         </button>
         </section>
-        <section>
+        <section id="updatesSection">
           <p class="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold">Updates</p>
           <!-- Phase 5: one plain line, no action needed. The policy switch and
                Check now live one layer down, in the details below. -->
