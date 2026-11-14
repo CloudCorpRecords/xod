@@ -465,8 +465,100 @@ def _discovery_value_present(claimed: str, prefix: Optional[str]) -> bool:
     return False
 
 
+def _instruction_demands_contents(subtask: Dict[str, Any]) -> bool:
+    """The discovery step's own instruction demands the identified
+    file's contents, not just its identity or the value on a preview
+    line: full/complete/entire contents, contents with their line
+    endings, or reproducing the contents. Judged on the instruction
+    only (fix wave cluster 1, Tier 2 grade T2C)."""
+    text = str(subtask.get("instruction", "")).lower()
+    if re.search(r"\b(?:full|complete|entire) contents?\b", text):
+        return True
+    if re.search(r"\bcontents?\b", text) and re.search(r"\bline endings?\b", text):
+        return True
+    if re.search(r"\breproduce\b[^.\n]{0,40}\bcontents?\b", text):
+        return True
+    return False
+
+
+def _identified_files(text: str) -> List[str]:
+    """The file paths a report names as its match: file mentions in a
+    clause that carries an identification marker, in order."""
+    out: List[str] = []
+    for clause in re.split(r"(?:[;!?\n]|\.\s+)", text):
+        if not _DISCOVERY_MARKER_RE.search(clause):
+            continue
+        for m in _DISCOVERY_FILE_RE.finditer(clause):
+            if m.group(0) not in out:
+                out.append(m.group(0))
+    return out
+
+
+def _read_record(entry: Any, reads: set) -> None:
+    """Fold one evidence/agent-step entry into the set of files it
+    shows were successfully read, when it records a computer_read_file
+    call that did not fail. Paths are kept whole and as basenames."""
+    if not isinstance(entry, dict):
+        return
+    tool = str(entry.get("tool") or entry.get("name") or "")
+    payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+    if not tool and payload:
+        tool = str(payload.get("tool") or "")
+    if tool != "computer_read_file":
+        return
+    src = payload if payload else entry
+    if (src.get("success") is False or src.get("error")
+            or entry.get("ok") is False or entry.get("success") is False):
+        return
+    path = str(src.get("filepath") or src.get("file_path") or src.get("path") or "")
+    if not path:
+        # agent_log rows name the read in their title ("Read x.txt").
+        m = re.match(r"\s*Read\s+(.+?)\s*$", str(entry.get("title") or ""))
+        path = m.group(1) if m else ""
+    if path:
+        norm = path.replace("\\", "/").rstrip("/")
+        reads.add(norm.lower())
+        reads.add(norm.rsplit("/", 1)[-1].lower())
+
+
+def _successful_read_files(task: Optional[Dict[str, Any]]) -> set:
+    """Files the step's task record shows were actually read with
+    computer_read_file: the task's evidence entries, its stored
+    evidence_json, its agent_steps, and the agent log's step slice
+    for the task (the live event slice). A listing, a preview, or a
+    failed read is not in this set."""
+    reads: set = set()
+    if not isinstance(task, dict):
+        return reads
+    ev = task.get("evidence")
+    if isinstance(ev, list):
+        for entry in ev:
+            _read_record(entry, reads)
+    for key in ("evidence_json", "agent_steps"):
+        raw = task.get(key)
+        if raw:
+            try:
+                data = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                data = None
+            entries = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+            for entry in entries:
+                _read_record(entry, reads)
+    tid = task.get("id")
+    if tid:
+        try:
+            from app.services import agent_log
+            for rows in (agent_log.steps_for(f"task:{tid}") or {}).values():
+                for entry in rows or []:
+                    _read_record(entry, reads)
+        except Exception:
+            pass
+    return reads
+
+
 def _discovery_answer_problem(subtask: Dict[str, Any],
-                              claimed: Any) -> Optional[str]:
+                              claimed: Any,
+                              task: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """The reason a no-effect discovery step's claimed result is not
     the discovery its own instruction demands, or None when the report
     makes the discovery (or the step demands none). An explicit
@@ -519,6 +611,33 @@ def _discovery_answer_problem(subtask: Dict[str, Any],
                 "is incomplete: the file is named but the value it was "
                 "inspected for is not reported. It is not done on absence "
                 "of contradiction.")
+    if _instruction_demands_contents(subtask):
+        # Cluster 1 (T2C, fourth grade): identification from the
+        # listing's first_line previews is real identification, but a
+        # step whose instruction demands the file's full contents is
+        # not done until the identified file was actually read. The
+        # graded step named directive.txt, reported that the rest of
+        # the file was unavailable, and recorded done/unverifiable
+        # with no successful computer_read_file on it anywhere in its
+        # event slice, so the next step had nothing to copy. A worker
+        # that tried and failed to read still fails honestly here: no
+        # successful read in the slice means the contents were never
+        # delivered, whatever the report claims.
+        identified = _identified_files(text)
+        reads = _successful_read_files(task)
+        read_through = any(
+            f.lower() in reads or f.rsplit("/", 1)[-1].lower() in reads
+            or any(r.endswith("/" + f.lower()) for r in reads)
+            for f in identified)
+        if identified and not read_through:
+            return (demand + ", but although its report names "
+                    f"{identified[0]} it shows no successful read of that "
+                    "file in the step's tool record, while the step's "
+                    "instruction demands the file's contents: the match "
+                    "was identified from the listing preview and never "
+                    "read, so the contents the next step needs were not "
+                    "delivered. Identification without the read is not "
+                    "done on absence of contradiction.")
     return None
 
 
@@ -2164,7 +2283,7 @@ def _outcome_from_task(task: Optional[Dict[str, Any]], subtask: Dict[str, Any]) 
             # a discovery instruction, so without this the closing
             # branch below would record an admitted non-discovery done
             # on absence of contradiction.
-            discovery_problem = _discovery_answer_problem(subtask, result)
+            discovery_problem = _discovery_answer_problem(subtask, result, task)
             if discovery_problem:
                 return {"status": "failed", "claimed": result,
                         "verified_status": "contradicted",
