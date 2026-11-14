@@ -74,8 +74,13 @@ async def all_models() -> Dict[str, Any]:
                         ("groq", "groq_api_key"), ("openrouter", "openrouter_api_key"), ("fireworks", "fireworks_api_key")):
         if getattr(settings, field, ""):
             mid = CLOUD_DEFAULTS[prov]
-            out.append({"provider": prov, "server": prov.title(), "base_url": "", "model": mid, "where": "online", "size_gb": None,
-                        "tools": True, "vision": prov in CLOUD_SEES, "thinking": None, "context": None, "online": True})
+            row = {"provider": prov, "server": prov.title(), "base_url": "", "model": mid, "where": "online", "size_gb": None,
+                   "tools": True, "vision": prov in CLOUD_SEES, "thinking": None, "context": None, "online": True}
+            out.append(row)
+            if prov == settings.llm_provider and settings.llm_model and not _same(settings.llm_model, mid):
+                # The active model is not the provider default: list it too,
+                # or it vanishes from /api/models and nothing is in use.
+                out.append({**row, "model": settings.llm_model})
     seeing = await vision.model()
     for r in out:
         size = r.get("size_gb")

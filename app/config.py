@@ -1,4 +1,5 @@
 import os
+import threading
 from pathlib import Path
 from dotenv import load_dotenv, set_key
 from pydantic import BaseModel
@@ -79,6 +80,11 @@ try:
 except Exception:
     _secrets_stale = False
 
+# Serializes maybe_heal_secrets(): the read paths serve from several worker
+# threads at once, and two overlapping heals reset the vault cache under
+# each other mid-reload.
+_heal_lock = threading.Lock()
+
 
 def reload_secrets() -> dict:
     """Reads the Keychain again (after macOS said no, or the prompt went unseen) and puts the keys back in use."""
@@ -103,14 +109,17 @@ def maybe_heal_secrets() -> bool:
     global _secrets_stale
     if not _secrets_stale:
         return False
-    from app.services import keychain
-    try:
-        if keychain.problem() is not None:
+    with _heal_lock:
+        if not _secrets_stale:   # a concurrent caller healed while this one waited
             return False
-    except Exception:
-        return False
-    reload_secrets()
-    return not _secrets_stale
+        from app.services import keychain
+        try:
+            if keychain.problem() is not None:
+                return False
+        except Exception:
+            return False
+        reload_secrets()
+        return not _secrets_stale
 
 def update_env_variable(key: str, value: str):
     """Updates a setting. API keys go to the Keychain only; other settings to SQLite and .env."""

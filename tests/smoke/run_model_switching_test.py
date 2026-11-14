@@ -19,6 +19,11 @@ This suite proves:
   (c) _build_endpoint for openai with no explicit model does not
       return gpt-4o;
   (d) CLOUD_DEFAULTS["openai"] == "gpt-6.1-terra".
+  (e) the ACTIVE non-default model stays represented as in use: with
+      gpt-4o active, quick() shows its row current and NOT missing, and
+      all_models() lists it with "chat" in in_use (Hydrogen Round 9:
+      offering only the default row made every upgrader's working model
+      render as "not available" and vanish from /api/models).
 
 Run: .venv/bin/python tests/smoke/run_model_switching_test.py
 """
@@ -85,6 +90,24 @@ async def main() -> None:
         check("the terra row is NOT marked current while gpt-4o is current",
               terra_rows[0].get("current") is False, str(terra_rows[0]))
         check("the terra row is not marked missing", not terra_rows[0].get("missing"), str(terra_rows[0]))
+    print("A2 the active non-default model (gpt-4o) stays represented as in use")
+    gpt4o_rows = [c for c in openai_rows if c["model"] == "gpt-4o"]
+    check("quick() shows the active gpt-4o row as current",
+          len(gpt4o_rows) == 1 and gpt4o_rows[0].get("current") is True, str(gpt4o_rows))
+    check("quick() does not mark the active gpt-4o row missing",
+          bool(gpt4o_rows) and not gpt4o_rows[0].get("missing"), str(gpt4o_rows))
+    from app.services import model_hub as _model_hub
+    try:
+        allm0 = await _model_hub.all_models()
+        oa0 = [m for m in allm0["models"] if m["provider"] == "openai"]
+        check("all_models() lists the active gpt-4o row",
+              any(m["model"] == "gpt-4o" for m in oa0), str(oa0))
+        check("all_models() marks gpt-4o in use for chat while it is active",
+              any(m["model"] == "gpt-4o" and "chat" in (m.get("in_use") or []) for m in oa0), str(oa0))
+    except Exception as e:
+        check("all_models() lists the active gpt-4o row", False, f"{type(e).__name__}: {e}")
+        check("all_models() marks gpt-4o in use for chat while it is active", False, f"{type(e).__name__}: {e}")
+
     # The click path: model_switcher.js refuses only current/missing rows, then
     # POSTs {provider, model} to /api/setup/choose, which is choose() itself.
     if terra_rows and terra_rows[0].get("current") is False and not terra_rows[0].get("missing"):

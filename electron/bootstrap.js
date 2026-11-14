@@ -51,7 +51,11 @@
 // does not exist. Semantics for every non-archive path are identical.
 const fs = (() => {
   if (process.versions && process.versions.electron) {
-    try { return require("original-fs"); } catch (e) { /* fall through to fs */ }
+    try { return require("original-fs"); } catch (e) {
+      // Never silent: falling back to the asar-patched fs inside Electron is
+      // the v1.1.4 failure mode, so say so where support can see it.
+      try { console.error("xod bootstrap: original-fs unavailable in Electron, falling back to fs: " + (e && e.message)); } catch (_) { /* keep loading */ }
+    }
   }
   return require("fs");
 })();

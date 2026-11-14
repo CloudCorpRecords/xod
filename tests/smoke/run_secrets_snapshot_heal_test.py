@@ -28,6 +28,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -151,6 +152,67 @@ def main():
           cfg["has_openai_key"] is True and cfg["tavily_configured"] is True
           and config.settings.openai_api_key == SEEDED["openai_api_key"],
           str({k: cfg[k] for k in ("has_openai_key", "tavily_configured")}))
+
+    # ---- phase C: poison once more and let GET /api/secrets be the FIRST
+    # read path after access returns: it must heal on its own too (this
+    # handler was named in the design but never exercised until now).
+    PromptKeyring.blocked = True
+    config.reload_secrets()
+    check("phase C setup: snapshot stale again", config._secrets_stale is True
+          and config.settings.openai_api_key == "")
+    PromptKeyring.blocked = False
+    time.sleep(2.6)
+    res = asyncio.run(app_main.secrets_list())
+    check("GET /api/secrets heals the snapshot on its own after an outage",
+          config.settings.openai_api_key == SEEDED["openai_api_key"]
+          and config._secrets_stale is False and res.get("readable") is True,
+          str({k: res.get(k) for k in ("readable",)}))
+
+    # ---- phase D: concurrent heal callers must not race. The read paths
+    # serve from worker threads (and saved_keys from more than one place);
+    # with a stale snapshot and the store answering, eight simultaneous
+    # maybe_heal_secrets() calls must produce exactly ONE reload, not a
+    # pile-up of overlapping reloads resetting the vault cache under each
+    # other (Hydrogen Round 9). The counting wrapper sleeps so the race
+    # window is wide open on an unsynchronized implementation.
+    PromptKeyring.blocked = True
+    config.reload_secrets()
+    PromptKeyring.blocked = False
+    time.sleep(2.6)
+    real_reload = config.reload_secrets
+    reload_calls = []
+
+    def counting_reload():
+        reload_calls.append(1)
+        time.sleep(0.3)
+        return real_reload()
+
+    config.reload_secrets = counting_reload
+    try:
+        barrier = threading.Barrier(8)
+        errors = []
+
+        def caller():
+            try:
+                barrier.wait(timeout=10)
+                config.maybe_heal_secrets()
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=caller) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+    finally:
+        config.reload_secrets = real_reload
+    check("concurrent heal callers run exactly one reload",
+          len(reload_calls) == 1 and not errors,
+          f"reloads={len(reload_calls)}, errors={errors}")
+    check("the snapshot is healed and consistent after the race",
+          config._secrets_stale is False
+          and config.settings.openai_api_key == SEEDED["openai_api_key"]
+          and config.settings.tavily_api_key == SEEDED["tavily_api_key"])
 
     failed = [n for n, ok in results if not ok]
     print(f"\nSUMMARY {'PASS' if not failed else 'FAIL'} {failed}")

@@ -80,6 +80,8 @@ def _has_chats() -> bool:
 
 
 async def status() -> Dict[str, Any]:
+    import asyncio
+
     from app.config import settings
     from app.services.local_engine import CATALOG, is_downloaded, recommend, download_status
     mac = _mac()
@@ -88,7 +90,9 @@ async def status() -> Dict[str, Any]:
     builtin = [{**m, "downloaded": is_downloaded(m["repo"]), "recommended": m["id"] == rec["id"],
                 "fits": m["min_ram_gb"] <= mac["ram_gb"], "download": download_status(m["repo"])} for m in CATALOG] if mac["apple_silicon"] else []
     lm, ol = await _lm_studio(), await _ollama()
-    cloud = saved_keys()
+    # saved_keys() can trigger a secrets heal (key store reads, up to the
+    # keyring timeout); keep that off the event loop.
+    cloud = await asyncio.to_thread(saved_keys)
     return {
         "complete": is_complete(),
         "show_on_start": not is_complete() and not _has_chats(),
@@ -230,6 +234,12 @@ async def quick() -> Dict[str, Any]:
     for p in s["cloud_keys"]:
         m = CLOUD_DEFAULTS[p]
         add("Online", p, m, f"{PROVIDER_NAMES.get(p, p)} · {m.split('/')[-1]}")
+        if p == cur_p and cur_m and cur_m != m:
+            # The active model is not the provider default (an upgrader on
+            # gpt-4o, a custom pick): it gets its own current row. Without
+            # this it fell to the "In use" stand-in below and rendered as
+            # missing / not available while it was working.
+            add("Online", p, cur_m, f"{PROVIDER_NAMES.get(p, p)} · {str(cur_m).split('/')[-1]}")
     for m in s["ollama"]["models"]:
         add("Ollama", "ollama", m, m)
     for m in s["lm_studio"]["models"]:
