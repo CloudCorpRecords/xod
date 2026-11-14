@@ -2250,7 +2250,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "computer_read_file",
-            "description": "Reads text content from ANY file on the computer with line numbers and optional line range slicing (start_line to end_line). Use to inspect code, configs, dotfiles, scripts, or notes before editing. The path must be one file, not a folder: to inspect the files inside a folder, call computer_list_directory on the folder first (its entries carry first_line previews), then read the individual files.",
+            "description": "Reads text content from ANY file on the computer with line numbers and optional line range slicing (start_line to end_line). Use to inspect code, configs, dotfiles, scripts, or notes before editing. The path must be one file, not a folder: to inspect the files inside a folder, call computer_list_directory on the folder first (its entries carry first_line previews), then read the individual files. A first_line preview identifies a file; it is not the file's contents. When a task asks for a file's full contents, or a later step will need them, identifying the file from the preview is not enough: call this on the identified file and report from the read itself.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2353,7 +2353,7 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "computer_list_directory",
-            "description": "Lists all files and subdirectories in ANY folder on the computer with file sizes, modified dates, and extensions. Each text file entry also carries first_line, the file's actual first line, so a file can be identified by its opening content from the listing itself. When a task asks which file in a folder matches a content criterion, judge from the first_line values (or read a candidate with computer_read_file when the first line is not decisive); never report that the matching file cannot be identified while unread candidates remain.",
+            "description": "Lists all files and subdirectories in ANY folder on the computer with file sizes, modified dates, and extensions. Each text file entry also carries first_line, the file's actual first line, so a file can be identified by its opening content from the listing itself. When a task asks which file in a folder matches a content criterion, judge from the first_line values (or read a candidate with computer_read_file when the first line is not decisive); never report that the matching file cannot be identified while unread candidates remain. first_line is a preview for identification only: when the task needs a file's contents beyond its first line, read the identified file with computer_read_file before reporting.",
             "parameters": {
                 "type": "object",
                 "properties": {
