@@ -34,7 +34,27 @@
 // verdict says the whole import graph resolves. Keep it that way.
 "use strict";
 
-const fs = require("fs");
+// The archive this file checks is a real file on disk, and every read of it
+// must reach the real filesystem. Inside a packaged Electron main process
+// that is NOT what require("fs") does: Electron's asar-aware fs layer
+// intercepts any path ending in .asar, treating the archive itself as a
+// directory in the archive scheme, so fs.readFileSync(app.asar) throws
+// "ENOENT, not found in ...app.asar" and fs.statSync(app.asar).isFile()
+// returns false. That is the v1.1.4 field failure (2026-11-14): this
+// bootstrap's decide() threw on the app's own archive on EVERY launch, its
+// catch returned "repair", and the repair's staged-copy check failed the
+// same way, so a healthy, checksum-verified install could never start.
+// Every release-gate check ran under plain Node, where fs is unpatched,
+// and passed. Electron ships the unpatched module as "original-fs" for
+// exactly this case; use it whenever the runtime is Electron, and plain fs
+// everywhere else (the standalone CLI, the test suites), where original-fs
+// does not exist. Semantics for every non-archive path are identical.
+const fs = (() => {
+  if (process.versions && process.versions.electron) {
+    try { return require("original-fs"); } catch (e) { /* fall through to fs */ }
+  }
+  return require("fs");
+})();
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");

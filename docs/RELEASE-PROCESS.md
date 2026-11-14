@@ -67,6 +67,27 @@ cold-launched it. These two checks are that opening and that launch.
   (platform, artifact, what was observed). Where no launch is feasible, the asar
   check still runs and the report says the cold launch is outstanding; the release
   may be published, but it is not called verified until a launch has been seen.
+- In-app healthy launch (mandatory since v1.1.5): the packaged app's own entry
+  point must pass its launch check inside the real packaged process, not under
+  plain Node. Since v1.1.4 the entry point is the recovery bootstrap, and
+  v1.1.4's bootstrap could not read its own app.asar inside a packaged
+  Electron process (Electron's asar-aware fs intercepts any path ending in
+  .asar, so the read threw ENOENT and the verdict came back "repair" on a
+  healthy, checksum-verified install), while every plain-Node run of the same
+  code passed. So: launch the built artifact as an app and confirm the
+  bootstrap does NOT trigger a repair, the app reaches its normal running
+  state, and the backend reports the new version. A plain-Node check, a CLI
+  verdict, or a test-harness run of the bootstrap's files does not count as
+  this step. electron/bootstrap-electron.test.js is the standing in-process
+  proof for the check itself and must be green on the release tree.
+- In-app repair (mandatory since v1.1.5): a packaged copy carrying a broken
+  package (the preserved fixture of the last broken release, step 3 of the
+  ship gates below) must repair itself from inside the packaged process and
+  end running the new version: the verdict, the staged-copy verification,
+  and the swap all execute in the packaged app, against the live release
+  channel. A repair exercised through the standalone CLI under plain Node
+  does not count; that is exactly the shape that let v1.1.4's repair ship
+  broken while its CLI exercise passed.
 - If either check fails, the release stops here. Publish nothing, fix the
   packaging or the code, and rebuild from the tag.
 
@@ -149,7 +170,11 @@ from coming back. They bind every release after v1.1.4, including this one.
   normal running state; a previous-version install verified to auto-pull the
   release through the launcher (step 5); and, since the bootstrap exists, its
   repair path exercised once against the last broken release's preserved
-  fixture before the release is called verified.
+  fixture before the release is called verified. Since v1.1.5 the bootstrap
+  proofs must run inside the packaged process (step 3's in-app healthy launch
+  and in-app repair): the v1.1.4 failure proved that a bootstrap verified
+  only under plain Node is not verified at all, because the packaged
+  process's own filesystem layer is part of the surface the check runs on.
 - Field verification is part of verified. A release is verified only when the
   built artifact has been checked at the user's actual surface: one correct
   app where the user launches from (for example, exactly one Xod in the Mac's
