@@ -39,14 +39,39 @@ xod-eval, LAUNCHER-AUTOPULL-AUDIT-2026-11-13.md.
   scripts/check_release.py before building.
 - Hand-built installers and hand-carried file transplants are not a release channel.
   If an emergency transplant is ever used, record it in the release report the same
-  day, and re-baseline that surface through the launcher (step 4) before the next
+  day, and re-baseline that surface through the launcher (step 5) before the next
   release. A transplanted surface can never be the verification surface.
 
-### 3. Publish as latest, with the updater's artifacts complete
+### 3. Verify the built artifact before anything is published
+
+A release is not verified until the built artifact itself passes both checks below.
+A checksum match, a CI pass, or a source-tree test run is not verification: v1.1.3
+matched its published hash exactly and was still dead on arrival, because its
+app.asar was missing liveness.js (the packaging allowlist in electron/package.json
+omitted it while main.js requires it at line 8), so the app died at startup on every
+platform before its updater could ever run. Nobody had opened the built artifact or
+cold-launched it. These two checks are that opening and that launch.
+
+- Package contents: run `python3 scripts/check_asar.py <built app.asar>` for each
+  platform build (a .app bundle path works too; the script finds
+  Contents/Resources/app.asar). It must exit 0: every relative require reachable
+  from the packaged entry point resolves to a file inside the archive. Run it on
+  the artifact that will be published, not on a source tree or an earlier build.
+- Cold launch: where a machine of the target platform is at hand, put the built
+  artifact in a scratch location (never over a working install), launch it, and
+  watch it reach its normal running state: main window open, backend answering,
+  no main-process exception dialog. Record the launch in the release report
+  (platform, artifact, what was observed). Where no launch is feasible, the asar
+  check still runs and the report says the cold launch is outstanding; the release
+  may be published, but it is not called verified until a launch has been seen.
+- If either check fails, the release stops here. Publish nothing, fix the
+  packaging or the code, and rebuild from the tag.
+
+### 4. Publish as latest, with the updater's artifacts complete
 
 The launcher is Xod's own updater (electron/updater.js), not electron-updater: there
 is no latest.yml in this design, and none should be invented. What the updater
-actually needs on the release, and what must be verified present before step 4:
+actually needs on the release, and what must be verified present before step 5:
 
 - Xod-X.Y.Z-arm64.dmg (the Mac download it looks for) and Xod-X.Y.Z-x64-setup.exe
   (the Windows one), plus the stable-name copies Xod-Mac.dmg and
@@ -61,7 +86,7 @@ actually needs on the release, and what must be verified present before step 4:
   Both updaters (electron/updater.js and app/services/updates.py) read only that
   endpoint.
 
-### 4. Verify the pull on a real previous-version install
+### 5. Verify the pull on a real previous-version install
 
 - Pick a test surface running the previous release, installed the normal way
   (never a transplant, never a dev checkout). The Mac and the Razer each count;
@@ -78,12 +103,12 @@ actually needs on the release, and what must be verified present before step 4:
 - Record the verification in the release report: surface, from-version, to-version
   as read back, and when the pull completed.
 
-### 5. Only then is it shipped
+### 6. Only then is it shipped
 
-- Until step 4 passes, every surface that talks about the release (release notes,
+- Until step 5 passes, every surface that talks about the release (release notes,
   posts, the work board, Linear) calls it "published, uptake unverified", never
   "shipped".
-- If step 4 fails, the release stays unverified, the failure is filed as an issue
+- If step 5 fails, the release stays unverified, the failure is filed as an issue
   the same day, and the next release does not start until the failure is understood.
   A failed pull is a defect in the release, not an errand for the person whose
   machine did not update.
@@ -93,7 +118,7 @@ actually needs on the release, and what must be verified present before step 4:
 - The updater's check is unauthenticated and can be rate-limited by GitHub; a
   single failed check is weather, a day of failed checks is a defect. The Python
   status caches the latest release for 24 hours, so the shell's read-back in
-  step 4 is the deciding evidence.
+  step 5 is the deciding evidence.
 - Version on screen: the app is expected to show its running version where a
   person can see it without digging (tracked with the version-display work), so a
   wrong old copy is obvious at a glance.
