@@ -55,7 +55,10 @@ cold-launched it. These two checks are that opening and that launch.
 - Package contents: run `python3 scripts/check_asar.py <built app.asar>` for each
   platform build (a .app bundle path works too; the script finds
   Contents/Resources/app.asar). It must exit 0: every relative require reachable
-  from the packaged entry point resolves to a file inside the archive. Run it on
+  from the packaged entry point resolves to a file inside the archive. Since
+  v1.1.4 the packaged entry point is bootstrap.js (electron/package.json names
+  it as "main"), so the walk starts there and, through the bootstrap's one
+  literal import, proves the whole app graph behind it. Run the check on
   the artifact that will be published, not on a source tree or an earlier build.
 - Cold launch: where a machine of the target platform is at hand, put the built
   artifact in a scratch location (never over a working install), launch it, and
@@ -100,6 +103,11 @@ actually needs on the release, and what must be verified present before step 5:
   the update status must show no newer version available. File stamps (the exe's
   FileVersion, a bundle's plist) are not evidence; they are exactly what misled
   the fleet in November 2026.
+- Since v1.1.4 the pulled install launches through the recovery bootstrap
+  (electron/bootstrap.js), which verifies the package before handing off to
+  main.js. A release is not complete until a machine that was running the
+  previous release has been launched once through that bootstrap and reached
+  its normal running state on the new version.
 - Record the verification in the release report: surface, from-version, to-version
   as read back, and when the pull completed.
 
@@ -112,6 +120,53 @@ actually needs on the release, and what must be verified present before step 5:
   the same day, and the next release does not start until the failure is understood.
   A failed pull is a defect in the release, not an errand for the person whose
   machine did not update.
+
+## The durable doctrine (standing, set 2026-11-14)
+
+The v1.1.3 failure was not one mistake but a shape of work: fixes, gates, and
+repairs drifting into separate releases and separate trees until the shipped
+artifact was something nobody had ever launched. These rules keep that shape
+from coming back. They bind every release after v1.1.4, including this one.
+
+- One integration line. Exactly one branch is the integration line at a time;
+  it is named in the newest convergence record in xod-eval and in its Linear
+  issue. Every other branch is an input to that line or waits behind it. A new
+  branch or worktree is created only after all three registrations exist: an
+  entry in the worktree owners registry naming the owner lane and the base, a
+  Linear issue naming the branch, and a stated merge target (the integration
+  line). A lane that finds an unregistered branch flags it and does not build
+  on it.
+- A release carries its fixes, its integrity gate, and its self-repair
+  together. Never split them across releases in a way that strands users on a
+  build that cannot update itself, and never let a deferred piece quietly
+  become sprawl on user machines. v1.1.4 is the pattern: the brain fixes, the
+  packaging fix and asar gate, the recovery bootstrap, and the footprint
+  doctor ship as one release.
+- The ship gates, all of them, every time: the version bumped in every source
+  with scripts/check_versions.py passing; the built app.asar passing
+  scripts/check_asar.py with the packaged entry point (bootstrap.js since
+  v1.1.4) as the walk root; a cold launch of the built artifact watched to its
+  normal running state; a previous-version install verified to auto-pull the
+  release through the launcher (step 5); and, since the bootstrap exists, its
+  repair path exercised once against the last broken release's preserved
+  fixture before the release is called verified.
+- Field verification is part of verified. A release is verified only when the
+  built artifact has been checked at the user's actual surface: one correct
+  app where the user launches from (for example, exactly one Xod in the Mac's
+  search results), a clean launch on a real user machine, and the running
+  version read back from the app itself. A checksum match, a CI pass, or a
+  source-tree test run is not verification, and when a field report contradicts
+  a recorded state, the field report wins and the state is re-derived from the
+  artifact or the code.
+- Cleanup removes only on positive evidence. The footprint doctor
+  (scripts/xod_doctor.py) is the standing cleanup tool: an item is removable
+  only when the doctor proves it redundant (a duplicate whose version, build,
+  and contents match a kept copy and which no launch agent references; a clean
+  checkout whose every commit, reflog-only ones included, is in the canonical
+  repo, with no gitignored files present). Every doubt is a hold with the
+  reason printed: unique commits, uncommitted work, unreadable identity,
+  a symlink, a live dependency. Cleanup is a dry run by default and never
+  follows or removes a symlink.
 
 ## Standing notes
 
