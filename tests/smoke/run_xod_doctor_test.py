@@ -33,12 +33,20 @@ def git(path: Path, *args: str, check=True):
     return out
 
 
-def make_app(parent: Path, name: str, version: str, bundle_id="dev.xod.desktop") -> Path:
+def make_app(parent: Path, name: str, version: str, bundle_id="dev.xod.desktop",
+             build: str | None = None, extra: dict | None = None) -> Path:
     app = parent / name
     (app / "Contents" / "Resources").mkdir(parents=True)
+    info = {"CFBundleShortVersionString": version, "CFBundleIdentifier": bundle_id}
+    if build is not None:
+        info["CFBundleVersion"] = build
     with open(app / "Contents" / "Info.plist", "wb") as f:
-        plistlib.dump({"CFBundleShortVersionString": version, "CFBundleIdentifier": bundle_id}, f)
+        plistlib.dump(info, f)
     (app / "Contents" / "Resources" / "app.asar").write_bytes(b"asar-bytes-" + version.encode())
+    for rel, data in (extra or {}).items():
+        target = app / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
     return app
 
 
@@ -167,6 +175,187 @@ doctor.classify(items2, spec2, None)
 by2 = {str(i.path): i for i in items2}
 cases.append(("no canonical repo: clean checkout held",
               by2[str(home / "xod-clean-clone")].cls == "hold"))
+
+# --- Round 6 review regressions: removal only on positive evidence. ---------
+# Each fixture below is a shape an independent review showed the doctor calling
+# stale-safe without proof. Every one of them must now be a hold.
+
+def scaffold(base: Path):
+    h = base / "home"
+    ad = h / "Applications"
+    for d in (ad, h / "Documents", h / "Downloads", h / ".Trash",
+              h / "Library" / "Application Support", h / "Library" / "LaunchAgents"):
+        d.mkdir(parents=True)
+    return h, ad
+
+
+def classify_at(h: Path, ad: Path, canon):
+    its, sp = doctor.inventory("darwin", h, ad)
+    doctor.classify(its, sp, canon)
+    return {str(i.path): i for i in its}, its
+
+
+def clone_from(canon: Path, dest: Path):
+    subprocess.run(["git", "clone", str(canon), str(dest)],
+                   capture_output=True, text=True, check=True)
+    return dest
+
+
+r6 = tmp / "r6"
+
+# C2: the canonical path is a plain directory, so git cannot read it at all.
+h6, ad6 = scaffold(r6 / "c2")
+canon6 = make_repo(r6 / "c2" / "canonical-xod", 2)
+clone_from(canon6, h6 / "xod-clean-clone")
+not_a_repo = r6 / "c2" / "not-a-repo"
+not_a_repo.mkdir()
+by6, _ = classify_at(h6, ad6, not_a_repo)
+it6 = by6[str(h6 / "xod-clean-clone")]
+cases.append(("unreadable canonical repo: checkout held, nothing presumed proven",
+              it6.cls == "hold" and any("could not be read" in r for r in it6.reasons)))
+
+# C3: a commit made on a detached HEAD, then abandoned when HEAD moved back.
+h6, ad6 = scaffold(r6 / "c3-reflog")
+canon6 = make_repo(r6 / "c3-reflog" / "canonical-xod", 2)
+reflog_clone = clone_from(canon6, h6 / "xod-reflog")
+git(reflog_clone, "checkout", "--detach", "HEAD")
+(reflog_clone / "reflog-only.txt").write_text("work from a detached head\n")
+git(reflog_clone, "add", ".")
+git(reflog_clone, "commit", "-m", "detached work, later abandoned")
+git(reflog_clone, "checkout", "main")
+by6, _ = classify_at(h6, ad6, canon6)
+it6 = by6[str(reflog_clone)]
+cases.append(("reflog-only commit: checkout held",
+              it6.cls == "hold" and any("canonical repo" in r for r in it6.reasons)))
+
+# C3: gitignored files inside an otherwise clean, fully proven checkout.
+h6, ad6 = scaffold(r6 / "c3-ignored")
+canon6 = make_repo(r6 / "c3-ignored" / "canonical-xod", 1)
+(canon6 / ".gitignore").write_text("local-data/\n")
+git(canon6, "add", ".")
+git(canon6, "commit", "-m", "ignore local data")
+ignored_clone = clone_from(canon6, h6 / "xod-ignored")
+(ignored_clone / "local-data").mkdir()
+(ignored_clone / "local-data" / "secrets.env").write_text("TOKEN=abc\n")
+by6, _ = classify_at(h6, ad6, canon6)
+it6 = by6[str(ignored_clone)]
+cases.append(("gitignored files: checkout held",
+              it6.cls == "hold" and any("ignores" in r for r in it6.reasons)))
+
+# C4: a bundle whose Info.plist is corrupt, and one with no bundle identifier.
+h6, ad6 = scaffold(r6 / "c4-identity")
+for name in ("Xod-a.app", "Xod-b.app"):
+    bundle = h6 / name
+    (bundle / "Contents" / "Resources").mkdir(parents=True)
+    (bundle / "Contents" / "Info.plist").write_bytes(b"\x00\x01 not a plist {{{")
+    (bundle / "Contents" / "Resources" / "app.asar").write_bytes(b"payload")
+for name in ("Xod-c.app", "Xod-d.app"):
+    bundle = h6 / name
+    (bundle / "Contents" / "Resources").mkdir(parents=True)
+    with open(bundle / "Contents" / "Info.plist", "wb") as f:
+        plistlib.dump({"CFBundleShortVersionString": "1.0.2"}, f)
+    (bundle / "Contents" / "Resources" / "app.asar").write_bytes(b"payload")
+by6, _ = classify_at(h6, ad6, None)
+cases.append(("corrupt Info.plist: both copies held, no 'None' version group",
+              by6[str(h6 / "Xod-a.app")].cls == "hold" and by6[str(h6 / "Xod-b.app")].cls == "hold"))
+cases.append(("missing bundle identifier: both copies held",
+              by6[str(h6 / "Xod-c.app")].cls == "hold" and by6[str(h6 / "Xod-d.app")].cls == "hold"))
+
+# C4: same version string, different build numbers are different builds.
+h6, ad6 = scaffold(r6 / "c4-build")
+make_app(h6, "Xod-old-a.app", "1.0.2", build="100")
+make_app(h6, "Xod-old-b.app", "1.0.2", build="101")
+by6, _ = classify_at(h6, ad6, None)
+cases.append(("same version, different build: both copies held",
+              by6[str(h6 / "Xod-old-a.app")].cls == "hold"
+              and by6[str(h6 / "Xod-old-b.app")].cls == "hold"))
+
+# C4: same version and build, but the bundle contents differ.
+h6, ad6 = scaffold(r6 / "c4-contents")
+make_app(h6, "Xod-old-a.app", "1.0.2", build="100")
+make_app(h6, "Xod-old-b.app", "1.0.2", build="100",
+         extra={"Contents/Resources/extra.dat": b"only in b"})
+by6, _ = classify_at(h6, ad6, None)
+it6 = by6[str(h6 / "Xod-old-b.app")]
+cases.append(("same version and build, different contents: differing copy held",
+              it6.cls == "hold" and any("contents differ" in r for r in it6.reasons)))
+
+# C4: a duplicate a launch agent points at is a live dependency, not a duplicate.
+h6, ad6 = scaffold(r6 / "c4-agent")
+make_app(h6, "Xod-keep.app", "1.0.2", build="100")
+agent_app = make_app(h6, "xod-agent-run.app", "1.0.2", build="100")
+with open(h6 / "Library" / "LaunchAgents" / "com.xod.runner.plist", "wb") as f:
+    plistlib.dump({"Label": "com.xod.runner",
+                   "ProgramArguments": ["/usr/bin/open", str(agent_app)]}, f)
+by6, _ = classify_at(h6, ad6, None)
+it6 = by6[str(agent_app)]
+cases.append(("agent-referenced app copy: held",
+              it6.cls == "hold" and any("launch agent" in r for r in it6.reasons)))
+
+# M2: the data folder's logs as a symlink to a directory outside the data folder.
+h6, ad6 = scaffold(r6 / "m2-data")
+outside_logs = r6 / "m2-data" / "outside-logs"
+outside_logs.mkdir(parents=True)
+(outside_logs / "keep.log").write_text("precious\n")
+data6 = h6 / "Library" / "Application Support" / "Xod"
+data6.mkdir(parents=True)
+(data6 / "logs").symlink_to(outside_logs, target_is_directory=True)
+by6, items6 = classify_at(h6, ad6, None)
+cases.append(("symlinked logs folder: held as a symlink",
+              by6[str(data6 / "logs")].cls == "hold"
+              and any("symlink" in r for r in by6[str(data6 / "logs")].reasons)))
+doctor.clean(items6, yes=True)
+cases.append(("cleanup leaves the symlinked logs and its target in place",
+              (data6 / "logs").is_symlink() and (outside_logs / "keep.log").exists()))
+
+# M2: a symlinked bundle inside a container folder is not a bundle at all.
+h6, ad6 = scaffold(r6 / "m2-bundle")
+real_bundle = make_app(h6, "Xod-real.app", "1.0.2", build="100")
+container6 = h6 / "xod-links"
+container6.mkdir()
+bundle_link = container6 / "Xod.app"
+bundle_link.symlink_to(real_bundle, target_is_directory=True)
+by6, items6 = classify_at(h6, ad6, None)
+cases.append(("symlinked bundle in a container: held, never stale-safe",
+              by6[str(bundle_link)].cls == "hold"))
+doctor.clean(items6, yes=True)
+cases.append(("cleanup leaves the bundle symlink and its target in place",
+              bundle_link.is_symlink() and real_bundle.exists()))
+
+# M3: checkouts referenced only inside agent command strings, in the shapes
+# real command lines take: an env assignment, a quoted path, a ;-separated one.
+h6, ad6 = scaffold(r6 / "m3")
+canon6 = make_repo(r6 / "m3" / "canonical-xod", 2)
+m3_shapes = {
+    "xod-envstack": lambda p: f"PYTHONPATH={p}/src exec python3 -m app",
+    "xod-quoted": lambda p: f'"{p}"',
+    "xod-semicolon": lambda p: f"cd /tmp;{p}/bin/run",
+}
+for dirname, shape in m3_shapes.items():
+    target = clone_from(canon6, h6 / dirname)
+    with open(h6 / "Library" / "LaunchAgents" / f"com.xod.{dirname}.plist", "wb") as f:
+        plistlib.dump({"Label": f"com.xod.{dirname}",
+                       "ProgramArguments": ["/bin/sh", "-c", shape(target)]}, f)
+by6, _ = classify_at(h6, ad6, canon6)
+for dirname in m3_shapes:
+    it6 = by6[str(h6 / dirname)]
+    cases.append((f"agent reference ({dirname}): checkout held",
+                  it6.cls == "hold" and any("launch agent" in r for r in it6.reasons)))
+
+# Doctor minor: an unreadable folder is a hold, not a crash.
+import os as _os
+if _os.geteuid() != 0:
+    h6, ad6 = scaffold(r6 / "unreadable")
+    sealed = h6 / "xod-sealed"
+    sealed.mkdir()
+    (sealed / "hidden.txt").write_text("cannot see me\n")
+    sealed.chmod(0)
+    try:
+        by6, _ = classify_at(h6, ad6, None)
+        cases.append(("unreadable folder: held, classify does not raise",
+                      by6[str(sealed)].cls == "hold"))
+    finally:
+        sealed.chmod(0o755)
 
 # Cleanup: dry run removes nothing; --yes removes exactly the stale-safe set.
 safe_paths = {i.path for i in items if i.cls == "stale-safe"}

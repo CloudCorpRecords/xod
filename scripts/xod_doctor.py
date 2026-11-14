@@ -17,9 +17,13 @@ load bearing). This doctor productizes that census for any user.
 The classification is conservative on purpose. An item is only ever "stale-safe" when there
 is positive evidence it is redundant or regenerable:
 
-  - an app copy whose version is still represented by another copy that is kept;
+  - an app copy whose version and build are still represented by a kept copy with
+    identical bundle contents (a copy a launch agent references is a hold, and a
+    bundle whose identity or version cannot be read is a hold);
   - a git checkout that is clean AND whose every commit exists in the canonical repo
-    (without a canonical repo, equivalence is unproven and the checkout is a hold);
+    (commits reachable only from a reflog count, files git ignores count as local
+    state, any failure reading either repo is a hold, and without a canonical repo
+    equivalence is unproven and the checkout is a hold);
   - the app's own scratch folders and its disposable outputs (logs, test runs);
   - an exact byte duplicate of a file that is kept;
   - anything already in the Trash.
@@ -41,6 +45,7 @@ import hashlib
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -81,6 +86,24 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def bundle_fingerprint(path: Path):
+    """(relative path, size) for every file in a bundle; None if any part is unreadable.
+
+    Two bundles with the same fingerprint hold the same files at the same sizes, which
+    is the positive evidence a duplicate claim needs. Contents are not hashed: a real
+    bundle holds tens of thousands of files, and cleanup decisions must stay cheap.
+    """
+    entries = []
+    for base, _dirs, files in os.walk(path, followlinks=False):
+        for name in files:
+            p = Path(base) / name
+            try:
+                entries.append((str(p.relative_to(path)), p.lstat().st_size))
+            except OSError:
+                return None
+    return tuple(sorted(entries))
 
 
 def git(path: Path, *args: str) -> tuple[int, str]:
@@ -225,9 +248,17 @@ def inventory(platform: str, home: Path, apps_dir: Path | None) -> tuple[list[It
                     grandchildren = list(child.iterdir())
                 except OSError:
                     grandchildren = []
-                bundles = [g for g in grandchildren if looks_xod(g.name) and is_app_bundle(g)]
-                for g in bundles:
-                    add(Item(g, "app"))
+                bundles = []
+                for g in grandchildren:
+                    if not looks_xod(g.name):
+                        continue
+                    if g.is_symlink():
+                        # A link that merely points at a bundle is not a bundle;
+                        # it becomes a folder item and classifies as a symlink hold.
+                        add(Item(g, "folder"))
+                    elif is_app_bundle(g):
+                        bundles.append(g)
+                        add(Item(g, "app"))
                 if not (bundles and len(bundles) == len(grandchildren)):
                     add(Item(child, "folder"))
             else:
@@ -264,40 +295,74 @@ def classify(items: list[Item], spec: dict, canonical: Path | None):
     def referenced(path: Path) -> bool:
         # Agents point at a folder directly (an interpreter inside it) or name
         # it inside a shell command string (the dev stack's -c line), so match
-        # the path as a whole token, not only as a prefix.
-        s = str(path)
-        return any(r == s or r.startswith(s + "/") or (s + " ") in r or r.endswith(s) for r in refs)
+        # the path wherever it stands as a path, at a token edge. Env
+        # assignments (PYTHONPATH=<path>/src), quoted strings, and ;-separated
+        # commands all count; a longer sibling name that only shares a prefix
+        # (xod versus xod2) does not. The lookahead allows a "/" after the
+        # path, because an agent naming something inside the folder depends
+        # on the folder just as much.
+        s = str(path).replace("\\", "/")
+        pat = re.compile(r"(?<![A-Za-z0-9._~/-])" + re.escape(s) + r"(?![A-Za-z0-9._~-])")
+        return any(pat.search(r.replace("\\", "/")) for r in refs)
 
-    # App bundles first: identity, then the version groups.
+    # App bundles first: identity, then the version groups. A duplicate is
+    # only stale-safe on positive evidence: same version AND build, bundle
+    # contents identical to the kept copy's, and no launch agent pointing at
+    # it. Anything the doctor cannot read resolves to a hold, never a pass.
     apps = [i for i in items if i.kind == "app"]
     for it in apps:
         info = read_plist(it.path / "Contents" / "Info.plist") or {}
         it.version = info.get("CFBundleShortVersionString")
         it.bundle_id = info.get("CFBundleIdentifier")
-        if it.bundle_id and it.bundle_id != XOD_BUNDLE_ID:
+        it.detail["build"] = info.get("CFBundleVersion")
+        if it.path.is_symlink():
+            it.hold("symlink; the doctor never follows or removes a link")
+        elif it.bundle_id and it.bundle_id != XOD_BUNDLE_ID:
             it.hold(f"separate product (bundle id {it.bundle_id}); the doctor only manages Xod itself")
-    desktop = [i for i in apps if i.bundle_id == XOD_BUNDLE_ID or not i.bundle_id]
+        elif not it.bundle_id:
+            it.hold("the bundle's identity could not be read (no readable bundle identifier); "
+                    "the doctor cannot prove this copy is Xod, let alone a duplicate")
+        elif not it.version:
+            it.hold("the bundle's version could not be read; duplication is unproven")
+    desktop = [i for i in apps
+               if i.bundle_id == XOD_BUNDLE_ID and i.version and not i.path.is_symlink()]
     current = None
     in_apps = [i for i in desktop if i.path.parent == spec["apps"]]
     if in_apps:
         current = max(in_apps, key=lambda i: version_key(i.version))
         current.cls = "current"
         current.reasons.append(f"the installed Xod {current.version} in the applications folder")
-    by_version: dict[str, list[Item]] = {}
+    by_version: dict[tuple[str, str], list[Item]] = {}
     for it in desktop:
         if it is not current:
-            by_version.setdefault(str(it.version), []).append(it)
-    for ver, group in by_version.items():
+            by_version.setdefault((str(it.version), str(it.detail.get("build"))), []).append(it)
+    for (ver, build), group in by_version.items():
         group.sort(key=lambda i: str(i.path))
-        if current is not None and ver == str(current.version):
+        label = f"Xod {ver}" + ("" if build == "None" else f" (build {build})")
+        if (current is not None and ver == str(current.version)
+                and build == str(current.detail.get("build"))):
+            kept_fp = bundle_fingerprint(current.path)
             for it in group:
-                it.safe(f"duplicate copy of the installed version {ver}; the applications copy is kept")
+                if referenced(it.path):
+                    it.hold("a launch agent runs from here; it is a live dependency")
+                elif kept_fp is not None and bundle_fingerprint(it.path) == kept_fp:
+                    it.safe(f"duplicate copy of the installed {label}; the applications copy is kept")
+                else:
+                    it.hold(f"not provably identical to the installed {label}; "
+                            "bundle contents differ or could not be read")
         else:
             keeper, rest = group[0], group[1:]
-            keeper.hold(f"kept: the copy of Xod {ver} this machine keeps" if rest else
-                        f"the only copy of Xod {ver} on this machine")
+            keeper.hold(f"kept: the copy of {label} this machine keeps" if rest else
+                        f"the only copy of {label} on this machine")
+            kept_fp = bundle_fingerprint(keeper.path)
             for it in rest:
-                it.safe(f"duplicate copy of Xod {ver}; one copy is kept at {keeper.path}")
+                if referenced(it.path):
+                    it.hold("a launch agent runs from here; it is a live dependency")
+                elif kept_fp is not None and bundle_fingerprint(it.path) == kept_fp:
+                    it.safe(f"duplicate copy of {label}; one copy is kept at {keeper.path}")
+                else:
+                    it.hold(f"bundle contents differ from the kept copy of {label}; "
+                            "not a provable duplicate")
 
     # Data folders and their itemized children.
     data_children: list[Item] = []
@@ -308,7 +373,11 @@ def classify(items: list[Item], spec: dict, canonical: Path | None):
         it.cls = "current"
         it.reasons.append("the installed app's data folder; an update or repair never touches it")
         for child in sorted(it.path.iterdir(), key=lambda p: p.name):
-            if child.is_dir() and child.name in DATA_PRUNE_DIRS:
+            if child.is_symlink():
+                c = Item(child, "data-child")
+                c.hold("symlink; the doctor never follows or removes a link")
+                data_children.append(c)
+            elif child.is_dir() and child.name in DATA_PRUNE_DIRS:
                 c = Item(child, "data-child")
                 c.safe(f"disposable app output ({child.name}); the app regenerates it")
                 data_children.append(c)
@@ -344,7 +413,12 @@ def classify(items: list[Item], spec: dict, canonical: Path | None):
             it.hold("a launch agent runs from here; it is a live dependency")
             continue
         if it.kind == "folder":
-            if it.size == 0 and not any(p.iterdir()):
+            try:
+                is_empty = it.size == 0 and not any(p.iterdir())
+            except OSError:
+                it.hold("folder could not be read; the doctor cannot prove it is empty")
+                continue
+            if is_empty:
                 it.safe("empty folder")
             elif p.name.startswith(SCRATCH_PREFIX):
                 it.safe("app scratch folder; the app recreates these as it works")
@@ -382,11 +456,16 @@ def classify_checkout(it: Item, canonical: Path | None, canonical_resolved, refe
     code, tree = git(p, "ls-tree", "-r", "HEAD")
     if code == 0:
         it.detail["head_tree_entries"] = len([ln for ln in tree.splitlines() if ln.strip()])
-    code, status = git(p, "status", "--porcelain")
+    code, status = git(p, "status", "--porcelain", "--ignored")
     if code != 0:
         it.hold("not a readable git checkout")
         return
-    if status.strip():
+    status_lines = [ln for ln in status.splitlines() if ln.strip()]
+    if any(ln.startswith("!!") for ln in status_lines):
+        it.hold("files git ignores are present (local config, outputs, or data); "
+                "they exist nowhere in git and removal would destroy them")
+        return
+    if status_lines:
         it.hold("uncommitted changes in the working tree")
         return
     if referenced(p):
@@ -399,7 +478,15 @@ def classify_checkout(it: Item, canonical: Path | None, canonical_resolved, refe
     if code != 0:
         it.hold("commit history unreadable")
         return
-    sha_list = [s for s in shas.splitlines() if s.strip()]
+    # Work done on a detached HEAD and then abandoned lives only in the
+    # reflog once HEAD moves on; rev-list --all never sees it. Count those
+    # commits too: they exist in this checkout and nowhere else.
+    code, reflog_shas = git(p, "rev-list", "--reflog")
+    if code != 0:
+        it.hold("commit history unreadable")
+        return
+    sha_list = list(dict.fromkeys(
+        s for s in (shas + "\n" + reflog_shas).splitlines() if s.strip()))
     missing = []
     if sha_list:
         try:
@@ -407,12 +494,21 @@ def classify_checkout(it: Item, canonical: Path | None, canonical_resolved, refe
                 ["git", "-C", str(canonical), "cat-file", "--batch-check"],
                 input="\n".join(sha_list), capture_output=True, text=True, timeout=300,
             )
-            for line in proc.stdout.splitlines():
-                parts = line.split(" ")
-                if len(parts) >= 2 and parts[1] == "missing":
-                    missing.append(parts[0])
         except (OSError, subprocess.TimeoutExpired):
             it.hold("the canonical repo could not be read for the equivalence check")
+            return
+        if proc.returncode != 0:
+            it.hold("the canonical repo could not be read for the equivalence check")
+            return
+        seen = set()
+        for line in proc.stdout.splitlines():
+            parts = line.split(" ")
+            if len(parts) >= 2:
+                seen.add(parts[0])
+                if parts[1] == "missing":
+                    missing.append(parts[0])
+        if any(s not in seen for s in sha_list):
+            it.hold("the canonical repo could not confirm every commit")
             return
     it.detail["commits_checked"] = len(sha_list)
     if missing:
