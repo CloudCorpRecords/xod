@@ -89,6 +89,55 @@ def open_run_for_task(task_id: str) -> Optional[Dict[str, Any]]:
     return dict(r) if r else None
 
 
+def open_runs(routine_id: str) -> List[Dict[str, Any]]:
+    """Every unfinished run of one routine that has a task, oldest first. A routine can have
+    more than one only if records were left open by an older build; the scheduler settles all
+    of them, so none can stay orphaned (live grade 2026-11-13, Tier 7 attempt 1)."""
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM routine_runs WHERE routine_id = ? AND finished_at IS NULL AND task_id IS NOT NULL "
+            "ORDER BY started_at", (routine_id,)).fetchall()]
+
+
+def queued_runs(routine_id: str) -> List[Dict[str, Any]]:
+    """Runs requested while another run of the same routine was in flight: recorded at request
+    time, started (oldest first) once the in-flight run settles."""
+    with _conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT * FROM routine_runs WHERE routine_id = ? AND finished_at IS NULL AND task_id IS NULL "
+            "AND delivery_state = 'queued' ORDER BY started_at", (routine_id,)).fetchall()]
+
+
+def run_queued(routine_id: str) -> str:
+    """A first-class record for a run that must wait behind an in-flight run of its routine."""
+    rid = f"run-{uuid.uuid4().hex[:10]}"
+    with _conn() as c:
+        c.execute("INSERT INTO routine_runs (id, routine_id, task_id, started_at, delivery_state, note) "
+                  "VALUES (?,?,NULL,?,'queued',?)",
+                  (rid, routine_id, time.time(), "queued behind an in-flight run of the same routine"))
+    _emit("run.queued", run_id=rid, routine_id=routine_id)
+    return rid
+
+
+def run_activate(run_id: str, task_id: str) -> None:
+    """A queued run starts: it gets its task and its clock starts now."""
+    with _conn() as c:
+        c.execute("UPDATE routine_runs SET task_id = ?, started_at = ?, delivery_state = NULL, note = NULL "
+                  "WHERE id = ? AND finished_at IS NULL", (task_id, time.time(), run_id))
+    _emit("run.started", run_id=run_id, task_id=task_id)
+
+
+def run_superseded(run_id: str, note: str) -> None:
+    """A queued run that will never start (its routine was turned off first) still reaches a
+    terminal, truthful state instead of sitting open forever. 'superseded' is not a failure:
+    it does not count toward the consecutive-failure auto-disable."""
+    with _conn() as c:
+        c.execute("UPDATE routine_runs SET finished_at = ?, outcome = 'superseded', delivery_state = 'suppressed', "
+                  "note = ? WHERE id = ? AND finished_at IS NULL", (time.time(), note, run_id))
+    _emit("run.superseded", run_id=run_id, note=note)
+
+
+
 _WATCH_RE = re.compile(r"^\s*WATCH:\s*(nothing new|found|could not check)\s*(.*)$", re.I | re.M | re.S)
 
 

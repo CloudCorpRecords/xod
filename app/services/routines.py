@@ -16,6 +16,7 @@ import datetime as dt
 import json
 import logging
 import sqlite3
+import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -268,8 +269,37 @@ def delete(rid: str) -> bool:
         return c.execute("DELETE FROM routines WHERE id = ?", (rid,)).rowcount > 0
 
 
-def run_now(rid: str, reason: str = "you asked") -> Dict[str, Any]:
+# Runs of one routine serialize (grade fix, Tier 7 cluster 4): run_now's check-and-start and
+# _follow_up's settle-and-start-next are one critical section, so two requests in the same
+# second can never both start, and a queued run can never be started twice.
+_RUN_LOCK = threading.RLock()
+
+
+def _start_run(r: Dict[str, Any], queued_run_id: Optional[str] = None) -> Dict[str, Any]:
+    """Starts a run of routine r now: an ordinary task plus its first-class run record.
+    With queued_run_id, that already-recorded queued run is activated (its request was
+    counted when it queued); otherwise a fresh run record is created."""
     from app.services.task_queue import task_queue
+    from app.services import delivery
+    task = task_queue.create(compose_request(r), title=f"↻ {r['name']}")
+    if queued_run_id:
+        delivery.run_activate(queued_run_id, task["id"])
+        run_id = queued_run_id
+    else:
+        run_id = delivery.run_started(r["id"], task["id"])   # a first-class run record (services/delivery.py)
+    now = time.time()
+    with _conn() as c:
+        c.execute("UPDATE routines SET last_run_at = ?, last_task_id = ?, last_status = 'running', next_run_at = ?, last_run_id = ? WHERE id = ?",
+                  (now, task["id"], _after_run(r["schedule"], now), run_id, r["id"]))
+    return {"success": True, "task": task, "run_id": run_id}
+
+
+def run_now(rid: str, reason: str = "you asked") -> Dict[str, Any]:
+    with _RUN_LOCK:
+        return _run_now_locked(rid, reason)
+
+
+def _run_now_locked(rid: str, reason: str = "you asked") -> Dict[str, Any]:
     r = get(rid)
     if not r:
         return {"success": False, "error": "No such routine."}
@@ -287,57 +317,86 @@ def run_now(rid: str, reason: str = "you asked") -> Dict[str, Any]:
             c.execute("UPDATE routines SET last_run_at = ?, last_status = 'done', runs = runs + 1, next_run_at = ? WHERE id = ?",
                       (now, _after_run(r["schedule"], now), rid))
         return {"success": True, "reminded": True}
-    task = task_queue.create(compose_request(r), title=f"↻ {r['name']}")
     from app.services import delivery
-    run_id = delivery.run_started(rid, task["id"])   # a first-class run record (services/delivery.py)
-    now = time.time()
     with _conn() as c:
-        c.execute("UPDATE routines SET last_run_at = ?, last_task_id = ?, last_status = 'running', runs = runs + 1, next_run_at = ?, last_run_id = ? WHERE id = ?",
-                  (now, task["id"], _after_run(r["schedule"], now), run_id, rid))
-    logger.info(f"Routine {r['name']} started ({reason}) as {task['id']}")
-    return {"success": True, "task": task}
+        c.execute("UPDATE routines SET runs = runs + 1 WHERE id = ?", (rid,))
+    if delivery.open_runs(rid):
+        # A run of this routine is already in flight. Starting another on top of it is what
+        # orphaned run records in the 2026-11-13 live grade (five same-second manual runs,
+        # four records with no outcome ever): the request is recorded as queued instead, and
+        # _follow_up starts it when the in-flight run settles.
+        run_id = delivery.run_queued(rid)
+        logger.info(f"Routine {r['name']} run queued behind an in-flight run ({reason}) as {run_id}")
+        return {"success": True, "queued": True, "run_id": run_id, "task": None}
+    out = _start_run(r)
+    logger.info(f"Routine {r['name']} started ({reason}) as {out['task']['id']}")
+    return out
 
 
 # ---------------------------------------------------------------- scheduler
 
 def _follow_up() -> None:
-    """When a routine's task finishes: record how it went; on success, learn its steps."""
+    """When a routine's task finishes: record how it went; on success, learn its steps.
+
+    Settles EVERY open run record of the routine, not only the one routines.last_run_id
+    points at: a record left open by an older build (or by runs started on top of each
+    other) is finished from its own task's real end state, never left orphaned. Then the
+    oldest queued run (run_now, while one was in flight) is started, one at a time; if the
+    routine has been turned off in the meantime, its queued runs are superseded instead."""
     from app.services.task_queue import task_queue
-    for r in list_all():
-        if r.get("last_status") != "running" or not r.get("last_task_id"):
-            continue
-        t = task_queue.get(r["last_task_id"])
-        status = (t or {}).get("status")
-        waiting = status == "waiting"
-        if waiting and r.get("last_run_id"):
-            # It needs the person: that decision reaches them once per waiting episode, while the
-            # run itself stays open until its task really ends.
-            from app.services import delivery
-            delivery.note_decision(r, t)
-        if r.get("last_run_id") and (status in ("done", "failed", "cancelled") or not t):
-            from app.services import delivery
-            open_run = delivery.open_run_for_task(r["last_task_id"])
-            if open_run:
-                delivery.run_finished(open_run["id"], r, t)
-                if delivery.consecutive_failures(r["id"]) >= delivery.MAX_CONSECUTIVE_FAILURES and r["enabled"]:
-                    # A broken job is stopped, and the person told which result will no longer arrive.
-                    update(r["id"], enabled=False)
-                    delivery.run_finished(delivery.run_started(r["id"], None), {**r, "notify_on": ["failed"]},
-                                          {"status": "failed", "result": (
-                                              f"It failed {delivery.MAX_CONSECUTIVE_FAILURES} runs in a row, so Xod turned it off. "
-                                              f"You will not get \"{r['name']}\" results until it is fixed and turned back on.")})
-        if waiting:
-            continue
-        if status in ("done", "failed", "cancelled") or not t:
-            fields: Dict[str, Any] = {}
-            if status == "done":
-                fresh = steps_from(f"task:{r['last_task_id']}")
-                if fresh:
-                    fields["steps"] = fresh
-            if fields:
-                update(r["id"], **fields)
-            with _conn() as c:
-                c.execute("UPDATE routines SET last_status = ? WHERE id = ?", (status or "gone", r["id"]))
+    from app.services import delivery
+    with _RUN_LOCK:
+        for r in list_all():
+            open_runs = delivery.open_runs(r["id"])
+            if not open_runs and not delivery.queued_runs(r["id"]):
+                continue
+            still_open = False
+            settled_status: Optional[str] = None
+            fresh_steps: List[str] = []
+            for run in open_runs:
+                t = task_queue.get(run["task_id"])
+                status = (t or {}).get("status")
+                if status == "waiting":
+                    # It needs the person: that decision reaches them once per waiting episode, while the
+                    # run itself stays open until its task really ends.
+                    delivery.note_decision(r, t)
+                    still_open = True
+                    continue
+                if status in ("done", "failed", "cancelled") or not t:
+                    delivery.run_finished(run["id"], r, t)
+                    settled_status = status or "gone"
+                    if status == "done":
+                        fresh = steps_from(f"task:{run['task_id']}")
+                        if fresh:
+                            fresh_steps = fresh
+                    if delivery.consecutive_failures(r["id"]) >= delivery.MAX_CONSECUTIVE_FAILURES and r["enabled"]:
+                        # A broken job is stopped, and the person told which result will no longer arrive.
+                        update(r["id"], enabled=False)
+                        r = {**r, "enabled": False}
+                        delivery.run_finished(delivery.run_started(r["id"], None), {**r, "notify_on": ["failed"]},
+                                              {"status": "failed", "result": (
+                                                  f"It failed {delivery.MAX_CONSECUTIVE_FAILURES} runs in a row, so Xod turned it off. "
+                                                  f"You will not get \"{r['name']}\" results until it is fixed and turned back on.")})
+                else:
+                    still_open = True
+            if fresh_steps:
+                update(r["id"], steps=fresh_steps)
+            if settled_status is not None and not still_open:
+                with _conn() as c:
+                    c.execute("UPDATE routines SET last_status = ? WHERE id = ?", (settled_status, r["id"]))
+            queued = delivery.queued_runs(r["id"])
+            if queued and not still_open:
+                current = get(r["id"]) or r
+                if current.get("enabled"):
+                    # The queued run's request is composed now, at its real start, so it sees
+                    # the state (and the previous check's contents) as of this run, not as of
+                    # when it was requested.
+                    _start_run(current, queued_run_id=queued[0]["id"])
+                    logger.info(f"Routine {current['name']}: queued run {queued[0]['id']} started")
+                    queued = queued[1:]
+                if queued and not current.get("enabled"):
+                    for qrun in queued:
+                        delivery.run_superseded(qrun["id"], "the routine was turned off before this queued run could start")
 
 
 def tick() -> List[str]:
