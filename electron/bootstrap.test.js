@@ -266,3 +266,83 @@ test("findAsar resolves an app bundle and version compare behaves", () => {
   assert.equal(B.newer("1.1.4", "1.1.3"), true);
   assert.equal(B.newer("1.1.3", "1.1.3"), false);
 });
+
+test("a known broken version is caught however the version string is dressed", () => {
+  const root = tmpdir();
+  const asar = path.join(root, "app.asar");
+  for (const dressed of ["v1.1.3", "1.1.3+build42", "1.1.3-beta"]) {
+    writeAsar(asar, fixtureHealthy(dressed));
+    const verdict = B.decide(asar);
+    assert.equal(verdict.action, "repair", `${dressed} must route to repair`);
+    assert.ok(verdict.reasons.some((r) => r.includes("1.1.3")), `${dressed} names the broken release`);
+  }
+  assert.equal(B.isKnownBroken("v1.1.3"), true);
+  assert.equal(B.isKnownBroken("1.1.4"), false);
+  assert.equal(B.isKnownBroken(null), false);
+  assert.equal(B.normalizeVersion("v1.1.3+build42"), "1.1.3");
+  assert.equal(B.normalizeVersion("not a version"), null);
+});
+
+test("a package whose version cannot be read is never cleared as healthy", () => {
+  const root = tmpdir();
+  const asar = path.join(root, "app.asar");
+  const noPkg = fixtureHealthy("1.1.4");
+  delete noPkg["package.json"];
+  noPkg["main.js"] = Buffer.from('const l = require("./liveness");\nmodule.exports = {};\n');
+  writeAsar(asar, noPkg);
+  let verdict = B.decide(asar);
+  assert.equal(verdict.action, "repair");
+  assert.ok(verdict.problems.some((p) => p.includes("package.json is missing")), "the missing manifest is a problem");
+  assert.ok(verdict.reasons.some((r) => r.includes("could not be read")), "the unreadable version is a reason");
+  const noVersion = fixtureHealthy("1.1.4");
+  noVersion["package.json"] = Buffer.from(JSON.stringify({ name: "xod-desktop", main: "bootstrap.js" }));
+  writeAsar(asar, noVersion);
+  verdict = B.decide(asar);
+  assert.equal(verdict.action, "repair");
+  assert.ok(verdict.reasons.some((r) => r.includes("could not be read")));
+});
+
+test("windows repair runs end to end: the checksum-verified installer is handed over", async () => {
+  const root = tmpdir();
+  const app = makeApp(root, fixture113());
+  const before = treeManifest(root);
+  const win = B.makePlatformIo("win32", "x64");
+  const exeBytes = Buffer.from("MZ checked installer bytes");
+  const sums = `${crypto.createHash("sha256").update(exeBytes).digest("hex")}  Xod-1.1.4-x64-setup.exe\n`;
+  let swaps = 0;
+  const io = {
+    workRoot: () => tmpdir(),
+    report: () => {},
+    fetchLatest: async () => ({
+      version: "1.1.4",
+      artifactName: "Xod-1.1.4-x64-setup.exe",
+      artifactUrl: "https://example.invalid/Xod-1.1.4-x64-setup.exe",
+      sumsUrl: "https://example.invalid/SHA256SUMS.txt",
+    }),
+    download: async (url, dest) => { fs.writeFileSync(dest, exeBytes); },
+    fetchText: async () => sums,
+    stageApp: win.stageApp,
+    stagedKind: win.stagedKind,
+    swapAndRelaunch: async () => { swaps++; },
+    keepWork: win.keepWork,
+  };
+  const result = await B.repair(app, io);
+  assert.equal(result.ok, true, `windows repair must complete, got: ${JSON.stringify(result)}`);
+  assert.equal(result.version, "1.1.4");
+  assert.equal(swaps, 1, "the installer is handed over exactly once");
+  assert.equal(treeManifest(root), before, "nothing is replaced before the installer runs");
+});
+
+test("the checksum line is matched by exact artifact name, not by suffix", async () => {
+  const root = tmpdir();
+  const app = makeApp(root, fixture113());
+  const staged = makeApp(path.join(root, "staged-root"), fixtureHealthy("1.1.4"));
+  const otherHash = crypto.createHash("sha256").update(Buffer.from("SOMEONE ELSES BYTES")).digest("hex");
+  const realHash = crypto.createHash("sha256").update(Buffer.from("DMGBYTES")).digest("hex");
+  const { io } = repairIo({
+    stageApp: async () => staged,
+    fetchText: async () => `${otherHash}  other-Xod-1.1.4-arm64.dmg\n${realHash}  Xod-1.1.4-arm64.dmg\n`,
+  });
+  const result = await B.repair(app, io);
+  assert.equal(result.ok, true, `a suffix-sharing sums entry must not shadow the real one: ${JSON.stringify(result)}`);
+});

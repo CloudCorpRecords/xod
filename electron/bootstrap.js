@@ -15,8 +15,10 @@
 //      local archive walk.
 //   4. Broken: does NOT load main.js (it would crash). Instead it repairs the install from
 //      the same channel the updater uses (the latest GitHub release, the download checked
-//      against the release's SHA256SUMS.txt), verifies the staged copy the same way before
-//      anything is replaced, and swaps it in only once the new copy is proven. If the
+//      against the release's SHA256SUMS.txt), verifies the staged copy before anything
+//      is replaced (an app bundle with the same walk; an installer by its checksum,
+//      which is the only verification an installer carries), and swaps it in only once
+//      the new copy is proven. If the
 //      download or the staged copy fails any check, the existing install is left exactly
 //      as it was and the failure is reported plainly. A failed repair never bricks an app
 //      that was only mostly broken, and never pretends to have worked.
@@ -55,6 +57,21 @@ const newer = (a, b) => {
     if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0);
   }
   return false;
+};
+
+// Version strings reach the known-broken gate from two places (package.json
+// inside an archive, a release tag) and they do not always arrive clean: a
+// leading "v" or build metadata must not let a known broken release slip
+// past the comparison, and a version that cannot be read at all returns
+// null here so the caller treats the copy as unproven, never as healthy.
+const normalizeVersion = (v) => {
+  if (v === null || v === undefined) return null;
+  const core = String(v).trim().replace(/^v/i, "").split("+")[0].split("-")[0];
+  return /^\d+(\.\d+)*$/.test(core) ? core : null;
+};
+const isKnownBroken = (v) => {
+  const n = normalizeVersion(v);
+  return n !== null && KNOWN_BROKEN_VERSIONS.some((k) => normalizeVersion(k) === n);
 };
 
 // ---------------------------------------------------------------------------
@@ -144,6 +161,8 @@ function checkAsar(asarPath) {
     } catch (e) {
       problems.push("package.json inside the archive is not valid JSON");
     }
+  } else {
+    problems.push("package.json is missing from the archive");
   }
   entryRel = entryRel.replace(/^\.\//, "");
   if (!archive.files[entryRel]) {
@@ -205,8 +224,11 @@ function decide(asarPath) {
   if (result.problems.length) {
     reasons.push(`the package is incomplete: ${result.problems[0]}`);
   }
-  if (result.version && KNOWN_BROKEN_VERSIONS.includes(result.version)) {
-    reasons.push(`version ${result.version} is a known broken release`);
+  const version = normalizeVersion(result.version);
+  if (!version) {
+    reasons.push("the version inside the package could not be read, so this copy cannot be cleared as healthy");
+  } else if (isKnownBroken(version)) {
+    reasons.push(`version ${version} is a known broken release`);
   }
   return {
     action: reasons.length ? "repair" : "launch",
@@ -220,7 +242,9 @@ function decide(asarPath) {
 // Repair. Every side effect goes through an io object so the whole pipeline
 // is testable offline. The contract the pipeline keeps:
 //   - nothing outside the work dir is written until a staged replacement has
-//     passed the checksum check AND the same integrity walk as the launch gate;
+//     passed the checksum check AND, when the staged artifact is an app
+//     bundle, the same integrity walk as the launch gate (a staged installer
+//     carries no archive to walk; the checksum is its verification);
 //   - any failure before the swap leaves the installed app byte-identical;
 //   - the result is honest: { ok, stage, error } names where it stopped.
 // ---------------------------------------------------------------------------
@@ -245,7 +269,7 @@ async function repair(appPath, io) {
     return fail("fetch", e);
   }
   if (!latest || !latest.version) return fail("fetch", "the release channel returned no version");
-  if (KNOWN_BROKEN_VERSIONS.includes(latest.version)) {
+  if (isKnownBroken(latest.version)) {
     return fail("fetch", `the latest release is ${latest.version}, which is itself a known broken release; there is nothing safe to repair to yet`);
   }
   let workDir;
@@ -255,17 +279,30 @@ async function repair(appPath, io) {
     const artifactPath = path.join(workDir, latest.artifactName);
     await io.download(latest.artifactUrl, artifactPath);
     const sumsText = await io.fetchText(latest.sumsUrl);
-    const line = sumsText.split("\n").find((l) => l.trim().endsWith(latest.artifactName));
+    const line = sumsText.split("\n").find((l) => {
+      const parts = l.trim().split(/\s+/);
+      return parts.length >= 2 && parts[parts.length - 1].replace(/^\*/, "") === latest.artifactName;
+    });
     const want = line ? line.trim().split(/\s+/)[0].toLowerCase() : null;
     const got = await sha256File(artifactPath);
     if (!want || want !== got) throw new Error("the download's checksum does not match the release");
     const stagedApp = await io.stageApp(artifactPath, workDir);
-    const verdict = decide(findAsar(stagedApp));
-    if (verdict.action !== "launch") {
-      throw new Error(`the downloaded copy does not pass the integrity check: ${verdict.problems[0] || verdict.reasons[0]}`);
-    }
-    if (verdict.version !== latest.version) {
-      throw new Error(`the downloaded copy reports version ${verdict.version}, not ${latest.version}`);
+    if (io.stagedKind === "installer") {
+      // The staged artifact is the platform installer itself. There is no
+      // app.asar inside it to walk; the checksum that just matched
+      // SHA256SUMS.txt is its verification, the same evidence the updater
+      // acts on, and it also pins the version: bytes that hash to the
+      // release's sum are the release's bytes. The version check below
+      // belongs to app bundles, whose package can be read directly.
+      io.report(`repairing Xod: the installer matches the release checksum`);
+    } else {
+      const verdict = decide(findAsar(stagedApp));
+      if (verdict.action !== "launch") {
+        throw new Error(`the downloaded copy does not pass the integrity check: ${verdict.problems[0] || verdict.reasons[0]}`);
+      }
+      if (verdict.version !== latest.version) {
+        throw new Error(`the downloaded copy reports version ${verdict.version}, not ${latest.version}`);
+      }
     }
     io.report(`repairing Xod: the new copy checks out, swapping it in`);
     await io.swapAndRelaunch({ stagedApp, targetApp: appPath, workDir });
@@ -350,6 +387,7 @@ function makeGitHubIo(platform, arch) {
           return resolve(io.download(res.headers.location, dest));
         }
         if (res.statusCode !== 200) return reject(new Error(`download answered ${res.statusCode}`));
+        res.on("error", reject);
         const out = fs.createWriteStream(dest);
         res.pipe(out);
         out.on("finish", () => out.close(resolve));
@@ -430,10 +468,12 @@ function makePlatformIo(platform = process.platform, arch = process.arch) {
   const io = makeGitHubIo(platform, arch);
   if (platform === "darwin") {
     io.stageApp = stageAppMac;
+    io.stagedKind = "app"; // repair() walks the staged bundle's app.asar
     io.swapAndRelaunch = (args) => swapAndRelaunchMac(args, process.pid);
     io.keepWork = () => true; // the swap script and its log live in the work dir
   } else if (platform === "win32") {
     io.stageApp = stageAppWin;
+    io.stagedKind = "installer"; // repair() verifies the staged installer by checksum
     io.swapAndRelaunch = swapAndRelaunchWin;
     // On Windows the staged app IS the artifact inside the work dir and the
     // installer runs from it after we exit, so the dir must survive repair().
@@ -543,6 +583,8 @@ if (typeof module !== "undefined" && module.exports) {
     sha256File,
     makePlatformIo,
     newer,
+    normalizeVersion,
+    isKnownBroken,
   };
 }
 
