@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.1.10
+
+A fix release for two defects found by the v1.1.9 home pass and live re-grade 5: the bundle seal still breaking at runtime through bundled-python spawn paths the first seal fix missed, and two mission verdict failures where correct worker reports were judged as failures.
+
+**The bundle seal now holds**
+- The first seal fix set the do-not-write-bytecode flag on the spawn paths it could see, but the build itself shipped timestamp-based bytecode: the packaging step compiled with the unchecked-hash invalidation mode but did not force recompilation, so every module that already had a bytecode file kept the timestamp form, and the first child process to import one rewrote it inside the sealed bundle. On the v1.1.9 home pass that was 64 sealed files rewritten in a single burst, under two minutes after install, and the broken seal again kept macOS permission grants from taking effect.
+- The build now forces recompilation of every module to unchecked-hash bytecode, which no child process ever rewrites, and the bundled interpreter carries a site customization that turns bytecode writing off even under an isolated interpreter or a stripped environment. The spawn paths the first fix missed are closed as well: the Partner launcher child, the desktop shell's backend spawn (the flag is now set always, not only in the packaged branch, and the server starts with the no-bytecode switch), external MCP clients holding a stale pre-fix configuration block (the block is now upgraded in place, with a backup, instead of being left as already configured), and the isolated test probe class, where the environment flag is ignored by design and the switch is now passed directly. The standing seal suite grows to 207 checks, including behavioral proofs that timestamp bytecode is rewritten on import and unchecked-hash bytecode is not, and the spawn-site audit is stricter than before: an isolated spawn of the app's own python must carry the switch, not just the flag.
+- Scope is unchanged: this makes a permission grant stick within one installed build. Grants still go stale across builds until the app has a stable signing identity; that is separate work.
+
+**Mission verdicts now match the reports**
+- Re-grade 5 showed a delegated step failing outright when its workers had done the reads but closed unverified over a check their read-only tools cannot run: the worker that held the needed file reported it could not verify a byte count its envelope denied, and the step had no outcome-level repair of any kind. Such a fan-out now gets one bounded completion retry: delivered workers are reused, undelivered briefs are re-run once with a completion note (deliver from the reads; a check that cannot be run is recorded as a caveat, not a non-delivery), the spend is marked in the saved contract, and the step is judged by the same all-workers-delivered rule.
+- The same re-grade showed the classification gate failing a retry report that had read and classified all three sources correctly: the gate counted a source only when its clause used a copular phrasing, and the report classified in bullet-label form, so two of the three sources scored zero. The gate now also counts a clause that states the source kind in label form, judging the kind vocabulary on the clause with file paths removed, so kind words inside filenames still cannot count. The listing-versus-classification bar is unchanged, and no verdict standard was loosened.
+
 ## 1.1.9
 
 A fix release for two defects found by the v1.1.8 home pass and live re-grade 4: the app bundle breaking its own code signature seal at runtime, which made macOS permission grants impossible to keep, and the discovery retry that never engaged when a worker answered from a folder listing instead of reading the file.
