@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.1.6
+
+A combined repair release. It carries the fix for the 1.1.5 launch failure, the self-healing key snapshot, and the model switching repairs, each put through this release's full gauntlet (test suites, fleet gates, an independent adversarial review, and in-app proofs of the built artifact) before the release was made latest. 1.1.5 was pulled back to a prerelease the day it shipped; this is the release that replaces it.
+
+**The launch failure is fixed at its root**
+- The 1.1.5 field failure was a mixed install: an updater swap interrupted mid-flight left the 1.1.4 app bundle in place while the backend already reported 1.1.5, and the 1.1.4 bootstrap could not read its own app.asar inside the packaged Electron process (Electron's archive-aware filesystem intercepts any path ending in .asar), so a healthy install demanded a repair that could never succeed. The bootstrap now reads the archive through Electron's unpatched filesystem module (original-fs), and that selection is proven inside a packaged Electron process by a standing test (electron/bootstrap-electron.test.js), not only under plain Node. If original-fs is ever unavailable inside Electron, the bootstrap now says so in its log instead of falling back silently.
+
+**Keys heal themselves after a keychain prompt**
+- If Xod starts while the macOS keychain prompt for a new install is still unanswered, the startup snapshot reads "no keys" even though the vault holds them, and before this release nothing ever refreshed it. The snapshot now heals itself on the next read once the store answers: no restart, no pressing Try again. The heal is serialized so simultaneous reads cannot race it, and it never runs on the interface's event loop.
+
+**Model switching works, and Terra is the OpenAI default**
+- The top switcher and the brain's Change button now open a picker that can actually switch models. Every provider with a saved key offers its current default model, and OpenAI's default is now gpt-6.1-terra (Terra). A model you already run that is not the default (for example gpt-4o) stays listed as the one in use instead of being shown as unavailable, and the endpoint fallbacks no longer resurrect gpt-4o after a restart.
+
+**Release machinery**
+- The CI Python checks job runs on macos-15 (GitHub retired the macos-14 runner images, and the job had been cancelled at scheduling on every run since), and a CodeRabbit review configuration (.coderabbit.yaml) is included for this repository.
+
 ## 1.1.4
 
 A repair release. It fixes the defect that made 1.1.3 unusable, and it carries the self-repair machinery that keeps a broken package from ever stranding an install again, together with the brain fixes graded since 1.1.3.
