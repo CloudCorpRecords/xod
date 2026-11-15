@@ -297,7 +297,7 @@ def mcp_entry(port: Optional[int] = None) -> Dict[str, Any]:
     return {"command": sys.executable,
             "args": ["-m", "app.mcp_server"],
             "cwd": str(APP_ROOT),
-            "env": {"XOD_URL": f"http://127.0.0.1:{port}"}}
+            "env": {"XOD_URL": f"http://127.0.0.1:{port}", "PYTHONDONTWRITEBYTECODE": "1"}}
 
 
 def _backup(path: Path) -> Optional[Path]:

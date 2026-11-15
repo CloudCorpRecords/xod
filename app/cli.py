@@ -262,7 +262,8 @@ def start_server() -> str:
     port = _port() if _port_free(_port()) else _free_port()   # the usual port when free, so the desktop app finds it
     url = f"http://127.0.0.1:{port}"
     SERVER_LOG.parent.mkdir(parents=True, exist_ok=True)
-    env = {**os.environ, "XOD_DATA_DIR": str(DATA_DIR), "PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1"}
+    env = {**os.environ, "XOD_DATA_DIR": str(DATA_DIR), "PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1",
+           "PYTHONDONTWRITEBYTECODE": "1"}
     if START_LIGHT:
         env["XOD_LIGHTWEIGHT"] = "1"
     kw: Dict[str, Any] = {}

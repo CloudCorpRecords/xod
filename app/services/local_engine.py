@@ -262,7 +262,8 @@ class LocalEngine:
             await self.stop()
             from app.services.memory_broker import memory_broker
             await memory_broker.make_room(need_gb, f"chat model {repo.split('/')[-1]}")
-            env = dict(os.environ, HF_HUB_OFFLINE="1", TOKENIZERS_PARALLELISM="false")
+            env = dict(os.environ, HF_HUB_OFFLINE="1", TOKENIZERS_PARALLELISM="false",
+                       PYTHONDONTWRITEBYTECODE="1")
             ENGINE_LOG.parent.mkdir(parents=True, exist_ok=True)
             with open(ENGINE_LOG, "wb") as log:     # the child keeps its own handle; a fresh log each start
                 self.proc = subprocess.Popen(_command(repo, self.port), stdout=subprocess.DEVNULL, stderr=log,

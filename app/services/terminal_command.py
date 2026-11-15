@@ -37,11 +37,11 @@ def _script() -> str:
     py = sys.executable
     if WIN:
         return ("@echo off\r\nrem " + MARK + " (Tools > Terminal command). Runs Xod in the terminal.\r\n"
-                "set PYTHONUTF8=1\r\n" + f'set "PYTHONPATH={APP_ROOT}"\r\n' + f'"{py}" -m app.cli %*\r\n')
+                "set PYTHONUTF8=1\r\nset PYTHONDONTWRITEBYTECODE=1\r\n" + f'set "PYTHONPATH={APP_ROOT}"\r\n' + f'"{py}" -m app.cli %*\r\n')
     if not _packaged() and (APP_ROOT / "xod").exists():
         return f'#!/bin/sh\n# {MARK} (Tools > Terminal command). Runs Xod in the terminal from this checkout.\nexec "{APP_ROOT / "xod"}" "$@"\n'
     return (f'#!/bin/sh\n# {MARK} (Tools > Terminal command). Runs Xod in the terminal with the app\'s own Python.\n'
-            f'PYTHONUTF8=1 PYTHONPATH="{APP_ROOT}" exec "{py}" -m app.cli "$@"\n')
+            f'PYTHONUTF8=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="{APP_ROOT}" exec "{py}" -m app.cli "$@"\n')
 
 
 def shell_path() -> List[str]:

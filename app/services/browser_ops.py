@@ -228,10 +228,10 @@ def run_cli(device: str, argv: List[str], timeout: float = CALL_TIMEOUT) -> Dict
     if device == "local":
         d = provision_local()
         cmd = [sys.executable, str(d / "browser_ops.py"), *argv]
-        env = {**os.environ, "BOPS_CONFIG": str(d / "config.json")}
+        env = {**os.environ, "BOPS_CONFIG": str(d / "config.json"), "PYTHONDONTWRITEBYTECODE": "1"}
     elif device == "remote":
         cmd = [sys.executable, str(provision_host()), *argv]
-        env = dict(os.environ)
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     else:
         raise ConfigError(f"unknown device {device!r}")
     try:
@@ -312,8 +312,10 @@ def _quote(arg: str) -> str:       # the module wrapper's own quoting for the de
 
 
 def probe(device: str, mode: str, owner: str = "") -> Dict[str, Any]:
+    env = None
     if device == "local":
         cmd = [sys.executable, "-", str(provision_local() / "config.json"), mode, owner]
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     else:
         remote = config()["remote"]
         opts = [os.path.expanduser(o) for o in remote.get("ssh_options", [])]
@@ -322,7 +324,7 @@ def probe(device: str, mode: str, owner: str = "") -> Dict[str, Any]:
         remote_cmd = " ".join([remote.get("python", "python"), "-", _quote(dev_dir + sep + "config.json"), mode, _quote(owner or "-")])
         cmd = ["ssh", *opts, remote["ssh_user_host"], remote_cmd]
     try:
-        proc = subprocess.run(cmd, input=PROBE, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(cmd, input=PROBE, capture_output=True, text=True, timeout=60, env=env)
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "the window check did not answer within 60 s"}
     return _parse(proc)

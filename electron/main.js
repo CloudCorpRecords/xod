@@ -157,7 +157,7 @@ async function pickPort() {
 
 function findPython() {
   for (const cmd of WIN ? ["py", "python"] : ["python3.12", "python3.13", "python3.11", "python3.10", "python3"]) {
-    const r = spawnSync(cmd, ["-c", "import sys; print(sys.version_info[:2] >= (3, 10))"], { encoding: "utf8" });
+    const r = spawnSync(cmd, ["-c", "import sys; print(sys.version_info[:2] >= (3, 10))"], { encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
     if (r.status === 0 && r.stdout.trim() === "True") return cmd;
   }
   return null;
@@ -165,7 +165,7 @@ function findPython() {
 
 function run(cmd, args, label) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, PYTHONUNBUFFERED: "1" } });
+    const p = spawn(cmd, args, { cwd: ROOT, env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONDONTWRITEBYTECODE: "1" } });
     const onData = (d) => {
       const line = d.toString().trim().split("\n").pop();
       if (line) status(`${label}… ${line.slice(0, 90)}`);
@@ -184,7 +184,7 @@ async function ensurePythonEnv() {
     return;
   }
   // From source: make .venv the first time (a few GB of packages).
-  if (fs.existsSync(PY) && spawnSync(PY, ["-c", "import sys"]).status === 0) return;
+  if (fs.existsSync(PY) && spawnSync(PY, ["-c", "import sys"], { env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } }).status === 0) return;
   const py = findPython();
   if (!py) throw new Error("Xod needs Python 3.10 or newer (3.12 recommended). Install it from python.org, then open Xod again.");
   status("First run: creating Xod's Python environment…");

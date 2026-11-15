@@ -770,7 +770,8 @@ def _fresh_check() -> Tuple[bool, bool]:
     try:
         r = subprocess.run([sys.executable, "-c", "import Quartz, ApplicationServices as A;"
                             "print(int(bool(Quartz.CGPreflightScreenCaptureAccess())), int(bool(A.AXIsProcessTrusted())))"],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, timeout=10,
+                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         a, b = (r.stdout.split() + ["0", "0"])[:2]
         value = (a == "1", b == "1")
     except Exception:
