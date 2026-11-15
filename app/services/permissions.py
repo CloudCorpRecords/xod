@@ -199,17 +199,17 @@ def _gui_trust_path() -> Path:
     return DATA_DIR / GUI_TRUST_FILE
 
 
-def _read_gui_trust(path: Path, now: float) -> Optional[bool]:
-    """The GUI main process's trust verdict from its file, or None when the
-    file cannot speak for this build right now: missing, unreadable,
-    malformed, written by another version (an update orphans the old
-    build's answer along with its grant), or stale. A verdict that cannot
-    be relied on is unknown, never a guess in either direction."""
+def _read_gui_verdict(path: Path, now: float, key: str) -> Optional[bool]:
+    """A GUI main process verdict from its file, or None when the file
+    cannot speak for this build right now: missing, unreadable, malformed,
+    written by another version (an update orphans the old build's answer
+    along with its grant), or stale. A verdict that cannot be relied on is
+    unknown, never a guess in either direction."""
     try:
         raw = json.loads(path.read_text())
     except Exception:
         return None
-    if not isinstance(raw, dict) or not isinstance(raw.get("trusted"), bool):
+    if not isinstance(raw, dict) or not isinstance(raw.get(key), bool):
         return None
     from app.version import VERSION
     if str(raw.get("app_version") or "") != VERSION:
@@ -220,7 +220,16 @@ def _read_gui_trust(path: Path, now: float) -> Optional[bool]:
     age = now - float(ts)
     if age < -30.0 or age > GUI_TRUST_MAX_AGE_S:
         return None
-    return bool(raw["trusted"])
+    return bool(raw[key])
+
+
+def _read_gui_trust(path: Path, now: float) -> Optional[bool]:
+    """The GUI main process's trust verdict from its file, or None when the
+    file cannot speak for this build right now: missing, unreadable,
+    malformed, written by another version (an update orphans the old
+    build's answer along with its grant), or stale. A verdict that cannot
+    be relied on is unknown, never a guess in either direction."""
+    return _read_gui_verdict(path, now, "trusted")
 
 
 def gui_trusted() -> Optional[bool]:
@@ -230,6 +239,35 @@ def gui_trusted() -> Optional[bool]:
     running outside the GUI's app has no verdict to read)."""
     try:
         return _read_gui_trust(_gui_trust_path(), time.time())
+    except Exception:
+        return None
+
+
+# Screen Recording is the second half of the same story (AGE-71): the grant
+# belongs to the app, so the GUI main process evaluates its own screen
+# status (systemPreferences.getMediaAccessStatus in electron/main.js) and
+# leaves the verdict next to the Accessibility one. desktop.py's status
+# surfaces this reading the same way trusted() surfaces the other.
+GUI_SCREEN_FILE = "screen_trust.json"
+
+
+def _gui_screen_path() -> Path:
+    from app.paths import DATA_DIR
+    return DATA_DIR / GUI_SCREEN_FILE
+
+
+def _read_gui_screen(path: Path, now: float) -> Optional[bool]:
+    """The GUI main process's Screen Recording verdict from its file, under
+    the same rules as _read_gui_trust: another build's answer, a stale one,
+    or a malformed one is unknown, never a guess in either direction."""
+    return _read_gui_verdict(path, now, "granted")
+
+
+def gui_screen() -> Optional[bool]:
+    """The GUI main process's own Screen Recording verdict, when it has
+    left a current one for this build. None when it has not."""
+    try:
+        return _read_gui_screen(_gui_screen_path(), time.time())
     except Exception:
         return None
 

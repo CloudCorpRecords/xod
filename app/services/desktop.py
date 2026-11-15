@@ -737,6 +737,26 @@ def permissions() -> Dict[str, Any]:
         # to a new process. Ask a fresh one (macOS counts it as the same app).
         fs, fa = _fresh_check()
         screen, access = screen or fs, access or fa
+    # Both readings above answer for this backend process and its fresh
+    # child, and macOS does not attribute the app's grants to either: the
+    # identity it holds responsible is the Electron GUI main process. The
+    # GUI evaluates its own Screen Recording and Accessibility there and
+    # leaves current verdicts in the data dir (electron/main.js, surfaced
+    # by services/permissions.py, the 2026-11-02 pattern). A current GUI
+    # verdict is the truth for its permission and overrides the child
+    # readings in either direction; a child reading never overrides it.
+    # With no current GUI verdict (a backend running outside the app), the
+    # child readings above stand, as before (AGE-71).
+    try:
+        from app.services import permissions as _perms
+        _gui_access = _perms.gui_trusted()
+        _gui_screen = _perms.gui_screen()
+    except Exception:
+        _gui_access = _gui_screen = None
+    if _gui_access is not None:
+        access = _gui_access
+    if _gui_screen is not None:
+        screen = _gui_screen
     return {"supported": True, "screen": screen, "accessibility": access, "enabled": enabled(),
             "ready": screen and access and enabled(), "app": _host_app(), "app_path": host_bundle()}
 

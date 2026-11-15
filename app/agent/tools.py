@@ -5094,7 +5094,16 @@ def _wants_cli_agent(query: str) -> bool:
 
 def _wants_desktop(query: str) -> bool:
     """The screen, mouse and keyboard tools only when the request is about using the computer itself."""
-    return bool(_DESKTOP_RE.search(query or ""))
+    if _DESKTOP_RE.search(query or ""):
+        return True
+    try:
+        # A request that names an external surface (the person's own Chrome
+        # profile, a named app, the browser they are already signed in to)
+        # can only be worked on the real screen (AGE-71).
+        from app.services import browser_ops as _bops
+        return bool(_bops.named_surface(query))
+    except Exception:
+        return False
 
 
 def _wants_agent_mail(query: str) -> bool:
