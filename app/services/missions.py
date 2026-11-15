@@ -834,15 +834,28 @@ def _classification_answer_problem(subtask: Dict[str, Any],
                     "done on absence of contradiction.")
     classified: set = set()
     for clause in re.split(r"(?:[;!?\n]|\.\s+)", text):
-        if not _CLASS_MARKER_RE.search(clause):
-            continue
         files = _DISCOVERY_FILE_RE.findall(clause)
         if files:
-            classified.update(f.lower() for f in files)
-        else:
-            m = _CLASS_SOURCE_RE.search(clause)
-            if m:
-                classified.add("kind:" + m.group(0).lower().split()[0])
+            # A file is classified when its clause carries a classifying
+            # predicate (the marker), or when the clause states what kind
+            # of source it is in label form (the kind vocabulary). The
+            # kind check runs on the clause with the file paths removed:
+            # the filenames themselves carry kind words (a registry file
+            # named registry_primary.txt, a blog named launch_blog.txt),
+            # and a bare listing of the candidates must not pass as a
+            # classification (AGE-77 iteration 3: the re-grade 5 retry
+            # report classified all three sources in bullet-label form,
+            # path then kind and provenance, and only the one bullet
+            # phrased as a predicate, "reprint of", was counted).
+            if _CLASS_MARKER_RE.search(clause) or _CLASS_SOURCE_RE.search(
+                    _DISCOVERY_FILE_RE.sub(" ", clause)):
+                classified.update(f.lower() for f in files)
+            continue
+        if not _CLASS_MARKER_RE.search(clause):
+            continue
+        m = _CLASS_SOURCE_RE.search(clause)
+        if m:
+            classified.add("kind:" + m.group(0).lower().split()[0])
     if len(classified) < 2:
         return (demand + ", but its report does not classify the "
                 "candidates: fewer than two sources are named with what "
@@ -3358,25 +3371,96 @@ class MissionRunner:
                 f"that does not spawn every authored worker is a failed delegation, "
                 f"not a step the parent quietly finishes itself."],
                 claimed=W.render_result(result))
-        done_n = sum(1 for w in rows if w.get("outcome") == "done")
-        evidence = [
-            f"Delegated execution: coordinator {result.get('coordinator')} spawned "
-            f"{len(rows)} worker(s) for this step through workers.coordinate; "
-            f"{done_n}/{len(rows)} done. The workers are recorded as rows in the "
-            f"workers table: {', '.join(str(w.get('id')) for w in rows)}."]
-        for f in result.get("failures") or []:
-            evidence.append(f"Worker did not deliver: {f.get('task')}: "
-                            f"{f.get('outcome')} ({f.get('why')})")
-        rendered = W.render_result(result)
-        if result.get("outcome") == "done":
-            return {"status": "done", "claimed": rendered,
-                    "verified_status": "verified" if result.get("evidence") else "unverifiable",
-                    "evidence": evidence}
-        return _failed(evidence + [
-            f"The delegated outcome was \"{result.get('outcome')}\": {done_n} of "
-            f"{len(rows)} workers delivered, so this step's own scope is not "
-            f"complete. The failed workers stay in the count above; the step is "
-            f"recorded failed, never done on a partial fan-out."], claimed=rendered)
+
+        def _compose(res: Dict[str, Any]) -> Dict[str, Any]:
+            res_rows = res.get("workers") or []
+            res_done = sum(1 for w in res_rows if w.get("outcome") == "done")
+            res_evidence = [
+                f"Delegated execution: coordinator {res.get('coordinator')} spawned "
+                f"{len(res_rows)} worker(s) for this step through workers.coordinate; "
+                f"{res_done}/{len(res_rows)} done. The workers are recorded as rows in the "
+                f"workers table: {', '.join(str(w.get('id')) for w in res_rows)}."]
+            for f in res.get("failures") or []:
+                res_evidence.append(f"Worker did not deliver: {f.get('task')}: "
+                                    f"{f.get('outcome')} ({f.get('why')})")
+            res_rendered = W.render_result(res)
+            if res.get("outcome") == "done":
+                return {"status": "done", "claimed": res_rendered,
+                        "verified_status": "verified" if res.get("evidence") else "unverifiable",
+                        "evidence": res_evidence}
+            return _failed(res_evidence + [
+                f"The delegated outcome was \"{res.get('outcome')}\": {res_done} of "
+                f"{len(res_rows)} workers delivered, so this step's own scope is not "
+                f"complete. The failed workers stay in the count above; the step is "
+                f"recorded failed, never done on a partial fan-out."], claimed=res_rendered)
+
+        outcome = _compose(result)
+        if outcome["status"] == "done":
+            return outcome
+        # Bounded completion retry (AGE-77 iteration 3, the delegated
+        # sibling of the outcome retry's read repair). A delegated step
+        # has no other outcome-level repair: it returns here and is
+        # saved terminally. When the fan-out ends undelivered and EVERY
+        # failure is a report admission (the worker's own report closed
+        # unverified or incomplete) rather than a tool failure, the
+        # undelivered briefs were substantively worked: the re-grade 5
+        # T2C worker read its file in full, delivered the contents
+        # through its delegate messages, and closed "Not verified" over
+        # a shell byte inspection its read-only envelope denies. The
+        # machinery re-runs the undelivered briefs once, reusing the
+        # delivered workers, with a completion note that names the
+        # trap: deliver from the reads; a check the read-only tools
+        # cannot run is a caveat, not a non-delivery. The spend is
+        # marked in the saved contract, and the retry is judged by the
+        # same rule as any fan-out: every worker delivered, or the
+        # step fails. A failure with any other shape (a tool failure,
+        # a crash, a timeout, no report) earns no retry.
+        contract = sub.get("contract") or {}
+        failures = result.get("failures") or []
+        admission_only = bool(failures) and all(
+            str(f.get("why") or "").startswith("its report says")
+            or "its report admits" in str(f.get("why") or "")
+            for f in failures)
+        if (result.get("outcome") in ("partial", "failed") and admission_only
+                and not contract.get("outcome_retry")):
+            note = (
+                "\n\nCompletion note: a previous worker on this same brief did "
+                "the assigned reads and then closed unverified over a check "
+                "its read-only tools cannot run (a shell byte inspection "
+                "outside its envelope), so its part was never delivered. That "
+                "check is not part of this brief. Report the assigned outcome "
+                "from what your reads return. If a check your tools cannot "
+                "run seems relevant, name it as a caveat in the report and "
+                "still deliver the outcome.")
+            failed_tasks = {str(f.get("task") or "").strip() for f in failures}
+            briefs2: List[Dict[str, Any]] = []
+            for b in briefs:
+                b2 = dict(b)
+                if str(b.get("task") or "").strip() in failed_tasks:
+                    b2["task"] = str(b.get("task") or "") + note
+                briefs2.append(b2)
+            _save_subtask(sub["id"], contract={**contract, "outcome_retry": {
+                "kind": "delegated_completion", "at": time.time(),
+                "coordinator": result.get("coordinator")}})
+            kwargs2 = {k: v for k, v in kwargs.items() if k != "reuse_from"}
+            try:
+                result2 = await W.coordinate(sub["id"], job, briefs2,
+                                              reuse_from=result.get("coordinator"),
+                                              **kwargs2)
+            except Exception:
+                result2 = None
+            if result2 is not None and len(result2.get("workers") or []) == len(briefs2):
+                outcome2 = _compose(result2)
+                outcome2["evidence"] = [
+                    f"The step's first fan-out (coordinator "
+                    f"{result.get('coordinator')}) ended \"{result.get('outcome')}\" "
+                    f"with every undelivered brief failing on a report admission "
+                    f"(its report says) rather than a tool failure, so the machinery "
+                    f"re-ran the undelivered brief(s) once with a completion note, "
+                    f"reusing the delivered workers. This outcome is from that "
+                    f"retry."] + outcome2["evidence"]
+                return outcome2
+        return outcome
 
     async def _retry_transient_file_inputs(
             self, mission_id: str, sub: Dict[str, Any],
