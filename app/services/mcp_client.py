@@ -19,6 +19,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import sys
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -117,6 +119,41 @@ def _env_for(name: str, spec: Dict[str, Any]) -> Dict[str, str]:
         if val:
             env[key] = val
     return env
+
+
+def stdio_env(name: str, spec: Dict[str, Any]):
+    """Builds the (env, command, cwd) for a stdio MCP server.
+
+    A child running Xod's own python must never write bytecode: inside the
+    packaged app the bundle is sealed, and a rewritten .pyc invalidates the
+    seal, which makes the running app a different identity to TCC than the
+    one the user granted (AGE-78). The backend carries
+    PYTHONDONTWRITEBYTECODE from electron serverEnv; every python child
+    spawned from here needs the same protection. Foreign servers keep their
+    own environment, except inside a packaged run where the flag is set for
+    every stdio server (a server may itself shell out to the bundled
+    python)."""
+    from mcp.client.stdio import get_default_environment
+    from app.paths import APP_ROOT
+    env = {**get_default_environment(),
+           "PATH": os.environ.get("PATH", "")}
+    for k in ("LANG", "TMPDIR", "SHELL", "TMP"):
+        if os.environ.get(k):
+            env[k] = os.environ[k]
+    env.update(_env_for(name, spec))
+    command = str(spec["command"])
+    cwd = spec.get("cwd")
+    own_python = command == "{xod_python}" or command == sys.executable
+    if command == "{xod_python}":
+        command = sys.executable
+        env = {**env, **{k: v for k, v in os.environ.items() if k.startswith("XOD_")},
+               "PYTHONPATH": str(APP_ROOT)}
+        cwd = cwd or str(APP_ROOT)
+    elif shutil.which(command):
+        command = shutil.which(command)
+    if own_python or os.environ.get("XOD_PACKAGED") == "1":
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return env, command, cwd
 
 
 def add_servers(block: Dict[str, Any]) -> Dict[str, Any]:
@@ -250,24 +287,15 @@ class ServerConn:
                 target: Any = self._http_target()
             else:
                 # What a program needs to start (on Windows: APPDATA, SYSTEMROOT, PATHEXT… or npx can't run), PATH as
-                # it is now (Node installed a minute ago counts), then the server's own settings.
-                from mcp.client.stdio import get_default_environment
+                # it is now (Node installed a minute ago counts), then the server's own settings. stdio_env also
+                # guarantees PYTHONDONTWRITEBYTECODE for Xod's own python children (AGE-78).
                 from app.agent.worker import _fresh_path
-                env = {**get_default_environment(), "PATH": _fresh_path(),
-                       **{k: v for k, v in os.environ.items() if k in ("LANG", "TMPDIR", "SHELL", "TMP")},
-                       **_env_for(self.name, self.spec)}
-                command = self.spec["command"]
-                if command == "{xod_python}":          # Xod's own built-in connectors
-                    import sys
-                    from app.paths import APP_ROOT
-                    command = sys.executable
-                    env.update({k: v for k, v in os.environ.items() if k.startswith("XOD_") or k == "PYTHONPATH"})
-                    self.spec = {**self.spec, "cwd": str(APP_ROOT)}
-                else:
-                    import shutil
-                    command = shutil.which(command, path=env["PATH"]) or command      # npx → …\nodejs\npx.cmd
+                env, command, cwd = stdio_env(self.name, self.spec)
+                env["PATH"] = _fresh_path()
+                if command not in (sys.executable,) and shutil.which(command, path=env["PATH"]):
+                    command = shutil.which(command, path=env["PATH"])      # npx → …\nodejs\npx.cmd
                 target = StdioServerParameters(command=command, args=self.spec.get("args") or [], env=env,
-                                                cwd=self.spec.get("cwd") or None)
+                                                cwd=cwd or None)
             async with Client(target, read_timeout_seconds=120) as client:
                 self.client = client
                 self.tools = (await client.list_tools()).tools

@@ -1171,6 +1171,7 @@ def _python_can_pytest(py: str) -> bool:
     "No module named pytest" on another."""
     try:
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         proc = subprocess.run([py, "-I", "-c", "import pytest"], capture_output=True,
                               timeout=_PYTEST_PROBE_TIMEOUT_SEC,
                               cwd=os.path.dirname(os.path.abspath(py)), env=env)
@@ -1199,7 +1200,8 @@ def _provision_pytest_venv(cwd: Path) -> Optional[str]:
     try:
         proc = subprocess.run([base, "-m", "venv", str(venv_dir)],
                               capture_output=True, text=True,
-                              timeout=_PYTEST_PROVISION_TIMEOUT_SEC)
+                              timeout=_PYTEST_PROVISION_TIMEOUT_SEC,
+                              env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         if proc.returncode != 0:
             return None
         py = _venv_python(venv_dir)
@@ -1207,7 +1209,8 @@ def _provision_pytest_venv(cwd: Path) -> Optional[str]:
             return None
         proc = subprocess.run([py, "-m", "pip", "install", "--quiet", "pytest"],
                               capture_output=True, text=True,
-                              timeout=_PYTEST_PROVISION_TIMEOUT_SEC)
+                              timeout=_PYTEST_PROVISION_TIMEOUT_SEC,
+                              env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         if proc.returncode != 0:
             return None
         return py if _python_can_pytest(py) else None
@@ -1323,7 +1326,7 @@ def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
                 f"{claim['refused']}")
     argv = _split_command(command)
     path_val = search_path()
-    env = dict(os.environ, PATH=path_val)
+    env = dict(os.environ, PATH=path_val, PYTHONDONTWRITEBYTECODE="1")
     existing_py_path = env.get("PYTHONPATH", "")
     base_dir_str = str(BASE_DIR)
     if base_dir_str not in existing_py_path.split(os.pathsep):

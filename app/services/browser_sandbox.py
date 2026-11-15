@@ -116,7 +116,8 @@ def _end_with_xod(proc: subprocess.Popen) -> None:
     try:
         flags = {"creationflags": 0x08000000} if os.name == "nt" else {"start_new_session": True}   # no console window
         subprocess.Popen([sys.executable, "-c", _WATCH, str(os.getpid()), str(proc.pid)],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **flags)
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, **flags)
     except Exception as e:
         logger.warning(f"Could not watch the background browser: {e}")
 

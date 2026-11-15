@@ -553,7 +553,7 @@ class SystemControlService:
         import shlex
         import shutil
         path_val = search_path()
-        env = dict(os.environ, PATH=path_val)
+        env = dict(os.environ, PATH=path_val, PYTHONDONTWRITEBYTECODE="1")
         existing_py_path = env.get("PYTHONPATH", "")
         app_root_str = str(APP_ROOT)
         if app_root_str not in existing_py_path.split(os.pathsep):

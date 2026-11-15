@@ -88,9 +88,10 @@ def ffmpeg_exe() -> Optional[str]:
 
 def worker_env(env: Dict[str, str]) -> Dict[str, str]:
     """Environment for the media worker: adds the downloaded libraries to its path."""
+    env = dict(env)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"   # the worker runs Xod's own python inside the sealed bundle (AGE-78)
     dirs = [str(_dir(g)) for g in GROUPS if _dir(g).exists()]
     if dirs:
-        env = dict(env)
         env["PYTHONPATH"] = os.pathsep.join([p for p in [env.get("PYTHONPATH")] if p] + dirs)
     return env
 
@@ -123,7 +124,8 @@ def _install(group: str) -> None:
         # --no-deps: everything else these need is already inside the app, at the right versions.
         cmd = [sys.executable, "-m", "pip", "install", "--no-deps", "--only-binary=:all:",
                "--disable-pip-version-check", "--no-input", "--target", str(tmp), "-r", reqs]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         for line in proc.stdout:
             if line.strip():
                 _state["line"] = line.strip()[:160]

@@ -235,7 +235,8 @@ class FineTuningService:
         try:
             # Cap MLX: a small buffer cache, and a hard budget that leaves headroom for the rest of the Mac.
             budget_gb = max(need_gb, mem["available_gb"] - 2.0 * MIN_FREE_GB_DURING_TRAINING)
-            env = dict(os.environ, XOD_MLX_CACHE_GB="0.5", XOD_MLX_MEMORY_GB=f"{budget_gb:.1f}")
+            env = dict(os.environ, XOD_MLX_CACHE_GB="0.5", XOD_MLX_MEMORY_GB=f"{budget_gb:.1f}",
+                       PYTHONDONTWRITEBYTECODE="1")
             proc = await asyncio.create_subprocess_exec(
                 *cmd, cwd=str(BASE_DIR), env=env,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,  # one stream: no pipe deadlock
@@ -328,7 +329,8 @@ class FineTuningService:
                 return
 
             budget_gb = max(need_gb, mem["available_gb"] - 2.0 * MIN_FREE_GB_DURING_TRAINING)
-            env = dict(os.environ, XOD_MLX_CACHE_GB="0.5", XOD_MLX_MEMORY_GB=f"{budget_gb:.1f}")
+            env = dict(os.environ, XOD_MLX_CACHE_GB="0.5", XOD_MLX_MEMORY_GB=f"{budget_gb:.1f}",
+                       PYTHONDONTWRITEBYTECODE="1")
             proc = await asyncio.create_subprocess_exec(
                 str(VENV_PYTHON), "-m", "app.services.mlx_dpo",
                 "--model", job["base_model"], "--init-adapter", job["init_adapter"],
@@ -532,6 +534,7 @@ class FineTuningService:
             "--model", base_model, "--adapter", str(adapter_dir), "--test", str(test_file),
             "--validator", validator, "--out", str(out_path),
             cwd=str(BASE_DIR), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+            env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
         )
         output, _ = await proc.communicate()
         try:

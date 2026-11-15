@@ -9,6 +9,7 @@ to the big teacher model, so a student's mistakes fall back to the teacher.
 import asyncio
 import json
 import logging
+import os
 import socket
 import subprocess
 import sys
@@ -134,6 +135,7 @@ async def start_server(name: str) -> Dict[str, Any]:
         [str(VENV_PYTHON), "-m", "app.services.engine_child", "--model", entry["base_model"],
          "--adapter-path", adapter, "--host", "127.0.0.1", "--port", str(port)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(APP_ROOT),
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
     _servers[name] = {"proc": proc, "port": port, "ready": False}
     deadline = time.time() + 180

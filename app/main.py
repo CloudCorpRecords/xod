@@ -1208,8 +1208,9 @@ async def mcp_self_config_endpoint(request: Request):
     port = request.url.port or 8000
     return {"config": {"mcpServers": {
         "xod": {"command": _sys.executable, "args": ["-m", "app.mcp_server"], "cwd": str(APP_ROOT),
-                "env": {"XOD_URL": f"http://127.0.0.1:{port}"}},
-        "xod-phone": {"command": _sys.executable, "args": ["-m", "app.phone_mcp"], "cwd": str(APP_ROOT)}}}}
+                "env": {"XOD_URL": f"http://127.0.0.1:{port}", "PYTHONDONTWRITEBYTECODE": "1"}},
+        "xod-phone": {"command": _sys.executable, "args": ["-m", "app.phone_mcp"], "cwd": str(APP_ROOT),
+                      "env": {"PYTHONDONTWRITEBYTECODE": "1"}}}}}
 
 
 @app.post("/api/mcp/servers")
