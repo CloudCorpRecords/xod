@@ -60,8 +60,14 @@ def title_for(tool: str, args: Dict[str, Any], result: Any) -> (str, str):
         return f"Waited for {a.get('condition', 'it').replace('_', ' ')}", str(r.get("detail") or r.get("error") or "")[:140]
     if tool == "computer_read_file":
         return f"Read {_base(path)}", f"{r.get('lines_count') or ''} lines".strip() if ok else str(r.get("error", ""))[:140]
-    if tool in ("computer_list_directory", "computer_directory_tree", "fs_list_workspace_files"):
-        return f"Looked in {_base(path) or 'a folder'}", ""
+    if tool in ("computer_list_directory", "computer_directory_tree",
+                "fs_list_workspace_files", "list_directory"):
+        # The detail carries the listed path itself: the mission layer
+        # reads a step's successful listings back from these rows and
+        # the detail is the field its listing reader consults, so a
+        # record that drops the path leaves the step's listings
+        # unrecoverable (AGE-77 iteration 2).
+        return f"Looked in {_base(path) or 'a folder'}", str(path or "")[:300]
     if tool == "computer_find_files":
         n = len(r.get("results") or [])
         return f"Searched files for “{str(a.get('query') or '')[:50]}”", f"{n} found"

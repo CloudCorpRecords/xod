@@ -1021,7 +1021,21 @@ def _has_decisive_evidence(task: Dict[str, Any]) -> bool:
 # of the same folders, so the retry carries the names themselves)
 # and the step run once more.
 #
-# One spend per step across both shapes, recorded in the step's
+# (c) Identified without a read (iteration 2, re-grade 4). The
+# discovery gate refuses an identification that rests only on a
+# listing preview when the step's instruction demands the file's
+# contents, and the step then just failed (T2C on v1.1.8: the
+# contract carried computer_read_file, the worker identified
+# directive.txt from the preview, never read it, and reported the
+# contents as not available). The repair names the identified file
+# and orders the read before the answer. Iteration 1's disclaimer
+# retry also never fired live, for two reasons fixed in the same
+# pass: the agent log recorded a listing step with an empty detail,
+# so _successful_listings found no folder for any real task, and
+# the disclaimer patterns were cut to the re-grade 3 wording and
+# missed the re-grade 4 reports entirely.
+#
+# One spend per step across all three shapes, recorded in the step's
 # saved contract ("outcome_retry") before the retry task is
 # created, so a re-drive after a restart cannot spend it twice.
 # The verdict gates are untouched: the retry's report is judged by
@@ -1156,6 +1170,15 @@ _LISTING_DISCLAIMER_RES = (
     r"\bcan identify only\b",
     r"\blisting (?:did not|does not|didn't) (?:show|include|provide|contain)\b",
     r"\bdirectory information\b[^.\n]{0,60}\bnot\b",
+    # Re-grade 4 wordings (v1.1.8), each taken from a graded report:
+    # "the available listing identifies only one file", "their names
+    # and source kinds are not available", "aren't available in the
+    # information provided". The re-grade 3 patterns above missed all
+    # three, which is one of the two reasons the retry never fired.
+    r"\bidentif\w+ only\b",
+    r"\b(?:names?|kinds?|contents?|details?|entries|files)\b"
+    r"[^.\n]{0,50}\bnot available\b",
+    r"(?:\bnot|n't) available in the information\b",
 )
 
 
@@ -1171,6 +1194,50 @@ def _listing_disclaimer(claimed: Any) -> Optional[str]:
         low = sentence.lower()
         if any(re.search(p, low) for p in _LISTING_DISCLAIMER_RES):
             return sentence.strip()[:200]
+    return None
+
+
+def _unread_identified_file(subtask: Dict[str, Any],
+                            outcome: Dict[str, Any],
+                            task: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The file a step's report identifies but the step never
+    successfully read, or None. The population is exactly the one
+    the discovery gate's read-through rule judges (AGE-77
+    iteration 2, from re-grade 4's T2C): the step's own text
+    demands a discovery and the identified file's contents, the
+    report names a file as the match, the step's tool record holds
+    no successful read of it, and the declared contract holds the
+    read tool that could have read it. Classification steps are
+    not judged here: their repair is the disclaimed-listing
+    re-presentation, and a classification under-delivery with no
+    disclaimer keeps its terminal failure."""
+    if not isinstance(outcome, dict) \
+            or outcome.get("status") not in ("failed", "blocked"):
+        return None
+    claimed = outcome.get("claimed")
+    if not claimed or not isinstance(claimed, str):
+        return None
+    if not _instruction_needs_discovery(subtask) \
+            or not _instruction_demands_contents(subtask):
+        return None
+    contract = subtask.get("contract") or {}
+    tools = contract.get("tools")
+    if tools is None:
+        return None
+    declared = [str(t) for t in tools if str(t).strip()]
+    canon = set(declared) | {_canonical_tool_name(t) for t in declared}
+    if "computer_read_file" not in canon:
+        return None
+    reads = _successful_read_files(task)
+    for f in _identified_files(claimed):
+        fl = f.lower()
+        if fl in reads or fl.rsplit("/", 1)[-1] in reads \
+                or any(r.endswith("/" + fl) for r in reads):
+            continue
+        # _identified_files drops a leading slash from an absolute
+        # path (its file pattern starts at the first name segment);
+        # name the file in the retry exactly as the report named it.
+        return "/" + f if ("/" + f) in claimed else f
     return None
 
 
@@ -3440,33 +3507,57 @@ class MissionRunner:
                              f"and re-ran the step once. This outcome is from "
                              f"that retry.")
         else:
-            listings = _successful_listings(task)
-            disclaimer = _listing_disclaimer(outcome.get("claimed")) \
-                if listings else None
-            if not listings or not disclaimer:
-                return None
-            representation = _render_listing_representation(listings)
-            if not representation:
-                return None
-            contract["outcome_retry"] = {"kind": "listing_represent",
-                                         "folders": listings,
-                                         "at": time.time()}
-            note = (f"Re-presentation note: this step's first pass reported "
-                    f"that listing results were not available "
-                    f"(\"{disclaimer}\"), but the step's own tool record "
-                    f"shows the listing succeeded.\n{representation}\n"
-                    f"These names are established results of this step, not "
-                    f"unavailable information: a report that the names in a "
-                    f"listed folder were not available contradicts the "
-                    f"step's own record and will fail the step again. Read "
-                    f"the files themselves and finish the step. This is "
-                    f"the step's one bounded retry.")
-            evidence_line = (f"The step's first pass ended {outcome['status']} "
-                             f"on a report disclaiming listing results the "
-                             f"step had already received "
-                             f"({', '.join(listings)}); the machinery "
-                             f"re-presented those results and re-ran the "
-                             f"step once. This outcome is from that retry.")
+            unread = _unread_identified_file(sub, outcome, task)
+            if unread:
+                contract["outcome_retry"] = {"kind": "read_identified",
+                                             "file": unread,
+                                             "at": time.time()}
+                note = (f"Read repair note: this step's first pass "
+                        f"identified {unread} as the matching file, but "
+                        f"the step's own tool record shows no successful "
+                        f"read of it: the identification rests on the "
+                        f"listing preview alone, while the step's "
+                        f"instruction requires the file's contents. Read "
+                        f"{unread} with computer_read_file before "
+                        f"answering, and base the report on what the read "
+                        f"returns. This is the step's one bounded retry: "
+                        f"a report that again identifies a file it never "
+                        f"read ends the step.")
+                evidence_line = (f"The step's first pass ended "
+                                 f"{outcome['status']} on a report that "
+                                 f"identified {unread} without a "
+                                 f"successful read of it; the machinery "
+                                 f"re-ran the step once with an explicit "
+                                 f"instruction to read the file first. "
+                                 f"This outcome is from that retry.")
+            else:
+                listings = _successful_listings(task)
+                disclaimer = _listing_disclaimer(outcome.get("claimed")) \
+                    if listings else None
+                if not listings or not disclaimer:
+                    return None
+                representation = _render_listing_representation(listings)
+                if not representation:
+                    return None
+                contract["outcome_retry"] = {"kind": "listing_represent",
+                                             "folders": listings,
+                                             "at": time.time()}
+                note = (f"Re-presentation note: this step's first pass reported "
+                        f"that listing results were not available "
+                        f"(\"{disclaimer}\"), but the step's own tool record "
+                        f"shows the listing succeeded.\n{representation}\n"
+                        f"These names are established results of this step, not "
+                        f"unavailable information: a report that the names in a "
+                        f"listed folder were not available contradicts the "
+                        f"step's own record and will fail the step again. Read "
+                        f"the files themselves and finish the step. This is "
+                        f"the step's one bounded retry.")
+                evidence_line = (f"The step's first pass ended {outcome['status']} "
+                                 f"on a report disclaiming listing results the "
+                                 f"step had already received "
+                                 f"({', '.join(listings)}); the machinery "
+                                 f"re-presented those results and re-ran the "
+                                 f"step once. This outcome is from that retry.")
         retry_sub = {**sub, "contract": contract}
         request, delivery, problem = assemble_step(mission_id, retry_sub)
         if problem:

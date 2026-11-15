@@ -177,7 +177,7 @@ class FakeQueue:
         if callable(b): return b(rec)
         return {"id": tid, "title": "", "request": "", **b}
 
-async def e2e(step1):
+async def e2e(step1, retry=None):
     def copy_step(rec):
         (S / "chosen.txt").write_text("CODE: ZULU-9\nDirective body.\nSecond line.\n")
         return {"id": rec["id"], "title": "", "request": "", "status": "done",
@@ -186,14 +186,24 @@ async def e2e(step1):
         (S / "code.txt").write_text("ZULU-9")
         return {"id": rec["id"], "title": "", "request": "", "status": "done",
                 "result": "Wrote the code."}
-    q = FakeQueue([step1, copy_step, code_step])
+    behaviors = [step1] + ([retry] if retry is not None else []) \
+        + [copy_step, code_step]
+    q = FakeQueue(behaviors)
     runner = M.MissionRunner(queue=q, ask=FakeAsk([json.dumps(PLAN)]), poll_sec=0.01)
     m = M.create_mission(GOAL)
     await runner.drive(m["id"])
     return M.get_mission(m["id"])
 
+# AGE-77 iteration 2: this shape now spends the step's one bounded
+# read repair before it ends, so the stub models the retry as the
+# worker repeating the preview-only identification. The step then
+# ends failed on the second pass, as the assertions below pin: the
+# gate's disposition is unchanged, the copy and code steps never
+# run, and chosen.txt is never produced.
 m = asyncio.run(e2e({"status": "done", "result": LIVE_RESULT,
-                     "evidence": list(LIST_EVIDENCE)}))
+                     "evidence": list(LIST_EVIDENCE)},
+                    retry={"status": "done", "result": LIVE_RESULT,
+                           "evidence": list(LIST_EVIDENCE)}))
 subs = m["subtasks"]
 check("e2e: step 1 fails on the missing read-through",
       subs[0]["status"] == "failed", str(subs[0]))
