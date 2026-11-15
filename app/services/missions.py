@@ -993,6 +993,218 @@ def _has_decisive_evidence(task: Dict[str, Any]) -> bool:
     return isinstance(ev, list) and bool(ev)
 
 
+# --------------------------------------------- outcome retry (AGE-77)
+# Live re-grade 3 (2026-11-14) left two terminal shapes that one
+# bounded retry at the mission layer answers, because everything
+# needed to finish the step already exists when the first pass ends:
+#
+# (a) Missing capability. The worker's report names a real tool its
+# declared contract leaves out and asks for it (the graded T2C
+# report: "Please allow `computer_list_directory` or provide the
+# filenames"). The verdict recorded the step failed and the mission
+# ended, although the repair is one line: add the named tool to the
+# contract and run the step again. The plea is judged conservatively,
+# in the _blocked_signal style: a plea sentence, a tool name from
+# the catalog itself (never an invented name), and that tool absent
+# from the declared contract. A step that declared no contract is
+# not judged here: dispatch-time tool selection governs it, and a
+# tool missing there is a selection defect, not a contract defect.
+#
+# (b) Disclaimed listings. The worker's report says the names in a
+# folder were not available in the directory information shown,
+# while the step's own tool record holds a successful
+# computer_list_directory of that folder (Tier 4 L1: two listings,
+# both ok, three files, then "their names and kinds were not
+# available in the directory information shown"). The gates are
+# right to fail that report; what was missing is the retry, with
+# the received results re-presented (rendered from a fresh listing
+# of the same folders, so the retry carries the names themselves)
+# and the step run once more.
+#
+# One spend per step across both shapes, recorded in the step's
+# saved contract ("outcome_retry") before the retry task is
+# created, so a re-drive after a restart cannot spend it twice.
+# The verdict gates are untouched: the retry's report is judged by
+# exactly the same composition as the first pass's.
+
+_CAPABILITY_PLEA_RES = (
+    r"\bplease allow\b",
+    r"\bdeclared tools?\b[^.\n]{0,60}\b(?:do not|does not|did not|don't) include\b",
+    r"\btools?\b[^.\n]{0,40}\b(?:do not|does not|did not|don't) include\b",
+    r"\bhave no (?:tool|way) to\b",
+    r"\bno (?:tool|way) to\b",
+    r"\bmissing\b[^.\n]{0,40}\btool\b",
+    r"\blacks?\b[^.\n]{0,40}\btools?\b",
+    r"\bnot (?:among|in) (?:my|the|its) (?:declared )?tools?\b",
+    r"\bneeds?\b[^.\n]{0,50}\btool\b",
+)
+
+
+def _catalog_tool_names() -> set:
+    """Every tool name a worker could name: the catalog's own names,
+    plus the planner-facing aliases, kept both as written and as the
+    canonical names they run as."""
+    names = set()
+    try:
+        from app.agent.tools import TOOL_DEFINITIONS
+        for t in TOOL_DEFINITIONS:
+            n = (t.get("function") or {}).get("name")
+            if n:
+                names.add(str(n))
+    except Exception:
+        pass
+    for alias, canon in _TOOL_NAME_ALIASES.items():
+        names.add(alias)
+        names.add(canon)
+    return names
+
+
+def _missing_capability_tool(subtask: Dict[str, Any],
+                             outcome: Dict[str, Any]) -> Optional[str]:
+    """The catalog tool a finished step's report pleads for and its
+    declared contract leaves out, or None. Judged only for a failed
+    or blocked outcome on a step that declared a contract."""
+    if not isinstance(outcome, dict) \
+            or outcome.get("status") not in ("failed", "blocked"):
+        return None
+    claimed = outcome.get("claimed")
+    if not claimed or not isinstance(claimed, str):
+        return None
+    contract = subtask.get("contract") or {}
+    tools = contract.get("tools")
+    if tools is None:
+        return None
+    declared = [str(t) for t in tools if str(t).strip()]
+    canon = set(declared) | {_canonical_tool_name(t) for t in declared}
+    catalog = _catalog_tool_names()
+    if not catalog:
+        return None
+    text = claimed.replace("\u2019", "'")
+    for sentence in re.split(r"[.\n]", text):
+        low = sentence.lower()
+        if re.search(r"\bneeds? no\b|\bno (?:additional|other|further) tools?\b",
+                     low):
+            continue
+        if not any(re.search(p, low) for p in _CAPABILITY_PLEA_RES):
+            continue
+        for name in sorted(catalog, key=len, reverse=True):
+            if name in low and _canonical_tool_name(name) not in canon:
+                return _canonical_tool_name(name)
+    return None
+
+
+def _task_tool_entries(task: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Every tool-record entry a finished task carries: its evidence
+    list, its stored evidence_json, its agent_steps, and the agent
+    log's step slice for the task. The same sources
+    _successful_read_files judges a step's reads from."""
+    entries: List[Dict[str, Any]] = []
+    if not isinstance(task, dict):
+        return entries
+    ev = task.get("evidence")
+    if isinstance(ev, list):
+        entries += [e for e in ev if isinstance(e, dict)]
+    for key in ("evidence_json", "agent_steps"):
+        raw = task.get(key)
+        if raw:
+            try:
+                data = json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                data = None
+            items = data if isinstance(data, list) else (
+                [data] if isinstance(data, dict) else [])
+            entries += [e for e in items if isinstance(e, dict)]
+    tid = task.get("id")
+    if tid:
+        try:
+            from app.services import agent_log
+            for rows in (agent_log.steps_for(f"task:{tid}") or {}).values():
+                entries += [e for e in rows or [] if isinstance(e, dict)]
+        except Exception:
+            pass
+    return entries
+
+
+def _successful_listings(task: Optional[Dict[str, Any]]) -> List[str]:
+    """The folder paths a step's task record shows were listed with
+    computer_list_directory in a call that did not fail, in record
+    order. A failed listing is not in this list."""
+    paths: List[str] = []
+    for entry in _task_tool_entries(task):
+        tool = str(entry.get("tool") or entry.get("name") or "")
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+        if not tool and payload:
+            tool = str(payload.get("tool") or "")
+        if tool != "computer_list_directory":
+            continue
+        src = payload if payload else entry
+        if (src.get("success") is False or src.get("error")
+                or entry.get("ok") is False or entry.get("success") is False):
+            continue
+        path = str(src.get("path") or src.get("folder_path")
+                   or src.get("filepath") or entry.get("detail") or "").strip()
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+_LISTING_DISCLAIMER_RES = (
+    r"\bnot available in the directory information\b",
+    r"\bnot (?:shown|available|included) in (?:the )?(?:directory|listing)\b",
+    r"\bnames? (?:were|was) not available\b",
+    r"\bcould identify only\b",
+    r"\bcan identify only\b",
+    r"\blisting (?:did not|does not|didn't) (?:show|include|provide|contain)\b",
+    r"\bdirectory information\b[^.\n]{0,60}\bnot\b",
+)
+
+
+def _listing_disclaimer(claimed: Any) -> Optional[str]:
+    """The sentence of a step report that disclaims the directory
+    information it was shown (the names in a listed folder called
+    unavailable, or only one of the listed files identified), or
+    None."""
+    if not claimed or not isinstance(claimed, str):
+        return None
+    text = claimed.replace("\u2019", "'")
+    for sentence in re.split(r"[.\n]", text):
+        low = sentence.lower()
+        if any(re.search(p, low) for p in _LISTING_DISCLAIMER_RES):
+            return sentence.strip()[:200]
+    return None
+
+
+def _render_listing_representation(folders: List[str]) -> Optional[str]:
+    """The re-presentation block for a disclaimed-listing retry: a
+    fresh listing of each folder the step already listed, with the
+    entries' names and first lines, or None when no folder can be
+    listed now (nothing true to re-present)."""
+    try:
+        from app.services.system_control import system_control_service as sc
+    except Exception:
+        return None
+    blocks: List[str] = []
+    for folder in folders[:3]:
+        try:
+            out = sc.list_directory(folder)
+        except Exception:
+            continue
+        if not isinstance(out, dict) or not out.get("success"):
+            continue
+        lines = [f"Folder {out.get('path') or folder}:"]
+        for f in out.get("folders") or []:
+            lines.append(f"- {f.get('name')} (folder)")
+        for f in out.get("files") or []:
+            first = f.get("first_line")
+            lines.append(f"- {f.get('name')}"
+                         + (f" (first line: {first})" if first else ""))
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return None
+    return ("Established results from this step's own tool record, "
+            "re-presented by the task layer:\n" + "\n".join(blocks))
+
+
 # A step slower than this is named in the log (Tier 6 D4: the stalls
 # under load could not be attributed to any step because nothing
 # recorded per-step durations). orchestrator.py keeps the same
@@ -1566,7 +1778,7 @@ Break it into a short list of subtasks the agent can do one at a time, in order.
 - "instruction": exactly what to do, in one or two sentences.
 - "expected_effects": the files this subtask will create, modify or delete, so the result can be checked on disk afterwards. Each effect is {{"kind": "create", "path": "/absolute/path", "content": null}} where kind is "create", "modify" or "delete", path is absolute or starts with ~/, and content is the exact file contents ONLY when the job dictates them word for word, otherwise null. An effect can instead prove that produced code works: {{"kind": "run", "command": "a single command line", "cwd": "/absolute/path", "expect_exit": 0}} where command is one plain command with no shell chaining, pipes or redirection, cwd is the directory the command runs from, and expect_exit (which defaults to 0) is the exit code that counts as success. If a subtask changes no files (looking something up, answering, deciding), expected_effects is [].
 - "inputs": what this subtask must be given to work. Each input is {{"source": "goal"}} (the mission goal itself, which carries any evidence pack or brief the user supplied), {{"source": "prior_step", "ref": "1"}} (the reported result of an earlier step, by its number), or {{"source": "file", "ref": "/absolute/path"}} (a file whose contents the step needs). The goal is always delivered; declare prior_step or file inputs whenever the step's work depends on them. A step whose declared input cannot be delivered never starts.
-- "tools": the tools this subtask needs, by their exact names (for example "computer_write_file" for a step that writes a file, "computer_read_file" for one that only reads, "computer_manage_file" or "fs_create_folder" for a step that creates a directory, "computer_manage_file" for one that deletes a file). Do not invent tool names. A step whose declared file effects need a tool its "tools" list leaves out never starts.
+- "tools": the tools this subtask needs, by their exact names (for example "computer_write_file" for a step that writes a file, "computer_read_file" for one that only reads, "computer_list_directory" for a step that must list a folder's contents to find, inspect or classify the files in it, "computer_manage_file" or "fs_create_folder" for a step that creates a directory, "computer_manage_file" for one that deletes a file). Do not invent tool names. A step whose declared file effects need a tool its "tools" list leaves out never starts.
 - "delegate": when a subtask's work is several independent read-only pieces that should be done by parallel workers (for example a sweep of many files split into ranges), do NOT leave the delegation as a sentence in the instruction. Give the subtask a "delegate" list of at least two worker briefs, each {{"task": "the one piece this worker does, with every path and detail it needs", "outcome": "what this worker must report", "facts": [], "constraints": []}}. The briefs must be disjoint: each worker gets only its own piece, never the whole job and never another worker's piece, and each brief must be fully self-contained because the worker sees nothing else. Workers run read-only in parallel, so a delegated subtask declares no expected_effects: put any file writing in its own later subtask that consumes the workers' combined result through a prior_step input. A subtask whose instruction says to delegate but that carries no "delegate" list never starts.
 - When a subtask creates a test file or an executable artifact, give it a "run" effect that runs what it made: run the test file with the project's test runner, or invoke the artifact harmlessly, with cwd set to the directory the subtask creates the file in. Creating a file is not proof it works; the run is the proof.
 - When a subtask researches a fact across sources, its instruction must require ranking primary sources (the official record, the issuing authority) over secondary coverage, must state that a syndicated reprint is not an independent confirmation, and must forbid presenting a figure sourced only to secondary coverage as established: if no primary source can be reached, the step reports that plainly instead of settling for the secondary figure.
@@ -2140,6 +2352,11 @@ def _contract_tool_problem(subtask: Dict[str, Any]) -> Optional[str]:
 # exactly as the AGE-32 repairs are recorded. _contract_tool_problem
 # still runs after the repair, so a step the repair cannot serve
 # still fails at assembly rather than dispatching unequipped.
+#
+# AGE-77 (live re-grade 3): the same repair now also judges the
+# folder-enumeration need (_instruction_needs_listing): a discovery,
+# classification, or explicit listing step whose contract carries no
+# listing tool gains computer_list_directory, recorded the same way.
 
 _RESEARCH_TOOLS = ("web.run", "web_search", "tavily_search", "you_search",
                    "web_scrape")
@@ -2168,6 +2385,49 @@ def _instruction_needs_research(subtask: Dict[str, Any]) -> bool:
               or re.match(r"(?:research|find|look up|search|investigate|gather)\b",
                           title, re.I))
     return bool(gather and _SOURCE_RE.search(text) and _URL_RE.search(text))
+
+
+# ------------------------------------------------- listing need (AGE-77)
+# Live re-grade 3 (2026-11-14) on the shipped v1.1.6: both failing
+# steps (T2C step 1, Tier 4 L1 step 1) were planned with the contract
+# [computer_manage_file, computer_read_file] although each step's own
+# instruction requires enumerating a folder ("List the text files in
+# .../inbox and classify each by name"; "name and classify every
+# candidate" among the files in a folder). The AGE-32/AGE-38 repair
+# judged research needs, run effects and file effects, but a
+# folder-enumeration need was no layer's business, so the contract
+# passed assembly unchanged; on the plain-task path the T2C worker
+# then made zero tool calls and stopped, asking for the listing tool
+# its contract left out. The repair below extends to that need,
+# judged from the step's own text the way the discovery and
+# classification judgments judge it: those two demands are
+# enumeration by definition, and an explicit list-the-contents
+# instruction is the third shape. The explicit shape is not judged
+# for a step declaring file effects: a write step placing a list it
+# was handed ("write the list of delivered file names to ...") makes
+# no enumeration demand of its own.
+
+_LISTING_TOOLS = ("computer_list_directory", "computer_directory_tree",
+                  "fs_list_workspace_files")
+_LIST_VERB_RE = re.compile(r"\b(?:list|enumerate|inventory)\b", re.I)
+_LIST_OBJECT_RE = re.compile(
+    r"\b(?:files?|contents?|entries|folder|directory|inbox)\b", re.I)
+
+
+def _instruction_needs_listing(subtask: Dict[str, Any]) -> bool:
+    """The step's own text requires enumerating a folder's contents:
+    a discovery or a classification (both inspect the candidates a
+    folder holds), or an explicit instruction to list a folder's
+    files or contents. Judged on the instruction and title only."""
+    if (_instruction_needs_discovery(subtask)
+            or _instruction_needs_classification(subtask)):
+        return True
+    both = (str(subtask.get("title", "")) + "\n"
+            + str(subtask.get("instruction", "")))
+    if not (_LIST_VERB_RE.search(both) and _LIST_OBJECT_RE.search(both)):
+        return False
+    return not any(e.get("kind") in ("create", "modify", "delete")
+                   for e in subtask.get("expected_effects") or [])
 
 
 def _capability_contract_repair(subtask: Dict[str, Any]) -> Optional[Tuple[List[str], str]]:
@@ -2201,6 +2461,15 @@ def _capability_contract_repair(subtask: Dict[str, Any]) -> Optional[Tuple[List[
             and not any(n in _RUN_TOOLS for n in canon)):
         added.append("computer_run_command")
         needs.append("running a command (it declares a run effect)")
+    # Folder enumeration (AGE-77): a step whose own text requires
+    # enumerating a folder (a discovery, a classification, or an
+    # explicit listing) is contracted with the listing tool, so the
+    # worker is never sent to enumerate a folder it cannot list.
+    if (_instruction_needs_listing(subtask)
+            and not any(n in canon or n in added for n in _LISTING_TOOLS)):
+        added.append("computer_list_directory")
+        needs.append("listing a folder's contents (its instruction requires "
+                     "enumerating the files in a folder)")
     # File effects (AGE-38): an effect whose serving tools are all
     # absent from the contract gets the canonical serving tool, the
     # first tool in the _effect_tools mapping for that effect. An
@@ -3097,6 +3366,121 @@ class MissionRunner:
             f"{window:.0f}s assembly retry; the assembly stop stands")
         return request, delivery, input_problem, None
 
+    async def _poll_task(self, mission_id: str, sub: Dict[str, Any]):
+        """Polls the subtask's current task to a terminal state.
+        Returns (task, pause_exit): pause_exit is None when the task
+        reached a terminal state; otherwise it is the value
+        _run_subtask returns for the pause (True: the wedge verdict
+        was recorded by pause supervision; False: the mission was
+        saved paused on a wait)."""
+        while True:
+            task = self.queue.get(sub["task_id"])
+            status = (task or {}).get("status")
+            if status == "waiting":
+                verdict = self._supervise_pause(mission_id, sub, task)
+                if verdict == "resume":
+                    continue   # the task is queued again; keep watching it in this drive
+                if verdict == "fail":
+                    return task, True   # the wedge verdict is recorded; the mission is finished or moves on
+                _save_subtask(sub["id"], status="waiting")
+                _save_mission(mission_id, state="paused")
+                return task, False
+            if task is None or status in _TERMINAL_TASK:
+                return task, None
+            if status in ("queued", "working") and sub["status"] != status:
+                _save_subtask(sub["id"], status=status)
+            await asyncio.sleep(self.poll_sec)
+
+    def _outcome_retry_task(self, mission_id: str, sub: Dict[str, Any],
+                            task: Optional[Dict[str, Any]],
+                            outcome: Dict[str, Any]):
+        """The step's one bounded outcome retry (AGE-77; see the
+        outcome-retry note at _missing_capability_tool). When the
+        finished outcome is a missing-capability plea the machinery
+        can repair, or a disclaimer of listings the step's own record
+        shows it received, the repair is made, recorded in the step's
+        saved contract (which also spends the retry), a fresh task is
+        created for the step under the repaired contract or with the
+        received results re-presented, and (new task, evidence line,
+        new contract) is returned; the caller polls the new task and
+        lets its outcome replace the first pass's. None when the
+        outcome is neither shape, when the retry is already spent,
+        or when the retry's own assembly cannot deliver the step's
+        declared inputs (the first outcome then stands)."""
+        if not isinstance(outcome, dict) \
+                or outcome.get("status") not in ("failed", "blocked"):
+            return None
+        contract = dict(sub.get("contract") or {})
+        if contract.get("outcome_retry"):
+            return None
+        note = None
+        evidence_line = None
+        missing_tool = _missing_capability_tool(sub, outcome)
+        if missing_tool:
+            declared = [str(t) for t in contract.get("tools") or []
+                        if str(t).strip()]
+            contract["tools"] = declared + [missing_tool]
+            contract["outcome_retry"] = {"kind": "capability",
+                                         "tool": missing_tool,
+                                         "at": time.time()}
+            note = (f"Capability retry note: this step's first pass ended "
+                    f"with a report that a capability was missing from its "
+                    f"declared contract: it asked for {missing_tool}, which "
+                    f"the contract did not include. The contract was "
+                    f"repaired before this retry (added: {missing_tool}; "
+                    f"the repair is recorded in the step's saved contract), "
+                    f"and the declared contract above is the contract of "
+                    f"record for this pass. This is the step's one bounded "
+                    f"capability retry: a second missing-capability report "
+                    f"ends the step.")
+            evidence_line = (f"The step's first pass ended {outcome['status']} "
+                             f"on a missing-capability report naming "
+                             f"{missing_tool}; the machinery repaired the "
+                             f"step's declared contract (added {missing_tool}) "
+                             f"and re-ran the step once. This outcome is from "
+                             f"that retry.")
+        else:
+            listings = _successful_listings(task)
+            disclaimer = _listing_disclaimer(outcome.get("claimed")) \
+                if listings else None
+            if not listings or not disclaimer:
+                return None
+            representation = _render_listing_representation(listings)
+            if not representation:
+                return None
+            contract["outcome_retry"] = {"kind": "listing_represent",
+                                         "folders": listings,
+                                         "at": time.time()}
+            note = (f"Re-presentation note: this step's first pass reported "
+                    f"that listing results were not available "
+                    f"(\"{disclaimer}\"), but the step's own tool record "
+                    f"shows the listing succeeded.\n{representation}\n"
+                    f"These names are established results of this step, not "
+                    f"unavailable information: a report that the names in a "
+                    f"listed folder were not available contradicts the "
+                    f"step's own record and will fail the step again. Read "
+                    f"the files themselves and finish the step. This is "
+                    f"the step's one bounded retry.")
+            evidence_line = (f"The step's first pass ended {outcome['status']} "
+                             f"on a report disclaiming listing results the "
+                             f"step had already received "
+                             f"({', '.join(listings)}); the machinery "
+                             f"re-presented those results and re-ran the "
+                             f"step once. This outcome is from that retry.")
+        retry_sub = {**sub, "contract": contract}
+        request, delivery, problem = assemble_step(mission_id, retry_sub)
+        if problem:
+            return None
+        _save_subtask(sub["id"], contract=contract)
+        request = request + "\n\n" + note
+        new_task = self.queue.create(
+            request,
+            title=f"{sub['title']} (mission step {sub['idx'] + 1})",
+            origin=(get_mission(mission_id) or {}).get("origin") or "user")
+        _save_subtask(sub["id"], task_id=new_task["id"], status="queued",
+                      started_at=time.time(), input_delivery=delivery)
+        return new_task, evidence_line, contract
+
     async def _run_subtask(self, mission_id: str, sub: Dict[str, Any]) -> bool:
         """Works one subtask to a recorded outcome. False means the mission
         paused because the subtask's task is waiting on the user."""
@@ -3218,24 +3602,25 @@ class MissionRunner:
             _save_subtask(sub["id"], task_id=task["id"], status="queued",
                           started_at=time.time(), input_delivery=delivery)
             sub = {**sub, "task_id": task["id"]}
-        while True:
-            task = self.queue.get(sub["task_id"])
-            status = (task or {}).get("status")
-            if status == "waiting":
-                verdict = self._supervise_pause(mission_id, sub, task)
-                if verdict == "resume":
-                    continue   # the task is queued again; keep watching it in this drive
-                if verdict == "fail":
-                    return True   # the wedge verdict is recorded; the mission is finished or moves on
-                _save_subtask(sub["id"], status="waiting")
-                _save_mission(mission_id, state="paused")
-                return False
-            if task is None or status in _TERMINAL_TASK:
-                break
-            if status in ("queued", "working") and sub["status"] != status:
-                _save_subtask(sub["id"], status=status)
-            await asyncio.sleep(self.poll_sec)
+        task, pause_exit = await self._poll_task(mission_id, sub)
+        if pause_exit is not None:
+            return pause_exit
         outcome = _outcome_from_task(task, sub)
+        # Outcome retry (AGE-77): a first pass that ended on a
+        # missing-capability plea the machinery can repair, or on a
+        # disclaimer of listings the step's own record shows it
+        # received, is re-run once under the repair; the retry's
+        # outcome replaces the first pass's, with the retry named in
+        # its evidence. Every other outcome flows through unchanged.
+        retry = self._outcome_retry_task(mission_id, sub, task, outcome)
+        if retry is not None:
+            new_task, retry_line, new_contract = retry
+            sub = {**sub, "task_id": new_task["id"], "contract": new_contract}
+            task, pause_exit = await self._poll_task(mission_id, sub)
+            if pause_exit is not None:
+                return pause_exit
+            outcome = _outcome_from_task(task, sub)
+            outcome["evidence"] = list(outcome.get("evidence") or []) + [retry_line]
         _save_subtask(sub["id"], status=outcome["status"], claimed=outcome["claimed"],
                       verified_status=outcome["verified_status"], evidence=outcome["evidence"],
                       finished_at=time.time())
