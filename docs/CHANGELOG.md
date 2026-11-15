@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 1.1.8
+
+A fix release for folder discovery steps: a step whose job is to enumerate a folder now always receives the listing tool in its contract, and a step that cannot proceed for a missing tool gets one bounded repair and retry instead of a terminal failure.
+
+**Discovery steps get the tools their job needs**
+- The planner prompt now names computer_list_directory for steps that enumerate a folder, and the contract assembly safety net has a folder-enumeration rule: a discovery, classification, or explicit list-the-contents step without file-mutation effects has the listing tool added to its contract, with the repair recorded like the existing contract repairs. Live re-grade 3 failed two grades (T2C and Tier 4 L1) because their discovery steps shipped contracts with no way to list the folder they were asked to inspect.
+- When a worker outcome asks for a catalog tool its contract leaves out, the runner repairs the contract and re-runs the step once, with the retry named in the step evidence. A missing-capability plea is no longer a terminal failure.
+- A step report can no longer disclaim listings the step already received: the verdict layer compares reports against successful listings as well as reads, and a disclaimer triggers the same bounded retry with the received results re-presented (folder names and first lines, the contradiction named) before the step is judged.
+
 ## 1.1.7
 
 A fix release for surface fidelity: when a task names the surface it should work in, Xod now works in that surface or says honestly that it cannot, instead of quietly substituting its own built-in browser.
