@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 1.1.9
+
+A fix release for two defects found by the v1.1.8 home pass and live re-grade 4: the app bundle breaking its own code signature seal at runtime, which made macOS permission grants impossible to keep, and the discovery retry that never engaged when a worker answered from a folder listing instead of reading the file.
+
+**The bundle no longer breaks its own seal**
+- The packaged app ships prebuilt bytecode files that are stale on first launch. A helper process spawned with a hand-built environment did not carry the do-not-write-bytecode flag, so it rewrote 140 sealed files inside the bundle in the first minute of running. The bundle's signature seal then failed verification, and a bundle with an invalid seal is not the identity macOS granted, so Accessibility and Screen Recording permissions could never take effect on an installed build.
+- The connectors environment is now built by one helper that always sets the flag for Xod's own python children, and every other place the app spawns its own python sets it too: engine children, training and evaluation runs, media workers, browser probes, the desktop grant probe, test provisioning, the handed-out MCP configuration snippets, the terminal launcher, and the shell's own probes. A new standing suite proves at launch level that a flagged child writes nothing into a bundle-like tree, and audits every spawn site in the app.
+- Scope: this makes a permission grant stick within one installed build. Grants still go stale across builds until the app has a stable signing identity; that is separate work.
+
+**The discovery retry now engages**
+- Re-grade 4 showed the 1.1.8 discovery retry never fired on a textbook occasion. The production record of a folder listing carried no path (the listing step was logged with an empty detail), so the retry's listing check found nothing and stopped. Listing steps now record the listed path, and the disclaimer detection covers the phrasings the graded reports actually used.
+- A discovery step that names a file from a listing preview without reading it now gets one bounded repair: the step is re-run once with the file named and an explicit instruction to read it before answering. The repair is recorded in the step's contract, and no verdict gate was loosened; the same gates judge the new report.
+
 ## 1.1.8
 
 A fix release for folder discovery steps: a step whose job is to enumerate a folder now always receives the listing tool in its contract, and a step that cannot proceed for a missing tool gets one bounded repair and retry instead of a terminal failure.
