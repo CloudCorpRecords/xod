@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.1.7
+
+A fix release for surface fidelity: when a task names the surface it should work in, Xod now works in that surface or says honestly that it cannot, instead of quietly substituting its own built-in browser.
+
+**Tasks that name your real browser now go there**
+- Xod detects when a task names a specific surface: your Chrome default profile, phrasings like "my regular Chrome profile", session phrasings like "the browser where I am already signed in to GitHub", and named apps such as Safari or Firefox. A named-surface task is routed to desktop control with the goal unchanged, so it runs in your real signed-in session, which is the point of running Xod on your own machine.
+- When that surface cannot be reached (the desktop control pack is off, or Screen Recording or Accessibility is not granted), the task ends with an honest refusal that names the surface and what is missing. It never falls back to the built-in sandbox browser and answers from there.
+- The built-in browser's mission runner also refuses a goal that names an external surface, and a finished mission is only accepted when the surface it ran on is consistent with the goal, so no future routing path can silently substitute surfaces again.
+- Desktop readiness is now read from the app window process itself: the main process leaves its Screen Recording and Accessibility verdicts where the backend reads them as the authority, instead of the backend asking its own child processes, which was why desktop status could read not ready on an install where the permissions were in fact granted.
+
 ## 1.1.6
 
 A combined repair release. It carries the fix for the 1.1.5 launch failure, the self-healing key snapshot, and the model switching repairs, each put through this release's full gauntlet (test suites, fleet gates, an independent adversarial review, and in-app proofs of the built artifact) before the release was made latest. 1.1.5 was pulled back to a prerelease the day it shipped; this is the release that replaces it.
