@@ -768,7 +768,7 @@ def _fresh_check() -> Tuple[bool, bool]:
     if time.time() - _fresh["at"] < 2:
         return _fresh["value"]
     try:
-        r = subprocess.run([sys.executable, "-c", "import Quartz, ApplicationServices as A;"
+        r = subprocess.run([sys.executable, "-B", "-c", "import Quartz, ApplicationServices as A;"
                             "print(int(bool(Quartz.CGPreflightScreenCaptureAccess())), int(bool(A.AXIsProcessTrusted())))"],
                            capture_output=True, text=True, timeout=10,
                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})

@@ -196,7 +196,7 @@ async function ensurePythonEnv() {
 
 function serverEnv() {
   // PYTHONUTF8: on Windows Python would otherwise read and write text as cp1252 and fail on emoji, accents, etc.
-  const env = { ...process.env, PYTHONUNBUFFERED: "1", PYTHONUTF8: "1", XOD_DATA_DIR: DATA_DIR };
+  const env = { ...process.env, PYTHONUNBUFFERED: "1", PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1", XOD_DATA_DIR: DATA_DIR };
   if (PACKAGED) Object.assign(env, { XOD_PACKAGED: "1", PYTHONDONTWRITEBYTECODE: "1", PYTHONNOUSERSITE: "1" });
   return env;
 }
@@ -223,7 +223,7 @@ async function startServer() {
   const logFile = path.join(logDir, "desktop-server.log");
   const logTail = () => { try { return fs.readFileSync(logFile, "utf8").slice(-1500); } catch (e) { return ""; } };
   const logFd = fs.openSync(logFile, "a");
-  server = spawn(PY, ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)], {
+  server = spawn(PY, ["-B", "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", String(port)], {
     cwd: ROOT,
     env: serverEnv(),
     detached: true,

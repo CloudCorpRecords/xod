@@ -96,13 +96,14 @@ def cd_suffix() -> str:
 
 
 async def exec_shell(command: str, cwd: Optional[str], **kw):
-    return await asyncio.create_subprocess_exec(*shell_argv(command), cwd=cwd, creationflags=NO_WINDOW, **kw)
+    env = {**os.environ, **(kw.pop("env", None) or {}), "PYTHONDONTWRITEBYTECODE": "1"}
+    return await asyncio.create_subprocess_exec(*shell_argv(command), cwd=cwd, env=env, creationflags=NO_WINDOW, **kw)
 
 
 async def _ps(script: str, *args: str, stdin: Optional[bytes] = None, timeout: float = 15) -> Dict[str, Any]:
     """Runs a fixed PowerShell script. Values go in as environment variables ($env:XOD_ARG0, …), never into the
     script text (anything after -Command would be pasted into the script)."""
-    env = {**os.environ, **{f"XOD_ARG{i}": str(a) for i, a in enumerate(args)}}
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", **{f"XOD_ARG{i}": str(a) for i, a in enumerate(args)}}
     proc = await asyncio.create_subprocess_exec(*POWERSHELL, script, env=env,
                                                 stdin=asyncio.subprocess.PIPE if stdin is not None else None,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, creationflags=NO_WINDOW)

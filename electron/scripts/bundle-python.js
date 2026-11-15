@@ -49,7 +49,7 @@ function copy(src, dst) {
 
 const src = findSource();
 const exe = exeIn(src);
-const version = execFileSync(exe, ["-c", "import sys; print(sys.version.split()[0])"], { encoding: "utf8" }).trim();
+const version = execFileSync(exe, ["-B", "-c", "import sys; print(sys.version.split()[0])"], { encoding: "utf8", env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } }).trim();
 fs.rmSync(OUT, { recursive: true, force: true });
 copy(src, OUT);
 fs.writeFileSync(path.join(OUT, "XOD_PYTHON_VERSION"), version + "\n");
@@ -60,7 +60,7 @@ const py = exeIn(OUT);
 // uv marks its Pythons "externally managed"; this copy is Xod's own, so drop the marker.
 fs.rmSync(path.join(libIn(OUT), "EXTERNALLY-MANAGED"), { force: true });
 const reqs = path.join(__dirname, "..", "..", "requirements.txt");
-const sh = (args) => execFileSync(py, args, { stdio: "inherit", env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: "1", PYTHONUTF8: "1" } });
+const sh = (args) => execFileSync(py, ["-B", ...args], { stdio: "inherit", env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: "1", PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1" } });
 sh(["-m", "pip", "install", "--no-compile", "--only-binary=:all:", "-r", reqs]);
 // Media Studio's libraries are a one-time download on first use instead (app/services/media_packages.py),
 // which keeps Xod's download about a third smaller. pip stays, to fetch them.
@@ -73,10 +73,12 @@ for (const name of fs.readdirSync(sp)) {
   const d = path.join(sp, name, "tests");
   if (fs.existsSync(d) && fs.lstatSync(d).isDirectory()) fs.rmSync(d, { recursive: true, force: true });
 }
-// Precompiled bytecode (hash-based, so it stays valid inside a read-only, signed app): faster launch.
-sh(["-m", "compileall", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash", libIn(OUT)]);
+// Enforce sys.dont_write_bytecode inside the bundled stdlib itself (runs even under -I / -E or stripped env),
+// then precompile all bytecode with -f + unchecked-hash so no timestamp-based .pyc from pip remains inside the signed app.
+fs.writeFileSync(path.join(libIn(OUT), "sitecustomize.py"), "import sys\nsys.dont_write_bytecode = True\n");
+sh(["-m", "compileall", "-f", "-q", "-j", "0", "--invalidation-mode", "unchecked-hash", libIn(OUT)]);
 fs.copyFileSync(reqs, path.join(OUT, "XOD_REQUIREMENTS"));
 // Notices for everything that ships inside the app (fails the build on a GPL-family license).
-execFileSync(WIN ? py : "python3", [path.join(__dirname, "..", "..", "scripts", "third_party_licenses.py"), sp,
-  path.join(OUT, "THIRD_PARTY_LICENSES.txt")], { stdio: "inherit", env: { ...process.env, PYTHONUTF8: "1" } });
+execFileSync(WIN ? py : "python3", ["-B", path.join(__dirname, "..", "..", "scripts", "third_party_licenses.py"), sp,
+  path.join(OUT, "THIRD_PARTY_LICENSES.txt")], { stdio: "inherit", env: { ...process.env, PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1" } });
 console.log("Installed Xod's packages into the bundled Python.");

@@ -54,7 +54,8 @@ def _run_cli(argv: List[str], timeout: Optional[int] = None, cwd: Optional[str] 
         r = subprocess.run(_resolve_argv(argv), capture_output=True, text=True,
                            encoding="utf-8", errors="replace",
                            timeout=timeout or _CLI["cli_timeout_sec"],
-                           cwd=cwd, input=input_text)
+                           cwd=cwd, input=input_text,
+                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         return r.returncode, r.stdout or "", r.stderr or ""
     except (OSError, subprocess.TimeoutExpired) as e:
         return -1, "", f"{type(e).__name__}: {e}"
@@ -420,11 +421,12 @@ def _detect_commands(repo_dir: str) -> List[str]:
 
 def _run_commands(commands: List[str], cwd: str, timeout: int) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     for cmd in commands:
         try:
             r = subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True,
                                text=True, encoding="utf-8", errors="replace",
-                               timeout=timeout)
+                               timeout=timeout, env=env)
             out[cmd] = {"exit": r.returncode,
                         "tail": ((r.stdout or "") + (r.stderr or "")).strip()[-300:]}
         except (OSError, subprocess.TimeoutExpired) as e:

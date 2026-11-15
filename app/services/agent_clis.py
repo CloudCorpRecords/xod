@@ -119,6 +119,7 @@ def search_path() -> str:
         shell = os.environ.get("SHELL") or "/bin/zsh"
         try:
             clean_env = {k: v for k, v in os.environ.items() if k not in ("PYTHONHOME", "PYTHONPATH")}
+            clean_env["PYTHONDONTWRITEBYTECODE"] = "1"
             r = subprocess.run([shell, "-lic", "printf %s \"$PATH\""], capture_output=True, text=True, timeout=8,
                                stdin=subprocess.DEVNULL, env=clean_env)
             parts += [p for p in r.stdout.strip().split(":") if p.startswith("/")]
@@ -137,7 +138,7 @@ def search_path() -> str:
 
 
 def _env() -> Dict[str, str]:
-    env = dict(os.environ, PATH=search_path(), TERM="xterm-256color", NO_COLOR="1", FORCE_COLOR="0", CI="")
+    env = dict(os.environ, PATH=search_path(), PYTHONDONTWRITEBYTECODE="1", TERM="xterm-256color", NO_COLOR="1", FORCE_COLOR="0", CI="")
     env.pop("CI", None)
     return env
 

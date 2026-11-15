@@ -459,6 +459,7 @@ class SystemControlService:
         """create_subprocess_exec for a tool child: own process group, registered."""
         kwargs.setdefault("stdout", asyncio.subprocess.PIPE)
         kwargs.setdefault("stderr", asyncio.subprocess.PIPE)
+        kwargs["env"] = {**os.environ, **(kwargs.get("env") or {}), "PYTHONDONTWRITEBYTECODE": "1"}
         if WIN:
             kwargs.setdefault("creationflags", getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         else:
@@ -564,7 +565,7 @@ class SystemControlService:
             py_q = shlex.quote(sys.executable)
             command = re.sub(
                 r'(^|&&|\|\||;)\s*pytest(?=\s|$)',
-                lambda m: f"{m.group(1)} {py_q} -m pytest",
+                lambda m: f"{m.group(1)} {py_q} -B -m pytest",
                 command,
             )
         proc = await asyncio.create_subprocess_shell(command, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env, start_new_session=True)

@@ -50,7 +50,8 @@ def shell_path() -> List[str]:
         return os.environ.get("PATH", "").split(os.pathsep)
     shell = os.environ.get("SHELL") or "/bin/zsh"
     try:
-        r = subprocess.run([shell, "-lic", 'printf %s "$PATH"'], capture_output=True, text=True, timeout=8, stdin=subprocess.DEVNULL)
+        r = subprocess.run([shell, "-lic", 'printf %s "$PATH"'], capture_output=True, text=True, timeout=8,
+                           stdin=subprocess.DEVNULL, env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         parts = [p for p in r.stdout.strip().split(":") if p.startswith("/")]
         if parts:
             return parts

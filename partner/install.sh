@@ -42,7 +42,7 @@ rsync -a --exclude site-packages --exclude test --exclude idlelib \
   "$PY_SRC/lib/python3.12/" "$STAGE/Contents/Resources/python/lib/python3.12/"
 # The staged interpreter must run from inside the bundle layout before
 # anything is signed; if its prefix does not resolve into the stage, stop.
-"$STAGE/Contents/Resources/python/bin/python3.12" -c \
+PYTHONDONTWRITEBYTECODE=1 "$STAGE/Contents/Resources/python/bin/python3.12" -B -c \
   "import ctypes, http.server, json, sys; assert sys.prefix.endswith('Contents/Resources/python'), sys.prefix"
 echo "bundled interpreter verified"
 
