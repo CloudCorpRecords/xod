@@ -1172,7 +1172,7 @@ def _python_can_pytest(py: str) -> bool:
     try:
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         env["PYTHONDONTWRITEBYTECODE"] = "1"
-        proc = subprocess.run([py, "-I", "-c", "import pytest"], capture_output=True,
+        proc = subprocess.run([py, "-I", "-B", "-c", "import pytest"], capture_output=True,
                               timeout=_PYTEST_PROBE_TIMEOUT_SEC,
                               cwd=os.path.dirname(os.path.abspath(py)), env=env)
         return proc.returncode == 0
@@ -1198,7 +1198,7 @@ def _provision_pytest_venv(cwd: Path) -> Optional[str]:
         return None
     venv_dir = Path(cwd) / ".xod-test-venv"
     try:
-        proc = subprocess.run([base, "-m", "venv", str(venv_dir)],
+        proc = subprocess.run([base, "-B", "-m", "venv", str(venv_dir)],
                               capture_output=True, text=True,
                               timeout=_PYTEST_PROVISION_TIMEOUT_SEC,
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
@@ -1207,7 +1207,7 @@ def _provision_pytest_venv(cwd: Path) -> Optional[str]:
         py = _venv_python(venv_dir)
         if not py:
             return None
-        proc = subprocess.run([py, "-m", "pip", "install", "--quiet", "pytest"],
+        proc = subprocess.run([py, "-B", "-m", "pip", "install", "--no-compile", "--quiet", "pytest"],
                               capture_output=True, text=True,
                               timeout=_PYTEST_PROVISION_TIMEOUT_SEC,
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
@@ -1341,7 +1341,7 @@ def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
             return (f"the run of '{command}' from {cwd} could not be run as a test: "
                     f"{why_not}. This is an environment problem, not a test failure: "
                     f"the tests themselves were never exercised.")
-        argv = [py] + argv[1:]
+        argv = [py, "-B"] + argv[1:]
         ran_with = py
     elif argv:
         head = argv[0]
@@ -1360,10 +1360,10 @@ def _check_run_claim(claim: Dict[str, Any]) -> Optional[str]:
         )
         active_py = str(venv_py) if venv_py else sys.executable
         if head in ("python", "python3"):
-            argv = [active_py, *argv[1:]]
+            argv = [active_py, "-B", *argv[1:]]
         elif head == "pytest" and not shutil.which("pytest", path=path_val):
             py, _why_not = _resolve_pytest_python(cwd_path)
-            argv = [py or active_py, "-m", "pytest", *argv[1:]]
+            argv = [py or active_py, "-B", "-m", "pytest", *argv[1:]]
             ran_with = py
     try:
         proc = subprocess.run(argv, cwd=str(cwd), shell=False, capture_output=True,

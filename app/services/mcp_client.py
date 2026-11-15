@@ -23,6 +23,7 @@ import shutil
 import sys
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.services import keychain
@@ -151,6 +152,11 @@ def stdio_env(name: str, spec: Dict[str, Any]):
         cwd = cwd or str(APP_ROOT)
     elif shutil.which(command):
         command = shutil.which(command)
+    try:
+        if Path(command).resolve() == Path(sys.executable).resolve() or Path(sys.prefix).resolve() in Path(command).resolve().parents:
+            own_python = True
+    except Exception:
+        pass
     if own_python or os.environ.get("XOD_PACKAGED") == "1":
         env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env, command, cwd
@@ -294,6 +300,11 @@ class ServerConn:
                 env["PATH"] = _fresh_path()
                 if command not in (sys.executable,) and shutil.which(command, path=env["PATH"]):
                     command = shutil.which(command, path=env["PATH"])      # npx → …\nodejs\npx.cmd
+                try:
+                    if Path(command).resolve() == Path(sys.executable).resolve() or Path(sys.prefix).resolve() in Path(command).resolve().parents:
+                        env["PYTHONDONTWRITEBYTECODE"] = "1"
+                except Exception:
+                    pass
                 target = StdioServerParameters(command=command, args=self.spec.get("args") or [], env=env,
                                                 cwd=cwd or None)
             async with Client(target, read_timeout_seconds=120) as client:

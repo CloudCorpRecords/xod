@@ -36,9 +36,10 @@ var signalSources: [DispatchSourceSignal] = []  // sources die with their last r
 func spawnChild() -> Bool {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: interpreter)
-    p.arguments = [script, stateDir]
+    p.arguments = ["-B", script, stateDir]
     var env = ProcessInfo.processInfo.environment
     env["XOD_PARTNER_PARENTED"] = "1"  // the child exits if it ever finds itself orphaned
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     p.environment = env
     p.standardOutput = FileHandle.standardOutput
     p.standardError = FileHandle.standardError

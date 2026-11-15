@@ -367,8 +367,6 @@ def merge_toml_config(path: Path, entry: Dict[str, Any]) -> Dict[str, Any]:
             text = path.read_text(encoding="utf-8")
         except OSError as e:
             return {"ok": False, "error": f"could not read config: {e}"}
-    if re.search(r"(?m)^\[mcp_servers\.xod\]\s*$", text):
-        return {"ok": True, "already": True, "changed": False, "backup": None}
     env = entry.get("env") or {}
     lines = ["", "[mcp_servers.xod]",
              f"command = {_toml_str(entry['command'])}",
@@ -379,6 +377,23 @@ def merge_toml_config(path: Path, entry: Dict[str, Any]) -> Dict[str, Any]:
         lines.append(f"{key} = {_toml_str(str(env[key]))}")
     lines.append(f"PYTHONPATH = {_toml_str(entry['cwd'])}")
     block = "\n".join(lines) + "\n"
+    if re.search(r"(?m)^\[mcp_servers\.xod\]\s*$", text):
+        if block.strip() in text:
+            return {"ok": True, "already": True, "changed": False, "backup": None}
+        backup = _backup(path) if existed else None
+        updated = re.sub(
+            r"(?ms)\n?^\[mcp_servers\.xod\]\s*\n.*?(?=^\[(?!mcp_servers\.xod\b)|\Z)",
+            lambda _m: block,
+            text,
+            count=1,
+        )
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(updated, encoding="utf-8")
+        except OSError as e:
+            return {"ok": False, "error": f"could not write config: {e}"}
+        return {"ok": True, "already": False, "changed": True,
+                "backup": str(backup) if backup else None}
     backup = _backup(path) if existed else None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -428,8 +443,9 @@ async def _ping(entry: Dict[str, Any]) -> Tuple[List[str], Any]:
     tools, and call list_routines through to the live backend."""
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
-    env = dict(os.environ)
+    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
     env.update({k: str(v) for k, v in (entry.get("env") or {}).items()})
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     params = StdioServerParameters(command=entry["command"],
                                    args=list(entry["args"]),
                                    cwd=entry.get("cwd"), env=env)

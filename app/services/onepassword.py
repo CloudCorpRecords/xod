@@ -48,7 +48,7 @@ def _run(args: List[str], timeout: int = 60) -> str:
         raise OnePasswordError("The 1Password command line tool (op) isn't installed.")
     from app.services.agent_clis import search_path
     import os
-    env = dict(os.environ, PATH=search_path())
+    env = dict(os.environ, PATH=search_path(), PYTHONDONTWRITEBYTECODE="1")
     try:
         r = subprocess.run([path, *args], capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL, env=env)
     except subprocess.TimeoutExpired:
