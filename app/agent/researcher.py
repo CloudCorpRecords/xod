@@ -436,6 +436,10 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         # Clear-cut web tasks and "submit it" / "continue" replies skip planning entirely.
         early_mission = self._mission_request(route_query, {})
         if early_mission:
+            if early_mission.get("named_surface"):
+                async for ev in self._stream_named_surface(early_mission["goal"], early_mission["named_surface"]):
+                    yield ev
+                return
             async for ev in self._stream_browser_mission(**early_mission):
                 yield ev
             return
@@ -615,6 +619,10 @@ When the user asks to inspect, audit, explain, write, or refactor code/files in 
         # instead of a fixed plan, so the agent can react to what each page shows.
         mission = self._mission_request(user_query, deliberation)
         if mission:
+            if mission.get("named_surface"):
+                async for ev in self._stream_named_surface(mission["goal"], mission["named_surface"]):
+                    yield ev
+                return
             async for ev in self._stream_browser_mission(**mission):
                 yield ev
             return
@@ -2524,6 +2532,25 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         if _contract_blocks_browser_surface(query):
             return None
 
+        # A task that names an external surface (the person's own Chrome
+        # profile, a named app, the browser they are already signed in to)
+        # is never a sandbox browser mission: the sandbox runs with its own
+        # data directory, so it cannot be that surface or see its session,
+        # and answering from it is surface substitution (AGE-71, the
+        # LF-NAMED-SURFACE family; Run 1 failed exactly this way). The
+        # marker routes the turn to _stream_named_surface, which works the
+        # task through desktop control when that is ready and refuses it
+        # honestly when it is not. This check sits before the planned-tools
+        # return and the web-action clause below, so no path from here can
+        # turn a named-surface task into a browser mission.
+        try:
+            from app.services import browser_ops as _bops_ns
+            _named = _bops_ns.named_surface(query)
+        except Exception:
+            _named = None
+        if _named:
+            return {"named_surface": _named, "goal": query}
+
         planned = [
             (t, (s.get("tool_args") or [{}])[i] if i < len(s.get("tool_args") or []) else {})
             for s in deliberation.get("plan_steps", []) for i, t in enumerate(s.get("tools", []))
@@ -2615,6 +2642,64 @@ You can click **Open in Finder** above to view the file directly in macOS Finder
         yield {"type": "plan_step", "step_id": 1, "status": "completed"}
         yield {"type": "plan_step", "step_id": 2, "status": "in_progress"}
         yield {"type": "content", "content": self._format_mission_report(result)}
+        yield {"type": "plan_step", "step_id": 2, "status": "completed"}
+        yield {"type": "done"}
+
+    async def _stream_named_surface(
+        self, goal: str, surface: str
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """A task that names an external surface runs on that surface or not
+        at all (AGE-71). The only route to the person's own browser profile,
+        their signed-in session, or a named app is desktop control of the
+        real screen. Ready: the desktop task loop works the goal there, and
+        its own verified screen check is the result. Not ready: the turn
+        ends here with an honest refusal naming the surface and what is
+        missing. The sandbox browser is never used as a stand-in: it is a
+        different surface with a different session, and reporting its state
+        as the named surface's is the failure this family exists to catch."""
+        from app.services import desktop
+        try:
+            st = desktop.status()
+        except Exception:
+            st = {}
+        if not st.get("ready"):
+            missing = []
+            if st.get("supported") is False:
+                missing.append("desktop control does not run on this system")
+            else:
+                if not st.get("enabled", True):
+                    missing.append("the desktop-control pack is off")
+                if not st.get("screen"):
+                    missing.append("Screen Recording is not granted")
+                if not st.get("accessibility"):
+                    missing.append("Accessibility is not granted")
+            yield {"type": "content", "content": (
+                f"I can't do this task yet. It has to happen in {surface}, and the only way I can work "
+                f"there is by using this computer's screen, which isn't ready ({'; '.join(missing) or 'desktop control is not ready'}). "
+                "I didn't use my built-in browser instead: it has its own profile and sign-ins, so it "
+                f"isn't {surface}, and anything I reported from it would be about the wrong place.")}
+            yield {"type": "done"}
+            return
+
+        yield {"type": "plan", "title": f"Working in {surface}", "steps": [
+            {"id": 1, "title": f"Do it in {surface}", "tools": ["desktop_task"], "status": "in_progress"},
+            {"id": 2, "title": "Report what actually happened", "tools": [], "status": "pending"},
+        ]}
+        yield {"type": "plan_step", "step_id": 1, "status": "in_progress"}
+        yield {"type": "tool_call", "name": "desktop_task", "args": {"goal": goal}, "id": "surface_1"}
+        from app.services import desktop_task
+        try:
+            res = await desktop_task.run(goal)
+        except Exception as e:
+            res = {"success": False, "error": f"The desktop run failed: {e}"}
+        summary = (res.get("summary") or res.get("question") or res.get("error")
+                   or "The desktop run ended without a summary.")
+        yield {"type": "tool_result", "name": "desktop_task",
+               "summary": f"{'done' if res.get('success') else 'stopped'} in {surface}",
+               "data": {k: v for k, v in res.items() if k != "steps"}, "id": "surface_1"}
+        yield {"type": "plan_step", "step_id": 1, "status": "completed" if res.get("success") else "failed"}
+        yield {"type": "plan_step", "step_id": 2, "status": "in_progress"}
+        yield {"type": "content", "content": str(summary)}
         yield {"type": "plan_step", "step_id": 2, "status": "completed"}
         yield {"type": "done"}
 

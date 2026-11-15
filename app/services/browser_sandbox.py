@@ -3977,6 +3977,26 @@ class BrowserSandboxService:
             )
 
         async def finish(status: str, answer: str) -> Dict[str, Any]:
+            if status == "completed":
+                # Surface evidence (AGE-71): a success is only accepted when
+                # the surface it came from is consistent with the goal. A
+                # goal that names an external surface can never be completed
+                # by this browser (its own profile, its own sign-ins), so a
+                # completed verdict for one is a substitution, not a result.
+                # The entry check below refuses such goals up front; this is
+                # the same check at the acceptance point, so no path through
+                # the loop can report one as done.
+                try:
+                    from app.services import browser_ops as _bops_fin
+                    _named_fin = _bops_fin.named_surface(mission_record["goal"])
+                except Exception:
+                    _named_fin = None
+                if _named_fin:
+                    status = "failed"
+                    answer = (f"Not accepted: this result came from my built-in browser, but the task "
+                              f"named {_named_fin} as the surface to work in. The built-in browser is a "
+                              f"different surface with its own profile and sign-ins, so this is not "
+                              f"evidence about {_named_fin} and I won't report it as the task done.")
             dataset_recorder.set_group_outcome(mission_record["mission_id"], "browser_step", status)
             mission_record["status"] = status
             mission_record["final_answer"] = answer
@@ -3985,6 +4005,26 @@ class BrowserSandboxService:
             self.latest_mission = mission_record
             await self._learn_site_tips(goal, history, sites_seen, status)
             return mission_record
+
+        # Mission-start refusal (AGE-71, defense in depth): a goal that names
+        # an external surface (the person's own Chrome profile, a named app,
+        # the browser they are already signed in to) never runs here. This
+        # browser has its own data directory, so it cannot be the named
+        # surface or see its session; running anyway is the substitution the
+        # LF-NAMED-SURFACE family grades as failure. The routing guard in
+        # researcher._mission_request is the front door; this is the lock on
+        # the surface itself, for any caller that reaches the runner directly.
+        try:
+            from app.services import browser_ops as _bops_ns
+            _named_goal = _bops_ns.named_surface(goal)
+        except Exception:
+            _named_goal = None
+        if _named_goal:
+            return await finish("failed", (
+                f"I stopped before starting: this task names {_named_goal} as the surface to work in, "
+                "and my built-in browser is a separate browser with its own profile and sign-ins, so "
+                f"nothing I did here would be happening in {_named_goal}. This task needs desktop "
+                "control of the real surface, not the built-in browser."))
 
         # --- Start somewhere sensible -------------------------------------------------
         target_nav_url = None if resume_here else (start_url or _guess_start_url(goal))

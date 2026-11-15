@@ -532,6 +532,70 @@ def addressed(query: str) -> bool:
     return bool(_ADDRESSED_RE.search(query or ""))
 
 
+# A request that names an external surface as the place the work must happen:
+# the person's own browser or profile ("my Chrome", "the default profile",
+# "my regular Chrome profile"), the session they already hold ("the browser
+# where I am already signed in to GitHub"), or a named app (Safari, Firefox).
+# Xod's sandbox browser is none of those: it runs with its own data directory,
+# so it can never see the named surface or its session, and doing the work
+# there anyway is the surface substitution AGE-71 (the LF-NAMED-SURFACE
+# family) grades as failure. This is the addressed() family grown a second
+# member: addressed() says a request is about the SHARED browser's tabs;
+# named_surface() says a request directs the work itself at a surface Xod
+# does not own. Detection is conservative on purpose: a bare browser mention
+# is not a naming, questions about a surface are not tasks on it, and the
+# shared browser and Xod's own browser are other surfaces' business.
+_NAMED_QUESTION_RE = re.compile(r"^\s*(how|what|why|when|should|is|are|does|do i|explain|tell me)\b", re.I)
+_NAMED_EXCLUDE_RE = re.compile(
+    r"\bshared (?:browser|chrome|chromium)\b|\bbrowser-ops\b"
+    r"|\bxod'?s (?:own )?browser\b|\bbuilt[- ]in browser\b|\bsandbox browser\b|\byour (?:own )?browser\b", re.I)
+_NAMED_SESSION_RE = re.compile(
+    r"\bthe browser where i(?:'m| am) already signed in(?:\s+to\s+([a-z0-9][a-z0-9.-]*))?"
+    r"|\bbrowser where i(?:'m| am) (?:already )?signed in(?:\s+to\s+([a-z0-9][a-z0-9.-]*))?"
+    r"|\bmy signed[- ]in browser\b", re.I)
+_NAMED_APP_PROFILE_RE = re.compile(
+    r"\b(safari|firefox|brave|opera)\b[^.\n]{0,40}\bprofile\b", re.I)
+_NAMED_CHROME_PROFILE_RE = re.compile(
+    r"\bgoogle chrome\b[^.\n]{0,80}\bdefault profile\b"
+    r"|\bdefault profile\b[^.\n]{0,80}\bgoogle chrome\b"
+    r"|\bmy (?:regular )?chrome(?: profile)?\b"
+    r"|\busing (?:my|the) (?:regular )?chrome profile\b"
+    r"|\bchrome (?:default )?profile\b"
+    r"|\bthe default (?:chrome )?profile\b", re.I)
+_NAMED_CHROME_RE = re.compile(
+    r"\b(?:open|launch|in|inside|using|use) (?:the )?(?:google )?chrome\b(?!\s+(?:web store|store|settings|extensions))", re.I)
+_NAMED_APP_RE = re.compile(
+    r"\b(?:open|launch|use|using|in|inside|switch to) (?:the )?(safari|firefox|brave|opera|chromium|microsoft edge|arc)\b"
+    r"|\b(safari|firefox|brave)\b[^.\n]{0,60}\bsigned in\b", re.I)
+_NAMED_PROFILE_RE = re.compile(r"\bmy (?:regular |main |primary )?browser profile\b", re.I)
+
+
+def named_surface(query: str) -> Optional[str]:
+    """The external surface this request names as the place the work must
+    happen, in the person's terms, or None when it names none."""
+    q = query or ""
+    if not q.strip() or _NAMED_QUESTION_RE.match(q) or _NAMED_EXCLUDE_RE.search(q):
+        return None
+    m = _NAMED_SESSION_RE.search(q)
+    if m:
+        svc = m.group(1) or m.group(2)
+        return f"the browser where you are already signed in{f' to {svc}' if svc else ''}"
+    m = _NAMED_APP_PROFILE_RE.search(q)
+    if m:
+        return f"your {m.group(1).title()} profile"
+    if _NAMED_CHROME_PROFILE_RE.search(q):
+        return "Google Chrome (default profile)" if "default" in q.lower() else "your Chrome profile"
+    if _NAMED_CHROME_RE.search(q):
+        return "Google Chrome"
+    m = _NAMED_APP_RE.search(q)
+    if m:
+        app = (m.group(1) or m.group(2)).title()
+        return "Microsoft Edge" if app == "Microsoft Edge" else app
+    if _NAMED_PROFILE_RE.search(q):
+        return "your browser profile"
+    return None
+
+
 def planner_lines() -> List[str]:
     """The tools as the planner's list shows them (the planner only plans with tools named in its prompt)."""
     devs = devices()

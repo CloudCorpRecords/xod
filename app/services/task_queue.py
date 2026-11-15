@@ -2541,8 +2541,23 @@ class TaskQueue:
         self._touch_progress(task_id)  # the progress clock starts when the run does
 
         resuming = action["type"] in ("approve", "continue")
+        # A task that names an external surface (the person's own Chrome
+        # profile, a named app, the browser they are already signed in to)
+        # never gets a sandbox tab: the tab would be the wrong surface, and
+        # opening it is the first step of the substitution AGE-71 forbids.
+        # The researcher routes the task to desktop control or refuses it
+        # honestly during the stream (researcher._stream_named_surface).
+        _named_surface = None
+        if action["type"] == "start":
+            try:
+                from app.services import browser_ops as _bops
+                _named_surface = _bops.named_surface(task.get("request") or "")
+            except Exception:
+                _named_surface = None
+        page_ok = True
         try:
-            page_ok = await self._ensure_tab(task, resuming)
+            if not _named_surface:
+                page_ok = await self._ensure_tab(task, resuming)
         except Exception as e:
             # The browser is a tool, not a gate: a task that never opens a page
             # must not die because Chrome would not start. Browser tools call

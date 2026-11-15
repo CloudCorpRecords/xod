@@ -58,7 +58,11 @@ let prefs = loadPrefs();
 // own trust check read false against a provably good grant (2026-11-02). The GUI therefore
 // evaluates its own trust here and leaves the verdict in the data dir, rewritten on an interval;
 // the backend (app/services/permissions.py) surfaces this reading and never its own.
+// Screen Recording is the same story (AGE-71): the backend child's own preflight answers for the
+// child, not the app, so the GUI leaves its own screen verdict beside the trust one and
+// app/services/desktop.py surfaces it the same way.
 const AX_TRUST_FILE = path.join(DATA_DIR, "ax_trust.json");
+const SCREEN_TRUST_FILE = path.join(DATA_DIR, "screen_trust.json");
 function writeAxTrust() {
   if (process.platform !== "darwin" || !PACKAGED) return;
   try {
@@ -66,6 +70,12 @@ function writeAxTrust() {
     const tmp = AX_TRUST_FILE + ".tmp";
     fs.writeFileSync(tmp, JSON.stringify({ trusted: !!systemPreferences.isTrustedAccessibilityClient(false), checked_at: Date.now() / 1000, app_version: app.getVersion() }));
     fs.renameSync(tmp, AX_TRUST_FILE);
+  } catch (e) { /* a missing verdict reads as unknown in the backend, never as false */ }
+  try {
+    const sTmp = SCREEN_TRUST_FILE + ".tmp";
+    const sStatus = systemPreferences.getMediaAccessStatus("screen");
+    fs.writeFileSync(sTmp, JSON.stringify({ granted: sStatus === "granted", status: sStatus, checked_at: Date.now() / 1000, app_version: app.getVersion() }));
+    fs.renameSync(sTmp, SCREEN_TRUST_FILE);
   } catch (e) { /* a missing verdict reads as unknown in the backend, never as false */ }
 }
 // Started by "Start Xod when I log in": stay in the tray, don't open the window.
