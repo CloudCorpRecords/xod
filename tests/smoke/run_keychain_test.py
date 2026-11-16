@@ -124,6 +124,12 @@ def main():
     keychain.get_password("Xod MCP", "some-new-name")      # a first-time lookup used to write the vault too
     locked.clear()
     check("…so every key is still there", vault_json() == before, str(sorted(vault_json()["secrets"])))
+    # "Try again" is a real action in the app, not just time passing: a failed read is
+    # refused from cache for the unreadable cooldown (keychain.UNREADABLE_COOLDOWN_SEC)
+    # so polling paths never hammer a locked store, and only Try again retries the
+    # store (POST /api/secrets/retry -> config.reload_secrets -> keychain.reset_cache).
+    # Simulate the button press, the same call this suite's launch() makes per start.
+    keychain.reset_cache()
     check("once macOS allows it, the next read finds them (Try again)", secret_store.get("fireworks_api_key") == "fw_test_value"
           and secret_store.health()["readable"])
 
