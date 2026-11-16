@@ -161,6 +161,7 @@ def is_scratch_job(title: str = "", origin: str = "") -> bool:
 # the user cancels a second time, the cancel is forced: the worker asyncio
 # task itself is cancelled, because a hung await never sees the graceful flag.
 CANCEL_GRACE_SEC = 30
+STOP_CLEANUP_WAIT_SEC = 5
 # Progress is measured on its own clock (the last_progress_at column), never
 # on updated_at: cancel notes and other status pokes update the row, and a
 # user trying to cancel a wedged task must not mask the wedge by doing so.
@@ -1509,6 +1510,7 @@ class TaskQueue:
         self._cancel_at: Dict[str, float] = {}
         self._stall_recoveries: Dict[str, List[float]] = {}
         self._escalations: Dict[str, asyncio.Task] = {}
+        self._stops: Dict[str, asyncio.Task] = {}
         self._watchdog: Optional[asyncio.Task] = None
         self._last_stream_meta: Dict[str, Dict[str, Any]] = {}
 
@@ -1994,10 +1996,41 @@ class TaskQueue:
             now_text="Cancelled")
 
     async def _force_stop(self, task_id: str, status: str, note: str, now_text: str,
-                          result: Optional[str] = None) -> bool:
+                          result: Optional[str] = None, recovery_at: Optional[float] = None) -> bool:
         """The recover_stuck mechanism, shared by forced cancels, the
         watchdog and the doctor fix: cancel the worker asyncio task itself
         (not just the flag), settle the row, restart the worker if it died."""
+        operation = self._stops.get(task_id)
+        if operation is not None and status == "cancelled":
+            self._cancel_requested.add(task_id)
+        if operation is None:
+            t = self.get(task_id)
+            if not t or t["status"] != "working":
+                return False
+            operation = asyncio.create_task(
+                self._complete_stop(task_id, status, note, now_text, result, recovery_at))
+            self._stops[task_id] = operation
+
+            def finished(done):
+                if self._stops.get(task_id) is done:
+                    self._stops.pop(task_id, None)
+                if not done.cancelled() and done.exception():
+                    logger.error("Task stop cleanup failed for %s: %s", task_id, done.exception())
+
+            operation.add_done_callback(finished)
+        # The operation, not this request, owns cancellation and settlement.
+        # A timeout or a disconnected caller must not abandon eventual recovery.
+        try:
+            return await asyncio.wait_for(asyncio.shield(operation), timeout=STOP_CLEANUP_WAIT_SEC)
+        except asyncio.TimeoutError:
+            current = self.get(task_id)
+            if not operation.done() and current and current["status"] == "working":
+                self._update(task_id, now="Stopping: waiting for the worker to exit",
+                             stalled=True, stalled_reason="Stop requested, but worker cleanup is not confirmed.")
+            return False
+
+    async def _complete_stop(self, task_id: str, status: str, note: str, now_text: str,
+                             result: Optional[str], recovery_at: Optional[float]) -> bool:
         t = self.get(task_id)
         if not t or t["status"] != "working":
             return False
@@ -2007,34 +2040,35 @@ class TaskQueue:
         run = None
         if worker is not None:
             worker.cancel()  # a hung await never sees the cancel flag; cancel the worker itself
-            try:
-                await asyncio.wait_for(asyncio.shield(worker), timeout=5)
-            except BaseException:
-                pass
-            if worker.done():
-                self._running_id = None
         else:
             # An orchestrated task runs in the orchestrator's pool, in its own asyncio task.
             from app.services import orchestrator
             run = orchestrator._pool.get(task_id)
             if run is not None and not run.done() and run is not asyncio.current_task():
                 run.cancel()
-                try:
-                    await asyncio.wait_for(asyncio.shield(run), timeout=5)
-                except BaseException:
-                    pass
         alive = worker or run
-        if alive is not None and alive is not asyncio.current_task() and not alive.done():
-            self._update(task_id, now="Stopping: waiting for the worker to exit",
-                         stalled=True, stalled_reason="Stop requested, but worker cleanup is not confirmed.")
-            return False
+        if alive is not None and alive is not asyncio.current_task():
+            await asyncio.gather(alive, return_exceptions=True)
+        if self._running_id == task_id:
+            self._running_id = None
         await self._sweep_tool_children(task_id)
+        if status == "queued" and task_id in self._cancel_requested:
+            status, note, now_text = "cancelled", "Cancelled while recovering from a stall", "Cancelled"
         fields: Dict[str, Any] = {"status": status, "finished_at": time.time(), "now": now_text,
                                   "next_action": None, "waiting_kind": None,
                                   "waiting_detail": None, "pending_json": None}
         if result is not None:
             fields["result"] = result
-        self._update(task_id, note=note, **fields)
+        # Never overwrite an independently settled task.
+        current = self.get(task_id)
+        if current and current["status"] == "working":
+            if status == "queued":
+                now = recovery_at if recovery_at is not None else time.time()
+                attempts = [ts for ts in self._stall_recoveries.get(task_id, [])
+                            if now - ts < STALL_RECOVER_WINDOW_SEC]
+                self._stall_recoveries[task_id] = attempts + [now]
+                fields.update(finished_at=None, last_progress_at=now)
+            self._update(task_id, note=note, **fields)
         from app.services import agent_log
         agent_log.clear_waiting_for_origin(f"task:{task_id}", decision=f"stopped ({status})")
         self._cancel_requested.discard(task_id)
@@ -2043,11 +2077,9 @@ class TaskQueue:
         if esc is not None and esc is not asyncio.current_task() and not esc.done():
             esc.cancel()
         await self._close_tab(t.get("tab_id"))
-        if worker is not None and self._wake is not None:
-            if worker.done():
-                self._worker = asyncio.create_task(self._loop())  # only restart a worker that was running
-            else:
-                asyncio.create_task(self._respawn_worker(worker))
+        if worker is not None:
+            await self._respawn_worker(worker)
+        self._kick()
         return True
 
     async def _sweep_tool_children(self, task_id: str) -> None:
@@ -2160,55 +2192,21 @@ class TaskQueue:
         progress clock restarts with the re-drive: only genuine
         progress moves it, and a re-driven task must get a fresh stall
         window or the watchdog would re-flag it before it can run."""
+        # A stop already owns this run. Never cancel its cleanup a second time
+        # or requeue it while the eventual settlement is pending.
+        if task_id in self._stops:
+            return False
         t = self.get(task_id)
         if not t or t["status"] != "working":
             return False
-        was_running = (task_id == self._running_id and self._worker is not None
-                       and not self._worker.done())
-        worker = self._worker if was_running else None
-        if worker is not None:
-            worker.cancel()  # a hung await never sees the cancel flag; cancel the worker itself
-            try:
-                await asyncio.wait_for(asyncio.shield(worker), timeout=5)
-            except BaseException:
-                pass
-            self._running_id = None
-        else:
-            # An orchestrated task runs in the orchestrator's pool, in its own asyncio task.
-            from app.services import orchestrator
-            run = orchestrator._pool.get(task_id)
-            if run is not None and not run.done() and run is not asyncio.current_task():
-                run.cancel()
-                try:
-                    await asyncio.wait_for(asyncio.shield(run), timeout=5)
-                except BaseException:
-                    pass
-        await self._sweep_tool_children(task_id)
-        esc = self._escalations.pop(task_id, None)
-        if esc is not None and esc is not asyncio.current_task() and not esc.done():
-            esc.cancel()
         attempts = [ts for ts in self._stall_recoveries.get(task_id, [])
                     if now - ts < STALL_RECOVER_WINDOW_SEC]
-        attempts.append(now)
-        self._stall_recoveries[task_id] = attempts
-        self._update(task_id, status="queued", stalled=0, stalled_reason=None,
-                     next_action=None, waiting_kind=None, waiting_detail=None,
-                     pending_json=None, now="Recovering: re-running after a stall",
-                     note=(f"Stalled with no progress inside a healthy server; Xod "
-                           f"cancelled the dead run and queued this task again "
-                           f"(recovery attempt {len(attempts)} of "
-                           f"{STALL_RECOVER_MAX_ATTEMPTS})"))
-        c = _conn()
-        c.execute("UPDATE tasks SET last_progress_at = ? WHERE id = ?", (now, task_id))
-        c.commit()
-        c.close()
-        if worker is not None and self._wake is not None:
-            if worker.done():
-                self._worker = asyncio.create_task(self._loop())  # only restart a worker that was running
-            else:
-                asyncio.create_task(self._respawn_worker(worker))
-        self._kick()
-        return True
+        return await self._force_stop(
+            task_id, status="queued", recovery_at=now,
+            now_text="Recovering: re-running after a stall",
+            note=(f"Stalled with no progress inside a healthy server; Xod "
+                  f"cancelled the dead run and queued this task again "
+                  f"(recovery attempt {len(attempts) + 1} of {STALL_RECOVER_MAX_ATTEMPTS})"))
 
     async def run_watchdog(self, now: Optional[float] = None,
                            stall_sec: Optional[float] = None,
@@ -2231,6 +2229,8 @@ class TaskQueue:
         stalled, recovered, redriven = [], [], []
         for r in rows:
             t = _row(r)
+            if t["id"] in self._stops:
+                continue
             quiet = now - self._progress_at(t)
             if quiet >= recover_sec:
                 mins = int(quiet // 60)
@@ -2291,6 +2291,7 @@ class TaskQueue:
 
     def stop(self) -> None:
         """Stops every loop and run of this queue at once (shutdown; tests use it as a crash)."""
+        self._wake = None  # a late stop finalizer must not revive a shut-down queue
         for t in (self._worker, self._watchdog):
             if t is not None:
                 t.cancel()
@@ -2323,7 +2324,8 @@ class TaskQueue:
                     # Every _run exit path lands here (done, failed, waiting, and a
                     # forced cancel unwinding through this loop): no tool child of
                     # this task survives the task.
-                    await self._sweep_tool_children(r["id"])
+                    if r["id"] not in self._stops:
+                        await self._sweep_tool_children(r["id"])
                     try:   # a task that stopped running holds no device (services/resources.py)
                         from app.services import resources
                         resources.release_holder(f"task:{r['id']}")

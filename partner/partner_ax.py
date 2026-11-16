@@ -21,6 +21,8 @@ import subprocess
 import time
 
 SCAN_TIMEOUT = 10.0   # a healthy walk takes well under a second; this guards a stuck tree
+APPROVAL_POLICY = "always-allow-v1"
+ONE_TIME_POLICY = "one-time-v1"
 FRONT_SETTLE = 0.6    # after bringing Muse forward (or before putting the other app back)
 UTF8 = 0x08000100     # kCFStringEncodingUTF8
 
@@ -262,16 +264,22 @@ class CtypesAx:
 
 
 # ------------------------------------------------------------------ the card rules (frozen port of muse_app)
-def pick_button(labels):
+def pick_button(labels, policy=APPROVAL_POLICY):
     """The approving button to press, or None. Same order as Xod's _pick_button:
-    Allow all once, then the
+    a scoped recipient/site Always allow (unless using one-time-v1), then Allow all once, then the
     one-time approvals (Send / Allow once / Allow for this task / Allow), then
     any other task-scoped approval (an Allow... button ending in 'for this
     task', e.g. 'Allow all web access for this task': it approves this task
     only and expires with it, so it belongs with the one-time approvals, and
     it beats an unscoped 'Allow always', which is never picked). Deny and
     friends are never picked."""
+    if policy not in (APPROVAL_POLICY, ONE_TIME_POLICY):
+        return None
     clean = [str(l).strip() for l in labels if str(l).strip()]
+    if policy == APPROVAL_POLICY:
+        for l in clean:
+            if l.casefold() in ("always allow for this recipient", "always allow for this site"):
+                return l
     for l in clean:
         if l.lower() == "allow all once":
             return l
@@ -398,7 +406,7 @@ class Walk:
         return fn()
 
     # -- shared tree machinery (mirrors muse_app._scan) ----------------
-    def _cards(self, pid):
+    def _cards(self, pid, policy=APPROVAL_POLICY):
         """Every approval card in Muse's tree: (entry, buttons-by-label)."""
         ax = self.ax
         deadline = time.time() + SCAN_TIMEOUT
@@ -445,7 +453,7 @@ class Walk:
                             hunt(c, d + 1)
 
                 hunt(parent, 0)
-                chosen = pick_button(list(btns))
+                chosen = pick_button(list(btns), policy)
                 if chosen is not None:
                     return btns[chosen], chosen
                 el = parent
@@ -460,7 +468,7 @@ class Walk:
                     and "approval request" in _label(ax, el).lower():
                 title = _label(ax, el)
                 buttons, what, texts = card_info(el)
-                chosen = pick_button(list(buttons))
+                chosen = pick_button(list(buttons), policy)
                 if chosen is None:
                     btn2, chosen2 = nearby_button(el)
                     if btn2 is not None:
@@ -518,7 +526,8 @@ class Walk:
                 self._put_back(prev)
         return {"running": True, "cards": cards}
 
-    def press(self, want_id, front=False, away=False):
+    def press(self, want_id, front=False, away=False, policy=APPROVAL_POLICY,
+              expected_button=None):
         """Press the approving button on one card (identified by its card_id),
         re-walking the live tree. Approve-only, exactly the frozen rules; a
         failed, buttonless, or not-showing first attempt may be retried once
@@ -529,13 +538,13 @@ class Walk:
         if pid is None:
             return {"pressed": False, "button": None, "card_id": want_id,
                     "reason": "Muse app not running", "running": False}
-        result, needs_front = self._press_attempt(pid, want_id)
+        result, needs_front = self._press_attempt(pid, want_id, policy, expected_button)
         if needs_front and front:
             prev = self._bring_forward(pid)
             if prev is not None:
                 time.sleep(FRONT_SETTLE)
             try:
-                result, _ = self._press_attempt(pid, want_id)
+                result, _ = self._press_attempt(pid, want_id, policy, expected_button)
             finally:
                 if prev is not None:
                     time.sleep(FRONT_SETTLE)
@@ -548,14 +557,17 @@ class Walk:
                      % (result["reason"], want_id, away))
         return result
 
-    def _press_attempt(self, pid, want_id):
-        for entry, buttons in self._cards(pid):
+    def _press_attempt(self, pid, want_id, policy=APPROVAL_POLICY, expected_button=None):
+        for entry, buttons in self._cards(pid, policy):
             if entry["card_id"] != want_id:
                 continue
             base = {"button": None, "card_id": want_id, "type": entry["type"]}
             if entry["expired"]:
                 return {**base, "pressed": False, "reason": "expired before Xod got to it"}, False
             chosen = entry["button"]
+            if expected_button is not None and chosen != expected_button:
+                return {**base, "pressed": False,
+                        "reason": "approval policy choice changed; rescan required"}, False
             if chosen is None:
                 return {**base, "pressed": False,
                         "reason": no_button_reason(entry["buttons"])}, len(buttons) == 0

@@ -96,7 +96,7 @@ API listens on `127.0.0.1:8795`.
 
 - `GET /status`: partner version, uptime, the watchdog's Xod health
   summary, `partner_trusted` (the Partner's own AXIsProcessTrusted),
-  `bundle_id`, and `approval_policy: "one-time-v1"`.
+  `bundle_id`, and `approval_policy: "always-allow-v1"`.
 - `POST /ax/scan` `{front?: bool}`: read-only. Returns whether the Muse
   app is running and, per card found, the card's title, summary, type,
   parties, the labels of every action button, the button the frozen
@@ -106,10 +106,15 @@ API listens on `127.0.0.1:8795`.
   live tree, finds exactly the named card, and presses its approving
   button, once. Returns what was pressed, or why nothing was, and logs
   every outcome to partner.log.
-- `POST /ax/press-once`: the versioned one-time-only route used by current
-  Xod. An older Partner cannot execute this route. Xod checks the policy
-  capability before delegation, and falls back to its own desktop adapter
-  when Partner is incompatible rather than sending a legacy press request.
+- `POST /ax/press-policy` `{card_id, approval_policy, expected_button, front?, away?}`:
+  current Xod sends `always-allow-v1` and the scanned choice. The Partner
+  refuses policy mismatches and changed button choices before acting.
+  Recipient/site Always allow is preferred; unscoped permanent grants are
+  never selected. Xod checks the advertised capability before delegation
+  and refuses inconsistent scan choices.
+- `POST /ax/press-once`: compatibility route that remains one-time-only.
+  It never chooses a recipient/site permanent grant. It is not an alias for
+  the broader policy.
 
 Scan and press refuse with 403 `{error, trusted: false, bundle_id}` when
 macOS is not honoring the Partner's grant. A missing or wrong token is a

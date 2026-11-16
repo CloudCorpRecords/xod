@@ -38,8 +38,17 @@ class ApprovalReliability(unittest.TestCase):
 
     def test_button_contract(self):
         for labels, expected in [
-            (["Always allow for this recipient", "Send"], "Send"),
-            (["Always allow for this site"], None),
+            (["Always allow for this recipient", "Send"], "Always allow for this recipient"),
+            (["Always allow for this site"], "Always allow for this site"),
+            (["Always allow for all sites", "Allow once"], "Allow once"),
+            (["Always allow for every recipient", "Send"], "Send"),
+            (["Always allow for all recipients", "Allow"], "Allow"),
+            (["Always allow for every site", "Allow for this task"], "Allow for this task"),
+            (["Always allow for this recipient and all sites", "Send"], "Send"),
+            (["Always allow for this site or every recipient", "Allow once"], "Allow once"),
+            (["Always allow all sites"], None),
+            (["Always allow for every recipient"], None),
+            (["  ALWAYS ALLOW FOR THIS SITE ", "Allow"], "ALWAYS ALLOW FOR THIS SITE"),
             (["Allow always", "Deny"], None),
             (["Allow for this task", "Deny"], "Allow for this task"),
             (["Allow all web access for this task"], "Allow all web access for this task"),
@@ -54,7 +63,7 @@ class ApprovalReliability(unittest.TestCase):
     def test_partner_policy_revalidated(self):
         raw = {"card_id": "one", "title": "Approval request for Browser",
                "what": "A test request", "button": "Allow", "buttons": ["Allow"]}
-        with patch.object(partner_client, "status", return_value={"partner_trusted": True, "approval_policy": "one-time-v1"}), \
+        with patch.object(partner_client, "status", return_value={"partner_trusted": True, "approval_policy": "always-allow-v1"}), \
              patch.object(partner_client, "scan", return_value={"cards": [raw]}), \
              patch.object(partner_client, "press") as press, \
              patch.object(muse_app, "active", return_value=False):
@@ -62,19 +71,19 @@ class ApprovalReliability(unittest.TestCase):
             press.assert_not_called()
             self.assertIn("paused", cards[0]["reason"])
 
-    def test_old_partner_cannot_expand_permission(self):
-        raw = {"card_id": "one", "button": "Always allow for this site",
+    def test_partner_behavior_must_match_advertised_policy(self):
+        raw = {"card_id": "one", "button": "Allow",
                "buttons": ["Always allow for this site", "Allow"]}
-        with patch.object(partner_client, "status", return_value={"partner_trusted": True, "approval_policy": "one-time-v1"}), \
+        with patch.object(partner_client, "status", return_value={"partner_trusted": True, "approval_policy": "always-allow-v1"}), \
              patch.object(partner_client, "scan", return_value={"cards": [raw]}), \
              patch.object(partner_client, "press") as press:
             result = muse_app._partner_scan_press()
             press.assert_not_called()
-            self.assertIn("persistent", result["approved"][0]["reason"])
+            self.assertIn("policy", result["approved"][0]["reason"])
 
     def test_timeout_is_uncertain_not_failed(self):
-        raw = {"card_id": "one", "button": "Allow"}
-        with patch.object(partner_client, "status", return_value={"partner_trusted": True, "approval_policy": "one-time-v1"}), \
+        raw = {"card_id": "one", "button": "Allow", "buttons": ["Allow"]}
+        with patch.object(partner_client, "status", return_value={"partner_trusted": True, "approval_policy": "always-allow-v1"}), \
              patch.object(partner_client, "scan", return_value={"cards": [raw]}), \
              patch.object(partner_client, "press", return_value=None), \
              patch.object(muse_app, "active", return_value=True):
@@ -101,10 +110,20 @@ class ApprovalReliability(unittest.TestCase):
             scan.assert_not_called()
             press.assert_not_called()
 
-    def test_client_uses_versioned_one_time_route(self):
+    def test_client_uses_versioned_policy_route(self):
         with patch.object(partner_client, "_call", return_value={}) as call:
-            partner_client.press("test-card")
-        self.assertEqual(call.call_args.args[:2], ("POST", "/ax/press-once"))
+            partner_client.press("test-card", button="Always allow for this site")
+        self.assertEqual(call.call_args.args[:2], ("POST", "/ax/press-policy"))
+        self.assertEqual(call.call_args.args[2]["approval_policy"], "always-allow-v1")
+        self.assertEqual(call.call_args.args[2]["expected_button"], "Always allow for this site")
+
+    def test_one_time_partner_is_not_silently_reinterpreted(self):
+        with patch.object(partner_client, "status", return_value={
+                "partner_trusted": True, "approval_policy": "one-time-v1"}), \
+             patch.object(partner_client, "press") as press:
+            self.assertFalse(muse_app._partner_delegated())
+            self.assertIsNone(muse_app._partner_scan_press())
+            press.assert_not_called()
 
     def test_permanent_button_appearing_after_scan_is_never_clicked(self):
         from tests.partner.run_partner_ax_test import FakeAx, card_tree, _core, _serve, _call
@@ -156,6 +175,60 @@ class ApprovalReliability(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(list(Path(tmp).iterdir()), [marker])
             self.assertEqual(marker.read_bytes(), before)
+
+    def test_email_always_allow_survives_restart_mid_press(self):
+        import subprocess
+        import json
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "XOD_DATA_DIR": str(Path(tmp) / "data"),
+                   "HOME": tmp, "XDG_CONFIG_HOME": str(Path(tmp) / "config"),
+                   "XOD_MUSE_APP_DRY_RUN": ""}
+            def run(scenario):
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "tests/partner/approval_restart_probe.py"), scenario, tmp],
+                    env=env, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertTrue(run("lost-response")["pending"])
+            self.assertFalse(run("same-card")["pressed"])
+            # A real new interpreter, not just cleared in-memory marks.
+            self.assertEqual((Path(tmp) / "presses").read_text().splitlines(),
+                             ["Always allow for this recipient"])
+            self.assertFalse(run("unscoped-card")["pressed"])
+            self.assertFalse(run("expired-card")["pressed"])
+            self.assertFalse(run("switch-off")["pressed"])
+            self.assertEqual(len((Path(tmp) / "presses").read_text().splitlines()), 1)
+            self.assertFalse(run("absence")["pending"])
+            self.assertTrue(run("same-card")["pressed"])
+            self.assertEqual(len((Path(tmp) / "presses").read_text().splitlines()), 2)
+
+    def test_policy_route_rejects_mismatch_and_changed_button(self):
+        from tests.partner.run_partner_ax_test import FakeAx, card_tree, _core, _serve, _call
+        ax = FakeAx(card_tree(["Always allow for this recipient", "Send"]))
+        walk = partner_ax.Walk(ax, pid_of=lambda: 4242)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, core = _core(tmp, True)
+            server, base = _serve(cfg, core, walk)
+            try:
+                _, scan = _call(base, "/ax/scan", token=core.token, body={})
+                cid = scan["cards"][0]["card_id"]
+                body = {"card_id": cid, "approval_policy": "one-time-v1",
+                        "expected_button": "Send"}
+                code, _ = _call(base, "/ax/press-policy", token=core.token, body=body)
+                self.assertEqual(code, 409)
+                self.assertEqual(ax.pressed, [])
+                body.update(approval_policy="always-allow-v1", expected_button="Always allow for this recipient")
+                ax.root = card_tree(["Send"])
+                _, result = _call(base, "/ax/press-policy", token=core.token, body=body)
+                self.assertFalse(result["pressed"])
+                self.assertEqual(ax.pressed, [])
+                ax.root = card_tree(["Always allow for this recipient", "Send"])
+                _, result = _call(base, "/ax/press-policy", token=core.token, body=body)
+                self.assertTrue(result["pressed"])
+                self.assertEqual(ax.pressed, ["Always allow for this recipient"])
+            finally:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":

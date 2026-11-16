@@ -34,7 +34,12 @@ replace the provider stack, or recreate the external Tree/Lane Highway tooling.
   preserves the old file. Unfinished jobs are retained independently of the
   60-job completed-history limit, including approval/session records.
 - Force-stop does not declare a task stopped if its Python worker is still
-  alive after the existing cleanup timeout. Deliberately long-lived background
+  alive after the existing cleanup timeout. One retained stop operation owns
+  cancellation, eventual settlement, tab cleanup, and consumer replacement;
+  request timeout or caller cancellation does not abandon it. Competing stop
+  and watchdog requests do not cancel cleanup twice. Stall re-drive uses the
+  same mechanism and cannot requeue work until the previous run exits.
+  Deliberately long-lived background
   jobs keep their existing separate lifecycle; this is not a new kill-all policy.
 - Lightweight mode keeps the existing Muse watcher and Partner supervisor.
   Disabled/paused/away rules, dry-run behavior, OS permission requirements, and
@@ -86,6 +91,7 @@ python tests/runtime/benchmark_team.py --batches 1 --check
 # Supply the pre-change revision when reproducing a comparison:
 python tests/runtime/benchmark_team.py --baseline-ref <revision>
 python tests/runtime/test_runtime.py
+python tests/runtime/test_task_stop.py
 node tests/runtime/test_refresh_gate.js
 ```
 
@@ -100,7 +106,7 @@ Passed in isolated state:
 - Blocked/pause handling: 16 checks.
 - Long-form execution: 32 checks.
 - Muse watcher: 61 checks.
-- Approval reliability: 13 tests; Partner delegation also passed.
+- Approval reliability: 16 tests after the handoff repair; Partner delegation also passed.
 - Native Crew protocol fixtures: 96 checks.
 - New lifecycle tests: 13; refresh-gate regression checks passed. The startup
   race test uses real Git in a throwaway repository and verifies absence of the
@@ -110,6 +116,18 @@ Passed in isolated state:
 New lifecycle and refresh checks are wired into CI. Native Crew fixtures now
 isolate XDG_CONFIG_HOME as well as HOME, so inherited developer configuration
 cannot silently change their inputs.
+
+The handoff repair adds `tests/runtime/test_task_stop.py`: real SQLite/queue
+regressions for cleanup exceeding the five-second response timeout, competing
+watchdog/stop requests, a disconnected caller, shutdown without consumer
+respawn, cancellation during stall re-drive, and orchestrated cleanup.
+The delayed-cancellation defect identified after the earlier pass is repaired
+by retaining the stop operation until the run really exits.
+All five new stop tests passed on Linux. The existing watchdog suite passed
+24 checks, task concurrency 15, lifecycle 13, Crew 96, Muse watcher 62, and
+signing requirement fixtures 18. Partner delegation, Partner AX fixtures, and
+the own-Python MCP child import check also passed. The real CoreFoundation
+check was skipped on Linux and is UNKNOWN here, not a native pass.
 
 The restarted app serves its local preview. A remote browser test was attempted
 once but could not enter: the deliberate localhost-only middleware returned 403.

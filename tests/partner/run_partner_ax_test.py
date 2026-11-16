@@ -290,10 +290,10 @@ def main():
         try:
             code, out = _call(base, "/ax/scan", token=core.token, body={})
             card = out["cards"][0]
-            assert card["button"] == "Allow", card
+            assert card["button"] == "Always allow for this recipient", card
             code, out = _call(base, "/ax/press", token=core.token, body={"card_id": card["card_id"]})
-            assert out["pressed"] is True and ax.pressed == ["Allow"], out
-            print("PASS: press chooses Allow without granting permanent permissions", flush=True)
+            assert out["pressed"] is True and ax.pressed == ["Always allow for this recipient"], out
+            print("PASS: press chooses scoped Always allow for this recipient", flush=True)
         finally:
             server.shutdown()
 
@@ -406,6 +406,9 @@ def main():
     assert AX.pick_button(["Allow all web access for this task", "Allow always"]) == \
         "Allow all web access for this task"
     assert AX.pick_button(["Don't send", "Allow for this task"]) == "Allow for this task"
+    assert AX.pick_button(["Always allow for all sites", "Allow once"]) == "Allow once"
+    assert AX.pick_button(["Always allow for every recipient", "Send"]) == "Send"
+    assert AX.pick_button(["Always allow for this recipient and every site"]) is None
     print("PASS: pick_button takes the task-scoped approvals and never an unscoped Allow always", flush=True)
 
     # a computer control card whose only approval is "Allow for this task"

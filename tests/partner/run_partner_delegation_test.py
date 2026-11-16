@@ -29,7 +29,7 @@ os.environ.update(HOME=_tmp.name, XOD_DATA_DIR=str(Path(_tmp.name) / "data"),
                   XOD_TEST_KEYRING_FILE=str(Path(_tmp.name) / "keys.json"))
 from app.services import muse_app, partner_client
 from app.paths import DATA_DIR
-assert DATA_DIR == Path(_tmp.name) / "data", "Delegation tests must use isolated state"
+assert DATA_DIR.resolve() == (Path(_tmp.name) / "data").resolve(), "Delegation tests must use isolated state"
 
 CARD = {"card_id": "museapp-testcard", "title": "Approval request for Gmail",
         "what": "From a@x.com To b@y.com Subject Hi", "buttons": ["Allow", "Deny"],
@@ -49,13 +49,13 @@ class FakePartner:
         if self.down:
             return None
         return {"partner_trusted": self.trusted, "version": 1, "bundle_id": "dev.xod.partner",
-                "approval_policy": "one-time-v1"}
+                "approval_policy": "always-allow-v1"}
 
     def scan(self, front=False):
         _calls["scan"] += 1
         return {"running": True, "trusted": True, "cards": [dict(CARD)]}
 
-    def press(self, card_id, front=False, away=False):
+    def press(self, card_id, front=False, away=False, button=None):
         _calls["press"].append(card_id)
         return dict(self.press_result)
 

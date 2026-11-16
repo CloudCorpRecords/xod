@@ -4,8 +4,8 @@ Muse and Claude Code ask", Xod watches the app's approval cards and presses the 
 one for you, through macOS Accessibility (pressed directly, so it works whatever window is in front and
 never moves your mouse).
 
-Choose one-time or task-scoped approval, never persistent permission changes.
-Permanent recipient/site permissions must be set by the user in Muse.
+For cards covered by the auto-approve switch, prefer Always allow for a
+recipient/site. Unscoped permanent permission buttons are never selected.
 
 Xod doesn't poll every few seconds: macOS tells it the moment Muse's window changes (an Accessibility
 observer on Muse's pid), it waits 300ms for the window to settle, then scans — a card should be handled
@@ -296,8 +296,11 @@ def _describe_error(e: Exception) -> str:
 
 # ------------------------------------------------------------------ the buttons on a card
 def _pick_button(labels: List[str]) -> Optional[str]:
-    """Choose one-time/task approval only; never widen persistent permissions."""
+    """Prefer recipient/site Always allow, then one-time/task approvals."""
     clean = [str(l).strip() for l in labels if str(l).strip()]
+    for l in clean:
+        if l.casefold() in ("always allow for this recipient", "always allow for this site"):
+            return l
     for l in clean:
         if l.lower() == "allow all once":
             return l
@@ -602,11 +605,12 @@ def _partner_scan_press(skip_ids: Optional[set] = None, want_front: bool = False
                  "type": raw.get("type") or _card_type(raw.get("title") or ""),
                  "from": raw.get("from") or "", "to": raw.get("to") or "",
                  "subject": raw.get("subject") or "", "attachments": raw.get("attachments") or []}
-        # Older installed Partners may still prefer permanent permissions.
-        # Refuse rather than let a mismatched helper broaden authorization.
-        if entry["button"] and _pick_button([entry["button"]]) is None:
+        # Validate the advertised policy against the full choice, not just
+        # whether an isolated button happens to be recognizable.
+        labels = raw.get("buttons") or []
+        if entry["button"] and (_pick_button(labels) != entry["button"]):
             entry["button"] = None
-            entry["reason"] = "Partner selected a persistent permission; update Partner or approve manually"
+            entry["reason"] = "Partner button does not match its approval policy; update Partner or approve manually"
         cid = raw.get("card_id") or _card_id(entry)
         # Preserve the helper's identity across the skip and history paths.
         entry["_id"] = cid
@@ -625,7 +629,7 @@ def _partner_scan_press(skip_ids: Optional[set] = None, want_front: bool = False
         elif not _claim_press(cid):
             entry["reason"] = "approval already attempted or paused"
         else:
-            r = partner_client.press(cid, front=want_front, away=away)
+            r = partner_client.press(cid, front=want_front, away=away, button=entry["button"])
             if r is None:
                 entry["reason"] = "approval outcome unknown: check Muse before retrying"
                 entry["uncertain"] = True
@@ -638,7 +642,12 @@ def _partner_scan_press(skip_ids: Optional[set] = None, want_front: bool = False
                     entry["uncertain"] = True
                     entry["reason"] = "approval outcome unknown: Partner returned an error"
             else:
-                entry["pressed"] = bool(r.get("pressed"))
+                entry["pressed"] = bool(r.get("pressed")) and r.get("button") == entry["button"]
+                if r.get("pressed") and not entry["pressed"]:
+                    entry["uncertain"] = True
+                    entry["reason"] = "Partner press does not match its approval policy; inspect Muse"
+                    entries.append(entry)
+                    continue
                 if r.get("button"):
                     entry["button"] = r["button"]
                 if not entry["pressed"]:

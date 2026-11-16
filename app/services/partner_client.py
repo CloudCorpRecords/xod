@@ -30,11 +30,11 @@ logger = logging.getLogger("xod.partner_client")
 DEFAULT_URL = "http://127.0.0.1:8795"
 STATE_DIR = Path.home() / "Library" / "Application Support" / "XodPartner"
 BUNDLE_ID = "dev.xod.partner"
-APPROVAL_POLICY = "one-time-v1"
+APPROVAL_POLICY = "always-allow-v1"
 
 
 def approval_compatible(st) -> bool:
-    """Only a helper advertising the one-time contract may receive clicks."""
+    """Only a helper advertising the configured contract may receive clicks."""
     return isinstance(st, dict) and st.get("approval_policy") == APPROVAL_POLICY
 
 PARTNER_NOTICE = ("Xod Partner needs its Accessibility switch on; it is the app that presses "
@@ -233,7 +233,7 @@ def summary() -> Dict[str, Any]:
     out.update(wd)
     out["approval_compatible"] = approval_compatible(st)
     if out.get("trusted") and not out["approval_compatible"]:
-        out["notice"] = ("This Partner needs an update before it can handle one-time approvals. "
+        out["notice"] = ("This Partner needs an update before it can handle scoped Always allow approvals. "
                          "Xod will use its own desktop access where available.")
     if wd.get("hold"):
         out["notice"] = HOLD_NOTICE
@@ -274,13 +274,15 @@ def scan(front: bool = False) -> Optional[Dict[str, Any]]:
     return _call("POST", "/ax/scan", {"front": bool(front)}, timeout=20.0)
 
 
-def press(card_id: str, front: bool = False, away: bool = False) -> Optional[Dict[str, Any]]:
+def press(card_id: str, front: bool = False, away: bool = False,
+          button: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Ask the Partner to press the approving button on one named card.
     Same answer discipline as scan()."""
     # A distinct route also prevents an older process that replaces the
     # compatible helper mid-scan from interpreting this as its broad approval.
-    return _call("POST", "/ax/press-once",
-                 {"card_id": card_id, "front": bool(front), "away": bool(away)}, timeout=25.0)
+    return _call("POST", "/ax/press-policy",
+                  {"card_id": card_id, "front": bool(front), "away": bool(away),
+                   "approval_policy": APPROVAL_POLICY, "expected_button": button}, timeout=25.0)
 
 
 # -- the Partner brain (v1.2): key provisioning and usage metering -----------

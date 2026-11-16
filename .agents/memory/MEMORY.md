@@ -1,2 +1,0 @@
-- [Product scope](product-scope.md) — The user permits rewriting the architecture; retained product constraints are in replit.md.
-- [Native fixture isolation](native-fixture-isolation.md) — Isolate XDG configuration alongside HOME to avoid accidentally reading developer agent settings.

@@ -20,11 +20,24 @@ still cannot watch native desktop cards; dry-run preview never presses buttons.
 
 ## Button and retry contract
 
-Choose a one-time or task-scoped button. Never silently turn a one-time
-approval into permanent recipient/site permission. Users may configure
-permanent permissions directly in Muse. Older Partners selecting a permanent
-button are refused with a notice; installing a changed Partner may require
-macOS permission re-pairing and is not done automatically.
+The owner's chosen policy recognizes exactly "Always allow for this recipient"
+and "Always allow for this site" (case-insensitive, surrounding whitespace
+ignored). Global or ambiguous variants, including "for all sites" and "for
+every recipient", never qualify as scoped approval. It prefers these exact buttons
+for cards covered by Xod's auto-approve switch. Next come group, one-time, and
+task-scoped approvals. Unscoped "Allow always", "Always allow everything",
+negative buttons, expired cards, and cards encountered while off/paused or
+while the away policy is inactive are not auto-pressed. The existing switch
+covers all eligible Muse cards, including email sends; it is not a separate
+per-recipient allowlist.
+
+Current Xod and Partner advertise `always-allow-v1`. Xod validates the chosen
+button against all scanned labels and sends both the policy and expected
+button to `/ax/press-policy`. Partner re-walks and refuses a changed choice or
+policy before acting. A one-time-only Partner is not silently reinterpreted.
+The legacy `/ax/press-once` route still enforces `one-time-v1`, even if a
+recipient/site Always allow button appears after a scan. Installing a changed
+Partner may require macOS permission re-pairing and is not done automatically.
 
 Record intent before issuing a click. Successful and uncertain click attempts
 are not repeated while the same card remains visible, including after an Xod
@@ -55,7 +68,8 @@ prove real desktop operation, macOS grant continuity, or release readiness.
 1. Use disposable test content and a sandbox recipient/site. Record the Xod and
    Partner build identities and grant status; do not reset permissions silently.
 2. Verify off, always, away, pause, and resume on real Muse cards. Confirm a new
-   card progresses and negative/permanent buttons are not chosen.
+   card progresses, scoped recipient/site Always allow is preferred, and
+   negative/unscoped permanent buttons are not chosen.
 3. Revoke a grant and disconnect Partner. Confirm the UI explains the block;
    restore access and verify an unattempted pending card proceeds.
 4. Interrupt a press response and restart Xod. Confirm no duplicate send;
@@ -66,3 +80,16 @@ prove real desktop operation, macOS grant continuity, or release readiness.
    install N+1 and N+2, and prove actual desktop actions still work without
    repeating permission grants. Record failures, not merely visible toggles.
 7. Keep release promotion separate from these checks.
+
+## Handoff repair verification
+
+The Linux regression suite includes fresh interpreter processes simulating an
+email press whose response is lost. Its durable intent prevents a second press
+after restart, until a complete absence scan. It also checks off, expired, and
+unscoped cards, policy mismatches, and changed live button choices. These are
+fake AX trees and real local storage/HTTP tests, not native desktop acceptance.
+
+The delegation isolation assertion resolves both paths, accommodating macOS
+`/var` and `/private/var` aliases. The nested delegation check in the approval
+suite exercises the same corrected assertion. Actual macOS execution here
+remains UNKNOWN.

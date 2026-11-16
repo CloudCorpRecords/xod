@@ -105,7 +105,7 @@ def main():
     noax = muse_app._describe_error(PermissionError("Xod needs Accessibility access to press Allow"))
     check("a permission failure shows the Accessibility fix", "Accessibility" in noax, noax)
 
-    print("M4 one-time approval, never persistent permission or Deny")
+    print("M4 recipient/site Always allow, never unscoped permission or Deny")
     send, always, dont = El("AXButton", "Send"), El("AXButton", "Always allow for this recipient"), El("AXButton", "Don't send")
     gmail = El("AXGroup", "Approval request for Gmail", [
         El("AXStaticText", "From: Tree <tree@example.com>"), El("AXStaticText", "To: hiring@example.com"),
@@ -114,8 +114,8 @@ def main():
     muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [gmail])]))
     muse_app._muse_pid = lambda: 4242
     got = muse_app._scan(True)["approved"][0]
-    check("a Gmail card: Send is pressed without granting permanent access",
-          got["button"] == "Send" and not always.pressed and send.pressed and not dont.pressed, str(got))
+    check("a Gmail card: scoped Always allow is preferred to Send",
+          got["button"] == "Always allow for this recipient" and always.pressed and not send.pressed and not dont.pressed, str(got))
     check("…its type and fields are read", got["type"] == "Gmail" and got["to"] == "hiring@example.com"
           and got["subject"] == "Your application" and got["attachments"] == ["cv.pdf"], str(got))
     send2, dont2 = El("AXButton", "Send"), El("AXButton", "Don't send")
@@ -130,10 +130,14 @@ def main():
     check("a card with only Deny: nothing pressed, and the reason says so",
           got["pressed"] is False and got["button"] is None and "Deny" in got["reason"] and not deny.pressed, str(got))
     check("button choice in order, never the negative ones",
-          muse_app._pick_button(["Send", "Always allow for this recipient", "Don't send"]) == "Send"
+           muse_app._pick_button(["Send", "Always allow for this recipient", "Don't send"]) == "Always allow for this recipient"
           and muse_app._pick_button(["Allow", "Send"]) == "Send"
           and muse_app._pick_button(["Deny", "Don't send"]) is None
           and muse_app._pick_button(["Always allow everything", "Allow"]) == "Allow")
+    check("global permanent grants lose to one-time approval",
+          muse_app._pick_button(["Always allow for all sites", "Allow once"]) == "Allow once"
+          and muse_app._pick_button(["Always allow for every recipient", "Send"]) == "Send"
+          and muse_app._pick_button(["Always allow for this site and all recipients"]) is None)
 
     allow2 = El("AXButton", "Allow")
     card4 = El("AXGroup", "Approval request for Browser", [El("AXStaticText", "Allow an upload?"), allow2])
@@ -245,7 +249,7 @@ def main():
     print("M8 blockers: 'Allow all once' group cards, and a card still showing gets pressed again")
     check("button order with the group buttons",
           muse_app._pick_button(["Allow", "Allow all once", "Deny all"]) == "Allow all once"
-          and muse_app._pick_button(["Allow all once", "Always allow for this recipient"]) == "Allow all once"
+           and muse_app._pick_button(["Allow all once", "Always allow for this recipient"]) == "Always allow for this recipient"
           and muse_app._pick_button(["Deny all", "Allow all once"]) == "Allow all once")
     check("'Allow once' (the one-time button on network/share cards) is pressed too",
           muse_app._pick_button(["Allow once", "Deny"]) == "Allow once"

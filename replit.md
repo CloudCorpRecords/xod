@@ -5,6 +5,12 @@ a local-first, open-source assistant. Muse auto-approval is a core feature,
 not an optional integration to remove during cleanup. Users bring their own
 provider keys or use local models.
 
+The owner explicitly wants recipient/site "Always allow" within the enabled
+auto-approve policy, including email sends. Preserve the press-intent journal,
+uncertain-outcome no-repeat protection, absence-scan rule, and versioned
+Partner policy. Unscoped permanent grants and negative buttons stay excluded.
+Do not commit `attached_assets/` or `.agents/memory/` to product delivery.
+
 ## Preview
 
 Run the configured **Xod web preview** workflow. It uses:
@@ -43,6 +49,7 @@ The existing BYOK and local-provider implementation has not been replaced.
 
 ```sh
 python tests/runtime/test_runtime.py
+python tests/runtime/test_task_stop.py
 python tests/runtime/benchmark_team.py --check
 node tests/runtime/test_refresh_gate.js
 python tests/smoke/run_crew_test.py

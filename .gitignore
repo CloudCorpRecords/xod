@@ -77,6 +77,8 @@ Thumbs.db
 *.sublime-workspace
 
 # --- Local Scratch & Separate Projects ---
+attached_assets/
+.agents/memory/
 scratch/
 everythingincludedisfake/
 tmp/
