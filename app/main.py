@@ -2251,6 +2251,7 @@ async def chat_endpoint(request: ChatRequest):
 async def get_config():
     """Returns safe masked configuration and status."""
     from app.config import maybe_heal_secrets
+    from app.services import setup_wizard
     await asyncio.to_thread(maybe_heal_secrets)   # a snapshot built during a key store outage heals itself first
     key = settings.trustmrr_api_key
     masked_key = ""
@@ -2284,15 +2285,16 @@ async def get_config():
         "llm_provider": settings.llm_provider,
         "llm_base_url": settings.llm_base_url,
         "llm_model": settings.llm_model,
+        "model_configuration": setup_wizard.configuration(),
         "llm_auto_model": auto_model_enabled(),
         "allow_local_inference": inference_policy.allowed(),
         "inference": inference_policy.route_state(),
-        "has_openai_key": bool(settings.openai_api_key),
-        "has_anthropic_key": bool(settings.anthropic_api_key),
-        "has_gemini_key": bool(settings.gemini_api_key),
-        "has_groq_key": bool(settings.groq_api_key),
-        "has_openrouter_key": bool(settings.openrouter_api_key),
-        "has_fireworks_key": bool(settings.fireworks_api_key),
+        "has_openai_key": llm_service._tier_key_ready("openai"),
+        "has_anthropic_key": llm_service._tier_key_ready("anthropic"),
+        "has_gemini_key": llm_service._tier_key_ready("gemini"),
+        "has_groq_key": llm_service._tier_key_ready("groq"),
+        "has_openrouter_key": llm_service._tier_key_ready("openrouter"),
+        "has_fireworks_key": llm_service._tier_key_ready("fireworks"),
         "has_tavily_key": bool(tav_key),
         "has_huggingface_token": bool(settings.huggingface_token),
         "huggingface_masked_token": (settings.huggingface_token[:4] + "..." + settings.huggingface_token[-4:]) if len(settings.huggingface_token) > 8 else ("Configured" if settings.huggingface_token else "")
@@ -2330,6 +2332,20 @@ async def update_config(req: ConfigUpdateRequest):
 
 async def _update_config_apply(req: ConfigUpdateRequest):
     """Updates settings and persists to .env."""
+    from app.services import setup_wizard
+    choice = None
+    if any(v is not None for v in (req.llm_provider, req.llm_model, req.llm_base_url)):
+        provider = req.llm_provider if req.llm_provider is not None else settings.llm_provider
+        changed_provider = provider != settings.llm_provider
+        defaults = setup_wizard.configuration()["defaults"].get(provider, {})
+        model = req.llm_model if req.llm_model is not None else (
+            defaults.get("model", "") if changed_provider else settings.llm_model)
+        base_url = req.llm_base_url if req.llm_base_url is not None else (
+            "" if changed_provider else settings.llm_base_url)
+        choice = setup_wizard.validate_choice(provider, model, base_url)
+        if not choice["success"]:
+            # Reject before saving any keys or unrelated settings.
+            raise HTTPException(status_code=400, detail=choice["error"])
     if req.trustmrr_api_key is not None:
         key_val = req.trustmrr_api_key.strip()
         update_env_variable("TRUSTMRR_API_KEY", key_val)
@@ -2349,22 +2365,6 @@ async def _update_config_apply(req: ConfigUpdateRequest):
         yt_val = req.youtube_api_key.strip()
         update_env_variable("YOUTUBE_API_KEY", yt_val)
         youtube_client.set_api_key(yt_val)
-
-    picked = [(new, getattr(settings, field)) for new, field in ((req.llm_provider, "llm_provider"), (req.llm_base_url, "llm_base_url"),
-                                                                 (req.llm_model, "llm_model")) if new is not None]
-    if any(new != old for new, old in picked):    # the person changed the model here: it's theirs, Xod won't swap it
-        from app.services.storage import set_setting
-        from app.services.setup_wizard import CHOSEN_BY_KEY
-        set_setting(CHOSEN_BY_KEY, "you")
-
-    if req.llm_provider is not None:
-        update_env_variable("LLM_PROVIDER", req.llm_provider)
-
-    if req.llm_base_url is not None:
-        update_env_variable("LLM_BASE_URL", req.llm_base_url)
-
-    if req.llm_model is not None:
-        update_env_variable("LLM_MODEL", req.llm_model)
 
     if req.llm_auto_model is not None:
         from app.services import auto_model
@@ -2399,9 +2399,10 @@ async def _update_config_apply(req: ConfigUpdateRequest):
         update_env_variable("HF_TOKEN", hf_val)
         media_model_manager.set_hf_token(hf_val)
 
-    from app.services import local_servers, setup_wizard
-    if req.llm_provider is not None:
-        local_servers.after_switch(req.llm_provider)     # not the built-in engine any more: free its memory now
+    if choice and any(choice[k] != getattr(settings, f"llm_{k}") for k in ("provider", "model", "base_url")):
+        result = setup_wizard.choose(choice["provider"], choice["model"], choice["base_url"])
+        if not result["success"]:
+            raise HTTPException(status_code=400, detail=result["error"])
     switched = setup_wizard.prefer_key()                  # a key just saved wins while the model is still Xod's pick
     msg = f"Settings updated. Xod now answers with {switched['label']} (your API key)." if switched["switched"] else "Settings updated successfully."
     return {"status": "success", "message": msg, "switched_to": switched.get("provider") if switched["switched"] else None}
@@ -5245,14 +5246,33 @@ async def setup_choose_endpoint(req: SetupChoice):
 
 @app.post("/api/setup/test")
 async def setup_test_endpoint():
-    """Says hello to the chosen model, starting the built-in engine if that's the one."""
+    """Explicit, possibly billed check of the saved model, not an Auto or specialist pick."""
     import time as _t
+    from urllib.parse import urlsplit
     t = _t.time()
+    info = llm_service.get_endpoint_info()
+    identity = {"provider": info["provider"], "model": info["model"],
+                "route": urlsplit(info["base_url"]).hostname}
     try:
-        msg = await llm_service.chat_completion([{"role": "user", "content": "Say hi in five words or fewer."}], max_tokens=40, think=False)
-        return {"success": True, "reply": (msg.get("content") or "").strip()[:200], "seconds": round(_t.time() - t, 1)}
+        msg = await llm_service.chat_completion(
+            [{"role": "user", "content": "Say hi in five words or fewer."}],
+            max_tokens=40, think=False, endpoint_override=info)
+        from app.services.llm import _base_model_id
+        actual = {"provider": msg.get("_provider", info["provider"]), "model": msg.get("_model", info["model"]),
+                  "response_model": msg.get("_response_model")}
+        matched = actual["provider"] == info["provider"] and actual["model"] == info["model"]
+        if actual["response_model"]:
+            matched = matched and _base_model_id(actual["response_model"]) == _base_model_id(info["model"])
+        reply = (msg.get("content") or "").strip()[:200]
+        return {"success": bool(reply) and matched, "reply": reply, **identity,
+                "actual": actual, "matched_selection": matched,
+                "error": "" if reply and matched else "The saved model was not verified. A different model, fallback or empty response is not a successful connection test.",
+                "seconds": round(_t.time() - t, 1)}
     except Exception as e:
-        return {"success": False, "error": str(e)[:300]}
+        error = str(e)
+        if info.get("api_key") not in ("", "missing", "local", "lm-studio", "ollama", None):
+            error = error.replace(info["api_key"], "[redacted]")
+        return {"success": False, **identity, "error": error[:300]}
 
 @app.post("/api/setup/complete")
 async def setup_complete_endpoint():

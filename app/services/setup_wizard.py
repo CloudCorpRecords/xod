@@ -112,7 +112,8 @@ def saved_keys() -> List[str]:
     """Cloud providers with an API key saved, best first."""
     from app.config import maybe_heal_secrets, settings
     maybe_heal_secrets()   # a snapshot built during a key store outage heals itself before it is read
-    return [p for p in KEY_ORDER if (getattr(settings, f"{p}_api_key", "") or "").strip()]
+    from app.services.llm import llm_service
+    return [p for p in KEY_ORDER if llm_service._tier_key_ready(p)]
 
 
 def key_choice(provider: str) -> Dict[str, str]:
@@ -148,12 +149,16 @@ def prefer_key(respect_saved: bool = False) -> Dict[str, Any]:
     return {"switched": bool(res.get("success")), **c}
 
 
-def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> Dict[str, Any]:
-    """Switches Xod's model. base_url: where a "local" server is (autoconnect found it). how: "you" when the person
-    picked it, "auto" when Xod did; Xod only changes a model on its own while the choice is still its own."""
+def validate_choice(provider: str, model: str, base_url: str = "", how: str = "you") -> Dict[str, Any]:
+    """Normalize and validate a choice without writing settings or credentials."""
+    from urllib.parse import urlsplit
+    from app.services.model_hub import CLOUD_ENDPOINTS, cloud_base_url
+    provider, model, base_url = provider.strip(), model.strip(), base_url.strip()
     allowed = {"xod", "lm_studio", "ollama", "local", "custom", "anthropic", "openai", "gemini", "groq", "openrouter", "fireworks"}
     if provider not in allowed:
         return {"success": False, "error": f"Unknown provider {provider}"}
+    if not model or len(model) > 512 or any(ord(c) < 32 for c in model):
+        return {"success": False, "error": "Enter a model name or pick a downloaded built-in model."}
     # Cloud-first policy (services/inference_policy.py, R11): an AUTOMATIC pick
     # may never land on a local provider while local inference is off — that
     # is exactly the fresh-install hunting this policy exists to stop. A
@@ -169,11 +174,30 @@ def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> D
         from app.services.local_engine import INTEL_MESSAGE, is_apple_silicon
         if not is_apple_silicon():
             return {"success": False, "error": INTEL_MESSAGE}
-    from app.config import update_env_variable
     from app.services.local_engine import catalog_entry, is_downloaded
+    if provider in CLOUD_ENDPOINTS:
+        base_url = cloud_base_url(provider, base_url)
+    elif provider == "xod":
+        base_url = ""  # the engine owns its runtime port
+    else:
+        if not base_url:
+            if provider == "ollama":
+                from app.services.ollama_hub import root
+                base_url = f"{root()}/v1"
+            else:
+                base_url = "http://localhost:1234/v1" if provider == "lm_studio" else "http://localhost:8080/v1"
+        try:
+            address = urlsplit(base_url)
+            if (address.scheme not in ("http", "https") or not address.hostname
+                    or address.username or address.password or address.query or address.fragment):
+                raise ValueError("Invalid endpoint")
+            address.port  # validate malformed ports, too
+        except ValueError:
+            return {"success": False, "error": "Use an http(s) endpoint without embedded credentials, query parameters or fragments."}
+        base_url = base_url.rstrip("/")
     # Checked before anything is saved (a refused address used to leave the provider switched anyway).
     from app.services import model_sources
-    if provider == "local" and not (base_url.startswith(("http://localhost", "http://127.0.0.1")) or model_sources.is_mine(base_url)):
+    if provider == "local" and not (address.hostname in ("localhost", "127.0.0.1", "::1") or model_sources.is_mine(base_url)):
         return {"success": False, "error": "A local server's address must be on this computer, or one you added under Model servers."}
     if provider == "custom" and not model_sources.is_mine(base_url):
         return {"success": False, "error": "Add that server under Model servers first."}
@@ -194,26 +218,52 @@ def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> D
         from app.services.storage import get_setting
         if get_setting("llm_provider", "") and chosen_by() != "auto":
             return {"success": False, "error": "The model on this computer was picked by its owner; Xod won't replace it on its own."}
-    # Ollama's address before switching: the one in use if Ollama is already the provider, else OLLAMA_HOST or the default.
-    from app.services.ollama_hub import root as ollama_root
-    ollama_url = f"{ollama_root()}/v1"
-    update_env_variable("LLM_PROVIDER", provider)
-    update_env_variable("LLM_MODEL", model)
-    if provider == "ollama":
-        update_env_variable("LLM_BASE_URL", ollama_url)
-    elif provider == "lm_studio":
-        update_env_variable("LLM_BASE_URL", base_url or "http://localhost:1234/v1")
-    elif provider in ("local", "custom"):
-        update_env_variable("LLM_BASE_URL", base_url)
-    from app.services.storage import set_setting
-    set_setting(CHOSEN_BY_KEY, how)
+    return {"success": True, "provider": provider, "model": model, "base_url": base_url}
+
+
+def choose(provider: str, model: str, base_url: str = "", how: str = "you") -> Dict[str, Any]:
+    """The common install-level writer for Settings, setup, panels and remote picks."""
+    from app.config import _model_lock
+    with _model_lock:
+        # The auto-pick guard and its write share the lock. A delayed automatic
+        # pick cannot validate before, then overwrite after a person's choice.
+        return _save_choice(provider, model, base_url, how)
+
+
+def _save_choice(provider: str, model: str, base_url: str, how: str) -> Dict[str, Any]:
+    result = validate_choice(provider, model, base_url, how)
+    if not result["success"]:
+        return result
+    provider, model, base_url = (result[k] for k in ("provider", "model", "base_url"))
+    from app.config import save_model_choice
+    save_model_choice(provider, model, base_url, how)
+    from app.services import inference_policy
     if how == "you" and provider in inference_policy.LOCAL_PROVIDERS:
         # Picking a local model yourself IS the opt-in (R11): record it, so
         # the setting the person sees matches the behavior they chose.
         inference_policy.set_allowed(True, source="user_model_choice")
     from app.services.local_servers import after_switch
     after_switch(provider)        # not the built-in engine any more: free its memory now
-    return {"success": True, "provider": provider, "model": model}
+    return result
+
+
+def configuration() -> Dict[str, Any]:
+    """Public configuration metadata. Whitelist fields; endpoint info contains a key."""
+    from app.services.llm import llm_service
+    from app.services.model_hub import CLOUD_DEFAULTS, CLOUD_ENDPOINTS
+    from app.services.local_engine import is_apple_silicon, INTEL_MESSAGE
+    endpoint = llm_service.get_endpoint_info()
+    defaults = {p: {"model": m, "base_url": CLOUD_ENDPOINTS[p]} for p, m in CLOUD_DEFAULTS.items()}
+    defaults.update({
+        "lm_studio": {"model": "google/gemma-4-12b-qat", "base_url": "http://localhost:1234/v1"},
+        "ollama": {"model": "llama3.1", "base_url": "http://localhost:11434/v1"},
+        "local": {"model": "", "base_url": "http://localhost:8080/v1"},
+        "custom": {"model": "", "base_url": ""},
+        "xod": {"model": "", "base_url": ""},
+    })
+    return {"current": {k: endpoint[k] for k in ("provider", "model", "base_url")},
+            "defaults": defaults, "mlx_supported": is_apple_silicon(),
+            "mlx_unavailable": "" if is_apple_silicon() else INTEL_MESSAGE}
 
 
 async def quick() -> Dict[str, Any]:

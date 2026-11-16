@@ -210,6 +210,19 @@ def has_setting(key: str) -> bool:
     return row is not None
 
 
+def set_settings(values: Dict[str, str]) -> None:
+    """Commit a group of ordinary settings together, or leave all unchanged."""
+    conn = get_db_connection()
+    try:
+        with conn:
+            conn.executemany("""
+                INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """, [(key, value, time.time()) for key, value in values.items()])
+    finally:
+        conn.close()
+
+
 def set_setting(key: str, value: str):
     conn = get_db_connection()
     cursor = conn.cursor()

@@ -1271,16 +1271,24 @@
         <div class="space-y-3">
           <label class="text-xs font-semibold text-zinc-300">LLM Provider</label>
           <select id="selectLlmProvider" onchange="handleProviderChange()" class="w-full bg-surface-750 border border-surface-600 rounded-lg px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-brand-500">
+            <option value="xod">Built-in MLX (Apple silicon, downloaded models)</option>
             <option value="lm_studio">LM Studio (Local • OpenAI-Compatible) - Recommended</option>
             <option value="fireworks">Fireworks AI (GLM 5.3 Flash / Cloud • Fast Serverless)</option>
             <option value="ollama">Ollama (Local)</option>
             <option value="local">Another local server (llama.cpp, Jan, KoboldCpp, GPT4All…)</option>
+            <option value="custom">Added model server (local network or cloud gateway)</option>
             <option value="openai">OpenAI (Cloud)</option>
             <option value="anthropic">Anthropic Claude (Cloud)</option>
             <option value="gemini">Google Gemini (Cloud)</option>
             <option value="groq">Groq (Ultra-Fast Cloud)</option>
             <option value="openrouter">OpenRouter (Cloud)</option>
           </select>
+          <p id="modelConfigurationHint" class="text-xs text-zinc-400"></p>
+          <div class="space-y-1">
+            <button type="button" id="testSavedModel" onclick="testSavedModel()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-xs font-semibold text-zinc-200 transition-colors disabled:opacity-50">Test saved model</button>
+            <p class="text-xs text-zinc-500">Save changes first. Testing sends a small request; cloud providers may charge for it.</p>
+            <p id="savedModelTestResult" role="status" aria-live="polite" class="text-xs text-zinc-300 break-words"></p>
+          </div>
 
           <!-- Base URL (For local / custom endpoint) -->
           <div id="groupBaseUrl" class="space-y-1">

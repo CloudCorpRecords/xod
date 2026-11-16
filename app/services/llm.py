@@ -10,7 +10,7 @@ from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple, Callable
 from app.config import settings
 from app.services import ollama_context
 from app.services.runtime_limits import inference
-from app.services.model_hub import CLOUD_DEFAULTS
+from app.services.model_hub import CLOUD_DEFAULTS, cloud_base_url
 
 logger = logging.getLogger("llm")
 
@@ -463,7 +463,11 @@ def plain_error(info: Dict[str, Any], status: Optional[int] = None, body: str = 
         said = said.get("message") if isinstance(said, dict) else said
     except Exception:
         said = None
-    return f"{who} answered with an error ({status}): {str(said or body).strip()[:200]}"
+    detail = str(said or body).strip()
+    key = info.get("api_key")
+    if key and key not in ("missing", "local", "lm-studio", "ollama"):
+        detail = detail.replace(key, "[redacted]")
+    return f"{who} answered with an error ({status}): {detail[:200]}"
 
 
 def reconcile_tool_transcript(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -584,36 +588,36 @@ class LLMService:
             api_key = model_sources.key_for(base_url) or ("local" if provider == "local" else "missing")
             m = model or settings.llm_model or "default"
         elif provider == "openai":
-            base_url = "https://api.openai.com/v1"
+            base_url = cloud_base_url("openai")
             api_key, key_profile_name = self._cloud_key("openai", key_profile_id)
             api_key = api_key or "missing"
             m = model or CLOUD_DEFAULTS["openai"]
         elif provider == "gemini":
-            base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+            base_url = cloud_base_url("gemini")
             api_key, key_profile_name = self._cloud_key("gemini", key_profile_id)
             api_key = api_key or "missing"
             m = model or "gemini-2.5-flash"
         elif provider == "groq":
-            base_url = "https://api.groq.com/openai/v1"
+            base_url = cloud_base_url("groq")
             api_key, key_profile_name = self._cloud_key("groq", key_profile_id)
             api_key = api_key or "missing"
             m = model or "llama-3.3-70b-versatile"
         elif provider == "openrouter":
-            base_url = "https://openrouter.ai/api/v1"
+            base_url = cloud_base_url("openrouter")
             api_key, key_profile_name = self._cloud_key("openrouter", key_profile_id)
             api_key = api_key or "missing"
             m = model or "meta-llama/llama-3.3-70b-instruct"
         elif provider == "anthropic":
             # Anthropic's OpenAI-compatible endpoint (chat/completions with a Bearer key).
-            base_url = "https://api.anthropic.com/v1"
+            base_url = cloud_base_url("anthropic")
             api_key, key_profile_name = self._cloud_key("anthropic", key_profile_id)
             api_key = api_key or "missing"
             m = model or "claude-opus-5-5"
         elif provider == "fireworks":
-            base_url = settings.llm_base_url if (settings.llm_base_url and "fireworks" in settings.llm_base_url) else "https://api.fireworks.ai/inference/v1"
+            base_url = cloud_base_url("fireworks", settings.llm_base_url)
             api_key, key_profile_name = self._cloud_key("fireworks", key_profile_id)
             api_key = api_key or "missing"
-            m = model or settings.llm_model
+            m = model or (settings.llm_model if settings.llm_provider == "fireworks" else CLOUD_DEFAULTS["fireworks"])
             if not m or m == "google/gemma-4-12b-qat":
                 m = "accounts/fireworks/models/glm-5p3-flash"
             elif not m.startswith("accounts/"):
@@ -630,7 +634,9 @@ class LLMService:
         return info
 
     def get_endpoint_info(self) -> Dict[str, Any]:
-        return self._build_endpoint(settings.llm_provider, settings.llm_model)
+        from app.config import _model_lock
+        with _model_lock:
+            return self._build_endpoint(settings.llm_provider, settings.llm_model)
 
     async def _apply_auto_model(self, info: Dict[str, Any], endpoint_override, tier) -> Dict[str, Any]:
         """Auto model mode: on the plain send path (no explicit endpoint, tier, or
@@ -1204,8 +1210,10 @@ class LLMService:
                     if res.status_code != 200 and await ollama_context.retry_after_error(payload, info, res.status_code, res.text):
                         continue
                     if res.status_code != 200:
-                        raise Exception(ollama_context.friendly_error(info, res.status_code, res.text)
-                                        or f"LLM API returned HTTP {res.status_code}: {res.text}")
+                        error = ollama_context.friendly_error(info, res.status_code, res.text) or plain_error(info, res.status_code, res.text)
+                        if info["api_key"] not in ("missing", "local", "lm-studio", "ollama"):
+                            error = error.replace(info["api_key"], "[redacted]")
+                        raise Exception(error)
                     data = res.json()
                     from app.services import llm_routing
                     llm_routing.record(info["provider"], info["model"], data.get("usage"),
@@ -1230,6 +1238,8 @@ class LLMService:
                             )
                         msg["content"] = msg["reasoning_content"]
                     msg["_provider"] = info["provider"]
+                    msg["_model"] = info["model"]
+                    msg["_response_model"] = data.get("model")
                     if task and answered and not tools:
                         from app.services import dataset_recorder
                         msg["_example_id"] = dataset_recorder.capture(

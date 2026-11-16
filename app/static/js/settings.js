@@ -6,6 +6,25 @@
 (() => {
   const TABS = ["general", "models", "search", "connections", "advanced"];
 
+  window.testSavedModel = async () => {
+    const button = document.getElementById("testSavedModel");
+    const result = document.getElementById("savedModelTestResult");
+    button.disabled = true;
+    result.textContent = "Connecting to the saved model...";
+    try {
+      const response = await fetch("/api/setup/test", { method: "POST" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Connection test failed.");
+      result.textContent = data.success
+        ? `${data.provider} / ${data.model} at ${data.route}: ${data.reply}`
+        : data.error || "The saved model did not answer.";
+    } catch (error) {
+      result.textContent = error.message;
+    } finally {
+      button.disabled = false;
+    }
+  };
+
   window.showSettingsTab = (name) => {
     if (!TABS.includes(name)) name = "general";
     document.querySelectorAll("#settingsModal [data-settings-page]").forEach((p) =>

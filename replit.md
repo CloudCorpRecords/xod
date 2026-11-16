@@ -40,10 +40,24 @@ CoreFoundation permission-prompt check is explicitly skipped off macOS.
 ## Model testing
 
 The requested live test model is gpt-6.1-terra through Replit-managed OpenAI
-access. No available OpenAI integration was returned by discovery in this
-workspace; no live-model result has been obtained. Do not invent credentials,
-silently substitute models, or write credentials into project files.
-The existing BYOK and local-provider implementation has not been replaced.
+access. The November 16 discovery returned no OpenAI integration here, and
+existence-only checks found no OpenAI or managed OpenAI key. No live request
+was sent; Terra access and native MLX inference remain UNKNOWN. Do not invent
+credentials, silently substitute models, or count synthetic HTTP as live proof.
+
+Settings > Models, setup, model panels and paired-device picks use the same
+validated install choice. Provider/model/endpoint and ownership are committed
+together; keys still use the existing OS secret store and profile mechanism.
+See `docs/MODEL-CONFIGURATION.md` for the contract and verification limits.
+
+```sh
+python tests/smoke/run_install_model_config_test.py
+node tests/runtime/test_model_settings.js
+python tests/smoke/run_model_switching_test.py
+python tests/smoke/run_provider_boot_guard_test.py
+python tests/smoke/run_provider_promotion_test.py
+python tests/smoke/run_models_test.py
+```
 
 ## Runtime checks
 

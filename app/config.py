@@ -64,6 +64,26 @@ def load_synced_settings() -> Settings:
     return s
 
 settings = load_synced_settings()
+_model_lock = threading.RLock()
+
+
+def save_model_choice(provider: str, model: str, base_url: str, chosen_by: str) -> None:
+    """Persist the validated install choice atomically. No credentials here.
+
+    SQLite is authoritative on startup. The legacy env mirror is best effort,
+    and cannot undo a committed choice or leave a half-updated runtime tuple.
+    """
+    from app.services.storage import set_settings
+    values = {"llm_provider": provider, "llm_model": model, "llm_base_url": base_url}
+    with _model_lock:
+        set_settings({**values, "model_chosen_by": chosen_by})
+        settings.__dict__.update(values)
+        for key, value in values.items():
+            os.environ[key.upper()] = value
+            try:
+                set_key(str(ENV_PATH), key.upper(), value)
+            except Exception:
+                pass
 
 # Whether that snapshot was built while the OS key store could not be read.
 # load_synced_settings reads every key once, at import; if the store's unlock

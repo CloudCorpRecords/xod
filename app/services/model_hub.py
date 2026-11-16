@@ -29,6 +29,33 @@ VISION_CATALOG: List[Dict[str, Any]] = [
 CLOUD_DEFAULTS = {"anthropic": "claude-opus-5-5", "openai": "gpt-6.1-terra", "gemini": "gemini-2.5-flash", "groq": "llama-3.3-70b-versatile",
                   "openrouter": "meta-llama/llama-3.3-70b-instruct", "fireworks": "accounts/fireworks/models/glm-5p3-flash"}
 CLOUD_SEES = {"anthropic", "openai", "gemini", "openrouter"}
+CLOUD_ENDPOINTS = {
+    "openai": "https://api.openai.com/v1",
+    "anthropic": "https://api.anthropic.com/v1",
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "groq": "https://api.groq.com/openai/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "fireworks": "https://api.fireworks.ai/inference/v1",
+}
+
+
+def cloud_base_url(provider: str, candidate: str = "") -> str:
+    """Named providers keep their own credentials on their own endpoints.
+
+    Fireworks also supports dedicated endpoints. Custom gateways belong under
+    Model servers with their own key, not a different named provider's key.
+    """
+    from urllib.parse import urlsplit
+    if provider == "fireworks" and candidate:
+        try:
+            url = urlsplit(candidate)
+            host = url.hostname or ""
+            if (url.scheme == "https" and (host == "fireworks.ai" or host.endswith(".fireworks.ai"))
+                    and not url.username and not url.password and not url.query and not url.fragment):
+                return candidate.rstrip("/")
+        except ValueError:
+            pass
+    return CLOUD_ENDPOINTS[provider]
 
 
 def key(provider: str, model: str) -> str:

@@ -468,7 +468,8 @@ async function loadConfig() {
     document.getElementById("selectLlmProvider").value = data.llm_provider || "lm_studio";
     document.getElementById("inputLlmBaseUrl").value = data.llm_base_url || "http://localhost:1234/v1";
     document.getElementById("inputLlmModel").value = data.llm_model || "google/gemma-4-12b-qat";
-    handleProviderChange();
+    window.xodModelConfig = data.model_configuration;
+    handleProviderChange(false);
     updateLlmModelPriceLine();
     const autoBox = document.getElementById("checkboxLlmAutoModel");
     if (autoBox) autoBox.checked = Boolean(data.llm_auto_model);
@@ -825,13 +826,14 @@ async function unloadActiveModel(instanceId) {
 }
 
 
-function handleProviderChange() {
+function handleProviderChange(resetChoice = true) {
   const provider = document.getElementById("selectLlmProvider").value;
   const grpBaseUrl = document.getElementById("groupBaseUrl");
   const grpCloud = document.getElementById("groupCloudKey");
   const lblCloud = document.getElementById("lblCloudKey");
   const pills = document.getElementById("fireworksQuickPills");
   const inputCloud = document.getElementById("inputCloudKey");
+  if (resetChoice && inputCloud) inputCloud.value = "";
 
   const lmContainer = document.getElementById("lmStudioDetectedModelsContainer");
 
@@ -839,30 +841,35 @@ function handleProviderChange() {
     grpBaseUrl.classList.remove("hidden");
     grpCloud.classList.add("hidden");
     if (pills) pills.classList.add("hidden");
-    document.getElementById("inputLlmBaseUrl").value = "http://localhost:1234/v1";
+    if (resetChoice) document.getElementById("inputLlmBaseUrl").value = "http://localhost:1234/v1";
     refreshLlmModels({ silent: true });
   } else if (provider === "ollama") {
     grpBaseUrl.classList.remove("hidden");
     grpCloud.classList.add("hidden");
     if (pills) pills.classList.add("hidden");
     if (lmContainer) lmContainer.classList.add("hidden");
-    document.getElementById("inputLlmBaseUrl").value = "http://localhost:11434/v1";
-  } else if (provider === "local") {
+    if (resetChoice) document.getElementById("inputLlmBaseUrl").value = "http://localhost:11434/v1";
+  } else if (provider === "local" || provider === "custom") {
     grpBaseUrl.classList.remove("hidden");
     grpCloud.classList.add("hidden");
     if (pills) pills.classList.add("hidden");
     if (lmContainer) lmContainer.classList.add("hidden");
     const url = document.getElementById("inputLlmBaseUrl");
-    if (/:(1234|11434)\//.test(url.value) || !url.value) url.value = "http://localhost:8080/v1";   // llama.cpp's default
+    if (resetChoice && provider === "local") url.value = "http://localhost:8080/v1";
+  } else if (provider === "xod") {
+    grpBaseUrl.classList.add("hidden");
+    grpCloud.classList.add("hidden");
+    if (pills) pills.classList.add("hidden");
+    if (lmContainer) lmContainer.classList.add("hidden");
   } else if (provider === "fireworks") {
     grpBaseUrl.classList.add("hidden");
     grpCloud.classList.remove("hidden");
     if (pills) pills.classList.remove("hidden");
     if (lmContainer) lmContainer.classList.add("hidden");
     lblCloud.textContent = "Fireworks AI API Key (Serverless Cloud)";
-    document.getElementById("inputLlmBaseUrl").value = "https://api.fireworks.ai/inference/v1";
+    if (resetChoice) document.getElementById("inputLlmBaseUrl").value = "https://api.fireworks.ai/inference/v1";
     const modelInput = document.getElementById("inputLlmModel");
-    if (!modelInput.value || modelInput.value.includes("gemma-4") || modelInput.value.includes("llama3.1") || modelInput.value.includes("bonsai")) {
+    if (resetChoice && (!modelInput.value || modelInput.value.includes("gemma-4") || modelInput.value.includes("llama3.1") || modelInput.value.includes("bonsai"))) {
       modelInput.value = "accounts/fireworks/models/glm-5p3-flash";
     }
   } else {
@@ -872,6 +879,21 @@ function handleProviderChange() {
     if (lmContainer) lmContainer.classList.add("hidden");
     lblCloud.textContent = `${provider.toUpperCase()} API Key`;
   }
+  const config = window.xodModelConfig;
+  if (resetChoice && config?.defaults?.[provider]) {
+    document.getElementById("inputLlmModel").value = config.defaults[provider].model;
+    document.getElementById("inputLlmBaseUrl").value = config.defaults[provider].base_url;
+  }
+  const mlx = document.querySelector('#selectLlmProvider option[value="xod"]');
+  if (mlx && config) {
+    mlx.disabled = !config.mlx_supported && provider !== "xod";
+    mlx.title = config.mlx_unavailable || "Uses a downloaded MLX model on this Mac.";
+  }
+  const hint = document.getElementById("modelConfigurationHint");
+  if (hint) hint.textContent = provider === "xod"
+    ? (config?.mlx_unavailable || "Use the full name of a downloaded built-in model. Manage downloads in Setup.")
+    : provider === "custom" ? "Add this endpoint and its key under AI models > Model servers first."
+    : "This choice is saved for this installation and used by chats and agents. Your keys stay in the OS key store.";
   kpOnProviderChange();
 }
 
@@ -1519,6 +1541,7 @@ async function deleteSavedLogin(site) {
 
 function openSettingsModal() {
   document.getElementById("settingsModal").classList.remove("hidden");
+  loadConfig(); // another picker or paired device may have changed this install's choice
   if (window.lucide) lucide.createIcons();
   loadKeyProfiles();
   startUsageAutoRefresh();
@@ -2383,8 +2406,8 @@ async function saveSettings() {
 
   const payload = {
     llm_provider: provider,
-    llm_base_url: (provider === "fireworks" && (!baseUrl || baseUrl.includes("localhost"))) ? "https://api.fireworks.ai/inference/v1" : baseUrl,
-    llm_model: (provider === "fireworks" && (!model || model.includes("gemma-4"))) ? "accounts/fireworks/models/glm-5p3-flash" : model
+    llm_base_url: baseUrl,
+    llm_model: model
   };
   payload.llm_auto_model = document.getElementById("checkboxLlmAutoModel")?.checked || false;
   if (key) payload.trustmrr_api_key = key;
@@ -2425,7 +2448,8 @@ async function saveSettings() {
       if (typeof loadMediaModelsSettings === "function") await loadMediaModelsSettings();
       showToast("Settings saved successfully!");
     } else {
-      alert("Failed to save settings");
+      const problem = await res.json().catch(() => ({}));
+      alert(problem.detail || problem.error || "Failed to save settings");
     }
   } catch (err) {
     alert("Error: " + err.message);
