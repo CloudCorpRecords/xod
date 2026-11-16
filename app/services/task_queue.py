@@ -1150,6 +1150,18 @@ def _output_tail(*parts: Any) -> str:
 # absolute path is respected verbatim, except the Xcode stub itself.
 _PYTEST_PROBE_TIMEOUT_SEC = 20
 _PYTEST_PROVISION_TIMEOUT_SEC = 300
+# AGE-76: provisioning a task venv is two subprocess steps that can take
+# most of a minute on a quiet machine and far longer under load, so it
+# must never be paid twice for the same directory, and never raced by
+# two instances sharing one directory (the two-instance topology: two
+# backend processes, one shared store, one scratch dir). Provisioning
+# is single-flight per directory through an atomic lock directory, a
+# ready venv is reused from cache, and interpreter probes are memoized
+# per interpreter so a contended machine pays one probe subprocess per
+# interpreter instead of one per candidate per run claim.
+_PYTEST_PROVISION_LOCK_WAIT_SEC = 900
+_PYTEST_PROVISION_LOCK_STALE_SEC = 900
+_PYTEST_PROBE_CACHE: Dict[str, bool] = {}
 
 
 def _is_disqualified_python(path: str) -> bool:
@@ -1169,15 +1181,86 @@ def _python_can_pytest(py: str) -> bool:
     unstable across runs (AGE-27): resolution trusted the bundle
     interpreter on one machine layout and the run then died with
     "No module named pytest" on another."""
+    cached = _PYTEST_PROBE_CACHE.get(py)
+    if cached is not None:
+        return cached
     try:
         env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
         env["PYTHONDONTWRITEBYTECODE"] = "1"
         proc = subprocess.run([py, "-I", "-B", "-c", "import pytest"], capture_output=True,
                               timeout=_PYTEST_PROBE_TIMEOUT_SEC,
                               cwd=os.path.dirname(os.path.abspath(py)), env=env)
-        return proc.returncode == 0
+        result = proc.returncode == 0
     except (OSError, subprocess.SubprocessError):
-        return False
+        result = False
+    _PYTEST_PROBE_CACHE[py] = result
+    return result
+
+
+def _forget_pytest_probe(py: str) -> None:
+    """Drops a memoized probe answer: provisioning just changed what
+    this interpreter can import, so the next probe must measure it
+    again instead of trusting the pre-install answer."""
+    _PYTEST_PROBE_CACHE.pop(py, None)
+
+
+def _ready_task_venv(venv_dir: Path) -> Optional[str]:
+    """The task venv's python when it already runs pytest, else None.
+    This is the cache read: a ready venv is never re-provisioned."""
+    py = _venv_python(venv_dir)
+    if py and _python_can_pytest(py):
+        return py
+    return None
+
+
+def _acquire_provision_lock(cwd: Path, venv_dir: Path) -> Optional[Path]:
+    """Single-flight lock for provisioning one directory's task venv:
+    an atomically created lock directory next to the venv. Returns the
+    lock path to release, the ready venv's python when another holder
+    finished provisioning while this caller waited (returned as a str,
+    distinguishable from a lock Path), or None when the wait timed out.
+    A lock older than the stale bound belongs to a holder that died
+    mid-provision (a live provision finishes well inside it: two steps
+    capped at _PYTEST_PROVISION_TIMEOUT_SEC each), so it is broken."""
+    lock_dir = Path(cwd) / ".xod-test-venv.lock"
+    deadline = time.time() + _PYTEST_PROVISION_LOCK_WAIT_SEC
+    while True:
+        try:
+            os.mkdir(lock_dir)
+            return lock_dir
+        except FileExistsError:
+            ready = _ready_task_venv(venv_dir)
+            if ready:
+                return ready  # type: ignore[return-value]
+            try:
+                age = time.time() - lock_dir.stat().st_mtime
+            except OSError:
+                continue
+            if age > _PYTEST_PROVISION_LOCK_STALE_SEC:
+                try:
+                    for child in lock_dir.iterdir():
+                        child.unlink()
+                    lock_dir.rmdir()
+                except OSError:
+                    pass
+                continue
+            if time.time() > deadline:
+                return None
+            time.sleep(0.25)
+        except OSError:
+            return None
+
+
+def _release_provision_lock(lock_dir: Path) -> None:
+    try:
+        for child in lock_dir.iterdir():
+            child.unlink()
+    except OSError:
+        pass
+    try:
+        lock_dir.rmdir()
+    except OSError:
+        pass
 
 
 def _venv_python(base: Path) -> Optional[str]:
@@ -1192,12 +1275,27 @@ def _provision_pytest_venv(cwd: Path) -> Optional[str]:
     """Makes <cwd>/.xod-test-venv from the app's own interpreter and
     installs pytest into it; returns its python, or None when that
     could not be done (no usable base interpreter, venv or install
-    failed, pytest still not importable)."""
+    failed, pytest still not importable). AGE-76: a task venv that
+    already runs pytest is returned from cache, and provisioning is
+    single-flight per directory, so concurrent instances sharing one
+    directory never pay the provisioning cost twice or race writing
+    the same venv."""
     base = sys.executable
     if not base or _is_disqualified_python(base) or not os.path.exists(base):
         return None
     venv_dir = Path(cwd) / ".xod-test-venv"
+    ready = _ready_task_venv(venv_dir)
+    if ready:
+        return ready
+    lock = _acquire_provision_lock(Path(cwd), venv_dir)
+    if lock is None:
+        return _ready_task_venv(venv_dir)
+    if isinstance(lock, str):
+        return lock
     try:
+        ready = _ready_task_venv(venv_dir)
+        if ready:
+            return ready
         proc = subprocess.run([base, "-B", "-m", "venv", str(venv_dir)],
                               capture_output=True, text=True,
                               timeout=_PYTEST_PROVISION_TIMEOUT_SEC,
@@ -1213,9 +1311,12 @@ def _provision_pytest_venv(cwd: Path) -> Optional[str]:
                               env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         if proc.returncode != 0:
             return None
+        _forget_pytest_probe(py)
         return py if _python_can_pytest(py) else None
     except (OSError, subprocess.SubprocessError):
         return None
+    finally:
+        _release_provision_lock(lock)
 
 
 def _resolve_pytest_python(cwd: Path):
