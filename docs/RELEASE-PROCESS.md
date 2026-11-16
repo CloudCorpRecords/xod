@@ -79,7 +79,14 @@ cold-launched it. These two checks are that opening and that launch.
   state, and the backend reports the new version. A plain-Node check, a CLI
   verdict, or a test-harness run of the bootstrap's files does not count as
   this step. electron/bootstrap-electron.test.js is the standing in-process
-  proof for the check itself and must be green on the release tree.
+  proof for the check itself and must be green on the release tree. Since
+  AGE-75 the proof must be green on darwin as well as linux: the field
+  failures happened on darwin/arm64, and a linux-only pass proves nothing
+  about the platform people run. The CI bootstrap-electron job runs the
+  suite on macos-15 and ubuntu-latest, and the release workflow's mac job
+  runs it again for the release candidate, so the candidate's workflow
+  run is the recorded darwin pass; note the platform and the run in the
+  release report.
 - In-app repair (mandatory since v1.1.5): a packaged copy carrying a broken
   package (the preserved fixture of the last broken release, step 3 of the
   ship gates below) must repair itself from inside the packaged process and

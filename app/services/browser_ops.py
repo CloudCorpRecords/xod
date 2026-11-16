@@ -547,6 +547,13 @@ def addressed(query: str) -> bool:
 # does not own. Detection is conservative on purpose: a bare browser mention
 # is not a naming, questions about a surface are not tasks on it, and the
 # shared browser and Xod's own browser are other surfaces' business.
+# Hardened 2026-11-16 (AGE-71): the family passes on a held-out wording, so
+# detection also covers the same namings said other ways: "logged in" for
+# "signed in", session namings by reference ("my browser, the one signed in
+# to ...", "the browser ... that is signed into ...", "my signed-in
+# session"), Chrome named through a preposition ("through Chrome"), and
+# possessive app namings ("Open my Firefox"). Every pattern added was first
+# probed as a miss that fell through to a sandbox browser mission.
 _NAMED_QUESTION_RE = re.compile(r"^\s*(how|what|why|when|should|is|are|does|do i|explain|tell me)\b", re.I)
 _NAMED_EXCLUDE_RE = re.compile(
     r"\bshared (?:browser|chrome|chromium)\b|\bbrowser-ops\b"
@@ -555,6 +562,22 @@ _NAMED_SESSION_RE = re.compile(
     r"\bthe browser where i(?:'m| am) already signed in(?:\s+to\s+([a-z0-9][a-z0-9.-]*))?"
     r"|\bbrowser where i(?:'m| am) (?:already )?signed in(?:\s+to\s+([a-z0-9][a-z0-9.-]*))?"
     r"|\bmy signed[- ]in browser\b", re.I)
+# The same session namings with "logged in" for "signed in" (a held-out
+# LF-NAMED-SURFACE wording can say either; AGE-71 hardening, 2026-11-16).
+_NAMED_SESSION_LOGGED_RE = re.compile(
+    r"\bthe browser where i(?:'m| am) already logged in(?:\s+to\s+([a-z0-9][a-z0-9.-]*))?"
+    r"|\bbrowser where i(?:'m| am) (?:already )?logged in(?:\s+to\s+([a-z0-9][a-z0-9.-]*))?"
+    r"|\bmy logged[- ]in browser\b", re.I)
+# Session namings by reference: the browser is identified by the session it
+# holds, not by a "where I am signed in" clause ("my browser, the one signed
+# in to GitHub", "the browser on my desktop that is signed into GitHub",
+# "my usual browser where GitHub is already logged in").
+_NAMED_SESSION_REL_RE = re.compile(
+    r"\bmy (?:regular |main |primary |usual )?browser\b[^.\n]{0,80}?\b(?:signed|logged) in\b"
+    r"|\bthe browser\b[^.\n]{0,80}?\b(?:signed|logged) in(?:to)?\b", re.I)
+# The session itself named as the surface ("from my signed-in session").
+_NAMED_SESSION_POSS_RE = re.compile(
+    r"\bmy (?:existing )?(?:signed|logged)[- ]in session\b", re.I)
 _NAMED_APP_PROFILE_RE = re.compile(
     r"\b(safari|firefox|brave|opera)\b[^.\n]{0,40}\bprofile\b", re.I)
 _NAMED_CHROME_PROFILE_RE = re.compile(
@@ -565,9 +588,10 @@ _NAMED_CHROME_PROFILE_RE = re.compile(
     r"|\bchrome (?:default )?profile\b"
     r"|\bthe default (?:chrome )?profile\b", re.I)
 _NAMED_CHROME_RE = re.compile(
-    r"\b(?:open|launch|in|inside|using|use) (?:the )?(?:google )?chrome\b(?!\s+(?:web store|store|settings|extensions))", re.I)
+    r"\b(?:open|launch|in|inside|using|use|through|via|with) (?:the )?(?:google )?chrome\b(?!\s+(?:web store|store|settings|extensions|devtools))", re.I)
 _NAMED_APP_RE = re.compile(
-    r"\b(?:open|launch|use|using|in|inside|switch to) (?:the )?(safari|firefox|brave|opera|chromium|microsoft edge|arc)\b"
+    r"\b(?:open|launch|use|using|in|inside|switch to) (?:the |my )?(safari|firefox|brave|opera|chromium|microsoft edge|arc)\b"
+    r"|\bmy (safari|firefox|brave|opera|chromium)\b"
     r"|\b(safari|firefox|brave)\b[^.\n]{0,60}\bsigned in\b", re.I)
 _NAMED_PROFILE_RE = re.compile(r"\bmy (?:regular |main |primary )?browser profile\b", re.I)
 
@@ -582,6 +606,14 @@ def named_surface(query: str) -> Optional[str]:
     if m:
         svc = m.group(1) or m.group(2)
         return f"the browser where you are already signed in{f' to {svc}' if svc else ''}"
+    m = _NAMED_SESSION_LOGGED_RE.search(q)
+    if m:
+        svc = m.group(1) or m.group(2)
+        return f"the browser where you are already signed in{f' to {svc}' if svc else ''}"
+    if _NAMED_SESSION_REL_RE.search(q):
+        return "the browser where you are already signed in"
+    if _NAMED_SESSION_POSS_RE.search(q):
+        return "your signed-in session"
     m = _NAMED_APP_PROFILE_RE.search(q)
     if m:
         return f"your {m.group(1).title()} profile"
@@ -591,7 +623,7 @@ def named_surface(query: str) -> Optional[str]:
         return "Google Chrome"
     m = _NAMED_APP_RE.search(q)
     if m:
-        app = (m.group(1) or m.group(2)).title()
+        app = (m.group(1) or m.group(2) or m.group(3)).title()
         return "Microsoft Edge" if app == "Microsoft Edge" else app
     if _NAMED_PROFILE_RE.search(q):
         return "your browser profile"

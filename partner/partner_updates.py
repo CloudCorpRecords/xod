@@ -73,6 +73,7 @@ backend, and a fake updates dir. Stdlib only.
 """
 import hashlib
 import json
+import os
 import plistlib
 import secrets
 import shutil
@@ -102,6 +103,16 @@ DEFAULTS = {
 def _iso(ts):
     from datetime import datetime
     return datetime.fromtimestamp(ts).astimezone().isoformat(timespec="seconds")
+
+
+def _norm_version(v):
+    """A version reduced to its numeric core for comparison: a leading v,
+    build metadata and a prerelease suffix never make two stamps of the
+    same release disagree."""
+    if v is None:
+        return None
+    core = str(v).strip().lstrip("vV").split("+")[0].split("-")[0]
+    return core or None
 
 
 def read_version(app_path):
@@ -205,6 +216,20 @@ class Http:
             return False, "chat reply mismatch: expected %r, observed %r" % (expected, observed[:120])
         return True, "exact reply matched"
 
+    def hello_version(self):
+        """The backend-reported version from GET /api/cli/hello, or None
+        when the endpoint cannot be read. The bundle version and this
+        version are stamped by the same release (the backend's version
+        module rides inside the bundle), so a disagreement between them
+        is a mixed install (AGE-72)."""
+        try:
+            _, data = self.get_json("/api/cli/hello")
+        except Exception:
+            return None
+        if isinstance(data, dict) and data.get("version"):
+            return str(data["version"])
+        return None
+
 
 def _default_start_token(app_path):
     """A token that changes when the app restarts: the pid and start time
@@ -288,6 +313,9 @@ class UpdateGuardian:
             "blocked_versions": sorted(blocked.keys()),
             "blocked": {v: (blocked[v] or {}).get("rollbacks", 0) for v in sorted(blocked)},
             "last_action": self.state.get("last_action"),
+            "battery_in_progress": bool(self.state.get("battery_in_progress")),
+            "superseded": self.state.get("superseded"),
+            "mixed_install": self.state.get("mixed_install"),
         }
 
     # -- payload observation -------------------------------------------
@@ -424,7 +452,46 @@ class UpdateGuardian:
                                              partner.get("running"), partner.get("trusted")))
         return True, detail
 
+    # -- battery marker (AGE-72) ------------------------------------------
+    # While a verdict runs, the guardian publishes battery-in-progress.json
+    # in its state dir. The Electron swap paths (the in-app updater and the
+    # bootstrap repair) read that marker and defer their own swap until
+    # the verdict lands, so two update paths can never interleave on the
+    # same install again. The marker is written before the first probe and
+    # removed in a finally, so even a battery that raises cannot leave a
+    # stale marker behind; the readers also age markers out.
+    def _battery_marker_path(self):
+        return self.state_dir / "battery-in-progress.json"
+
+    def _mark_battery_start(self, for_version):
+        at = _iso(self.now_fn())
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            tmp = self.state_dir / "battery-in-progress.json.tmp"
+            tmp.write_text(json.dumps({"for_version": for_version, "at": at,
+                                       "pid": os.getpid()}))
+            tmp.replace(self._battery_marker_path())
+        except Exception as exc:
+            self.log("updates guardian: battery marker write failed: %s" % exc)
+        self.state["battery_in_progress"] = {"for_version": for_version, "at": at}
+        self._save_state()
+
+    def _mark_battery_end(self):
+        try:
+            self._battery_marker_path().unlink()
+        except Exception:
+            pass
+        self.state.pop("battery_in_progress", None)
+        self._save_state()
+
     def run_battery(self, for_version):
+        self._mark_battery_start(for_version)
+        try:
+            return self._run_battery_checks(for_version)
+        finally:
+            self._mark_battery_end()
+
+    def _run_battery_checks(self, for_version):
         nonce = secrets.token_hex(3).upper()
         checks = []
 
@@ -501,6 +568,18 @@ class UpdateGuardian:
             self.log("updates guardian: RESTORE FAILED before the swap: the staged copy "
                      "did not verify; the app path was not touched")
             return False
+        # AGE-72, second belt: the installed version may have moved while
+        # the restore copy was staging (a newer swap landing mid-rollback).
+        # Restoring now would move the install backwards over that swap,
+        # so abort with the app path untouched.
+        moved = read_version(self.app_path)
+        if moved != pending.get("payload_version"):
+            shutil.rmtree(staging, ignore_errors=True)
+            self.log("updates guardian: RESTORE ABORTED before the swap: the installed "
+                     "version moved to %s while the restore was staging, not the %s "
+                     "that failed the battery; the app path was not touched"
+                     % (moved, pending.get("payload_version")))
+            return False
         aside = self._snap_dir() / ".replaced-bad"
         shutil.rmtree(aside, ignore_errors=True)
         moved_aside = False
@@ -530,6 +609,22 @@ class UpdateGuardian:
 
     def _rollback(self, pending, checks):
         bad_version = pending.get("payload_version")
+        # AGE-72: never restore over a completed newer swap. The battery
+        # ran against bad_version, but the installed version is re-read
+        # NOW: if it moved while the verdict ran (a repair swap, a newer
+        # update), this rollback's premise is gone. Abort without
+        # quitting, restoring, or blocking anything.
+        installed_now = read_version(self.app_path)
+        if installed_now != bad_version:
+            self.log("updates guardian: rollback ABORTED for %s: the installed version "
+                     "is now %s, not the version that failed the battery; a completed "
+                     "newer swap is never restored over"
+                     % (bad_version, installed_now))
+            self.state["last_rollback_aborted"] = {
+                "at": _iso(self.now_fn()), "bad_version": bad_version,
+                "installed_version": installed_now}
+            self.state["last_action"] = "rollback aborted: installed moved to %s" % installed_now
+            return False
         failure = "; ".join("%s: %s" % (c["name"], c["detail"]) for c in checks if not c["ok"])
         self.log("updates guardian: update to %s FAILED the battery (%s); rolling back to %s"
                  % (bad_version, failure, pending.get("snapshot_version")))
@@ -565,6 +660,17 @@ class UpdateGuardian:
             ok2, checks2 = self.run_battery(pending.get("snapshot_version"))
             self.log("updates guardian: post-rollback battery for the restored %s: %s"
                      % (pending.get("snapshot_version"), "PASS" if ok2 else "FAIL"))
+            # AGE-72 property (c): a restored bundle whose backend still
+            # reports a different version is a mixed install even after
+            # the rollback. Surface it as a defect state in status; do
+            # not loop another rollback over it.
+            agree, detail = self._version_agreement(pending.get("snapshot_version"))
+            if not agree:
+                self.state["mixed_install"] = {
+                    "at": _iso(self.now_fn()), "detail": detail,
+                    "after": "rollback to %s" % pending.get("snapshot_version")}
+                self.log("updates guardian: MIXED INSTALL after rollback: %s; "
+                         "recorded as a defect state in status" % detail)
         blocked = self.state.setdefault("blocked", {})
         entry = blocked.get(bad_version) or {"rollbacks": 0}
         entry["rollbacks"] = int(entry.get("rollbacks", 0)) + 1
@@ -630,6 +736,23 @@ class UpdateGuardian:
         self.state["last_action"] = "snapshot ahead of %s" % version
         self._save_state()
 
+    def _version_agreement(self, bundle_version):
+        """AGE-72 property (c): after any swap, the installed bundle
+        version and the backend-reported version must agree. Both are
+        stamped by the same release, so a disagreement is a mixed
+        install, the field state behind the 2026-11-14 failure (bundle
+        at the rolled-back version, backend reporting the newer one).
+        An unreadable backend version proves nothing either way; the
+        battery's health check owns that failure."""
+        hello = getattr(self.http, "hello_version", None)
+        backend = hello() if callable(hello) else None
+        if backend is None or bundle_version is None:
+            return True, "backend version unreadable; the health check owns that failure"
+        if _norm_version(backend) == _norm_version(bundle_version):
+            return True, "bundle and backend agree on %s" % bundle_version
+        return False, ("mixed install: the installed bundle reports %s but the backend "
+                       "reports %s" % (bundle_version, backend))
+
     def _maybe_verify_swap(self, pending, now):
         current = read_version(self.app_path)
         if current is None or current == pending.get("pre_version"):
@@ -639,8 +762,49 @@ class UpdateGuardian:
             self.log("updates guardian: installed version stamp changed to %s but the app "
                      "has not restarted yet; the battery waits for the new process" % current)
             return
+        if current != pending.get("payload_version"):
+            # AGE-72: the install moved to a version that was never this
+            # cycle's staged payload (a bootstrap repair swap, or an even
+            # newer update landed first). The pending verdict is
+            # superseded: no battery against a version this cycle did not
+            # stage, and above all no rollback, which would restore the
+            # pre-update snapshot over a completed newer swap. The
+            # intervening install is left exactly as it landed and held
+            # as unverified: the retained snapshot is not overwritten by
+            # it until some battery passes for the installed state.
+            self.log("updates guardian: the installed version is %s, not the staged payload "
+                     "%s this guardian cycle was watching; another swap landed first. No "
+                     "battery and no rollback for the superseded payload; the installed "
+                     "state is held as unverified"
+                     % (current, pending.get("payload_version")))
+            self.state["superseded"] = {"at": _iso(now),
+                                        "expected": pending.get("payload_version"),
+                                        "found": current,
+                                        "pre_version": pending.get("pre_version")}
+            self.state["snapshot_hold"] = True
+            self.state["pending"] = None
+            self.state["last_action"] = "superseded swap: installed %s" % current
+            self._save_state()
+            return
         self.log("updates guardian: swap detected: installed Xod went %s to %s and restarted; "
                  "running the health battery" % (pending.get("pre_version"), current))
+        agree, detail = self._version_agreement(current)
+        if not agree:
+            # AGE-72 property (c): the swap landed a bundle whose backend
+            # reports a different version. That is a defect state, not a
+            # pass: fail the cycle on a version-agreement check and roll
+            # back, so the mixed install never sits silent.
+            checks = [{"name": "version agreement", "ok": False, "detail": detail}]
+            self.state["last_battery"] = {"at": _iso(now), "ok": False,
+                                          "for_version": current, "checks": checks}
+            self.state["mixed_install"] = {"at": _iso(now), "detail": detail,
+                                           "bundle_version": current}
+            self.log("updates guardian: MIXED INSTALL detected: %s; failing the cycle "
+                     "and rolling back to %s" % (detail, pending.get("snapshot_version")))
+            self._rollback(pending, checks)
+            self.state["pending"] = None
+            self._save_state()
+            return
         ok, checks = self.run_battery(current)
         if ok:
             self.state.pop("snapshot_hold", None)   # the installed build just proved itself

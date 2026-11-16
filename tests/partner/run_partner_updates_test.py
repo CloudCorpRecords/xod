@@ -79,6 +79,7 @@ class FakeBackend:
     def __init__(self):
         self.mode = "healthy"
         self.tasks = {}
+        self.hello_version = None  # AGE-72: /api/cli/hello version, when set
 
     def handler(self):
         outer = self
@@ -100,6 +101,12 @@ class FakeBackend:
             def do_GET(self):
                 if self.path == "/":
                     return self._send(200, "{}")
+                if self.path == "/api/cli/hello":
+                    if outer.hello_version is None:
+                        return self._send(404, "{}")
+                    return self._send(200, json.dumps({
+                        "app": "xod", "version": outer.hello_version,
+                        "data_dir": "/fake", "pid": 4242}))
                 if self.path == "/api/tasks":
                     return self._send(200, json.dumps({"tasks": list(outer.tasks.values())}))
                 if self.path == "/api/crew/settings/auto-approve":
@@ -379,6 +386,111 @@ def main():
         assert st["updates"]["blocked_versions"] == [], st["updates"]
         server.shutdown()
         print("PASS: the guardian state is visible as an updates block in the Partner /status output", flush=True)
+
+    # AGE-72: a swap whose backend reports a different version than the
+    # bundle is a mixed install: a defect state that fails the cycle and
+    # rolls back, never a silent pass (the 2026-11-14 field state: bundle
+    # at one version, backend reporting another)
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FakeBackend()
+        g, state, app_path, lines, calls, token, server = rig(tmp, backend)
+        good_bytes = tree_bytes(app_path)
+        stage_payload(Path(tmp) / "updates", "0.9.13", "staged-0.9.13")
+        g.tick(1000.0)
+        swap_in(app_path, "0.9.13", "mixed-0.9.13", token, "pid2:start2")
+        backend.hello_version = "0.9.12"  # the backend tree stayed behind
+        g.quit_app = lambda: (calls.__setitem__("quit", calls["quit"] + 1),
+                              setattr(backend, "hello_version", "0.9.12"))
+        g.tick(1015.0)
+        assert tree_bytes(app_path) == good_bytes, "mixed install was not rolled back"
+        assert PU.read_version(app_path) == "0.9.12"
+        marker = json.loads((state / "blocked-update-0.9.13.json").read_text())
+        assert "mixed install" in marker["failure"], marker
+        assert "version agreement" in marker["failure"], marker
+        assert g.status()["mixed_install"]["bundle_version"] == "0.9.13", g.status()
+        assert any("MIXED INSTALL" in ln for ln in lines), lines
+        server.shutdown()
+        print("PASS: a bundle/backend version disagreement is a mixed-install defect and rolls back", flush=True)
+
+    # AGE-72: a swap to a version that was never the staged payload (a
+    # repair swap, or an even newer update) supersedes the pending cycle:
+    # no battery, no rollback, the intervening install is left exactly as
+    # it landed, and its state is held as unverified
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FakeBackend()
+        g, state, app_path, lines, calls, token, server = rig(tmp, backend)
+        stage_payload(Path(tmp) / "updates", "0.9.13", "staged-0.9.13")
+        g.tick(1000.0)
+        swap_in(app_path, "0.9.14", "other-0.9.14", token, "pid2:start2")
+        landed = tree_bytes(app_path)
+        g.tick(1015.0)
+        assert tree_bytes(app_path) == landed, "a superseding swap was disturbed"
+        assert calls["quit"] == 0 and calls["relaunch"] == 0, calls
+        st = g.status()
+        assert st["pending_version"] is None, st
+        assert st["last_battery_ok"] is None, st
+        assert st["superseded"]["found"] == "0.9.14", st
+        assert st["superseded"]["expected"] == "0.9.13", st
+        saved = json.loads((state / "updates-guardian.json").read_text())
+        assert saved.get("snapshot_hold") is True, saved
+        assert any("not the staged payload" in ln for ln in lines), lines
+        server.shutdown()
+        print("PASS: a superseding swap is left alone, unbatteried, and held unverified", flush=True)
+
+    # AGE-72: a newer swap landing while the battery runs must not be
+    # rolled back over: the rollback re-reads the installed version and
+    # aborts when it no longer matches the version that failed
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FakeBackend()
+        g, state, app_path, lines, calls, token, server = rig(tmp, backend)
+        stage_payload(Path(tmp) / "updates", "0.9.13", "staged-0.9.13")
+        g.tick(1000.0)
+        swap_in(app_path, "0.9.13", "bad-0.9.13", token, "pid2:start2")
+
+        def battery_then_newer_swap(for_version):
+            swap_in(app_path, "0.9.14", "good-0.9.14", token, "pid9:start9")
+            return False, [{"name": "chat exact reply", "ok": False,
+                            "detail": "simulated failure"}]
+
+        g.run_battery = battery_then_newer_swap
+        g.tick(1015.0)
+        assert PU.read_version(app_path) == "0.9.14", "the newer swap was rolled back over"
+        assert (app_path / "Contents" / "marker.txt").read_text() == "good-0.9.14"
+        assert calls["quit"] == 0, calls
+        assert not (state / "blocked-update-0.9.13.json").exists(), \
+            "an aborted rollback must not block the version that failed"
+        assert any("rollback ABORTED" in ln for ln in lines), lines
+        server.shutdown()
+        print("PASS: a rollback never restores over a completed newer swap", flush=True)
+
+    # AGE-72: while a battery runs, the guardian publishes its
+    # battery-in-progress marker (the Electron swap paths defer to it),
+    # and the marker is gone when the verdict lands
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FakeBackend()
+        g, state, app_path, lines, calls, token, server = rig(tmp, backend)
+        seen = {}
+        real_chat = g.http.chat_exact
+
+        def chat_spy(prompt, expected, timeout_s):
+            marker = state / "battery-in-progress.json"
+            seen["marker_exists"] = marker.exists()
+            if marker.exists():
+                seen["marker"] = json.loads(marker.read_text())
+            seen["status_flag"] = g.status()["battery_in_progress"]
+            return real_chat(prompt, expected, timeout_s)
+
+        g.http.chat_exact = chat_spy
+        ok, checks = g.run_battery("0.9.12")
+        assert ok, checks
+        assert seen.get("marker_exists") is True, "no battery marker during the battery"
+        assert seen["marker"]["for_version"] == "0.9.12", seen
+        assert seen.get("status_flag") is True, "status must show the battery in progress"
+        assert not (state / "battery-in-progress.json").exists(), \
+            "the battery marker must be removed when the verdict lands"
+        assert g.status()["battery_in_progress"] is False, g.status()
+        server.shutdown()
+        print("PASS: the battery publishes and clears its in-progress marker", flush=True)
 
     print("ALL PARTNER UPDATE GUARDIAN TESTS PASSED", flush=True)
     return 0

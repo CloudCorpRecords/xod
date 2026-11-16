@@ -14,6 +14,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
+# The stand-in engine consumes no memory, so the FIX C budget gate (services/model_budget.py)
+# is off for this sandbox: at its production defaults it estimates the stub model at 6.0 GB and
+# rightly refuses it on smaller machines (AGE-80). The gate itself is proven in
+# run_local_memory_cap_test.py.
+os.environ.setdefault("XOD_MODEL_BUDGET", "off")
 sys.path.insert(0, str(ROOT))
 TMP = Path(tempfile.mkdtemp(prefix="xod-engine-"))
 os.environ["XOD_DATA_DIR"] = str(TMP / "data")
@@ -22,6 +27,15 @@ os.environ["XOD_DATA_DIR"] = str(TMP / "data")
 from app.services import llm, local_engine as le  # noqa: E402
 from app.services.llm import llm_service  # noqa: E402
 from app.services.memory_broker import memory_broker  # noqa: E402
+
+# Every scenario below talks to the local stand-in engine, and this sandbox's fresh data dir
+# carries the cloud-first policy's fresh-install default (local inference off,
+# services/inference_policy.py), so the router would refuse the endpoint. Turn it on the way
+# a person does in Settings (AGE-80, the same fix as AGE-79). The policy itself is proven in
+# run_cloud_first_default_test.py.
+from app.services import inference_policy  # noqa: E402
+
+inference_policy.set_allowed(True, source="test_sandbox")
 
 results = []
 
@@ -41,6 +55,7 @@ def check(name, ok, detail=""):
 #   chatty   writes 200 KB to its log on every request (a full pipe froze the real engine)
 STUB = r'''
 import json, sys, time
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 port, plan, count = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 try:
@@ -95,7 +110,19 @@ class H(BaseHTTPRequestHandler):
         self._chunk({}, "stop")
         self.wfile.write(b"data: [DONE]\n\n"); self.wfile.flush()
 
-ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+class Server(ThreadingHTTPServer):
+    def server_bind(self):
+        # http.server's server_bind looks the bind address up in reverse DNS
+        # (socket.getfqdn) before it starts listening. On the CI runner that
+        # lookup stalls ~35 s, and every engine start in this suite paid it,
+        # which is what AGE-83 measured as slow stall recovery. The stand-in
+        # does not need a server name, so bind without the lookup.
+        socketserver.TCPServer.server_bind(self)
+        host, p = self.server_address[:2]
+        self.server_name = host
+        self.server_port = p
+
+Server(("127.0.0.1", port), H).serve_forever()
 '''
 STUB_PATH = TMP / "stub_engine.py"
 STUB_PATH.write_text(STUB)

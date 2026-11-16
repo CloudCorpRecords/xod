@@ -867,6 +867,13 @@ async def _start_task_worker():
     from app.services import activity, routines
     activity.prune()
     routines.start()
+    try:   # the fleet bridge (services/fleet_bridge.py, AGE-84): Tree's published gate tools,
+        # when installed on this machine, register themselves as MCP servers before the hub
+        # connects, so the harness can call them like any other outside tool server
+        from app.services import fleet_bridge
+        fleet_bridge.register_fleet_tools()
+    except Exception:
+        pass
     try:   # the computer-control bridge (services/computer_bridge.py, AGE-85): Xod's own
         # look / screenshot / click / type / press MCP server registers itself before the
         # hub connects, at trust ask, so every action waits for the person's approval card

@@ -17,6 +17,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
+# The stand-in's models report real file sizes but consume no memory, so the FIX C
+# budget gate (services/model_budget.py) is off for this sandbox: at its production
+# defaults (40% of RAM, 25% free floor) it would rightly refuse a "7B" the sandbox
+# machine cannot hold (AGE-73). The gate itself is proven in run_local_memory_cap_test.py.
+os.environ.setdefault("XOD_MODEL_BUDGET", "off")
 sys.path.insert(0, str(ROOT))
 TMP = tempfile.mkdtemp(prefix="xod-vision-")
 GB = 1024 ** 3

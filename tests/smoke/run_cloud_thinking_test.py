@@ -114,6 +114,12 @@ async def main():
     check("non-streaming: all thinking means one more try with room, and the answer (not the thoughts) comes back",
           msg.get("content") == "Here is the answer [1]." and len(SEEN) == 2, f"{msg.get('content')!r} {len(SEEN)}")
 
+    # The block below is about a local model, and this sandbox's fresh data dir carries the
+    # cloud-first policy's fresh-install default (local inference off, services/inference_policy.py),
+    # so the router rightly refuses a local endpoint until it is turned on. Turn it on the way a
+    # person does in Settings (AGE-79). The policy itself is proven in run_cloud_first_default_test.py.
+    from app.services import inference_policy
+    inference_policy.set_allowed(True, source="test_sandbox")
     SEEN.clear()
     await stream({"provider": "lm_studio", "base_url": base, "model": "gemma", "api_key": "x"}, max_tokens=5000)
     check("local models still switch thinking off entirely, budget unchanged",

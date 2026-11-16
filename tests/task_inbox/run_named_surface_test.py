@@ -13,7 +13,10 @@ This suite proves the routing behavior with the family's frozen wordings,
 without any live install or live browser:
   - detection: browser_ops.named_surface names the surface for each variant
     wording and stays silent for ordinary web tasks, questions, the shared
-    browser, and Xod's own browser;
+    browser, and Xod's own browser; the 2026-11-16 hardening adds the same
+    namings said other ways (held-out-style phrasings: "logged in" for
+    "signed in", session namings by reference, "through Chrome", possessive
+    app namings) as positives, with their own negative controls;
   - routing: researcher._mission_request returns the named-surface marker
     for every variant (never a browser mission), including when the planner
     already chose a browser mission, while unnamed web tasks still route
@@ -118,6 +121,52 @@ def test_detection():
     for name, q in negatives.items():
         check(name, B.named_surface(q) is None, repr(B.named_surface(q)))
 
+    # Hardened phrasings (AGE-71, 2026-11-16): the family passes on a
+    # HELD-OUT wording, so the same namings said other ways must also be
+    # caught. Every one of these was first probed as a miss on the
+    # 2026-11-14 detection: each fell through to a sandbox browser mission,
+    # which is the substitution Run 1 failed on.
+    hardened = {
+        "Chrome named through a preposition is a naming":
+            ("Install the Sentry app on my repo through Chrome, I am signed in there as CloudCorpRecords.",
+             "Google Chrome"),
+        "the session naming with 'logged in' for 'signed in' is a naming":
+            ("In the browser where I am already logged in to GitHub, install the app.",
+             "the browser where you are already signed in to GitHub"),
+        "a session naming by reference ('my browser, the one signed in') is a naming":
+            ("Do it in my browser, the one signed in to GitHub, not a fresh one.",
+             "the browser where you are already signed in"),
+        "Chrome named with 'with' is a naming":
+            ("Install it with Chrome on my machine, using my existing GitHub login.",
+             "Google Chrome"),
+        "a possessive app naming ('Open my Firefox') is a naming":
+            ("Open my Firefox and install the GitHub app there.", "Firefox"),
+        "a session naming by relative clause ('the browser ... signed into') is a naming":
+            ("Using the browser on my desktop that is signed into GitHub, install the app.",
+             "the browser where you are already signed in"),
+        "the session itself named as the surface is a naming":
+            ("Install the app from my signed-in session on GitHub.", "your signed-in session"),
+        "a session naming by reference with 'logged in' is a naming":
+            ("Install the app via my usual browser where GitHub is already logged in.",
+             "the browser where you are already signed in"),
+        "a possessive Safari naming is a naming":
+            ("Add it in my Safari please.", "Safari"),
+    }
+    for name, (q, want) in hardened.items():
+        check(name, B.named_surface(q) == want, repr(B.named_surface(q)))
+    hardened_negatives = {
+        "Chrome DevTools is a tool, not the Chrome surface":
+            "Open Chrome DevTools and tell me what the console shows",
+        "a 'with my credentials' task names no surface":
+            "Log in to the site with my username and password and check my balance",
+        "a 'through' with no browser after it names no surface":
+            "Search the web through three sources and summarize what you find",
+        "a question about the session names no surface":
+            "Tell me whether my browser is signed in to GitHub",
+    }
+    for name, q in hardened_negatives.items():
+        check(name, B.named_surface(q) is None, repr(B.named_surface(q)))
+
 
 def test_mission_routing():
     import app.agent.researcher as RS
@@ -131,6 +180,23 @@ def test_mission_routing():
     m = r._mission_request(VARIANT_A, planned)
     check("a planner-chosen browser mission cannot override a named surface",
           bool(m) and bool(m.get("named_surface")), repr(m)[:160])
+    # Held-out-style wordings (AGE-71 hardening, 2026-11-16): composed like
+    # a held-out variant, they must take the named-surface path too, never
+    # a sandbox browser mission.
+    held_out_style = {
+        "logged-in session wording":
+            "In the browser where I am already logged in to GitHub, install the CodeRabbit app "
+            "for CloudCorpRecords/xod only.",
+        "possessive app wording":
+            "Open my Firefox and install the Renovate app on GitHub for CloudCorpRecords/xod only.",
+        "through-Chrome wording":
+            "Install the CodeRabbit app through Chrome for CloudCorpRecords/xod only: "
+            "https://github.com/apps/coderabbitai",
+    }
+    for name, q in held_out_style.items():
+        m = r._mission_request(q, {})
+        check(f"a held-out-style wording ({name}) routes to the named-surface path",
+              bool(m) and bool(m.get("named_surface")) and m.get("goal") == q, repr(m)[:160])
     m = r._mission_request("Apply for the senior engineer job on indeed.com and submit my application", {})
     check("an unnamed web task still routes to a browser mission",
           bool(m) and not m.get("named_surface") and m.get("goal"), repr(m)[:160])
@@ -197,6 +263,13 @@ def test_mission_runner_refusal():
               and "built-in browser" in answer, f"status={rec.get('status')} answer={answer[:160]}")
         check("the refused mission never navigated anywhere",
               not any(s.get("action") == "navigate" for s in rec.get("steps", [])), repr(rec.get("steps"))[:160])
+        rec = asyncio.run(sb.run_browser_mission(
+            goal="Open my Firefox and go to https://github.com/apps/renovate"))
+        answer = rec.get("final_answer") or ""
+        check("the mission runner also refuses a held-out-style possessive-app goal",
+              rec.get("status") == "failed" and "Firefox" in answer
+              and not any(s.get("action") == "navigate" for s in rec.get("steps", [])),
+              f"status={rec.get('status')} answer={answer[:160]}")
     finally:
         sb.latest_mission = prev
 
