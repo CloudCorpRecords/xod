@@ -867,6 +867,13 @@ async def _start_task_worker():
     from app.services import activity, routines
     activity.prune()
     routines.start()
+    try:   # the fleet bridge (services/fleet_bridge.py, AGE-84): Tree's published gate tools,
+        # when installed on this machine, register themselves as MCP servers before the hub
+        # connects, so the harness can call them like any other outside tool server
+        from app.services import fleet_bridge
+        fleet_bridge.register_fleet_tools()
+    except Exception:
+        pass
     from app.services.mcp_client import mcp_hub
     asyncio.create_task(mcp_hub.start())   # connect outside tool servers in the background
     from app.services import agent_mail
