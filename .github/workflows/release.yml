@@ -46,6 +46,15 @@ jobs:
         run: |
           npm ci
           npm run dist
+      # AGE-75: a darwin pass of the in-packaged-process bootstrap proof is
+      # recorded for every release candidate. This step runs on the mac
+      # builder, inside the same npm ci tree the installer was built from;
+      # if it fails the mac job fails and the release is never published.
+      - name: Bootstrap verdict inside packaged Electron (darwin)
+        working-directory: electron
+        run: |
+          node --test bootstrap-electron-layout.test.js
+          node --test bootstrap-electron.test.js
       - name: Checksum
         working-directory: electron/dist
         run: |
