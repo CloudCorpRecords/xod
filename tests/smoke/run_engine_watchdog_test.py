@@ -28,6 +28,15 @@ from app.services import llm, local_engine as le  # noqa: E402
 from app.services.llm import llm_service  # noqa: E402
 from app.services.memory_broker import memory_broker  # noqa: E402
 
+# Every scenario below talks to the local stand-in engine, and this sandbox's fresh data dir
+# carries the cloud-first policy's fresh-install default (local inference off,
+# services/inference_policy.py), so the router would refuse the endpoint. Turn it on the way
+# a person does in Settings (AGE-80, the same fix as AGE-79). The policy itself is proven in
+# run_cloud_first_default_test.py.
+from app.services import inference_policy  # noqa: E402
+
+inference_policy.set_allowed(True, source="test_sandbox")
+
 results = []
 
 
