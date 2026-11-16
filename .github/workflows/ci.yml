@@ -45,6 +45,7 @@ jobs:
           PYTHONUTF8: "1"
         run: |
           python tests/smoke/run_platform_smoke.py
+          python tests/smoke/run_platform_smoke_packaging_test.py
           python tests/smoke/run_cloud_thinking_test.py
           python tests/smoke/run_phone_test.py
           python tests/smoke/run_phone_mcp_test.py

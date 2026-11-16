@@ -30,7 +30,9 @@ jobs:
       - name: From scratch (secrets in Windows Credential Manager)
         env:
           XOD_REAL_KEYRING: "1"
-        run: python tests/smoke/run_platform_smoke.py
+        run: |
+          python tests/smoke/run_platform_smoke.py
+          python tests/smoke/run_platform_smoke_packaging_test.py
       - name: Cloud models never end on thinking alone
         run: python tests/smoke/run_cloud_thinking_test.py
       - name: Local models through Ollama, edge cases (stand-in Ollama)

@@ -74,6 +74,43 @@ def free_port():
         return s.getsockname()[1]
 
 
+def packed_files(edir):
+    """The files electron-builder will pack from the electron folder: the build.files
+    patterns in electron/package.json, expanded the way electron-builder expands them
+    (glob patterns matched against the folder, a directory pattern packs everything
+    under it, ! patterns are removed again), as posix paths relative to the folder.
+    A pattern that matches nothing contributes nothing. (AGE-73: this list has held
+    glob patterns since v1.1.4; reading the patterns as literal filenames crashes.)"""
+    import glob as glob_module
+    patterns = json.loads((edir / "package.json").read_text())["build"]["files"]
+    packed = set()
+    for pattern in patterns:
+        negate = pattern.startswith("!")
+        body = pattern[1:] if negate else pattern
+        hits = set()
+        for hit in glob_module.glob(str(edir / body), recursive=True):
+            p = Path(hit)
+            if p.is_dir():
+                hits.update(str(q.relative_to(edir).as_posix()) for q in p.rglob("*") if q.is_file())
+            elif p.is_file():
+                hits.add(p.relative_to(edir).as_posix())
+        if negate:
+            packed -= hits
+        else:
+            packed |= hits
+    return packed
+
+
+def missing_requires(edir):
+    """Relative requires (./x) in the packed .js files that no packed file satisfies:
+    the installed app would fail to start on the first one it loads."""
+    import re
+    packed = packed_files(edir)
+    needed = {m + ("" if m.endswith(".js") else ".js") for f in packed if f.endswith(".js")
+              for m in re.findall(r"""require\(["']\./([^"']+)["']\)""", (edir / f).read_text())}
+    return sorted(needed - packed)
+
+
 def http(method, url, body=None, timeout=60):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method, headers={"Content-Type": "application/json"} if data else {})
@@ -94,8 +131,13 @@ def main():
 
     data = tempfile.mkdtemp(prefix="xod-fresh-")
     port = free_port()
+    # XOD_MODEL_BUDGET off: the FakeModel stand-in consumes no memory, so the FIX C budget gate
+    # (services/model_budget.py) is off for this sandbox server. At its production defaults it
+    # estimates an unknown-size local model at 7.0 GB and rightly refuses it on any machine
+    # whose 40%-of-RAM budget is under that (AGE-73). The gate itself is proven in
+    # run_local_memory_cap_test.py.
     env = {**os.environ, "XOD_DATA_DIR": data, "PYTHONUNBUFFERED": "1", "PYTHONUTF8": "1", "LLM_PROVIDER": "lm_studio", "LLM_BASE_URL": model_url,
-           "LLM_MODEL": "stand-in", "XOD_SECRETS_SERVICE": "Xod smoke test keys"}
+           "LLM_MODEL": "stand-in", "XOD_SECRETS_SERVICE": "Xod smoke test keys", "XOD_MODEL_BUDGET": "off"}
     if not os.environ.get("XOD_REAL_KEYRING"):
         kr = Path(data) / "test-keyring.json"
         kr.write_text("{}")
@@ -187,12 +229,9 @@ def main():
 
     # The installer packs only the files electron/package.json lists: one the app's code requires but isn't listed
     # would make the installed app fail to start, and nothing else here would notice.
-    import re
     edir = Path(__file__).resolve().parents[2] / "electron"
-    listed = set(json.loads((edir / "package.json").read_text())["build"]["files"])
-    needed = {m + ("" if m.endswith(".js") else ".js") for f in listed if f.endswith(".js")
-              for m in re.findall(r"""require\(["']\./([^"']+)["']\)""", (edir / f).read_text())}
-    check("every file the desktop app requires is packed into the installer", needed <= listed, str(sorted(needed - listed)))
+    missing = missing_requires(edir)
+    check("every file the desktop app requires is packed into the installer", not missing, str(missing))
 
     failed = [n for n, ok in results if not ok]
     print(f"\nSUMMARY {'PASS' if not failed else 'FAIL'} {failed}")
