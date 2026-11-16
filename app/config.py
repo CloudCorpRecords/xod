@@ -85,17 +85,51 @@ except Exception:
 # each other mid-reload.
 _heal_lock = threading.Lock()
 
+# Serializes reload_secrets() itself: the retry endpoint, the family vault
+# apply path and maybe_heal_secrets() can all reload at once, and two
+# overlapping reloads must not reset the vault cache under each other
+# mid-read (AGE-74).
+_reload_lock = threading.RLock()
+
 
 def reload_secrets() -> dict:
-    """Reads the Keychain again (after macOS said no, or the prompt went unseen) and puts the keys back in use."""
+    """Reads the Keychain again (after macOS said no, or the prompt went unseen) and puts the keys back in use.
+
+    Atomic from the reader's perspective (AGE-74): the new snapshot is read
+    fully into a local dict first, and the live settings object is swapped
+    over in a single update only after that read has fully succeeded. If
+    the vault cannot be read (it turned unreadable between the caller's
+    problem() check and this fresh load, or it is still locked), the
+    previous snapshot stays in use untouched, including keys saved
+    in-process via update_env_variable, and the snapshot stays stale so a
+    later heal retries. The old code overwrote the snapshot field by field
+    as it read, so a transient unreadable vault wiped every in-memory key
+    and a concurrent reader could observe a mix of two snapshots.
+    """
     global _secrets_stale
-    from app.services import keychain, secret_store
-    keychain.reset_cache()
-    for field in secret_store.SECRET_FIELDS:
-        setattr(settings, field, secret_store.get(field))
-    health = secret_store.health()
-    _secrets_stale = not health["readable"]
-    return health
+    with _reload_lock:
+        from app.services import keychain, secret_store
+        keychain.reset_cache()
+        health = secret_store.health()
+        if not health["readable"]:
+            _secrets_stale = True
+            return health
+        try:
+            new_values = {field: secret_store.get(field)
+                          for field in secret_store.SECRET_FIELDS}
+        except Exception:
+            _secrets_stale = True
+            raise
+        health = secret_store.health()
+        if not health["readable"]:
+            # The vault turned unreadable during the read: the values just
+            # read cannot be trusted as a complete snapshot, so none of
+            # them are swapped in.
+            _secrets_stale = True
+            return health
+        settings.__dict__.update(new_values)
+        _secrets_stale = False
+        return health
 
 
 def maybe_heal_secrets() -> bool:
