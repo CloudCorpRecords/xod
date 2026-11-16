@@ -51,6 +51,32 @@ OLD_ROOT = Path(os.environ.get("XOD_FIX5_OLD_ROOT",
 TMP = Path(tempfile.mkdtemp(prefix="xod_missions_two_instance_"))
 REAL_HOME = os.environ.get("HOME", "")
 
+def preprovision_pytest_venv(scratch: Path):
+    """Provisions (or reuses) the pytest task venv for one
+    configuration's scratch dir BEFORE any timed window starts
+    (AGE-76). The verify gate resolves a pytest interpreter for a run
+    claim whose cwd is the scratch dir, and on a machine with no
+    pytest-capable interpreter that means creating a venv and pip
+    installing pytest: measured 15 to 56 seconds quiet, unbounded
+    under load. Paid inside run_config's 180 second window, that race
+    failed t1d and t1e as collateral on a contended machine (they
+    declare no pytest run; they starved behind the gate provisioning
+    for t1a). Paid here, before the creator spawn, the GO signal, and
+    the deadline, provisioning costs whatever it costs and the timed
+    window only ever measures mission execution. Resolution is the
+    app's own, so what is provisioned is exactly what the gate will
+    find. Returns the interpreter path, or None when provisioning is
+    impossible here (the gate then reports its environment problem
+    in-window, as designed)."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        import app.services.task_queue as TQ
+        py, _why = TQ._resolve_pytest_python(Path(scratch))
+        return py
+    except Exception:
+        return None
+
+
 DRIVER = r'''
 import asyncio, json, os, sqlite3, sys, threading, time, uuid
 os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
@@ -393,6 +419,7 @@ def run_config(label: str, seat_a: Path, seat_b: Path):
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True)
 
+    preprovision_pytest_venv(cfg / "scratch")
     created = spawn(seat_a, "creator", "alpha", "0.1", mode="create")
     out, _ = created.communicate(timeout=120)
     mids = {}
@@ -533,4 +560,5 @@ def main():
     sys.exit(1 if failed else 0)
 
 
-main()
+if __name__ == "__main__":
+    main()
