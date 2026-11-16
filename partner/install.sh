@@ -3,8 +3,9 @@
 #
 # Assembles "Xod Partner.app" (bundle id dev.xod.partner) in ~/Applications:
 # a small compiled launcher as the bundle executable, the Python partner and
-# a bundled minimal CPython in Resources, ad-hoc signed with the fixed
-# identifier dev.xod.partner (the build is frozen; see README). Then points
+# a bundled minimal CPython in Resources, signed with the fixed identifier
+# dev.xod.partner (the build is frozen; see README): the stable Xod signing
+# identity when one is available (AGE-57), ad-hoc otherwise. Then points
 # the dev.xod.partner LaunchAgent
 # at the bundle executable and reloads it. The v0 state dir, token, inbox,
 # and log history are kept exactly as they are.
@@ -47,7 +48,25 @@ PYTHONDONTWRITEBYTECODE=1 "$STAGE/Contents/Resources/python/bin/python3.12" -B -
 echo "bundled interpreter verified"
 
 swiftc -O -o "$STAGE/Contents/MacOS/XodPartner" "$SRC/launcher/XodPartner.swift"
-codesign --force --deep --sign - --identifier dev.xod.partner "$STAGE"
+# Signing identity (AGE-57, docs/SIGNING.md): prefer the same stable identity
+# the main app signs with, so the Partner's Accessibility grant survives
+# rebuilds too. The identity comes from XOD_MAC_SIGN_IDENTITY, or the
+# "Xod Release Signing" certificate when it is in the keychain. Without
+# either, fall back to the historical ad-hoc signature; an ad-hoc build's
+# Accessibility row binds to its cdhash, so the next reinstall then needs
+# the supervised repair ceremony again.
+SIGN_IDENTITY="${XOD_MAC_SIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | grep -q '"Xod Release Signing"'; then
+  SIGN_IDENTITY="Xod Release Signing"
+fi
+if [ -n "$SIGN_IDENTITY" ]; then
+  codesign --force --deep --sign "$SIGN_IDENTITY" --identifier dev.xod.partner "$STAGE"
+  echo "signed with identity: $SIGN_IDENTITY"
+else
+  codesign --force --deep --sign - --identifier dev.xod.partner "$STAGE"
+  echo "WARNING: ad-hoc signed (no Xod Release Signing identity found); the"
+  echo "Accessibility row will bind to this build's cdhash (AGE-57)."
+fi
 codesign --verify --strict "$STAGE"
 
 rm -rf "$APP"
@@ -57,11 +76,18 @@ codesign -dv "$APP" 2>&1 | grep -E "Identifier|Signature" || true
 CDHASH="$(codesign -dvvvv "$APP" 2>&1 | sed -n 's/^CandidateCDHash sha256=//p')"
 printf "cdhash=%s\nbuilt=%s\nversion=1.2\n" "$CDHASH" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE/build.txt"
 echo "build record: $STATE/build.txt (CDHash $CDHASH)"
-echo "NOTE: pair (or repair) the Accessibility switch ONLY against this exact"
-echo "build. For an ad-hoc signed app the Accessibility row binds to the"
-echo "build's code hash, so any reinstall mints a new build the old row will"
-echo "not cover; only the supervised repair (a reset from Xod, then one flip)"
-echo "binds it again."
+if [ -n "$SIGN_IDENTITY" ]; then
+  echo "NOTE: this build is signed with $SIGN_IDENTITY, so its Accessibility"
+  echo "row binds to that identity, not to this build's cdhash: reinstalls of"
+  echo "builds signed with the same identity keep the grant. Pair (or repair)"
+  echo "the switch once against this build and later builds inherit it."
+else
+  echo "NOTE: pair (or repair) the Accessibility switch ONLY against this exact"
+  echo "build. For an ad-hoc signed app the Accessibility row binds to the"
+  echo "build's code hash, so any reinstall mints a new build the old row will"
+  echo "not cover; only the supervised repair (a reset from Xod, then one flip)"
+  echo "binds it again."
+fi
 
 sed -e "s|__APP_EXE__|$APP/Contents/MacOS/XodPartner|g" \
     -e "s|__STATE_DIR__|$STATE|g" \
