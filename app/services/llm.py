@@ -1240,6 +1240,7 @@ class LLMService:
                         raise _gave_up()
                     restarted = True
                     await _restart_engine(info, str(e), engine_start)
+                    from app.services.local_engine import local_engine
                     engine_start = local_engine.started_at
                     continue
                 except (httpx.ConnectError, httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.ReadError) as e:
@@ -1475,6 +1476,7 @@ class LLMService:
                     if err:
                         yield {"type": "error", "content": err}
                         return
+                    from app.services.local_engine import local_engine
                     restarted, engine_start = True, local_engine.started_at
                     continue
                 except StreamStalled as e:
@@ -1650,6 +1652,7 @@ class LLMService:
                     if err:
                         yield {"type": "error", "content": err}
                         return
+                    from app.services.local_engine import local_engine
                     restarted, engine_start = True, local_engine.started_at
                     continue
                 except StreamStalled as e:

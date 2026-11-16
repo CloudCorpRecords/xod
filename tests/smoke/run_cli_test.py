@@ -33,6 +33,11 @@ DATA.mkdir()
 KEYS = TMP / "keys.json"
 KEYS.write_text("{}")
 os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (services/speech.py speech_off)
+# The stand-in model consumes no memory, so the FIX C budget gate (services/model_budget.py)
+# is off for this sandbox: at its production defaults it estimates the unknown-size stand-in
+# at 7.0 GB and rightly refuses it on smaller machines (AGE-81). The gate itself is proven in
+# run_local_memory_cap_test.py.
+os.environ.setdefault("XOD_MODEL_BUDGET", "off")
 os.environ.update(XOD_DATA_DIR=str(DATA), PYTHON_KEYRING_BACKEND="tests.support.filekeyring.FileKeyring",
                   XOD_TEST_KEYRING_FILE=str(KEYS))
 os.environ.pop("XOD_URL", None)
