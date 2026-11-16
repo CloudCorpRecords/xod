@@ -148,7 +148,11 @@ def stdio_env(name: str, spec: Dict[str, Any]):
     if command == "{xod_python}":
         command = sys.executable
         env = {**env, **{k: v for k, v in os.environ.items() if k.startswith("XOD_")},
-               "PYTHONPATH": str(APP_ROOT)}
+               # The host may inject dependencies outside sys.prefix (Replit,
+               # for example). Own-Python children need the same import paths,
+               # not just the repository; foreign MCP servers stay isolated.
+               "PYTHONPATH": os.pathsep.join(dict.fromkeys(
+                   [str(APP_ROOT), *(p for p in sys.path if p)]))}
         cwd = cwd or str(APP_ROOT)
     elif shutil.which(command):
         command = shutil.which(command)

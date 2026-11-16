@@ -62,6 +62,8 @@ class FakeAX:
 
 def main():
     from app.services import muse_app
+    from app.services.storage import set_setting
+    set_setting(muse_app.SETTING, "on")
     muse_app._bring_forward = lambda: None      # never move a real app's window from a test
     muse_app._put_back = lambda prev: None
 
@@ -103,7 +105,7 @@ def main():
     noax = muse_app._describe_error(PermissionError("Xod needs Accessibility access to press Allow"))
     check("a permission failure shows the Accessibility fix", "Accessibility" in noax, noax)
 
-    print("M4 which button: Always-allow > Send > Allow, never Deny")
+    print("M4 one-time approval, never persistent permission or Deny")
     send, always, dont = El("AXButton", "Send"), El("AXButton", "Always allow for this recipient"), El("AXButton", "Don't send")
     gmail = El("AXGroup", "Approval request for Gmail", [
         El("AXStaticText", "From: Tree <tree@example.com>"), El("AXStaticText", "To: hiring@example.com"),
@@ -112,8 +114,8 @@ def main():
     muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [gmail])]))
     muse_app._muse_pid = lambda: 4242
     got = muse_app._scan(True)["approved"][0]
-    check("a Gmail card: the always-allow button is pressed, and only that",
-          got["button"] == "Always allow for this recipient" and always.pressed and not send.pressed and not dont.pressed, str(got))
+    check("a Gmail card: Send is pressed without granting permanent access",
+          got["button"] == "Send" and not always.pressed and send.pressed and not dont.pressed, str(got))
     check("…its type and fields are read", got["type"] == "Gmail" and got["to"] == "hiring@example.com"
           and got["subject"] == "Your application" and got["attachments"] == ["cv.pdf"], str(got))
     send2, dont2 = El("AXButton", "Send"), El("AXButton", "Don't send")
@@ -128,7 +130,7 @@ def main():
     check("a card with only Deny: nothing pressed, and the reason says so",
           got["pressed"] is False and got["button"] is None and "Deny" in got["reason"] and not deny.pressed, str(got))
     check("button choice in order, never the negative ones",
-          muse_app._pick_button(["Send", "Always allow for this recipient", "Don't send"]) == "Always allow for this recipient"
+          muse_app._pick_button(["Send", "Always allow for this recipient", "Don't send"]) == "Send"
           and muse_app._pick_button(["Allow", "Send"]) == "Send"
           and muse_app._pick_button(["Deny", "Don't send"]) is None
           and muse_app._pick_button(["Always allow everything", "Allow"]) == "Allow")
@@ -243,7 +245,7 @@ def main():
     print("M8 blockers: 'Allow all once' group cards, and a card still showing gets pressed again")
     check("button order with the group buttons",
           muse_app._pick_button(["Allow", "Allow all once", "Deny all"]) == "Allow all once"
-          and muse_app._pick_button(["Allow all once", "Always allow for this recipient"]) == "Always allow for this recipient"
+          and muse_app._pick_button(["Allow all once", "Always allow for this recipient"]) == "Allow all once"
           and muse_app._pick_button(["Deny all", "Allow all once"]) == "Allow all once")
     check("'Allow once' (the one-time button on network/share cards) is pressed too",
           muse_app._pick_button(["Allow once", "Deny"]) == "Allow once"
@@ -284,8 +286,8 @@ def main():
             muse_app.REPRESS_AFTER = 4.0
     n1 = _asyncio.run(stuck())
     stuck_rows = [r for r in agent_log.approvals(80) if r["id"].endswith("-stuck")]
-    check("a card still showing after a press is pressed again, up to 3, then logged press-failed",
-          n1 == 1 and allow5.presses == 3 and stuck_rows and "press failed" in stuck_rows[0]["decision"],
+    check("a card still showing after a press is not repeated and is logged for review",
+          n1 == 1 and allow5.presses == 1 and stuck_rows and "confirmation missing" in stuck_rows[0]["decision"],
           f"presses={allow5.presses} stuck={stuck_rows[:1]}")
 
     print("M9 a trigger looks three times (cards build in stages), never on a timer of its own")
@@ -355,7 +357,8 @@ def main():
     power.release("auto-approve")
     power._state["backend"], power._state["reasons"] = None, saved_reasons
     locked = power.is_locked()
-    check("lock state reads on this Mac (bool, never a password anywhere)", locked in (True, False), repr(locked))
+    check("lock state is known on desktop or explicitly unknown on Linux",
+          locked in (True, False) if sys.platform != "linux" else locked is None, repr(locked))
     st = muse_app.status()
     check("watcher status carries backend, awake and locked", st.get("backend") in ("mac_ax", "win_uia", None)
           and "awake_held" in st and "locked" in st, str(st))
@@ -418,8 +421,8 @@ def main():
         finally:
             muse_app.REPRESS_AFTER = 4.0
     n0 = _asyncio.run(repress())
-    check("a press that didn't take: the next press brings Muse forward, then puts your app back",
-          n0 == [] and fronts == ["forward", ("back", 99)] and allow8.presses == 2, f"{n0} {fronts} {allow8.presses}")
+    check("a successful press still visible is not blindly repeated",
+          n0 == [] and fronts == [] and allow8.presses == 1, f"{n0} {fronts} {allow8.presses}")
 
     fronts.clear()
     hidden_card = El("AXGroup", "Approval request for Threads Messages", [
@@ -494,12 +497,15 @@ def main():
         check("a change from chat sends a notification that says so", len(told) == 1 and "chat" in told[0], str(told))
         out = _asyncio.run(phone_api.run("muse.set", {"mode": "away"}))
         check("the phone can set it (muse.set) and gets the one-line state back",
-              out["ok"] and out["data"]["mode"] == "away" and "away" in out["data"]["summary"]
-              and any("your phone" in t for t in told), str(out))
+              (not out["ok"] and "Mac and Windows" in out["error"]) if sys.platform == "linux"
+              else (out["ok"] and out["data"]["mode"] == "away"
+                    and any("your phone" in t for t in told)), str(out))
         out = _asyncio.run(phone_api.run("muse.status", {}))
-        check("the phone can read it (muse.status)", out["ok"] and out["data"]["mode"] == "away", str(out))
+        check("the phone can read it (muse.status)",
+              out["ok"] and out["data"]["mode"] == ("off" if sys.platform == "linux" else "away"), str(out))
         out = _asyncio.run(phone_api.run("muse.set", {"mode": "sometimes"}))
-        check("the phone gets a plain error for a bad position", not out["ok"] and "sometimes" in out["error"], str(out))
+        check("the phone gets a plain error for an unsupported platform or bad position",
+              not out["ok"] and ("Mac and Windows" if sys.platform == "linux" else "sometimes") in out["error"], str(out))
         sentinel.begin([{"role": "user", "content": "summarize this web page for me"}])
         check("turning approvals on when you didn't ask (an instruction in a page) waits for your OK",
               (sentinel.review("muse_approvals", {"action": "always"}) or {}).get("rule") == "not_asked")

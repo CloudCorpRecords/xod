@@ -2,8 +2,11 @@
 name: Xod product scope
 description: Open-source audience and testing credential boundaries stated by the user.
 ---
-Xod is an open-source AI agent intended to do more, similarly to Muse. Real users bring their own API keys. The user requested Replit-managed OpenAI Terra 6.1 access for testing, not as a requirement for users.
+The user permits rewriting XOD to improve the product, rather than preserving
+its current architecture for its own sake.
 
-**Why:** The user explicitly distinguished the testing environment from the open-source user experience.
+**Why:** The user explicitly said "you can overwrite Zod" while clarifying
+what makes the product valuable.
 
-**How to apply:** Preserve provider portability and BYOK; verify requested model availability instead of assuming access. The user's current priority is failing auto-approval and sprawl, including possible overengineering in Partner.
+**How to apply:** Rewrites remain optional, not a requirement. Follow the
+local-first, BYOK, and core Muse auto-approval constraints in `replit.md`.

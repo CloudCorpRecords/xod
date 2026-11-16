@@ -16,13 +16,20 @@ carrying the partner block with its notice.
 Run with the repo venv: .venv/bin/python tests/partner/run_partner_delegation_test.py
 """
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 import os
-os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
+_tmp = tempfile.TemporaryDirectory(prefix="xod-partner-delegation-")
+os.environ.update(HOME=_tmp.name, XOD_DATA_DIR=str(Path(_tmp.name) / "data"),
+                  XOD_NO_UPDATE_CHECK="1",
+                  PYTHON_KEYRING_BACKEND="tests.support.filekeyring.FileKeyring",
+                  XOD_TEST_KEYRING_FILE=str(Path(_tmp.name) / "keys.json"))
 from app.services import muse_app, partner_client
+from app.paths import DATA_DIR
+assert DATA_DIR == Path(_tmp.name) / "data", "Delegation tests must use isolated state"
 
 CARD = {"card_id": "museapp-testcard", "title": "Approval request for Gmail",
         "what": "From a@x.com To b@y.com Subject Hi", "buttons": ["Allow", "Deny"],
@@ -41,7 +48,8 @@ class FakePartner:
     def status(self, force=False):
         if self.down:
             return None
-        return {"partner_trusted": self.trusted, "version": 1, "bundle_id": "dev.xod.partner"}
+        return {"partner_trusted": self.trusted, "version": 1, "bundle_id": "dev.xod.partner",
+                "approval_policy": "one-time-v1"}
 
     def scan(self, front=False):
         _calls["scan"] += 1
@@ -58,6 +66,7 @@ def _fake_own_scan(press, skip_ids=None):
 
 
 def _install(fake):
+    muse_app._save_pending(set())
     partner_client.status, partner_client.scan, partner_client.press = \
         fake.status, fake.scan, fake.press
     muse_app._scan = _fake_own_scan
@@ -65,6 +74,8 @@ def _install(fake):
 
 
 def main():
+    from app.services.storage import set_setting
+    set_setting(muse_app.SETTING, "on")
     orig = (partner_client.status, partner_client.scan, partner_client.press, muse_app._scan)
     try:
         # trusted Partner: the whole scan goes through it, Xod's walk never runs

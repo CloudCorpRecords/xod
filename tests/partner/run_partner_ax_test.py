@@ -167,6 +167,9 @@ def _seam_request_access():
     callback receives is released when request_access returns, so every
     observation is captured inside the callback."""
     import ctypes
+    if sys.platform != "darwin":
+        print("SKIP: real CoreFoundation prompt requires macOS", flush=True)
+        return
     real = AX.CtypesAx()
     assert real.ok, "the real AX seam must load on this Mac"
     cf = real._cf
@@ -287,10 +290,10 @@ def main():
         try:
             code, out = _call(base, "/ax/scan", token=core.token, body={})
             card = out["cards"][0]
-            assert card["button"] == "Always allow for this recipient", card
+            assert card["button"] == "Allow", card
             code, out = _call(base, "/ax/press", token=core.token, body={"card_id": card["card_id"]})
-            assert out["pressed"] is True and ax.pressed == ["Always allow for this recipient"], out
-            print("PASS: press prefers Always allow for this recipient over Allow", flush=True)
+            assert out["pressed"] is True and ax.pressed == ["Allow"], out
+            print("PASS: press chooses Allow without granting permanent permissions", flush=True)
         finally:
             server.shutdown()
 
@@ -464,9 +467,9 @@ def main():
         ax = FlakyAx(card_tree(["Allow", "Deny"]))
         holder["ax"] = ax
         out = AX.Walk(ax, pid_of=lambda: 4242).press(cid, front=True)
-        assert out["pressed"] is True and ax.pressed == ["Allow"], out
-        assert ax.perform_calls == 2, ax.perform_calls
-        print("PASS: a press failing on a stale element (-25202) is retried fronted and lands", flush=True)
+        assert out["pressed"] is False and "outcome unknown" in out["reason"], out
+        assert ax.perform_calls == 1, ax.perform_calls
+        print("PASS: an uncertain press is not repeated even when fronting is allowed", flush=True)
 
         ax = FlakyAx(card_tree(["Allow", "Deny"]))
         holder["ax"] = ax

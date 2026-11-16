@@ -264,7 +264,7 @@ class CtypesAx:
 # ------------------------------------------------------------------ the card rules (frozen port of muse_app)
 def pick_button(labels):
     """The approving button to press, or None. Same order as Xod's _pick_button:
-    an always-allow naming a recipient or site, then Allow all once, then the
+    Allow all once, then the
     one-time approvals (Send / Allow once / Allow for this task / Allow), then
     any other task-scoped approval (an Allow... button ending in 'for this
     task', e.g. 'Allow all web access for this task': it approves this task
@@ -272,10 +272,6 @@ def pick_button(labels):
     it beats an unscoped 'Allow always', which is never picked). Deny and
     friends are never picked."""
     clean = [str(l).strip() for l in labels if str(l).strip()]
-    for l in clean:
-        low = l.lower()
-        if low.startswith("always allow") and ("recipient" in low or "site" in low):
-            return l
     for l in clean:
         if l.lower() == "allow all once":
             return l
@@ -567,6 +563,6 @@ class Walk:
             if err == 0:
                 return {**base, "pressed": True, "button": chosen, "reason": ""}, False
             return {**base, "pressed": False, "button": chosen,
-                    "reason": "press failed: AXPress returned %d" % err}, True
+                    "reason": "approval outcome unknown: AXPress returned %d" % err}, False
         return {"pressed": False, "button": None, "card_id": want_id,
                 "reason": "card not showing"}, True

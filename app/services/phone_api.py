@@ -305,7 +305,8 @@ def _muse(args: Dict[str, Any]) -> Dict[str, Any]:
     from app.services import muse_app
     st = muse_app.status()
     return {"summary": muse_app.describe(st), **{k: st.get(k) for k in
-            ("mode", "paused_until", "away_minutes", "pressing_now", "approved", "accessibility_error", "backend")}}
+            ("mode", "paused_until", "away_minutes", "pressing_now", "approved", "accessibility_error",
+             "backend", "watcher_running", "watcher_notice", "approval_notice")}}
 
 
 def _muse_set(args: Dict[str, Any]) -> Dict[str, Any]:

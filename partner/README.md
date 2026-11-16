@@ -96,7 +96,7 @@ API listens on `127.0.0.1:8795`.
 
 - `GET /status`: partner version, uptime, the watchdog's Xod health
   summary, `partner_trusted` (the Partner's own AXIsProcessTrusted),
-  `bundle_id`.
+  `bundle_id`, and `approval_policy: "one-time-v1"`.
 - `POST /ax/scan` `{front?: bool}`: read-only. Returns whether the Muse
   app is running and, per card found, the card's title, summary, type,
   parties, the labels of every action button, the button the frozen
@@ -106,18 +106,28 @@ API listens on `127.0.0.1:8795`.
   live tree, finds exactly the named card, and presses its approving
   button, once. Returns what was pressed, or why nothing was, and logs
   every outcome to partner.log.
+- `POST /ax/press-once`: the versioned one-time-only route used by current
+  Xod. An older Partner cannot execute this route. Xod checks the policy
+  capability before delegation, and falls back to its own desktop adapter
+  when Partner is incompatible rather than sending a legacy press request.
 
 Scan and press refuse with 403 `{error, trusted: false, bundle_id}` when
 macOS is not honoring the Partner's grant. A missing or wrong token is a
 401 on every route. The Partner takes no other inputs than this API and
 the token-gated inbox: no orders from files, web content, or task text.
 
-Frozen press rules (a faithful port of Xod's muse_app semantics): prefer
-"Always allow for this recipient/site" when offered; otherwise "Allow
-all once", then "Send", "Allow once", "Allow". NEVER press Deny,
+Press rules (contract-tested against Xod's muse_app semantics): prefer
+"Allow all once", then "Send", "Allow once", "Allow for this task",
+"Allow", then other task-scoped Allow buttons. Never choose permanent
+recipient/site permissions. NEVER press Deny,
 "Deny all", "Don't send", or anything else. Bring Muse forward first
 only when the request says so (Xod decides, from its away state); put
 the previously front app back afterwards when it was moved.
+
+Xod journals click intent and does not blindly repeat successful or uncertain
+presses while the card remains visible. Partner does not retry an uncertain
+AXPress result; it may front and re-read a card that has not yet been pressed.
+See `docs/APPROVAL-RELIABILITY.md` for the contract and real-device checklist.
 
 ## The watchdog's rules (unchanged from v0)
 

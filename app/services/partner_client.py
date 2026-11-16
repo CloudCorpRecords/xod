@@ -30,6 +30,12 @@ logger = logging.getLogger("xod.partner_client")
 DEFAULT_URL = "http://127.0.0.1:8795"
 STATE_DIR = Path.home() / "Library" / "Application Support" / "XodPartner"
 BUNDLE_ID = "dev.xod.partner"
+APPROVAL_POLICY = "one-time-v1"
+
+
+def approval_compatible(st) -> bool:
+    """Only a helper advertising the one-time contract may receive clicks."""
+    return isinstance(st, dict) and st.get("approval_policy") == APPROVAL_POLICY
 
 PARTNER_NOTICE = ("Xod Partner needs its Accessibility switch on; it is the app that presses "
                   "approval buttons now. Open the Accessibility settings and flip Xod Partner "
@@ -151,7 +157,8 @@ def _call(method: str, path: str, body: Optional[Dict[str, Any]] = None,
                                           "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
+            out = json.loads(resp.read())
+            return out if isinstance(out, dict) else None
     except urllib.error.HTTPError as e:
         try:
             out = json.loads(e.read())
@@ -224,6 +231,10 @@ def summary() -> Dict[str, Any]:
                "notice": (REPAIR_NOTICE if stale else
                           PARTNER_NOTICE if trusted is False else None)}
     out.update(wd)
+    out["approval_compatible"] = approval_compatible(st)
+    if out.get("trusted") and not out["approval_compatible"]:
+        out["notice"] = ("This Partner needs an update before it can handle one-time approvals. "
+                         "Xod will use its own desktop access where available.")
     if wd.get("hold"):
         out["notice"] = HOLD_NOTICE
         out["repair_steps"] = None
@@ -266,7 +277,9 @@ def scan(front: bool = False) -> Optional[Dict[str, Any]]:
 def press(card_id: str, front: bool = False, away: bool = False) -> Optional[Dict[str, Any]]:
     """Ask the Partner to press the approving button on one named card.
     Same answer discipline as scan()."""
-    return _call("POST", "/ax/press",
+    # A distinct route also prevents an older process that replaces the
+    # compatible helper mid-scan from interpreting this as its broad approval.
+    return _call("POST", "/ax/press-once",
                  {"card_id": card_id, "front": bool(front), "away": bool(away)}, timeout=25.0)
 
 

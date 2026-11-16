@@ -297,6 +297,7 @@
   }
 
   function autoApproveState(st) {
+    if (st.watcher_notice) return st.watcher_notice;
     if (st.paused_until) {
       const mins = Math.max(1, Math.round((st.paused_until * 1000 - Date.now()) / 60000));
       return `Paused for ${mins} more min.`;
@@ -319,6 +320,7 @@
     const note = root.querySelector("[data-c-autoapprove-note]");
     if (note) {
       const bits = [];
+      if (st.approval_notice) bits.push(st.approval_notice);
       if (st.accessibility_error) bits.push(st.accessibility_error);
       else if (st.on && st.awake_held) bits.push("Staying awake while this is on, so the computer doesn't lock mid-job.");
       if (st.on && st.locked) bits.push("Screen is locked: cards are still read; a press while locked is unproven.");
@@ -353,7 +355,7 @@
     const said = { off: "Muse and Claude Code approvals wait for you again.",
                    always: "Xod now approves everything Muse and Claude Code ask, and logs each one. (In Crew jobs, ones its safety check flags still wait for you.)",
                    away: `Xod approves Muse's cards only while you're away (screen locked or ${r.away_minutes} min idle). Crew jobs' requests are approved as they come.` };
-    if (typeof showToast === "function") showToast(r.accessibility_error || (r.paused_until ? autoApproveState(r) + " Then it comes back on." : said[r.mode]));
+    if (typeof showToast === "function") showToast(r.watcher_notice || r.accessibility_error || (r.paused_until ? autoApproveState(r) + " Then it comes back on." : said[r.mode]));
   }
 
   async function loadAutoApprove() {

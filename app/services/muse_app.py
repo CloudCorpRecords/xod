@@ -4,9 +4,8 @@ Muse and Claude Code ask", Xod watches the app's approval cards and presses the 
 one for you, through macOS Accessibility (pressed directly, so it works whatever window is in front and
 never moves your mouse).
 
-Which button, in order: "Always allow for this recipient" (or "…for this site"), then "Send", then "Allow".
-Never "Deny" or "Don't send". An always-allow press is one you chose: it sends this one and stops future
-cards for that recipient/site, and the log says so, so he can undo it in Muse.
+Choose one-time or task-scoped approval, never persistent permission changes.
+Permanent recipient/site permissions must be set by the user in Muse.
 
 Xod doesn't poll every few seconds: macOS tells it the moment Muse's window changes (an Accessibility
 observer on Muse's pid), it waits 300ms for the window to settle, then scans — a card should be handled
@@ -36,6 +35,7 @@ UI can be click-tested without touching real cards.
 """
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -57,8 +57,8 @@ DEBOUNCE_SEC = 0.3
 # model call and no screenshot, and looks only ever happen on a trigger or the 30s backstop.
 BURST_DELAYS = (0.25, 1.0, 2.5)
 SCAN_TIMEOUT = 10.0  # a healthy in-process walk takes well under a second; this only guards a stuck tree
-REPRESS_AFTER = 4.0   # a pressed card should be gone; one still showing after this is a new showing (or a failed press)
-MAX_PRESS_TRIES = 3   # ...and after this many presses of one showing, stop and log it as failed
+REPRESS_AFTER = 4.0   # legacy name: delay before checking whether a pressed card disappeared
+MAX_PRESS_TRIES = 1   # no repeat of a successful/uncertain action while its card remains visible
 FRONT_SETTLE = 0.6    # after bringing Muse forward (or before putting the other app back): let the window settle
 SUMMARY_HOUR = 8
 MODES = ("off", "always", "away")
@@ -71,6 +71,7 @@ _state: Dict[str, Any] = {"task": None, "warned": False, "last": None, "count": 
                           "present": set(), "pressed_ids": set(), "press_marks": {}, "fail_logged": set(), "scan_lock": None,
                           "observer": None, "observer_pid": None, "debouncer": None,
                           "loop": None, "backstop_at": 0.0}
+_intent_lock = threading.RLock()
 
 
 def mode() -> str:
@@ -131,6 +132,9 @@ def _check_active() -> bool:
 
 
 def active() -> bool:
+    from app.services import run_mode
+    if run_mode.skip("muse_app"):
+        return False
     if mode() == "away" and enabled() and time.time() - (_state.get("away_at") or 0) < 2.0 and _state.get("away_now"):
         return bool(_state["away_now"]["away"])
     return _check_active()
@@ -220,6 +224,39 @@ def status() -> Dict[str, Any]:
         out["partner"] = None
     if m == "away" and not until:
         out["you"] = user_away()
+    from app.services import run_mode
+    task = _state.get("task")
+    reason = None
+    if m == "off":
+        reason = "Desktop approvals are off."
+    elif until:
+        reason = "Desktop approvals are paused."
+    elif out["backend"] is None:
+        reason = "Desktop card watching requires Mac or Windows. Crew approvals remain separate."
+    elif run_mode.skip("muse_app"):
+        reason = "Lightweight mode disables desktop card watching. Turn it off and restart Xod."
+    elif task is None or task.done():
+        reason = "Desktop approval watcher is not running."
+    elif out["accessibility_error"]:
+        reason = out["accessibility_error"]
+    elif out["backend"] == "mac_ax" and not (
+            (out.get("partner") or {}).get("trusted") and
+            (out.get("partner") or {}).get("approval_compatible")) \
+            and (out.get("permissions") or {}).get("trusted") is not True:
+        reason = "Accessibility access is not confirmed. Check Xod or Partner permissions before desktop approvals can run."
+    elif not active():
+        reason = "Waiting until you are away."
+    elif DRY_RUN:
+        reason = "Dry run: desktop cards are read but no approval buttons are pressed."
+    out["watcher_running"] = bool(task is not None and not task.done())
+    out["watcher_notice"] = reason
+    out["pressing_now"] = reason is None and not DRY_RUN
+    try:
+        pending = len(_pending_presses())
+        out["approval_notice"] = (f"{pending} approval(s) awaiting confirmation. Xod will not repeat a click "
+                                  "while the same card remains visible; check Muse if it stays blocked.") if pending else None
+    except Exception:
+        out["approval_notice"] = "The approval intent record cannot be read. Desktop approvals require recovery."
     try:
         from app.services import power
         pst = power.status()
@@ -232,6 +269,8 @@ def status() -> Dict[str, Any]:
 
 def describe(st: Dict[str, Any]) -> str:
     """One line for chat, the phone and notifications."""
+    if st.get("watcher_notice"):
+        return st["watcher_notice"]
     if st.get("paused_until"):
         left = max(1, int((st["paused_until"] - time.time()) // 60))
         back = "always" if st["mode"] == "always" else "only while you're away"
@@ -257,21 +296,19 @@ def _describe_error(e: Exception) -> str:
 
 # ------------------------------------------------------------------ the buttons on a card
 def _pick_button(labels: List[str]) -> Optional[str]:
-    """The approving button to press, or None. Order: an always-allow that names a recipient or a site,
-    then Send, then Allow. 'Always allow' with no named scope is not pressed (fall back to one-time);
-    Deny / Don't send and anything negative are never pressed."""
+    """Choose one-time/task approval only; never widen persistent permissions."""
     clean = [str(l).strip() for l in labels if str(l).strip()]
-    for l in clean:
-        low = l.lower()
-        if low.startswith("always allow") and ("recipient" in low or "site" in low):
-            return l
     for l in clean:
         if l.lower() == "allow all once":
             return l
-    for want in ("send", "allow once", "allow"):
+    for want in ("send", "allow once", "allow for this task", "allow"):
         for l in clean:
             if l.lower() == want:
                 return l
+    for l in clean:
+        low = l.lower()
+        if low.startswith("allow ") and low.endswith(" for this task"):
+            return l
     return None
 
 
@@ -358,14 +395,34 @@ def _label(ax, el) -> str:
     return ""
 
 
-def _pressed_from_db() -> Dict[str, float]:
-    """Cards already pressed, per the approvals DB (survives restarts): id -> when."""
-    try:
-        from app.services import agent_log
-        return {r["id"]: (r.get("ts") or 0) for r in agent_log.approvals(500)
-                if r.get("kind") == "muse_app" and r.get("decision") == "allowed by Xod"}
-    except Exception:
-        return {}
+def _pending_presses() -> set:
+    """Crash-safe intent journal: unknown outcomes must survive a restart."""
+    from app.services.storage import get_setting
+    raw = json.loads(get_setting("muse_pending_presses", "[]"))
+    if not isinstance(raw, list) or not all(isinstance(x, str) for x in raw):
+        raise ValueError("Approval intent journal is invalid; manual recovery required")
+    return set(raw)
+
+
+def _save_pending(ids: set) -> None:
+    from app.services.storage import set_setting
+    set_setting("muse_pending_presses", json.dumps(sorted(ids)))
+
+
+def _claim_press(cid: str) -> bool:
+    # asyncio cancellation does not stop a to_thread worker. Serialize intent
+    # claims across those workers too, not just across live asyncio scans.
+    with _intent_lock:
+        pending = _pending_presses()
+        if cid in pending or not active():
+            return False
+        _save_pending(pending | {cid})
+        return True
+
+
+def _release_press(cid: str) -> None:
+    with _intent_lock:
+        _save_pending(_pending_presses() - {cid})
 
 
 def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
@@ -464,10 +521,20 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
             elif press and DRY_RUN:
                 entry["reason"] = "dry run: not pressed (test mode)"
             elif press:
-                err = ax.perform(buttons[chosen], "AXPress")
-                entry["pressed"] = err == 0
-                if err != 0:
-                    entry["reason"] = f"press failed: AXPress returned {err}"
+                cid = _card_id(entry)
+                pending = _pending_presses()
+                if cid in pending:
+                    entry["reason"] = "approval already attempted: waiting for card to disappear"
+                elif not active():
+                    entry["reason"] = "approval paused or user presence changed"
+                elif not _claim_press(cid):
+                    entry["reason"] = "approval already attempted or paused"
+                else:
+                    err = ax.perform(buttons[chosen], "AXPress")
+                    entry["pressed"] = err == 0
+                    if err != 0:
+                        entry["uncertain"] = True
+                        entry["reason"] = f"approval outcome unknown: AXPress returned {err}"
             found.append(entry)
             return
         for child in children(el):
@@ -484,7 +551,8 @@ def _partner_delegated() -> bool:
     try:
         from app.services import partner_client
         st = partner_client.status()
-        return bool(st) and not st.get("_status") and st.get("partner_trusted") is True
+        return bool(st) and not st.get("_status") and st.get("partner_trusted") is True \
+            and partner_client.approval_compatible(st)
     except Exception:
         return False
 
@@ -512,7 +580,8 @@ def _partner_scan_press(skip_ids: Optional[set] = None, want_front: bool = False
     the reason, so nothing can be pressed twice by two hands."""
     from app.services import partner_client
     st = partner_client.status(force=True)
-    if not st or st.get("_status") or st.get("partner_trusted") is not True:
+    if not st or st.get("_status") or st.get("partner_trusted") is not True \
+            or not partner_client.approval_compatible(st):
         return None
     first = partner_client.scan(front=want_front)
     if not first or first.get("trusted") is False or first.get("_status"):
@@ -533,27 +602,51 @@ def _partner_scan_press(skip_ids: Optional[set] = None, want_front: bool = False
                  "type": raw.get("type") or _card_type(raw.get("title") or ""),
                  "from": raw.get("from") or "", "to": raw.get("to") or "",
                  "subject": raw.get("subject") or "", "attachments": raw.get("attachments") or []}
+        # Older installed Partners may still prefer permanent permissions.
+        # Refuse rather than let a mismatched helper broaden authorization.
+        if entry["button"] and _pick_button([entry["button"]]) is None:
+            entry["button"] = None
+            entry["reason"] = "Partner selected a persistent permission; update Partner or approve manually"
         cid = raw.get("card_id") or _card_id(entry)
+        # Preserve the helper's identity across the skip and history paths.
+        entry["_id"] = cid
         if raw.get("expired"):
             entry["button"], entry["reason"] = None, "expired before Xod got to it"
         elif entry["button"] is not None and cid in (skip_ids or set()):
             entry["reason"] = "already pressed: not pressing again"
         elif entry["button"] is None:
-            entry["reason"] = _no_button_reason(raw.get("buttons") or [])
+            entry["reason"] = entry["reason"] or _no_button_reason(raw.get("buttons") or [])
         elif DRY_RUN:
             entry["reason"] = "dry run: not pressed (test mode)"
+        elif cid in _pending_presses():
+            entry["reason"] = "approval already attempted: waiting for card to disappear"
+        elif not active():
+            entry["reason"] = "approval paused or user presence changed"
+        elif not _claim_press(cid):
+            entry["reason"] = "approval already attempted or paused"
         else:
             r = partner_client.press(cid, front=want_front, away=away)
             if r is None:
-                entry["reason"] = "partner press failed: no answer from the Partner"
+                entry["reason"] = "approval outcome unknown: check Muse before retrying"
+                entry["uncertain"] = True
             elif r.get("trusted") is False or r.get("_status"):
                 entry["reason"] = "partner press refused: the Partner is not trusted"
+                if r.get("_status") in (401, 403):
+                    # An explicit authorization refusal proves no action ran.
+                    _release_press(cid)
+                else:
+                    entry["uncertain"] = True
+                    entry["reason"] = "approval outcome unknown: Partner returned an error"
             else:
                 entry["pressed"] = bool(r.get("pressed"))
                 if r.get("button"):
                     entry["button"] = r["button"]
                 if not entry["pressed"]:
                     entry["reason"] = r.get("reason") or "press failed"
+                    entry["uncertain"] = True
+                    if entry["reason"] in ("card not showing", "Muse app not running", "expired before Xod got to it"):
+                        entry["uncertain"] = False
+                        _release_press(cid)
         entries.append(entry)
     return {"running": bool(first.get("running", True)), "approved": entries}
 
@@ -739,11 +832,9 @@ def _sync_observer(pid: Optional[int]) -> None:
 
 # ------------------------------------------------------------------ the watcher
 async def scan_once() -> List[Dict[str, Any]]:
-    """Press the approving button on every Muse app card waiting now; log each new one once.
-    One scan at a time (an observer event and the backstop must never press together). A pressed card
-    should disappear: if the same card is still showing REPRESS_AFTER seconds later it is treated as a
-    new showing and pressed again, up to MAX_PRESS_TRIES presses, then logged as press-failed. (Upload
-    cards often share text, so 'pressed once, skip forever' stalls the agent on the next identical card.)"""
+    """Serialize scans; attempt each showing once and wait for observed disappearance.
+    Identical text after absence is a new showing. Persistent intent protects
+    against duplicate side effects after uncertain responses or process restarts."""
     if _state.get("scan_lock") is None:
         _state["scan_lock"] = asyncio.Lock()
     if _state["scan_lock"].locked():
@@ -755,9 +846,8 @@ async def scan_once() -> List[Dict[str, Any]]:
             _state["scan_again"] = False
             now = time.time()
             marks = _state["press_marks"]
-            if not _state.get("primed"):
-                for pid, ts in _pressed_from_db().items():
-                    marks.setdefault(pid, {"tries": 1, "last": ts})
+            # Only unresolved intent survives restart. Historical audit rows
+            # are not outstanding requests and must not suppress a new card.
             skip = {pid for pid, m in marks.items()
                     if m["tries"] >= MAX_PRESS_TRIES or now - m["last"] < REPRESS_AFTER}
             capped = {pid for pid, m in marks.items() if m["tries"] >= MAX_PRESS_TRIES}
@@ -779,18 +869,25 @@ async def scan_once() -> List[Dict[str, Any]]:
                     await asyncio.sleep(FRONT_SETTLE)
             try:
                 if use_partner:
+                    _state["last_path"] = "partner"
                     res = await asyncio.to_thread(_partner_scan_press, skip, want_front)
                     if res is None:  # the Partner vanished between the check and the scan: Xod's own hands
+                        _state["last_path"] = "own"
                         res = await asyncio.to_thread(_scan, True, skip)
                     elif want_front:
                         fronted |= {_card_id(c) for c in (res.get("approved") or [])}
                 else:
+                    _state["last_path"] = "own"
                     res = await asyncio.to_thread(_scan, True, skip)
             finally:
                 if moved:
                     await asyncio.sleep(FRONT_SETTLE)
                     await asyncio.to_thread(_put_back, prev)
             cards = res.get("approved") or []
+            if want_front:
+                # Bound the retry even if Partner vanished and the direct
+                # fallback could not reveal a button.
+                fronted |= {_card_id(c) for c in cards}
             no_button = {_card_id(c) for c in cards if c.get("button") is None and str(c.get("reason", "")).startswith("no button")}
             if no_button - fronted and not moved and not DRY_RUN and not any(c.get("pressed") for c in cards):
                 _state["no_button_ids"] = no_button       # look again at once with Muse in front, before logging it
@@ -800,6 +897,9 @@ async def scan_once() -> List[Dict[str, Any]]:
                 if moved and c.get("pressed"):
                     c["reason"] = "brought Muse to the front to press it"
                 cid = _card_id(c)
+                if c.get("uncertain"):
+                    marks[cid] = {"tries": MAX_PRESS_TRIES, "last": time.time()}
+                    _log({**c, "_id": cid + "-uncertain"})
                 if c.get("pressed"):
                     _state["pressed_ids"].add(cid)
                     m = marks.setdefault(cid, {"tries": 0, "last": now})
@@ -807,7 +907,7 @@ async def scan_once() -> List[Dict[str, Any]]:
                 if cid in capped and cid not in _state["fail_logged"]:
                     _state["fail_logged"].add(cid)
                     _log({**c, "_id": cid + "-stuck", "pressed": False,
-                          "reason": f"press failed: still showing after {MAX_PRESS_TRIES} presses"})
+                          "reason": "confirmation missing: card still showing; check Muse before retrying"})
                 if (c.get("title") or "", c.get("what") or "") not in _state["present"]:
                     _log(c)
             if any(str(c.get("reason") or "").startswith("press failed") for c in cards):
@@ -835,6 +935,10 @@ async def scan_once() -> List[Dict[str, Any]]:
                 _state["trust_warned"] = False
             _state["present"] = keys
             _state["present_ids"] = {_card_id(c) for c in cards}
+            # Only a completed scan proving absence ends a showing. A timeout
+            # or transport failure never reaches here and cannot clear intent.
+            with _intent_lock:
+                _save_pending(_pending_presses() & _state["present_ids"])
             _state["no_button_ids"] = no_button
             for pid in [pid for pid in marks if pid not in _state["present_ids"]]:
                 marks.pop(pid, None)          # the showing ended; an identical card later is a new showing
@@ -844,8 +948,7 @@ async def scan_once() -> List[Dict[str, Any]]:
             _state["error"] = None
             loop = _state.get("loop")
             if loop is not None and any(c.get("pressed") for c in cards):
-                # a pressed card should be gone by then; if it isn't, the next look presses again (with Muse in
-                # front), well before the 30s backstop and before Muse lets the card expire
+                # Confirm disappearance promptly, without repeating the click.
                 loop.call_later(REPRESS_AFTER + 0.5, _fire_scan)
             if not _state.get("scan_again"):
                 return cards
@@ -916,6 +1019,9 @@ async def _watch() -> None:
 
 
 def start() -> None:
+    from app.services import run_mode
+    if run_mode.skip("muse_app"):
+        return
     if _backends.backend() is None:
         return  # no card watcher on this platform (Linux): Crew approvals still work in Xod
     try:

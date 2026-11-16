@@ -611,6 +611,7 @@ def make_restarter(cfg, probe, log):
 
 def api_status(core):
     st = core.status(time.time())
+    st["approval_policy"] = "one-time-v1"
     st["bundle_id"] = BUNDLE_ID
     st["uptime_s"] = int(time.time() - core.started_at)
     if getattr(core, "updates_guardian", None) is not None:
@@ -663,7 +664,7 @@ def make_server(cfg, core, walk, log):
 
         def do_POST(self):
             path = self.path.split("?")[0]
-            if path not in ("/ax/scan", "/ax/press", "/ax/request-access", "/brain/key"):
+            if path not in ("/ax/scan", "/ax/press", "/ax/press-once", "/ax/request-access", "/brain/key"):
                 return self._send(404, {"error": "not found"})
             if not self._authed():
                 return self._send(401, {"error": "unauthorized"})
