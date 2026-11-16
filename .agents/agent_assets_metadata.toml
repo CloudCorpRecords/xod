@@ -1,0 +1,30 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "t8Gzg6uFO1Whj7zI45GQn"
+uri = "file://.local/reports/xod-registration-plan.html"
+type = "html"
+title = "Xod registration and cleanup plan"
+description = "Read-only plan with the full 56-entry branch/worktree ledger, missing audit evidence, ownership decisions, and conditional cleanup steps."
+logical_id = "0600bbf6-1e6a-4961-896a-60b6322bfda5"
+content_hash = "sha256:654a392dca84aa1d38a39acd4438ab4735bafe79a2550c4936ee721d96e995d2"
+size = 70874
+mtime_ms = 1794871145500
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:e7f135e5-1239-45e8-a62a-dc8241c9c97a/0600bbf6-1e6a-4961-896a-60b6322bfda5/19bbfb1a-0c05-4796-886f-80a42667d517"
+storage_version_token = "1794871166946362"
+content_type = "text/html"
+
+[[outputs]]
+id = "mIpRCTv3qY-1vl8JbFllL"
+uri = "file://.local/reports/xod-registration-ledger.csv"
+type = "table"
+title = "Branch and worktree registration ledger"
+description = "Importable 56-row ledger with commit IDs, proposed merge targets, owner gaps, dirty-state observations, and evidence."
+logical_id = "c8c599d4-d5ea-45c1-a294-038dad937a50"
+content_hash = "sha256:a84d2e980275734f8dc7b14c8426648e57fbd8016e3c50827d1202309b237a86"
+size = 46391
+mtime_ms = 1794871007881
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:e7f135e5-1239-45e8-a62a-dc8241c9c97a/c8c599d4-d5ea-45c1-a294-038dad937a50/d855ff1e-733c-4927-b778-35f497276e1d"
+storage_version_token = "1794871167574947"
+content_type = "text/csv"
