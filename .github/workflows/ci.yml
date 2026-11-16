@@ -99,3 +99,30 @@ jobs:
       - run: node --check main.js
       - name: Audit what ships in the app
         run: npm audit --omit=dev --audit-level=low
+
+  bootstrap-electron:
+    # AGE-75: the bootstrap verdict proof must run inside a packaged
+    # Electron process on darwin as well as linux. The field failures the
+    # bootstrap exists for happened on darwin/arm64, but the runner was
+    # Linux-only (flat dist layout, xvfb launch), so no darwin pass could
+    # ever be recorded. The layout checks run on both OSes; the packaged
+    # launch itself runs wherever the runner is.
+    name: Bootstrap in packaged Electron (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    defaults:
+      run:
+        working-directory: electron
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "22"
+      - run: npm ci
+      - name: Dist layout (darwin and linux shapes)
+        run: node --test bootstrap-electron-layout.test.js
+      - name: Bootstrap verdict inside packaged Electron
+        run: node --test bootstrap-electron.test.js

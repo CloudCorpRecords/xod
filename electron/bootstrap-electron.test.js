@@ -28,12 +28,23 @@
 // the packaged runs launch from lives under XOD_ELECTRON_TEST_SCRATCH
 // (default os.tmpdir()); one copy serves every run in this file and is
 // removed when the file finishes.
+//
+// Platforms (AGE-75): the runner used to be Linux-only. It assumed the
+// flat dist layout (<dist>/electron with resources/ beside it) and
+// launched through xvfb-run, so on darwin it found no dist at all: a Mac
+// dist is an app bundle (Electron.app/Contents/MacOS/Electron, resources
+// at Contents/Resources) and macOS has no xvfb. Dist resolution and the
+// launch route now come from scripts/bootstrap-electron-layout.js, which
+// knows both shapes; bootstrap-electron-layout.test.js proves the darwin
+// shape on any host, and CI plus the release workflow run this file
+// itself on macos runners, where the packaged launch is real.
 const { test, after } = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { execFile } = require("child_process");
+const { execFile, execFileSync } = require("child_process");
+const layoutLib = require("./scripts/bootstrap-electron-layout");
 
 // --- the same minimal asar writer bootstrap.test.js uses ---
 function writeAsar(file, files) {
@@ -112,42 +123,47 @@ function fixtureBroken113() {
   };
 }
 
-function electronDistDir() {
+function electronDist() {
   const candidates = [];
   if (process.env.XOD_ELECTRON_BIN) candidates.push(process.env.XOD_ELECTRON_BIN);
   try {
     const p = require.resolve("electron", { paths: [__dirname] });
     candidates.push(typeof p === "string" ? p : "");
   } catch (e) { /* not installed here */ }
-  candidates.push(path.join(os.homedir(), "workspace", "xod-eval", "v114-ship", "artifact", "electron-bin", "electron"));
-  for (const bin of candidates) {
-    if (!bin) continue;
-    const dir = path.dirname(bin);
-    if (fs.existsSync(bin) && fs.existsSync(path.join(dir, "resources"))) return dir;
-  }
-  return null;
+  const preserved = path.join(os.homedir(), "workspace", "xod-eval", "v114-ship", "artifact", "electron-bin");
+  candidates.push(path.join(preserved, "electron"));
+  candidates.push(preserved);
+  return layoutLib.resolveDist(candidates, process.platform);
 }
 
-let sharedDist = null;
+let sharedLayout = null;
 let sharedRoot = null;
 after(() => {
   if (sharedRoot) { try { fs.rmSync(sharedRoot, { recursive: true, force: true }); } catch (e) {} }
 });
-function packagedDist(distDir) {
-  if (sharedDist) return sharedDist;
+function packagedDist(layout) {
+  if (sharedLayout) return sharedLayout;
   const scratchRoot = process.env.XOD_ELECTRON_TEST_SCRATCH || os.tmpdir();
   sharedRoot = fs.mkdtempSync(path.join(scratchRoot, "xod-bootstrap-electron-"));
   const dist = path.join(sharedRoot, "dist");
-  fs.cpSync(distDir, dist, { recursive: true });
-  sharedDist = dist;
-  return sharedDist;
+  fs.cpSync(layout.root, dist, { recursive: true });
+  sharedLayout = layoutLib.relocate(layout, dist);
+  // Rewriting app.asar inside a copied .app invalidates its signature;
+  // re-sign the copy ad hoc so macOS will launch it. Best effort only:
+  // a direct exec of the binary usually runs either way, and a codesign
+  // failure must not mask the verdict this test exists to produce.
+  const app = layoutLib.appBundlePath(sharedLayout);
+  if (app) {
+    try { execFileSync("codesign", ["--force", "--deep", "--sign", "-", app], { stdio: "ignore" }); } catch (e) {}
+  }
+  return sharedLayout;
 }
 
-function runPackaged(distDir, targetAsar, label) {
+function runPackaged(layout, targetAsar, label) {
   return new Promise((resolve, reject) => {
-    const dist = packagedDist(distDir);
+    const dist = packagedDist(layout);
     const root = sharedRoot;
-    const ownAsar = path.join(dist, "resources", "app.asar");
+    const ownAsar = dist.appAsar;
     writeAsar(ownAsar, {
       "package.json": Buffer.from(JSON.stringify({
         name: "xod-bootstrap-electron-fixture", version: "9.9.9", main: "harness.js",
@@ -163,8 +179,8 @@ function runPackaged(distDir, targetAsar, label) {
       XOD_ELECTRON_TEST_OUT: outFile,
       XOD_ELECTRON_TEST_TARGET: targetAsar || "",
     };
-    const bin = path.join(dist, "electron");
-    execFile("xvfb-run", ["-a", bin, "--no-sandbox", "--disable-gpu"],
+    const spec = layoutLib.launchSpec(process.platform, dist.binary);
+    execFile(spec.command, spec.args,
       { env, timeout: 120000, maxBuffer: 16 * 1024 * 1024 },
       (err, stdout, stderr) => {
         if (!fs.existsSync(outFile)) {
@@ -178,9 +194,9 @@ function runPackaged(distDir, targetAsar, label) {
 }
 
 test("inside a packaged Electron process, a healthy package is a launch, not a repair", async () => {
-  const distDir = electronDistDir();
-  assert.ok(distDir, "no Electron dist found: set XOD_ELECTRON_BIN to an electron binary " +
-    "in a dist layout (with resources/ beside it), or npm ci the electron package first");
+  const dist = electronDist();
+  assert.ok(dist, "no Electron dist found: set XOD_ELECTRON_BIN to an electron binary " +
+    "in a dist layout (flat, or a .app bundle on darwin), or npm ci the electron package first");
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "xod-bootstrap-electron-targets-"));
   const healthy = path.join(scratch, "healthy-app.asar");
   writeAsar(healthy, {
@@ -189,7 +205,7 @@ test("inside a packaged Electron process, a healthy package is a launch, not a r
     "main.js": Buffer.from('const l = require("./liveness");\nmodule.exports = {};\n'),
     "liveness.js": Buffer.from("class LivenessReview {}\nmodule.exports = { LivenessReview };\n"),
   });
-  const out = await runPackaged(distDir, healthy, "healthy");
+  const out = await runPackaged(dist, healthy, "healthy");
   assert.ok(out.electron, "the harness ran inside Electron");
   assert.equal(out.ownError, undefined);
   assert.equal(out.own.action, "launch",
@@ -204,12 +220,12 @@ test("inside a packaged Electron process, a healthy package is a launch, not a r
 });
 
 test("inside a packaged Electron process, the 1.1.3 defect is still caught for its real reasons", async () => {
-  const distDir = electronDistDir();
-  assert.ok(distDir, "no Electron dist found: set XOD_ELECTRON_BIN first");
+  const dist = electronDist();
+  assert.ok(dist, "no Electron dist found: set XOD_ELECTRON_BIN first");
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "xod-bootstrap-electron-targets-"));
   const broken = path.join(scratch, "broken-113-app.asar");
   writeAsar(broken, fixtureBroken113());
-  const out = await runPackaged(distDir, broken, "broken");
+  const out = await runPackaged(dist, broken, "broken");
   assert.equal(out.own.action, "launch", "the harness app itself stays healthy");
   assert.equal(out.targetError, undefined);
   assert.equal(out.target.action, "repair");
