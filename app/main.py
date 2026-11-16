@@ -874,6 +874,13 @@ async def _start_task_worker():
         fleet_bridge.register_fleet_tools()
     except Exception:
         pass
+    try:   # the computer-control bridge (services/computer_bridge.py, AGE-85): Xod's own
+        # look / screenshot / click / type / press MCP server registers itself before the
+        # hub connects, at trust ask, so every action waits for the person's approval card
+        from app.services import computer_bridge
+        computer_bridge.register_computer_control()
+    except Exception:
+        pass
     from app.services.mcp_client import mcp_hub
     asyncio.create_task(mcp_hub.start())   # connect outside tool servers in the background
     from app.services import agent_mail
