@@ -35,6 +35,14 @@ jobs:
         run: python3 scripts/check_release.py
       - name: Build the installer
         working-directory: electron
+        env:
+          # AGE-57 (docs/SIGNING.md): when the CSC_LINK and CSC_KEY_PASSWORD secrets exist,
+          # electron-builder imports that signing certificate and build-mac.sh signs every
+          # release with it, so macOS grants and keychain trust survive updates. While the
+          # secrets are unset these expand empty, build-mac.sh treats that as "no
+          # certificate", and the build stays ad-hoc with a loud warning.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: |
           npm ci
           npm run dist
