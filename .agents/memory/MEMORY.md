@@ -1,0 +1,1 @@
+- [Product scope](product-scope.md) — Open-source BYOK users; Replit-managed model access is for testing, with approval reliability the immediate priority.
