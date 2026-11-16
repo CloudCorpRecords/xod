@@ -55,6 +55,7 @@ def check(name, ok, detail=""):
 #   chatty   writes 200 KB to its log on every request (a full pipe froze the real engine)
 STUB = r'''
 import json, sys, time
+import socketserver
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 port, plan, count = int(sys.argv[1]), sys.argv[2], sys.argv[3]
 try:
@@ -109,7 +110,19 @@ class H(BaseHTTPRequestHandler):
         self._chunk({}, "stop")
         self.wfile.write(b"data: [DONE]\n\n"); self.wfile.flush()
 
-ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+class Server(ThreadingHTTPServer):
+    def server_bind(self):
+        # http.server's server_bind looks the bind address up in reverse DNS
+        # (socket.getfqdn) before it starts listening. On the CI runner that
+        # lookup stalls ~35 s, and every engine start in this suite paid it,
+        # which is what AGE-83 measured as slow stall recovery. The stand-in
+        # does not need a server name, so bind without the lookup.
+        socketserver.TCPServer.server_bind(self)
+        host, p = self.server_address[:2]
+        self.server_name = host
+        self.server_port = p
+
+Server(("127.0.0.1", port), H).serve_forever()
 '''
 STUB_PATH = TMP / "stub_engine.py"
 STUB_PATH.write_text(STUB)
