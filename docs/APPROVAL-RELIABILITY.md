@@ -14,6 +14,10 @@ This repair keeps these distinct responsibilities rather than replacing them
 with another agent or deleting Partner. No model call is needed to choose a
 known approval button.
 
+Lightweight mode retains the Muse watcher, Partner supervision, and Computer
+Health. It skips unrelated optional services, not the approval relay. Linux
+still cannot watch native desktop cards; dry-run preview never presses buttons.
+
 ## Button and retry contract
 
 Choose a one-time or task-scoped button. Never silently turn a one-time

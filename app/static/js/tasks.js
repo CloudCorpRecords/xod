@@ -38,13 +38,13 @@
 
   function schedule(ms) {
     clearInterval(pollTimer);
-    pollTimer = setInterval(refresh, ms);
+    pollTimer = setInterval(() => refresh(false), ms);
   }
 
   // ---------- data ----------
-  async function refresh() {
+  const refresh = createRefreshGate(async (isCurrent) => {
     const data = await api("/api/tasks");
-    if (!data.tasks) return;
+    if (!isCurrent() || !data.tasks) return;
     noticeChanges(data.tasks);
     tasks = data.tasks;
     const c = data.counts || {};
@@ -59,7 +59,7 @@
     }
     if (window.__xodRefreshStatusLine) window.__xodRefreshStatusLine();
     if (isOpen()) render();
-  }
+  });
 
   function noticeChanges(next) {
     for (const t of next) {

@@ -23,6 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TMP = Path(tempfile.mkdtemp(prefix="xod-crew-"))
 HOMEDIR = TMP / "home"
+os.environ["XDG_CONFIG_HOME"] = str(HOMEDIR / ".config")
 BIN = HOMEDIR / ".local" / "bin"
 BIN.mkdir(parents=True)
 (TMP / "state").mkdir()

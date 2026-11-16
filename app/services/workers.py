@@ -375,7 +375,7 @@ def _queued_steers(worker_id: str) -> List[Dict[str, Any]]:
 
 async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
     """One agent turn. Returns 'done', or 'interrupted' when an urgent steer cut it short."""
-    async def consume():
+    async def consume_admitted():
         call_args: Dict[str, Any] = {}
         async for ev in agent(prompt, wid):
             while wid in _frozen:          # test hook: a frozen worker makes no progress at all
@@ -403,6 +403,13 @@ async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
                 _save(wid, last_activity_at=time.time(), last_activity=str(ev.get("content", ""))[:200], stalled_reason=None)
                 continue
             _save(wid, last_activity_at=time.time(), stalled_reason=None)
+    async def consume():
+        from app.services import runtime_limits
+        _save(wid, last_activity="queued for a worker slot", last_activity_at=time.time())
+        async with runtime_limits.slot("workers", runtime_limits.worker_limit()):
+            _save(wid, last_activity="running", last_activity_at=time.time())
+            await consume_admitted()
+
     run = asyncio.ensure_future(consume())
     try:
         while not run.done():
@@ -418,6 +425,7 @@ async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
         return "done"
     except asyncio.CancelledError:
         run.cancel()
+        await asyncio.gather(run, return_exceptions=True)
         raise
 
 

@@ -3369,10 +3369,15 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
     # claimed before use, sticky per holder, so two lanes never interleave on one device. A busy
     # resource is defer-and-recheck: wait in the queue with the reason recorded, then say so.
     from app.services import resources as _resources
+    from app.services.runtime_limits import resource_holder
+    _holder = resource_holder.get() or _origin
     _res = _resources.resource_for(name, arguments or {})
     if _res:
+        if resource_holder.get():
+            from app.services.runtime_limits import claimed_holders
+            claimed_holders.add(_holder)
         _chat = _origin.startswith("chat")
-        _got = await _resources.wait_for(_res, _origin, max_wait=30 if _chat else 600, ttl=45 if _chat else 120)
+        _got = await _resources.wait_for(_res, _holder, max_wait=30 if _chat else 600, ttl=45 if _chat else 120)
         if not _got["granted"]:
             return {"success": False, "deferred": True, "resource": _res,
                     "error": f"{_res} is busy ({_got.get('reason') or 'held by another lane'}). Nothing was done; "

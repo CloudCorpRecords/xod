@@ -17,6 +17,7 @@ Ideas taken from how Replit's agent works (their posts on decision-time guidance
                   done, what isn't, and exactly why. "continue" picks it up again.
 """
 import asyncio
+from contextlib import aclosing
 import json
 import logging
 import os
@@ -710,7 +711,31 @@ def _shrink(convo: List[Dict[str, Any]], force_local: Optional[bool] = None) -> 
     for m in tool_msgs[:-keep_full]:
         c = m.get("content") or ""
         if len(c) > threshold:
-            m["content"] = c[:head_n] + " … " + c[-tail_n:]
+            try:
+                data = json.loads(c)
+            except (ValueError, TypeError):
+                data = None
+            if isinstance(data, dict):
+                # Never truncate away an approval, effect status, file path or
+                # job handle hidden in the middle of a large JSON tool result.
+                state_keys = {"success", "error", "outcome", "outcome_evidence", "needs_approval",
+                              "approval_id", "job_id", "status", "path", "file_path", "id", "tool",
+                              "verification", "exit_code", "message"}
+                compact = {}
+                for key, value in data.items():
+                    if key in state_keys:
+                        compact[key] = value
+                    elif isinstance(value, str) and len(value) > threshold:
+                        compact[key] = value[:head_n] + " … " + value[-tail_n:]
+                    elif isinstance(value, (list, dict)):
+                        text = json.dumps(value, default=str)
+                        compact[key] = value if len(text) <= threshold else text[:head_n] + " … " + text[-tail_n:]
+                    else:
+                        compact[key] = value
+                compact["_compacted"] = True
+                m["content"] = json.dumps(compact, default=str)
+            else:
+                m["content"] = c[:head_n] + " … " + c[-tail_n:]
 
 
 def _summary(name: str, res: Any) -> str:
@@ -970,11 +995,12 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 jobs.append(a if isinstance(a, dict) else {})
             yield {"type": "status", "content": f"Handing {len(jobs)} piece{'s' if len(jobs) != 1 else ''} to the team…"}
             results = []
-            async for ev in team.delegate_many(jobs, execute_tool, start_index=subs + 1):
-                if ev.get("type") == "_results":
-                    results = ev["results"]
-                else:
-                    yield ev
+            async with aclosing(team.delegate_many(jobs, execute_tool, start_index=subs + 1)) as delegated:
+                async for ev in delegated:
+                    if ev.get("type") == "_results":
+                        results = ev["results"]
+                    else:
+                        yield ev
             subs += len(jobs)
             for (i, tc), a, r in zip(handoffs, jobs, results):
                 cid = tc.get("id") or f"work_{step}_{i}"
@@ -984,8 +1010,22 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 from app.services import agent_log
                 agent_log.step("team_delegate", a, {**r, "success": r.get("success")})
                 convo.append({"role": "tool", "tool_call_id": cid, "name": "team_delegate",
-                              "content": json.dumps({k: r.get(k) for k in ("agent", "brain", "success", "summary", "error")}, default=str)[:4000]})
+                              "content": json.dumps({k: r.get(k) for k in ("agent", "brain", "success", "summary", "error",
+                                                                       "verification", "needs_approval", "evidence")}, default=str)})
             calls = [tc for tc in calls if tc.get("function", {}).get("name") != "team_delegate"]
+            pending_approval = next((r.get("approval") for r in results if r.get("needs_approval") and r.get("approval")), None)
+            if pending_approval:
+                # Preserve tool transcript pairs for calls we must not run after
+                # a teammate reached the approval boundary.
+                for tc in calls:
+                    cid = tc.get("id")
+                    if cid and cid not in answered_ids:
+                        convo.append({"role": "tool", "tool_call_id": cid,
+                                      "content": '{"success":false,"error":"Not run: waiting for teammate approval"}'})
+                yield {"type": "approval_hold", "data": pending_approval}
+                answer = "**Waiting for your OK** on the team's approval card. No further steps were run."
+                left = "waited for teammate approval"
+                break
         for i, tc in enumerate(calls[:4]):
             name = tc.get("function", {}).get("name", "")
             raw = tc.get("function", {}).get("arguments") or "{}"

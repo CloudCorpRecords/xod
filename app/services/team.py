@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from app.paths import DATA_DIR
@@ -40,7 +41,14 @@ def load() -> Dict[str, Any]:
     except Exception:
         s = {}
     return {"enabled": s.get("enabled", True), "tiers": s.get("tiers") or {}, "agents": s.get("agents") or [],
-            "max_parallel": int(s.get("max_parallel") or 3)}
+            "max_parallel": _parallel_limit(s.get("max_parallel"))}
+
+
+def _parallel_limit(value):
+    try:
+        return max(1, min(6, int(value or 3)))
+    except (TypeError, ValueError):
+        return 3
 
 
 def save(**changes: Any) -> Dict[str, Any]:
@@ -169,6 +177,9 @@ found, and the proof it works (an output you saw). It's {now}.
 
 async def team_on() -> bool:
     """Worth offering team_delegate: more than one brain, or a teammate agent."""
+    from app.services import workers
+    if workers.envelope.get() == "read_only":
+        return False  # an admitted leaf worker cannot wait on another worker slot
     if not load()["enabled"]:
         return False
     t = await tiers()
@@ -202,6 +213,7 @@ async def run_subagent(label: str, task: str, tier: str, execute_tool: Callable,
     log: List[Dict[str, Any]] = []
     told: Dict[str, int] = {}
     report = ""
+    approval = None
     nudged = swapped = False
     from app.services.llm import llm_service
     for step in range(SUB_STEPS):
@@ -257,6 +269,7 @@ async def run_subagent(label: str, task: str, tier: str, execute_tool: Callable,
                         "exit": res.get("exit_code") if isinstance(res, dict) else None, "new": True})
             convo.append({"role": "tool", "tool_call_id": cid, "name": name, "content": json.dumps(res, default=str)[:3000]})
             if isinstance(res, dict) and res.get("needs_approval"):
+                approval = res
                 report = f"Stopped at a step that needs the person's OK: {res.get('message') or name}"
                 break
         for tc in calls:
@@ -266,13 +279,17 @@ async def run_subagent(label: str, task: str, tier: str, execute_tool: Callable,
                               "content": json.dumps({"success": False, "error": "Skipped: parallel tool call cap in one turn or paused for approval."})})
         if report:
             break
-        worker._shrink(convo)
+        worker._shrink(convo, force_local=_local(t))
     else:
         report = report or f"Ran out of steps after {len(log)} actions; last: {log[-1]['name'] if log else 'none'}."
-    ok = bool(report) and not report.startswith(("Stopped", "Ran out"))
-    emit({"type": "subagent_status", "agent_id": label, "status": "completed" if ok else "partial", "message": brain,
+    ok = bool(report) and report != "It gave no answer." and not report.startswith(("Stopped", "Ran out"))
+    emit({"type": "subagent_status", "agent_id": label, "status": "waiting" if approval else "completed" if ok else "partial", "message": brain,
           "findings": report[:1500], "duration_ms": int((time.time() - started) * 1000)})
-    return {"success": ok, "agent": label, "brain": brain, "tier": tier, "summary": report[:3000], "steps": len(log)}
+    return {"success": ok, "agent": label, "brain": brain, "tier": tier, "summary": report[:3000], "steps": len(log),
+            "needs_approval": report.startswith("Stopped at a step"),
+            "approval": approval,
+            "verification": "worker_report",
+            "evidence": [{"tool": e["name"], "ok": not e["failed"], "summary": e["out"][-600:]} for e in log[-8:]]}
 
 
 async def _ask_outside(label, name, task, execute_tool, emit, started) -> Dict[str, Any]:
@@ -291,17 +308,25 @@ async def _ask_outside(label, name, task, execute_tool, emit, started) -> Dict[s
     res = await execute_tool(tool, {key: task})
     emit({"type": "subagent_tool_result", "agent_id": label, "name": tool, "id": f"{label}_0", "summary": str((res or {}).get("content") or "")[:120], "data": res})
     text = str((res or {}).get("content") or (res or {}).get("error") or "")
-    ok = bool(res and res.get("success"))
-    emit({"type": "subagent_status", "agent_id": label, "status": "completed" if ok else "partial", "message": name,
+    needs_approval = bool(res and res.get("needs_approval"))
+    ok = bool(res and res.get("success")) and not needs_approval
+    emit({"type": "subagent_status", "agent_id": label, "status": "waiting" if needs_approval else "completed" if ok else "partial", "message": name,
           "findings": text[:1500], "duration_ms": int((time.time() - started) * 1000)})
-    return {"success": ok, "agent": label, "brain": name, "summary": text[:3000], "needs_approval": bool(res and res.get("needs_approval"))}
+    return {"success": ok, "agent": label, "brain": name, "summary": text[:3000], "needs_approval": needs_approval,
+            "approval": res if needs_approval else None, "verification": "worker_report"}
 
 
 async def delegate_many(jobs: List[Dict[str, Any]], execute_tool: Callable, start_index: int = 1):
     """Runs handed-off pieces at the same time (at most max_parallel at once) and streams their events.
     Yields chat events, then {"type": "_results", "results": [...]} in the order given."""
     queue: asyncio.Queue = asyncio.Queue()
-    sem = asyncio.Semaphore(load()["max_parallel"])
+    from app.services import runtime_limits
+    from app.services import workers
+    if workers.envelope.get() == "read_only":
+        raise PermissionError("Read-only leaf workers cannot delegate again.")
+    if len(jobs) > 32:
+        raise ValueError("At most 32 delegated pieces per batch; split the work before retrying.")
+    batch_id = uuid.uuid4().hex
     labels = [f"sub{start_index + i}" for i in range(len(jobs))]
     t = await tiers()
     yield {"type": "swarm_plan", "title": f"Team: {len(jobs)} subagent{'s' if len(jobs) != 1 else ''} at work", "conductor": "Xod",
@@ -311,28 +336,55 @@ async def delegate_many(jobs: List[Dict[str, Any]], execute_tool: Callable, star
                          for lb, j in zip(labels, jobs)]}
 
     async def one(lb, j):
-        async with sem:
-            try:
+        queued = time.monotonic()
+        queue.put_nowait({"type": "subagent_status", "agent_id": lb, "status": "queued",
+                         "message": "Waiting for a worker slot"})
+        holder = f"team:{batch_id}:{lb}"
+        tok = runtime_limits.resource_holder.set(holder)
+        try:
+            async with runtime_limits.slot("workers", runtime_limits.worker_limit()):
+                queue.put_nowait({"type": "subagent_status", "agent_id": lb, "status": "running",
+                                 "message": "Worker slot acquired", "queue_wait_ms": int((time.monotonic() - queued) * 1000)})
                 return await run_subagent(lb, str(j.get("task") or ""), str(j.get("tier") or "standard"), execute_tool,
                                           queue.put_nowait, j.get("agent"))
-            except Exception as e:
-                logger.exception("subagent failed")
-                return {"success": False, "agent": lb, "summary": "", "error": f"{type(e).__name__}: {e}"}
+        except Exception as e:
+            logger.exception("subagent failed")
+            return {"success": False, "agent": lb, "summary": "", "error": f"{type(e).__name__}: {e}"}
+        finally:
+            runtime_limits.resource_holder.reset(tok)
+            # Device claims have their own holder, but audit/effect ownership stays
+            # with the parent task so its completion verifier still sees the work.
+            # Don't import/init the device registry for workers that never use
+            # a device. Tools set this flag only after making a real claim.
+            if holder in runtime_limits.claimed_holders:
+                from app.services import resources
+                await asyncio.to_thread(resources.release_holder, holder)
+                runtime_limits.claimed_holders.discard(holder)
 
     tasks = [asyncio.create_task(one(lb, j)) for lb, j in zip(labels, jobs)]
     pending = set(tasks)
-    while pending:
-        getter = asyncio.create_task(queue.get())
-        done, _ = await asyncio.wait(pending | {getter}, return_when=asyncio.FIRST_COMPLETED)
-        if getter in done:
-            yield getter.result()
-        else:
-            getter.cancel()
-        pending = {x for x in pending if not x.done()}
-    while not queue.empty():
-        yield queue.get_nowait()
-    results = [x.result() for x in tasks]
-    yield {"type": "swarm_complete", "total_subagents": len(results), "results": [
-        {"agent_id": r["agent"], "status": "completed" if r.get("success") else "partial", "findings": (r.get("summary") or r.get("error") or "")[:600]}
-        for r in results]}
-    yield {"type": "_results", "results": results}
+    getter = None
+    try:
+        while pending:
+            getter = asyncio.create_task(queue.get())
+            done, _ = await asyncio.wait(pending | {getter}, return_when=asyncio.FIRST_COMPLETED)
+            if getter in done:
+                yield getter.result()
+            else:
+                getter.cancel()
+                await asyncio.gather(getter, return_exceptions=True)
+            pending = {x for x in pending if not x.done()}
+        while not queue.empty():
+            yield queue.get_nowait()
+        results = [x.result() for x in tasks]
+        yield {"type": "swarm_complete", "total_subagents": len(results), "results": [
+            {"agent_id": r["agent"], "status": "waiting" if r.get("needs_approval") else "completed" if r.get("success") else "partial",
+             "findings": (r.get("summary") or r.get("error") or "")[:600]}
+            for r in results]}
+        yield {"type": "_results", "results": results}
+    finally:
+        owned = tasks + ([getter] if getter else [])
+        for child in owned:
+            if not child.done():
+                child.cancel()
+        await asyncio.gather(*owned, return_exceptions=True)

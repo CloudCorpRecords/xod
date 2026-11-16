@@ -177,3 +177,4 @@ class ClaudeRun:
                         os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
                     except Exception:
                         pass
+                    await asyncio.wait_for(self.proc.wait(), 3)

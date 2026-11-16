@@ -2004,13 +2004,15 @@ class TaskQueue:
         was_running = (task_id == self._running_id and self._worker is not None
                        and not self._worker.done())
         worker = self._worker if was_running else None
+        run = None
         if worker is not None:
             worker.cancel()  # a hung await never sees the cancel flag; cancel the worker itself
             try:
                 await asyncio.wait_for(asyncio.shield(worker), timeout=5)
             except BaseException:
                 pass
-            self._running_id = None
+            if worker.done():
+                self._running_id = None
         else:
             # An orchestrated task runs in the orchestrator's pool, in its own asyncio task.
             from app.services import orchestrator
@@ -2021,6 +2023,11 @@ class TaskQueue:
                     await asyncio.wait_for(asyncio.shield(run), timeout=5)
                 except BaseException:
                     pass
+        alive = worker or run
+        if alive is not None and alive is not asyncio.current_task() and not alive.done():
+            self._update(task_id, now="Stopping: waiting for the worker to exit",
+                         stalled=True, stalled_reason="Stop requested, but worker cleanup is not confirmed.")
+            return False
         await self._sweep_tool_children(task_id)
         fields: Dict[str, Any] = {"status": status, "finished_at": time.time(), "now": now_text,
                                   "next_action": None, "waiting_kind": None,

@@ -973,6 +973,7 @@ async def _run_parallel(q: Any, task_id: str, step: Dict[str, Any], instructions
             await asyncio.wait({run}, timeout=STEER_POLL_SEC)
         except asyncio.CancelledError:
             run.cancel()        # the task's own run is going away: so does its fan-out
+            await asyncio.gather(run, return_exceptions=True)
             raise
         if run.done():
             break

@@ -10,6 +10,7 @@
   const ICON = { tool: "⚙", says: "💬", asks: "✋", you: "🙋", xod: "✅", status: "•", error: "⚠" };
   let root = null, current = null, timer = null, chip = null;
   let listOnly = false;          // a narrow window showing the list instead of the open job
+  const drafts = new Map();
   const WHO = { claude: "Claude Code", muse: "Muse" };
   const who = (j) => WHO[j.agent] || j.agent || "The agent";
 
@@ -123,11 +124,12 @@
   }
 
   let modelsLoaded = false;
-  async function refreshLoop() {
+  async function refreshLoop(isCurrent = () => true) {
     const body = root.querySelector("[data-c-loop-body]");
     const box = root.querySelector("[data-c-loop]");
     if (!body || !box || !box.open) return;
     const L = await api("/api/crew/loop");
+    if (!isCurrent()) return;
     if (!L || L.success === false) { body.textContent = "Couldn't read the loop."; return; }
     const rows = (L.repos || []).map((r) => {
       const j = r.last_job;
@@ -155,11 +157,11 @@
     }
   }
 
-  async function refresh() {
+  const refresh = createRefreshGate(async (isCurrent) => {
     if (!root || root.classList.contains("hidden")) return;
-    refreshAutoApprove();
-    refreshLoop();
+    await Promise.all([refreshAutoApprove(isCurrent), refreshLoop(isCurrent)]);
     const d = await api("/api/crew");
+    if (!isCurrent() || (!d.success && !d.jobs) || root.classList.contains("hidden")) return;
     const jobs = d.jobs || [];
     if (current && !jobs.some((j) => j.id === current)) current = null;
     if (!current && jobs.length) current = jobs[0].id;
@@ -173,16 +175,22 @@
     side.classList.toggle("w-full", narrow);
     right.classList.toggle("hidden", narrow && (listOnly || !current));
     if (!current) { setHtml(right, `<div class="m-auto text-zinc-500 text-[12px] p-6">Pick a job, or start one.</div>`); return; }
-    const r = await api(`/api/crew/${encodeURIComponent(current)}`);
-    if (!r.success) return;
+    const selected = current;
+    const r = await api(`/api/crew/${encodeURIComponent(selected)}`);
+    if (!isCurrent() || current !== selected || !r.success || root.classList.contains("hidden")) return;
     const typing = right.querySelector("[data-c-msg]") === document.activeElement || [...right.querySelectorAll("[data-c-free]")].includes(document.activeElement);
     if (typing) return;                                   // don't redraw while you type there
     const sc = right.querySelector("[data-c-scroll]");
+    const scroll = sc ? sc.scrollTop : 0;
     const atBottom = !sc || sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 40;
     setHtml(right, (narrow ? `<button data-c="back" class="self-start m-2 mb-0 px-2 py-1 rounded-md text-[12px] text-zinc-400 hover:text-white hover:bg-surface-700">← All jobs</button>` : "") + detail(r.job));
     const sc2 = right.querySelector("[data-c-scroll]");
-    if (sc2 && atBottom) sc2.scrollTop = sc2.scrollHeight;
-  }
+    if (sc2) sc2.scrollTop = atBottom ? sc2.scrollHeight : scroll;
+    right.querySelectorAll("[data-c-msg], [data-c-free]").forEach((input) => {
+      input.value = drafts.get(`${selected}:${input.dataset.cFree || "message"}`) || "";
+      input.oninput = () => drafts.set(`${selected}:${input.dataset.cFree || "message"}`, input.value);
+    });
+  });
 
   function open() {
     if (!root) {
@@ -256,7 +264,7 @@
     loadAutoApprove();
     refresh();
     clearInterval(timer);
-    timer = setInterval(refresh, 1500);
+    timer = setInterval(() => refresh(false), 3000);
   }
 
   async function onClick(e) {
@@ -393,9 +401,10 @@
 
   // The watcher can hit (or clear) a problem seconds after the switch is flipped, so the note under
   // it is refreshed with the panel — not only when Crew is opened or the switch is toggled.
-  async function refreshAutoApprove() {
+  async function refreshAutoApprove(isCurrent = () => true) {
     if (!root || !root.querySelector("[data-c-autoapprove]")) return;
-    showAutoApprove(await api("/api/crew/settings/auto-approve"));
+    const status = await api("/api/crew/settings/auto-approve");
+    if (isCurrent()) showAutoApprove(status);
   }
 
   async function loadTools() {
@@ -416,7 +425,10 @@
     if (msg && msg.value.trim()) {
       const steer = root.querySelector("[data-c-steer]")?.checked;
       const text = msg.value; msg.value = ""; msg.blur();
-      const r = await api(`/api/crew/${current}/message`, { text, steer });
+      const sending = current;
+      drafts.delete(`${sending}:message`);
+      const r = await api(`/api/crew/${sending}/message`, { text, steer });
+      if (!r.success) drafts.set(`${sending}:message`, text);
       if (!r.success && typeof showToast === "function") showToast(r.error);
       refresh(); return;
     }
@@ -424,6 +436,7 @@
     if (free && free.value.trim()) {
       const q = free.closest("[data-c-q]").dataset.cQ;
       const r = await api(`/api/crew/${current}/answer`, { question: q, answers: [{ question: free.dataset.cFree, text: free.value }] });
+      if (r.success) drafts.delete(`${current}:${free.dataset.cFree}`);
       free.blur();
       if (!r.success && typeof showToast === "function") showToast(r.error);
       refresh();
@@ -431,21 +444,23 @@
   }
 
   // Anywhere in the app: a chip when an agent is waiting for your OK.
-  async function watch() {
+  const watch = createRefreshGate(async (isCurrent) => {
     if (window.enabledPacks && !window.enabledPacks.has("cli-agents")) return;
     const d = await api("/api/crew");
+    if (!isCurrent() || !d.jobs) return;
     const waiting = (d.jobs || []).filter((j) => j.status === "waiting");
     if (!waiting.length) { if (chip) chip.classList.add("hidden"); return; }
     if (!chip) {
       chip = document.createElement("button");
       chip.className = "fixed bottom-24 left-5 z-[80] flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-amber-500/15 border border-amber-500/40 text-amber-100 text-[12px] shadow-2xl";
-      chip.addEventListener("click", () => { current = (waiting[0] || {}).id || current; open(); });
+      chip.addEventListener("click", () => { current = chip.dataset.jobId || current; open(); });
       document.body.appendChild(chip);
     }
     chip.classList.remove("hidden");
+    chip.dataset.jobId = waiting[0].id;
     chip.innerHTML = `<span class="size-2 rounded-full bg-amber-400 animate-pulse"></span>${waiting.length === 1 ? esc(who(waiting[0])) : "Crew"} needs your OK on ${waiting.length === 1 ? `"${esc(waiting[0].title)}"` : `${waiting.length} jobs`} · Open Crew`;
-  }
-  setInterval(watch, 4000);
+  });
+  setInterval(() => watch(false), 4000);
 
   window.openCrew = open;
 })();

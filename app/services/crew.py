@@ -25,6 +25,7 @@ One Muse host (`muse serve`) is kept running and reused, so only the first job w
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -46,6 +47,9 @@ _jobs: Dict[str, Dict[str, Any]] = {}
 _by_session: Dict[str, str] = {}
 _host: Dict[str, Any] = {"host": None, "lock": None, "used": 0.0, "starting": False}
 _runs: Dict[str, ClaudeRun] = {}           # job id -> its running Claude Code
+_starts: Dict[str, asyncio.Task] = {}
+_preparations: Dict[str, asyncio.Task] = {}
+_discarding: Dict[str, asyncio.Task] = {}
 AGENTS = {"muse": "Muse", "claude": "Claude Code"}
 _listeners: List[Any] = []                 # callables(job_id, event) for whoever is watching (the board, a waiting tool)
 
@@ -72,11 +76,69 @@ def _load() -> None:
 
 
 def _save() -> None:
+    tmp = CREW_FILE.with_name(f".{CREW_FILE.name}.{uuid.uuid4().hex}.tmp")
     try:
-        keep = sorted(_jobs.values(), key=lambda j: j["started"])[-60:]
-        CREW_FILE.write_text(json.dumps(keep, default=str))
+        ordered = sorted(_jobs.values(), key=lambda j: j["started"])
+        terminal = {"done", "failed", "stopped"}
+        # A long-running or interrupted job must not age out while newer jobs
+        # finish. Keep its approvals/session even after 60 other completions.
+        keep = [j for j in ordered if j.get("status") not in terminal]
+        keep += [j for j in ordered if j.get("status") in terminal][-60:]
+        CREW_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with tmp.open("w", encoding="utf-8") as f:
+            json.dump(keep, f, default=str)
+            f.flush()
+            os.fsync(f.fileno())
+        tmp.replace(CREW_FILE)
     except OSError:
-        pass
+        logger.exception("Crew progress could not be saved; previous checkpoint was retained")
+        raise
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _launch(jid, coroutine):
+    task = asyncio.create_task(coroutine)
+    _starts[jid] = task
+    def finished(done):
+        if _starts.get(jid) is done:
+            _starts.pop(jid, None)
+        if not done.cancelled() and done.exception():
+            logger.error("Crew start failed: %s", done.exception())
+    task.add_done_callback(finished)
+
+
+async def _prepare_workspace(j, cwd):
+    # The thread cannot be cancelled. Its task owns the result until it has
+    # been recorded; callers await it shielded rather than losing that result.
+    wt = await asyncio.to_thread(worktrees.create, cwd, j["name"], j["id"])
+    if wt:
+        j["worktree"], j["folder"] = wt, wt["cwd"]
+        _save()
+
+
+async def _discard_unstarted_workspace(j):
+    wt = j.get("worktree")
+    if not wt or wt.get("closed") or j.get("_launched") is not False:
+        return
+    async def discard():
+        await asyncio.to_thread(worktrees.remove, wt, True)
+        branch = await asyncio.to_thread(worktrees._out,
+                                        ["rev-parse", "--verify", "--quiet", f"refs/heads/{wt['branch']}"], wt["repo"])
+        if os.path.exists(wt["path"]) or branch:
+            raise CrewError("Unused workspace cleanup was not confirmed; its reference has been retained.")
+        wt["closed"] = "discarded"
+        j["folder"] = j["project"]
+        _save()
+    # Two simultaneous stop requests must not race Git's worktree removal.
+    task = _discarding.get(j["id"])
+    if task is None:
+        task = _discarding[j["id"]] = asyncio.create_task(discard())
+    try:
+        await asyncio.shield(task)
+    finally:
+        if task.done():
+            _discarding.pop(j["id"], None)
 
 
 def _view(j: Dict[str, Any], steps: int = 60) -> Dict[str, Any]:
@@ -148,7 +210,11 @@ async def _muse() -> MuseHost:
         env = dict(agent_clis._env(), XDG_CONFIG_HOME=str(_muse_config()))
         h = MuseHost(path, str(agent_clis.HOME), env=env)
         h.on_event, h.on_request = _on_event, _on_request
-        await h.start(timeout=180)
+        try:
+            await h.start(timeout=180)
+        except BaseException:
+            await h.stop()
+            raise
         _host["host"], _host["used"] = h, time.time()
         asyncio.create_task(_idle_watch(h))
         return h
@@ -232,6 +298,12 @@ async def _idle_watch(h: MuseHost) -> None:
 
 
 async def shutdown() -> None:
+    for jid in list(_preparations):
+        await stop(jid)
+    starts = list(_starts.values())
+    for task in starts:
+        task.cancel()
+    await asyncio.gather(*starts, return_exceptions=True)
     h = _host.get("host")
     if h:
         await h.stop()
@@ -343,22 +415,34 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
     n = 1 + sum(1 for j in _jobs.values() if j["agent"] == agent)
     j = {"id": jid, "name": f"{agent}-job-{n}", "agent": agent, "title": (title or task.strip().splitlines()[0])[:100], "task": task,
          "folder": cwd, "project": cwd, "status": "starting", "started": time.time(), "updated": time.time(), "session_id": None,
-         "turn_id": None, "steps": [], "approvals": {}, "questions": {}, "_text": "", "answer": "", "usage": {}, "error": None}
+         "turn_id": None, "steps": [], "approvals": {}, "questions": {}, "_text": "", "answer": "", "usage": {}, "error": None,
+         "_launched": False}
     if kind == "board":
         j["seat"] = {"role": "board", "agent": agent, "model_requested": board_model(),
                      "model_actual": None, "model_proof": None, "limitation": None}
         if not j["seat"]["model_requested"]:
             j["seat"]["limitation"] = ("No board model pin is configured (the board_claude_model setting is "
                                        "empty): this seat ran the agent's own default model.")
-    if isolate is not False:
-        try:
-            wt = await asyncio.to_thread(worktrees.create, cwd, j["name"], jid)
-        except worktrees.WorktreeError as e:
-            raise CrewError(str(e))
-        if wt:
-            j["worktree"] = wt
-            j["folder"] = wt["cwd"]
+    # Reserve capacity before the first await; simultaneous start requests must
+    # not all pass the limit while worktree creation is in progress.
     _jobs[jid] = j
+    if isolate is not False:
+        preparing = _preparations[jid] = asyncio.create_task(_prepare_workspace(j, cwd))
+        try:
+            await asyncio.shield(preparing)
+        except asyncio.CancelledError:
+            # Even a cancelled HTTP caller must retain/clean up the thread's
+            # eventual worktree, rather than abandoning it in the background.
+            await stop(jid)
+            raise
+        except Exception as e:
+            _fail(j, f"Could not prepare the workspace: {e}")
+            raise CrewError(str(e))
+        finally:
+            if preparing.done():
+                _preparations.pop(jid, None)
+    if j.get("_stop_before_launch") or j["status"] != "starting":
+        raise CrewError("The job was stopped while its workspace was being prepared.")
     from app.services import event_log
     event_log.emit("crew.started", actor=f"crew:{agent}", ids={"crew_job": jid},
                    payload={"agent": agent, "kind": kind or "", "title": j["title"],
@@ -370,13 +454,17 @@ async def start(task: str, folder: str = "", title: str = "", approval_mode: Opt
                            f"your checkout until you merge it" + (". Your uncommitted changes there aren't in its copy." if w.get("dirty") else "."))
     if agent == "claude":
         _step(j, "status", "Starting Claude Code")
-        asyncio.create_task(_claude_start(j, j["task"]))
+        j["_launched"] = True
+        _launch(jid, _claude_start(j, j["task"]))
         _save()
         return _view(j)
     j["model"], why = await asyncio.to_thread(pick_model, kind)
     _step(j, "status", "Starting Muse" + (f" on {j['model']} ({why})" if j["model"] else "")
           + (" (the first job waits while it starts its tools)" if not (_host["host"] and _host["host"].running()) else ""))
-    asyncio.create_task(_run_start(j, approval_mode))
+    if j.get("_stop_before_launch") or j["status"] != "starting":
+        raise CrewError("The job was stopped while its model was being selected.")
+    j["_launched"] = True
+    _launch(jid, _run_start(j, approval_mode))
     _save()
     return _view(j)
 
@@ -455,7 +543,7 @@ async def interrupt(jid: str) -> Dict[str, Any]:
     j = job(jid)
     if j["agent"] == "claude":
         r = _runs.get(j["id"])
-        if r and r.running() and j["status"] in ("working", "waiting"):
+        if r and r.running() and j["status"] in ("working", "waiting", "interrupted"):
             j["_interrupting"] = True
             try:
                 await r.interrupt()
@@ -464,7 +552,7 @@ async def interrupt(jid: str) -> Dict[str, Any]:
         _step(j, "status", "Interrupted")
         return _view(j)
     h = _host.get("host")
-    if h and h.running() and j.get("session_id") and j["status"] in ("working", "waiting"):
+    if h and h.running() and j.get("session_id") and j["status"] in ("working", "waiting", "interrupted"):
         try:
             await h.interrupt(j["session_id"])
         except MuseError as e:
@@ -475,17 +563,39 @@ async def interrupt(jid: str) -> Dict[str, Any]:
 
 async def stop(jid: str) -> Dict[str, Any]:
     j = job(jid)
-    if j["status"] in ("starting", "working", "waiting"):
+    if j.get("_launched") is False and j["status"] in ("starting", "interrupted", "stopped"):
+        j["_stop_before_launch"] = True
+        preparing = _preparations.get(jid)
+        try:
+            if preparing:
+                await asyncio.shield(preparing)
+            await _discard_unstarted_workspace(j)
+        except Exception as e:
+            j.update(status="interrupted", error=f"Workspace cleanup was not confirmed: {e}")
+            _save()
+            return _view(j)
+    startup = _starts.get(jid)
+    if startup and not startup.done():
+        startup.cancel()
+        await asyncio.gather(startup, return_exceptions=True)
+    if j["status"] in ("starting", "working", "waiting", "interrupted"):
         try:
             await interrupt(jid)
-        except CrewError:
-            pass
+        except CrewError as e:
+            j.update(status="interrupted", error=f"Stop was not confirmed: {e}")
+            _save()
+            return _view(j)
     for a in j["approvals"].values():
         if a["state"] == "waiting":
             a["state"] = "dropped"
-    r = _runs.pop(j["id"], None)
+    r = _runs.get(j["id"])
     if r:
         await r.stop()
+        if r.running():
+            j.update(status="interrupted", error="The agent process is still running; stop was not confirmed.")
+            _save()
+            return _view(j)
+        _runs.pop(j["id"], None)
     j.update(status="stopped", ended=time.time())
     _save()
     _emit(j, {"type": "done", "status": "stopped"})
@@ -823,7 +933,11 @@ async def _claude_run(j: Dict[str, Any], resume: str = "") -> ClaudeRun:
     try:
         await r.start(timeout=90)
     except ClaudeError as e:
+        await r.stop()
         raise CrewError(str(e))
+    except BaseException:
+        await r.stop()
+        raise
     _runs[jid] = r
     asyncio.create_task(_claude_idle(jid, r))
     return r

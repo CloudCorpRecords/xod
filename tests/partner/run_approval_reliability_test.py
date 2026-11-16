@@ -80,11 +80,17 @@ class ApprovalReliability(unittest.TestCase):
              patch.object(muse_app, "active", return_value=True):
             self.assertTrue(muse_app._partner_scan_press()["approved"][0]["uncertain"])
 
-    def test_lightweight_cannot_start_watcher(self):
+    def test_explicit_skip_cannot_start_watcher(self):
         with patch.object(run_mode, "skip", return_value=True), \
              patch.object(muse_app.asyncio, "create_task") as create:
             muse_app.start()
             create.assert_not_called()
+
+    def test_lightweight_keeps_core_approval_services(self):
+        with patch.object(run_mode, "lightweight_active", return_value=True):
+            self.assertFalse(run_mode.skip("muse_app"))
+            self.assertFalse(run_mode.skip("partner_watchdog"))
+            self.assertTrue(run_mode.skip("autoconnect"))
 
     def test_legacy_partner_cannot_receive_a_click(self):
         with patch.object(partner_client, "status", return_value={"partner_trusted": True}), \

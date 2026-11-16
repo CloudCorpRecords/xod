@@ -79,6 +79,7 @@ class MuseHost:
                 await asyncio.wait_for(self.proc.wait(), 5)
             except asyncio.TimeoutError:
                 self.proc.kill()
+                await asyncio.wait_for(self.proc.wait(), 5)
         for f in self._waiting.values():
             if not f.done():
                 f.set_exception(MuseError("Muse stopped."))

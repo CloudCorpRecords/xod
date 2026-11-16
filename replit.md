@@ -38,3 +38,17 @@ access. No available OpenAI integration was returned by discovery in this
 workspace; no live-model result has been obtained. Do not invent credentials,
 silently substitute models, or write credentials into project files.
 The existing BYOK and local-provider implementation has not been replaced.
+
+## Runtime checks
+
+```sh
+python tests/runtime/test_runtime.py
+python tests/runtime/benchmark_team.py --check
+node tests/runtime/test_refresh_gate.js
+python tests/smoke/run_crew_test.py
+```
+
+See `docs/RUNTIME-RELIABILITY.md` for measurements, tradeoffs and unverified
+native/live-model behavior. Lightweight mode retains Muse watching and Partner
+supervision; dry-run and platform limits still apply. Keep the localhost-only
+guard: remote browser testing cannot access this local assistant by default.

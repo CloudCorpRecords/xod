@@ -9,6 +9,7 @@ import logging
 from typing import List, Dict, Any, Optional, AsyncGenerator, Tuple, Callable
 from app.config import settings
 from app.services import ollama_context
+from app.services.runtime_limits import inference
 from app.services.model_hub import CLOUD_DEFAULTS
 
 logger = logging.getLogger("llm")
@@ -187,16 +188,18 @@ async def _watched(aw: Any, info: Dict[str, Any]) -> Any:
     finally:
         if not task.done():
             task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @contextlib.asynccontextmanager
 async def _open_stream(client: httpx.AsyncClient, url: str, payload: Dict[str, Any], headers: Dict[str, str], info: Dict[str, Any]):
     """client.stream("POST", ...), with the wait for the first reply watched (see _watched)."""
-    response = await _watched(client.send(client.build_request("POST", url, json=payload, headers=headers), stream=True), info)
-    try:
-        yield response
-    finally:
-        await response.aclose()
+    async with inference(info):
+        response = await _watched(client.send(client.build_request("POST", url, json=payload, headers=headers), stream=True), info)
+        try:
+            yield response
+        finally:
+            await response.aclose()
 
 
 async def _lines(response: httpx.Response, info: Dict[str, Any]) -> AsyncGenerator[str, None]:
@@ -1184,7 +1187,8 @@ class LLMService:
         async with httpx.AsyncClient(timeout=timeout) as client:
             for attempt in range(1, (1 if is_specialist else MAX_ATTEMPTS) + 1):
                 try:
-                    res = await _watched(client.post(url, json=payload, headers=headers), info)
+                    async with inference(info):
+                        res = await _watched(client.post(url, json=payload, headers=headers), info)
                     if res.status_code in RETRYABLE_STATUS and attempt < MAX_ATTEMPTS and not is_specialist:
                         logger.warning(f"LLM HTTP {res.status_code}, retrying ({attempt}/{MAX_ATTEMPTS})")
                         await asyncio.sleep(1.5 * attempt)
@@ -1304,8 +1308,9 @@ class LLMService:
             payload["chat_template_kwargs"] = {"enable_thinking": False}
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(connect=3.0, read=90.0, write=10.0, pool=3.0)) as client:
-                res = await client.post(f"{info['base_url']}/chat/completions", json=payload,
-                                        headers={"Authorization": f"Bearer {info['api_key']}", "Content-Type": "application/json"})
+                async with inference(info):
+                    res = await client.post(f"{info['base_url']}/chat/completions", json=payload,
+                                            headers={"Authorization": f"Bearer {info['api_key']}", "Content-Type": "application/json"})
             return res.status_code == 200
         except Exception:
             return False
