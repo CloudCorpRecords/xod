@@ -140,10 +140,15 @@ def main():
     # ---- phase B: poison the snapshot again (a reload while blocked, the
     # retry endpoint pressed too early) and let GET /api/config be the FIRST
     # read path after access returns: it must heal on its own too.
+    # AGE-74 update: a failed reload no longer clears the snapshot (that
+    # clearing was the defect); it leaves the last good keys in place and
+    # marks the snapshot stale, so the setup state below is "stale with
+    # keys" where this suite originally asserted "stale and empty".
     PromptKeyring.blocked = True
     health = config.reload_secrets()
     check("a reload during an outage leaves the snapshot stale, not healed-wrong",
-          health["readable"] is False and config.settings.openai_api_key == ""
+          health["readable"] is False
+          and config.settings.openai_api_key == SEEDED["openai_api_key"]
           and config._secrets_stale is True, str(health))
     PromptKeyring.blocked = False
     time.sleep(2.6)
@@ -159,7 +164,7 @@ def main():
     PromptKeyring.blocked = True
     config.reload_secrets()
     check("phase C setup: snapshot stale again", config._secrets_stale is True
-          and config.settings.openai_api_key == "")
+          and config.settings.openai_api_key == SEEDED["openai_api_key"])
     PromptKeyring.blocked = False
     time.sleep(2.6)
     res = asyncio.run(app_main.secrets_list())
