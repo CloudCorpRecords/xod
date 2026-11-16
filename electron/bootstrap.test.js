@@ -333,6 +333,49 @@ test("windows repair runs end to end: the checksum-verified installer is handed 
   assert.equal(treeManifest(root), before, "nothing is replaced before the installer runs");
 });
 
+test("AGE-72: repair refuses a latest release older than the installed bundle", async () => {
+  const root = tmpdir();
+  const app = makeApp(root, fixtureHealthy("1.1.6")); // installed 1.1.6, healthy graph
+  const before = treeManifest(root);
+  const { io, calls } = repairIo(); // the default fake latest is 1.1.4, the 2026-11-14 field state
+  const result = await B.repair(app, io);
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, "fetch");
+  assert.ok(result.error.includes("1.1.4") && result.error.includes("1.1.6"),
+    `the refusal names both versions: ${result.error}`);
+  assert.ok(result.error.includes("backwards"), `the refusal says why: ${result.error}`);
+  assert.ok(!calls.includes("download"), "nothing was downloaded");
+  assert.ok(!calls.includes("swap"), "no swap was attempted");
+  assert.equal(treeManifest(root), before, "the install was not touched");
+});
+
+test("AGE-72: repair to the installed version itself is still allowed", async () => {
+  const root = tmpdir();
+  const broken114 = fixture113();
+  broken114["package.json"] = Buffer.from(JSON.stringify({ name: "xod-desktop", version: "1.1.4", main: "main.js" }));
+  const app = makeApp(root, broken114); // broken graph, version 1.1.4
+  const staged = makeApp(path.join(root, "staged-root"), fixtureHealthy("1.1.4"));
+  const { io, calls } = repairIo({ stageApp: async () => staged });
+  const result = await B.repair(app, io);
+  assert.equal(result.ok, true, `an equal-version repair must proceed: ${JSON.stringify(result)}`);
+  assert.equal(result.version, "1.1.4");
+  assert.ok(calls.includes("swap"), "the checked copy was swapped in");
+});
+
+test("AGE-72: the repair swap defers while the guardian battery is mid-verdict", async () => {
+  const root = tmpdir();
+  const app = makeApp(root, fixture113());
+  const staged = makeApp(path.join(root, "staged-root"), fixtureHealthy("1.1.4"));
+  const { io, calls } = repairIo({
+    stageApp: async () => staged,
+    guardianBatteryActive: () => true,
+  });
+  const result = await B.repair(app, io);
+  assert.equal(result.ok, false);
+  assert.ok(result.error.includes("guardian"), `the deferral names the guardian: ${result.error}`);
+  assert.ok(!calls.includes("swap"), "no swap was attempted during the verdict");
+});
+
 test("the checksum line is matched by exact artifact name, not by suffix", async () => {
   const root = tmpdir();
   const app = makeApp(root, fixture113());

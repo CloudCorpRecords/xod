@@ -99,6 +99,40 @@ const isKnownBroken = (v) => {
 };
 
 // ---------------------------------------------------------------------------
+// Guardian coordination (AGE-72). Xod Partner's update guardian runs a
+// health battery after an updater swap and can roll the install back while
+// the battery runs. A second swap landing in the middle of that verdict
+// interleaves with the rollback and can leave a mixed install (the bundle
+// at one version, the backend at another), so the guardian publishes
+// battery-in-progress.json in its state dir for exactly the span of a
+// verdict, and every Electron swap path defers while a fresh marker
+// exists. The marker reader is duplicated in updater.js on purpose: this
+// file may not import siblings before its own verdict (see the header).
+// The freshness ceiling sits well above the battery's worst case (health
+// wait plus chat, task and permission probes), so an abandoned marker
+// from a crashed guardian can never block swaps forever.
+// ---------------------------------------------------------------------------
+const GUARDIAN_BATTERY_MAX_AGE_MS = 20 * 60 * 1000;
+function guardianStateDir(home = os.homedir()) {
+  return path.join(home, "Library", "Application Support", "XodPartner");
+}
+function guardianBatteryActive(stateDir = guardianStateDir(), now = Date.now()) {
+  try {
+    const raw = fs.readFileSync(path.join(stateDir, "battery-in-progress.json"), "utf8");
+    const at = Date.parse(JSON.parse(raw).at || "");
+    return Number.isFinite(at) && now - at >= 0 && now - at < GUARDIAN_BATTERY_MAX_AGE_MS;
+  } catch (e) { return false; }
+}
+
+// The installed bundle's own version, read from its app.asar the same way
+// the verdict reads it. Null when it cannot be read: an unreadable package
+// is the core repair case, and an unreadable version proves nothing about
+// which side of the floor the install sits on.
+function installedVersionOf(appPath) {
+  try { return decide(findAsar(appPath)).version; } catch (e) { return null; }
+}
+
+// ---------------------------------------------------------------------------
 // The asar walk. Same format parsing and the same resolution order Node uses,
 // matching scripts/check_asar.py so the release gate and the launch check can
 // never disagree about whether a package can run its own main process.
@@ -296,6 +330,18 @@ async function repair(appPath, io) {
   if (isKnownBroken(latest.version)) {
     return fail("fetch", `the latest release is ${latest.version}, which is itself a known broken release; there is nothing safe to repair to yet`);
   }
+  // Version floor (AGE-72): repair targets releases/latest, and latest can
+  // be OLDER than the installed bundle whenever a newer build shipped as a
+  // prerelease (2026-11-14: a healthy 1.1.6 install repaired itself into
+  // 1.1.4, the then-latest, and wedged). Never move an install backwards:
+  // refuse here, in the same shape as the known-broken refusal above. The
+  // floor binds only when the installed version actually reads.
+  const installed = normalizeVersion(io.installedVersion
+    ? await io.installedVersion(appPath)
+    : installedVersionOf(appPath));
+  if (installed && newer(installed, latest.version)) {
+    return fail("fetch", `the latest release is ${latest.version}, which is older than the installed ${installed}; repairing would move this install backwards, so nothing was downloaded`);
+  }
   let workDir;
   try {
     workDir = fs.mkdtempSync(path.join(io.workRoot(), "xod-bootstrap-"));
@@ -327,6 +373,16 @@ async function repair(appPath, io) {
       if (verdict.version !== latest.version) {
         throw new Error(`the downloaded copy reports version ${verdict.version}, not ${latest.version}`);
       }
+    }
+    // Non-interleave (AGE-72): the guardian may be mid-verdict on this
+    // install right now. Swapping under its battery invites its rollback
+    // to restore over this repair, so defer with a clear line instead;
+    // the staged download is scratch and the next launch retries.
+    const batteryActive = io.guardianBatteryActive
+      ? io.guardianBatteryActive()
+      : guardianBatteryActive();
+    if (batteryActive) {
+      return fail("repair", "the update guardian is in the middle of its post-update health check on this install; the repair swap is deferred until that verdict lands, and nothing was replaced");
     }
     io.report(`repairing Xod: the new copy checks out, swapping it in`);
     await io.swapAndRelaunch({ stagedApp, targetApp: appPath, workDir });
@@ -609,6 +665,9 @@ if (typeof module !== "undefined" && module.exports) {
     newer,
     normalizeVersion,
     isKnownBroken,
+    guardianBatteryActive,
+    guardianStateDir,
+    installedVersionOf,
   };
 }
 

@@ -53,6 +53,28 @@ const ver = (v) => (String(v || "").match(/\d+/g) || [0]).slice(0, 3).map(Number
 const newer = (a, b) => { const x = ver(a), y = ver(b); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
 const log = (...a) => console.log("[updater]", ...a);
 
+// Guardian coordination (AGE-72). Xod Partner's update guardian runs a
+// health battery after a swap and can roll the install back while the
+// battery runs. If this updater's swap lands mid-verdict, the rollback can
+// restore the pre-update snapshot over the newer install (the 2026-11-14
+// mixed install), so the swap defers while the guardian's
+// battery-in-progress marker is fresh. The marker reader is duplicated in
+// bootstrap.js on purpose: that file may not import siblings before its
+// own verdict. The Partner is macOS-only, so the marker lives in its
+// Application Support state dir; on other platforms the read simply
+// misses and nothing defers.
+const GUARDIAN_BATTERY_MAX_AGE_MS = 20 * 60 * 1000;
+function guardianStateDir(home = os.homedir()) {
+  return path.join(home, "Library", "Application Support", "XodPartner");
+}
+function guardianBatteryActive(stateDir = guardianStateDir(), now = Date.now()) {
+  try {
+    const raw = fs.readFileSync(path.join(stateDir, "battery-in-progress.json"), "utf8");
+    const at = Date.parse(JSON.parse(raw).at || "");
+    return Number.isFinite(at) && now - at >= 0 && now - at < GUARDIAN_BATTERY_MAX_AGE_MS;
+  } catch (e) { return false; }
+}
+
 function set(patch) {
   S = { ...S, ...patch };
   for (const fn of listeners) { try { fn(S); } catch (e) {} }
@@ -166,6 +188,13 @@ async function stage(release, onProgress) {
 // A detached script swaps the bundles after this process exits, then (optionally) opens Xod again.
 function swap(relaunch) {
   if (!ready || installing) return false;
+  if (guardianBatteryActive()) {
+    // AGE-72: never swap into the middle of the guardian's verdict on the
+    // current install. The staged update stays ready and installs on a
+    // later quit, once the verdict has landed.
+    log("swap deferred: the update guardian is checking the current install; the staged update stays ready");
+    return false;
+  }
   installing = true;
   if (WIN) {
     // Silent per-user install over the current one; --force-run opens Xod again afterwards.
@@ -215,7 +244,11 @@ fi
 
 function restartInto() {
   set({ state: "installing", progress: 1 });
-  if (swap(true)) setTimeout(() => app.quit(), 300);
+  if (swap(true)) { setTimeout(() => app.quit(), 300); return; }
+  // The swap did not start (AGE-72 deferral): do not sit in "installing"
+  // and do not quit into nothing. The update stays ready and installs on
+  // a later quit.
+  set({ state: "ready", progress: 1, error: "The update is ready, but the update guardian is checking the current install right now; it will install on a later quit." });
 }
 
 // Starts (or joins) the background download of the newer release.
@@ -327,4 +360,4 @@ function start(getWin, getAppUrl) {
   };
 }
 
-module.exports = { start, _test: { newer, canReplace, stage, swap, check, install, status: () => S, onState: (fn) => listeners.push(fn), setReady: (r) => { ready = r; } } };
+module.exports = { start, _test: { newer, canReplace, stage, swap, check, install, guardianBatteryActive, guardianStateDir, status: () => S, onState: (fn) => listeners.push(fn), setReady: (r) => { ready = r; } } };
