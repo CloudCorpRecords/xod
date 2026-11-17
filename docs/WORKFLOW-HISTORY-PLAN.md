@@ -1,8 +1,8 @@
 # Workflow separation and private-history recovery plan
 
-**Not executed.** This is the proposed operation for informed review, not
-permission to rewrite `main`, create unregistered work, or push. The product
-and CI handoff branches are preserved unchanged. Do not substitute a newly
+**Not executed.** Round 4 requests execution if authorization and the documented
+safeguards allow it; this document does not satisfy its own approval gates.
+The product and CI handoff branches are preserved unchanged. Do not substitute a newly
 named branch for a requested main rewrite and report it as done.
 
 ## Exact inspected refs
@@ -221,16 +221,36 @@ command, credential request or push attempt is executed here.
 
 ## Current result
 
-**Owner decision: keep main unchanged.** The owner explicitly declined the
-proposed local history rewrite after reviewing its consequences. Reconstruction,
-candidate creation and remote delivery are not authorized by that decision.
-Ordinary additive commits recording this plan and tracking hygiene do not
-rewrite existing history.
+### Round 4 correction and access evidence — November 16, 2026 (Pacific)
 
-History analysis and the recovery/reconstruction plan are DONE. Main rewrite
-is **NOT AUTHORIZED** and will not proceed. Any future reconsideration requires
-a new explicit request plus owner/issue/target registration, complete
-history/privacy evidence, a restored backup and candidate verification.
-Remote delivery is additionally blocked on confirmed authorization/protection.
-Both original handoff branches remain untouched. See
-`REPOSITORY-CLEANUP-PLAN.md` for the full bounded ledger and seven-item status.
+The earlier assertion of an owner decision to keep main unchanged is removed.
+It is not the reason for this round's blocker, and no new owner decision is
+claimed. Round 4 explicitly asks for conditional execution.
+
+Inspection began at local main
+`62bc9c20c779adfcdfe1f3dbec8f9262a112f8bb`; the checkout is shallow.
+`git ls-remote origin refs/heads/main` succeeded and returned the original
+`d8b30112cfedfc139b8086d8c0471910253804c6` upstream tip.
+`git push --dry-run origin HEAD:refs/heads/main` also exited zero, advertising
+`d8b3011..62bc9c2`. It did not publish commits or update any remote ref.
+
+These operations prove read/receive-pack advertisement access, **not** GitHub's
+acceptance of workflow-file changes or branch protection checks on an actual
+update. No current authentication failure was observed. The older reported
+workflow-permission rejection is historical evidence, not a newly reproduced
+failure; neither a dry run nor separating commits can establish that it is fixed.
+
+**BLOCKED: needs owner decision.** The plan requires an actual tracking issue
+and registered candidate before reconstruction (the requested target is main), followed
+by review and specific approval of the frozen replacement before moving local
+main. Those registrations and a reviewed replacement are not supplied by the
+Round 4 note. They must not be invented. Complete-history privacy evidence,
+a restore-tested private backup, and candidate verification are also not yet
+completed. No history reconstruction or ref replacement has been attempted,
+and no unsafe raw-history push was used as an authorization probe.
+
+Ordinary additive hardening commits are not a history rewrite. Both original
+handoff branches remain untouched. After the registration decision, execute
+the safeguards above in order; report the exact command/error if an operation
+then fails. Remote delivery still needs the publication-graph review and
+confirmed workflow authorization/protection before an actual push.

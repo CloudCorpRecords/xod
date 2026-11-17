@@ -159,3 +159,54 @@ Before native constraints, independently test real-model multi-turn correction,
 delegation decisions, premature completion, and context pressure. Then test
 restart recovery, real local inference and disposable native-device actions
 separately. Unknown provider token limits and whole-app memory stay UNKNOWN.
+
+## Round 4 finish-and-harden evidence
+
+No runtime agent, Muse approval policy, Always Allow behavior, orchestration
+service or checkpoint subsystem was added or changed in this round.
+The live evaluation harness gained bounded larger-input parameters; the
+release checker gained one exact file-and-literal public-name exception.
+
+`tests/task_inbox/run_named_surface_test.py::test_named_surface_stream` now
+uses the actual CodeRabbit install wording with desktop `ready:false` and
+both grants absent. It asserts the exact Chrome profile is named, both
+Screen Recording and Accessibility are named as missing, the event stream
+contains only refusal content followed by done (no approvals/actions), and
+browser launch, sandbox mission and tab-management methods are never called.
+The separate Safari refusal, ready-desktop route, mission-runner defense and
+queue no-sandbox tests remain. These are deterministic fixtures, not a new
+claim that this Linux process can control the user's native browser.
+
+```sh
+python tests/task_inbox/run_named_surface_test.py
+python tests/release/test_release_checker.py
+python tests/runtime/test_live_eval_inputs.py
+python scripts/verify_agent.py --profile all \
+  --output generated-artifacts/round4-agent-verification.json
+```
+
+The named-surface suite passed 59/59 checks. Six release-check tests cover the
+exact public scope exception, refusal of the same literal elsewhere and of
+unrelated usernames, and preservation of secret/path/size rejection.
+Four live-input tests preserve the original case, check the expanded record
+positions/calculation, reject invalid limits and require explicit live consent.
+The canonical verifier passed all 14 groups, including all three context
+envelopes and the existing Muse/approval/Partner regressions.
+
+The supplemental inventory and per-script output are delivered separately in
+`generated-artifacts/round4-supplementary-regressions.json`. All 32 supplemental
+commands exited zero: 46 successful Linux regression commands together with
+the 14 canonical groups. It is a Linux
+inventory, **not a claim to reproduce Tree's exact 46-run Mac manifest**.
+Native CoreFoundation execution and explicit live-only grading cases retain
+their skip messages; they are not native/live acceptance passes. Initial
+environment-isolation/wrapper failures are retained in ignored baseline
+reports rather than presented as product failures or erased. Package paths
+must survive HOME isolation, unittest must not receive wrapper-only arguments,
+and the unchanged Tier 2 missing-file fixture needs a timeout longer than its
+existing 90-second recovery window.
+
+The larger live-context result, actual provider token count/request ID and
+exact reproduction commands are in `MODEL-CONFIGURATION.md`. Keep that recall
+result separate from fleet completion, context compaction and long-duration
+claims.

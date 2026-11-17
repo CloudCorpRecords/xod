@@ -174,3 +174,116 @@ operational metadata, exact limitations and the distinction between large-input
 recall, multi-turn work, synthetic compaction checks and untested long-duration
 behavior. No native, Electron, managed-key-provenance or dollar-cost claim is
 added by these results.
+
+## Round 4: larger real request and exact reproduction
+
+On November 16, 2026 (Pacific), the existing live harness sent one larger
+long-context input through the same shared LLM service and authorized OpenAI
+route. The test uses 1,800 varied operational records, not repeated filler.
+Provider-reported input usage, not characters or estimates, determines whether
+the 100,000-input-token requirement passes.
+
+| Field | Observed value |
+| --- | --- |
+| Run start (UTC) | `2026-11-17T05:50:33.664004+00:00` |
+| Run start (America/Los_Angeles) | `2026-11-16T21:50:33.664004-08:00` |
+| Provider and route | `openai`, `https://api.openai.com/v1` |
+| Saved, dispatched and returned model | `gpt-6.1-terra` in all three |
+| Successful request ID | `req_8817f05184c14545bcaa7c15c20f7ae0` |
+| Final HTTP status | `200` |
+| Provider-reported input tokens | **112,486** |
+| Completion / total tokens | 59 / 112,545 |
+| Reported cached input / reasoning tokens | 0 / 0 |
+| Duration including compatibility retries | 5.553 seconds |
+| Synthetic input characters | 357,936, not a token count |
+| Input SHA-256 | `988abeabb125d6e42ee5c92bcc38ccda1e50968be126f0d187cde4c08d724180` |
+| Outcome | **PASS, 10/10 checks** |
+
+Coherence checks, independently compared to the input generator:
+
+| Check | Expected and returned |
+| --- | --- |
+| Beginning | Project `Cedar`, marker `CEDAR-731` |
+| Middle | Marker `HERON-248`; reference record `899` |
+| Cross-record calculation | Record 899 units × unit cost = `110`, not their sum |
+| End | Marker `QUARTZ-916` |
+| Final amendment overrides beginning | Spending ceiling `42`, not baseline `90` |
+| Persistent prohibition | `external changes` |
+| Actual usage and model | At least 100,000 provider input tokens and exact returned model; both passed |
+
+Three HTTP attempts were made against the same route and model. Existing
+compatibility handling received HTTP 400 for the original token parameter
+(`req_3af4d6fc4f0946499216cb8b1f12dca7`), then HTTP 400 before omitting the
+unsupported temperature setting (`req_71458bcae59a4bd9907d15d60807f0c1`),
+then the successful request above. The two rejected responses reported no
+token usage; no dollar-cost or free-request claim is made. The cumulative
+message-character allowance counts all three attempts.
+
+The machine-readable evidence is
+`generated-artifacts/round4-long-context-live.json`, deliberately ignored by
+Git and delivered separately. The normal installation's saved model and
+credentials were not changed; real credentials remained in process memory.
+
+### Re-run from the repository root
+
+Prerequisites: the project's Python dependencies are installed, network access
+to the configured OpenAI route works, and an authorized **`OPENAI_API_KEY`**
+is already supplied to the process through the OS/workspace secret mechanism.
+That is the only required credential variable. Do not put a key in a command,
+document, test fixture, issue, Git config or output report. The model ID is
+pinned by the harness; the key must actually have access to it. No different
+model is silently substituted.
+
+The larger, potentially billed reproduction command is:
+
+```sh
+python tests/runtime/live_agent_eval.py --live --case long \
+  --long-records 1800 --min-input-tokens 100000 \
+  --max-input-characters 1800000 --max-requests 3 --timeout 180 \
+  --output generated-artifacts/round4-long-context-live.json
+```
+
+`--live` is mandatory consent to provider calls. `--long-records` controls the
+number of distinct records; it does not guarantee a token count.
+`--min-input-tokens` is checked against actual response usage. The other limits
+cap cumulative message characters (including retries), HTTP attempts and total
+wall seconds; per-request generation remains capped at 4,096 tokens.
+The command exits zero only if all coherence, usage and returned-model checks
+pass. A timeout, missing key, model denial or exhausted budget is not a pass.
+
+The original accepted 900-record case remains reproducible without changing
+its default size or 30,000-token minimum:
+
+```sh
+python tests/runtime/live_agent_eval.py --live --case long \
+  --max-requests 3 --timeout 180 \
+  --output generated-artifacts/long-context-live.json
+```
+
+The existing fleet evaluation is a separate, possibly billed test:
+
+```sh
+python tests/runtime/live_agent_eval.py --live --case fleet --same-model \
+  --max-requests 36 --timeout 300 \
+  --output generated-artifacts/fleet-context-reproduction.json
+```
+
+These commands do not enable long-running mode in the real installation.
+For the distinct context-compaction test and its operating-ceiling flags, see
+`LONG-RUNNING-CLOUD.md`. Large-input recall is not proof of fleet success,
+200,000-token operating capacity, native desktop behavior or an hours-long soak.
+
+The harness itself sets temporary `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`
+and `XOD_DATA_DIR`, uses the null keyring backend, and sets
+`PYTHON_KEYRING_BACKEND`, `XOD_SPEECH`, `XOD_NO_UPDATE_CHECK`,
+`XOD_MUSE_APP_DRY_RUN` and `XOD_LIGHTWEIGHT`. Users do not need to set those
+variables or provide a Replit integration. Other inherited credential-variable
+names ending in `_API_KEY`, `_TOKEN` or `_SECRET` are removed from the test
+environment after the authorized OpenAI key is consumed.
+
+Without sending provider requests, verify the input generator, larger-case
+positioning, CLI bounds and mandatory live consent with:
+
+```sh
+python tests/runtime/test_live_eval_inputs.py
+```

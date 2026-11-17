@@ -37,10 +37,14 @@ Run: .venv/bin/python tests/task_inbox/run_named_surface_test.py
 """
 import asyncio, json, os, sys, tempfile, time, types
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 TMP = Path(tempfile.mkdtemp(prefix="xod_named_surface_"))
 os.environ.update({"XOD_DATA_DIR": str(TMP / "data"),
+                   "HOME": str(TMP / "home"),
+                   "XDG_CONFIG_HOME": str(TMP / "config"),
+                   "XDG_DATA_HOME": str(TMP / "share"),
                    "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring",
                    "XOD_TEST_KEYRING_FILE": str(TMP / "keys.json"),
                    "XOD_NO_UPDATE_CHECK": "1"})
@@ -221,10 +225,27 @@ def test_named_surface_stream():
         async def _forbidden(goal, max_steps=30):
             raise AssertionError("desktop_task.run must not run when desktop is not ready")
         DT.run = _forbidden
-        evs = asyncio.run(_collect(r._stream_named_surface(VARIANT_E, "Safari")))
+        from app.services.browser_sandbox import browser_sandbox_service as sandbox
+        with patch.object(sandbox, "ensure_browser_running", new_callable=AsyncMock) as launch, \
+                patch.object(sandbox, "run_browser_mission", new_callable=AsyncMock) as mission, \
+                patch.object(sandbox, "manage_tabs", new_callable=AsyncMock) as tabs:
+            # Use the actual CodeRabbit wording, not just a generic browser task.
+            evs = asyncio.run(_collect(r._stream_named_surface(
+                VARIANT_A, "Google Chrome (default profile)")))
+        check("CodeRabbit refusal opens no browser, sandbox mission or tab",
+              launch.call_count == mission.call_count == tabs.call_count == 0)
         content = "".join(e.get("content", "") for e in evs if e.get("type") == "content")
         check("desktop not ready: the stream refuses, naming the surface it could not reach",
-              "Safari" in content and "built-in browser" in content, content[:200])
+              "Google Chrome (default profile)" in content and "built-in browser" in content, content[:200])
+        check("desktop not ready: the refusal names both missing grants",
+              "Screen Recording is not granted" in content and "Accessibility is not granted" in content,
+              content[:250])
+        check("desktop not ready: no approval request or executable action is emitted",
+              {e.get("type") for e in evs} == {"content", "done"}, repr(evs)[:200])
+        # Existing Safari coverage remains a distinct surface refusal.
+        safari = asyncio.run(_collect(r._stream_named_surface(VARIANT_E, "Safari")))
+        check("Safari also remains a refused named surface",
+              "Safari" in "".join(e.get("content", "") for e in safari) and safari[-1]["type"] == "done")
         check("desktop not ready: nothing ran (no tool call of any kind)",
               not any(e.get("type") == "tool_call" for e in evs), repr(evs)[:200])
         check("desktop not ready: the refusal is the end of the turn",

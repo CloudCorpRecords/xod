@@ -53,6 +53,8 @@ NAME_OK = re.compile(r"(?!)")   # files allowed to carry your name: none
 # on purpose) and the public npm scope of the fleet's published tools (the repo
 # worker pins). Only these exact strings are scrubbed; any other name hit fails.
 PUBLIC_NAME_STRINGS = ["rene-turcios-shop.fourthwall.com", "@reneturcios/"]
+# This exact quoted literal is a public npm scope, not the installer's username.
+PUBLIC_FILE_NAME_STRINGS = {"app/services/fleet_policy.py": ['"@reneturcios"']}
 SKIP_CONTENT = re.compile(r"\.(png|jpe?g|gif|ico|icns|woff2?|ttf|otf|webp|mp4|mp3|wav|pdf|lock)$|package-lock\.json$")
 
 
@@ -114,7 +116,7 @@ def main() -> int:
             problems.append(f"{f}:{line}: contains your home folder path")
         if not NAME_OK.search(f):
             name_text = text
-            for public in PUBLIC_NAME_STRINGS:
+            for public in PUBLIC_NAME_STRINGS + PUBLIC_FILE_NAME_STRINGS.get(f, []):
                 name_text = name_text.replace(public, "")
             for rx in name_res:
                 m = rx.search(name_text)
