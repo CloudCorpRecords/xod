@@ -109,11 +109,11 @@ response is only counted if it is a real JSON-RPC result, not an error or HTML.
 | `prisma` | Automatic OAuth | Authorization metadata discovered | Account consent and non-mutating read |
 | `cloudflare` | Automatic OAuth | Authorization metadata discovered | Account consent, read, refresh and reconnect |
 | `github` | Token / optional existing `gh` sign-in | Protected endpoint/auth metadata reached | User token or explicitly authorized CLI account |
-| `huggingface` | Public | Actual MCP tools listed | Account-specific tools not tested |
+| `huggingface` | Public | Actual tools listed and `hub_repo_search` returned content | Account-specific tools not tested |
 | `mslearn` | Public | Actual tools listed and public documentation search returned content | Initial tools/list transient failure retained in evidence |
-| `context7` | Public | Actual MCP tools listed | Individual tool calls not tested |
-| `deepwiki` | Public | Actual MCP tools listed | Individual tool calls not tested |
-| `cloudflare-docs` | Public | Actual MCP tools listed | Individual tool calls not tested |
+| `context7` | Public | Actual tools listed and `resolve-library-id` returned content | Other operations not tested |
+| `deepwiki` | Public | Actual tools listed and `read_wiki_structure` returned content | Other operations not tested |
+| `cloudflare-docs` | Public | Actual tools listed and `search_cloudflare_documentation` returned content | Other operations not tested |
 | `google-calendar` | Own Google OAuth client | Actual public tool discovery succeeded | Authorized account read and provider eligibility |
 | `gmail` | Own Google OAuth client | Actual public tool discovery; simulated full OAuth/read/refresh flow passed | Authorized mailbox read and provider eligibility |
 | `google-drive` | Own Google OAuth client | Actual public tool discovery succeeded | Authorized account read and provider eligibility |
@@ -128,6 +128,21 @@ account/client was available for that proof, and no other authenticated provider
 account was substituted. The simulated Gmail test uses the actual MCP client and
 OAuth implementation against an in-process HTTP fixture, with synthetic tokens
 and mailbox data.
+
+### Follow-up live recheck
+
+On 2026-11-17, all 31 remote endpoints again responded to initialization or
+authorization discovery. All 34 connector lifecycle tests and the connector UI
+suite passed again. Actual read-only public tool calls also returned non-error
+content on **all five public connectors**: Hugging Face model search, Microsoft
+Learn documentation search, Context7 library resolution, DeepWiki repository wiki
+structure, and Cloudflare documentation search. Calls used Xod's actual
+`ServerConn` MCP transport, with bounded timeouts and session cleanup.
+
+Evidence: `generated-artifacts/connector-public-recheck.json`. Response bodies
+were not saved. These checks do not prove every tool works, private account
+authorization works, or native macOS access works. The account gates above
+remain open; no email, payment, database or other account write was attempted.
 
 ## Repeatable checks
 
