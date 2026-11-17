@@ -11,7 +11,8 @@ A worker is one agent run with:
   - a structured result: outcome, report, evidence (what its tools returned), failures kept.
 
 spawn() returns the id at once. The result arrives as an event (worker.result in the event
-log, plus an in-process completion the parent awaits); the parent never polls a status field.
+log, plus an in-process completion the parent awaits). Waiting reconciles persisted state
+at most once a second when recovering a missing notification.
 States are honest: running (activity within QUIET_AFTER_SEC), quiet (running, no activity
 since last_activity_at), done, failed, interrupted.
 
@@ -21,6 +22,7 @@ synthesis: its parent gets ONE result, with every worker's failure itemized insi
 """
 import asyncio
 import contextvars
+import hashlib
 import json
 import os
 import re
@@ -363,6 +365,9 @@ def steer(worker_id: str, body: str, now: bool = False, source: str = "orchestra
                                              1 if (now or kind == "cancel") else 0, "queued", time.time()))
     c.commit()
     c.close()
+    # A steered worker no longer answers its original complete brief. Do not
+    # reuse that report later as if its intervening instructions never existed.
+    _save(worker_id, job_key=None)
     _emit("steer.received", w, steer_id=sid, kind=kind, body=body[:200], urgent=bool(now))
     return {"success": True, "steer_id": sid, "state": "queued",
             "applies": "now: its current turn is interrupted" if now or kind == "cancel" else "after its current turn"}
@@ -371,6 +376,16 @@ def steer(worker_id: str, body: str, now: bool = False, source: str = "orchestra
 def _queued_steers(worker_id: str) -> List[Dict[str, Any]]:
     from app.services import orchestrator as O
     return O.inbox(worker_id, state="queued")
+
+
+def _raise_if_cancelled(wid: str) -> None:
+    """Observe cancellation before admission, not after the agent's first effects."""
+    from app.services import orchestrator as O
+    cancelled = [s for s in _queued_steers(wid) if s["kind"] == "cancel"]
+    for steer in cancelled:
+        O._mark_steer(steer["id"], "applied", "worker stopped before further tool dispatch")
+    if cancelled:
+        raise asyncio.CancelledError()
 
 
 async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
@@ -407,6 +422,7 @@ async def _turn(wid: str, prompt: str, sink: Dict[str, List[Any]]) -> str:
         from app.services import runtime_limits
         _save(wid, last_activity="queued for a worker slot", last_activity_at=time.time())
         async with runtime_limits.slot("workers", runtime_limits.worker_limit()):
+            _raise_if_cancelled(wid)
             _save(wid, last_activity="running", last_activity_at=time.time())
             await consume_admitted()
 
@@ -487,18 +503,35 @@ async def _run(wid: str, brief: str, env: str, needs: Optional[List[str]] = None
     holder = f"worker:{wid}"
     deadline = time.time() + WORKER_TIMEOUT_SEC
     try:
-        for need in needs or []:
-            while True:
-                got = resources.acquire(need, holder)
-                if got["granted"]:
-                    break
-                _save(wid, last_activity=f"queued for {need}: {got.get('reason') or 'busy'}", last_activity_at=time.time())
-                if time.time() > deadline:
-                    raise asyncio.TimeoutError()
-                await resources.wait_for(need, holder, max_wait=min(5.0, max(0.1, deadline - time.time())))
-                if resources.acquire(need, holder)["granted"]:
-                    break
-            _save(wid, last_activity=f"holding {need}")
+        _raise_if_cancelled(wid)
+
+        async def acquire_needs():
+            for need in needs or []:
+                while True:
+                    got = resources.acquire(need, holder)
+                    if got["granted"]:
+                        break
+                    _save(wid, last_activity=f"queued for {need}: {got.get('reason') or 'busy'}", last_activity_at=time.time())
+                    if time.time() > deadline:
+                        raise asyncio.TimeoutError()
+                    await resources.wait_for(need, holder, max_wait=min(5.0, max(0.1, deadline - time.time())))
+                    if resources.acquire(need, holder)["granted"]:
+                        break
+                _save(wid, last_activity=f"holding {need}")
+
+        # Keep the original resource waiter (and its FIFO position) alive while
+        # observing cancels. Cancelling/requeuing every check would starve it.
+        acquiring = asyncio.create_task(acquire_needs())
+        try:
+            while not acquiring.done():
+                await asyncio.wait({acquiring}, timeout=.25)
+                _raise_if_cancelled(wid)
+            acquiring.result()
+        finally:
+            if not acquiring.done():
+                acquiring.cancel()
+            await asyncio.gather(acquiring, return_exceptions=True)
+        _raise_if_cancelled(wid)
         prompt = brief
         turns = 0
         continuations = 0
@@ -616,11 +649,30 @@ _frozen: set = set()       # test hook only (XOD_TEST_HOOKS=1): workers whose pr
 
 
 async def wait(worker_ids: List[str], timeout: Optional[float] = None) -> Dict[str, Dict[str, Any]]:
-    """Waits for the workers' result events (not a status-polling loop) and returns their
-    structured results by id. A worker still running at the timeout is reported as running."""
-    evs = [(_done_events.get(w) or asyncio.Event()) for w in worker_ids]
+    """Events wake normal waits; bounded reconciliation handles lost process state.
+
+    Missing IDs return an empty record. Timeout/caller cancellation stops only
+    these waiters, never the workers or their shared completion events.
+    """
+    async def one(wid):
+        while True:
+            row = get(wid)
+            if not row or row["state"] != "running":
+                return
+            event = _done_events.setdefault(wid, asyncio.Event())
+            try:
+                await asyncio.wait_for(event.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            # A stale signalled event must not cause a busy loop. Do not clear
+            # the shared event: other callers may still be waiting on it.
+            row = get(wid)
+            if not row or row["state"] != "running":
+                return
+            await asyncio.sleep(1.0)
+
     try:
-        await asyncio.wait_for(asyncio.gather(*(e.wait() for e in evs)), timeout=timeout)
+        await asyncio.wait_for(asyncio.gather(*(one(w) for w in set(worker_ids))), timeout=timeout)
     except asyncio.TimeoutError:
         pass
     return {w: (get(w) or {}) for w in worker_ids}
@@ -732,6 +784,13 @@ async def _default_synth(job: str, results: List[Dict[str, Any]]) -> str:
 synthesize: Callable[[str, List[Dict[str, Any]]], Awaitable[str]] = _default_synth
 
 
+def _job_key(brief: str, needs: List[str]) -> str:
+    """Versioned identity of all effective worker inputs, not just its task label."""
+    value = json.dumps({"brief": brief, "needs": needs}, ensure_ascii=False,
+                       sort_keys=True, separators=(",", ":"))
+    return "brief-v1:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
 async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
                      timeout: Optional[float] = WORKER_TIMEOUT_SEC, reuse_from: Optional[str] = None) -> Dict[str, Any]:
     """Runs one coordinated job: a coordinator record, one read-only worker per subtask, all in
@@ -747,19 +806,32 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
     _emit("worker.spawned", {"id": cid, "parent_id": parent_id}, role="coordinator", task=job[:200], n=len(subtasks))
     # Resume after an interruption: a job a previous coordinator for this same step already
     # finished keeps its result; only the jobs that did not finish run again.
-    reuse: Dict[str, str] = {}
-    if reuse_from:
+    reuse: Dict[str, List[str]] = {}
+    previous = get(reuse_from) if reuse_from else None
+    if previous and previous["role"] == "coordinator" and previous["parent_id"] == parent_id:
         for w in list_workers(reuse_from):
-            if w["state"] == "done" and w.get("job_key"):
-                reuse[w["job_key"]] = w["id"]
+            result = w.get("result") or {}
+            try:
+                needs = json.loads(w.get("needs") or "null")
+            except (TypeError, ValueError):
+                continue
+            if (w["state"] == "done" and w["role"] == "worker"
+                    and w["envelope"] == "read_only" and isinstance(needs, list)
+                    and result.get("outcome") == "done" and (result.get("report") or "").strip()
+                    and w.get("job_key") == _job_key(w["brief"], needs)):
+                reuse.setdefault(w["job_key"], []).append(w["id"])
     tok = current_worker.set(cid)
+    reused = []
     try:
         ids = []
         for s_ in subtasks:
-            key = s_["task"]
-            if key in reuse:
-                ids.append(reuse[key])
-                _done_events.setdefault(reuse[key], asyncio.Event()).set()
+            brief = render_brief(s_["task"], s_.get("outcome") or "A clear, sourced answer.",
+                                 s_.get("constraints") or [], s_.get("facts") or [], "read_only")
+            key = _job_key(brief, s_.get("needs") or [])
+            if reuse.get(key):
+                wid = reuse[key].pop(0)
+                ids.append(wid)
+                reused.append(wid)
                 continue
             wid = spawn(cid, s_["task"], s_.get("outcome", ""), s_.get("constraints"), s_.get("facts"),
                         parent_type="coordinator", role="worker", needs=s_.get("needs"))
@@ -767,7 +839,6 @@ async def coordinate(parent_id: str, job: str, subtasks: List[Dict[str, Any]],
             ids.append(wid)
     finally:
         current_worker.reset(tok)
-    reused = [i for i in ids if i in reuse.values()]
     try:
         got = await wait(ids, timeout=timeout)
     except asyncio.CancelledError:

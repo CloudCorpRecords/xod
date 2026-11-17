@@ -235,6 +235,90 @@ invariants. Synthetic checks cover clipping, tool compaction, redaction,
 retry/usage metadata, cancellation cleanup, approval propagation and
 same-model opt-in; they are not counted as live model evidence.
 
+## Worker recovery hardening (November 17, 2026)
+
+This pass exercised real worker/resource SQLite state with scripted agents,
+not the live provider, desktop drivers or Electron interactions.
+
+Three failures were reproduced before changing the runtime:
+
+- Coordinator recovery reused completed workers by task text alone, even
+  after the expected outcome, facts, constraints or declared resources changed.
+- A persisted terminal worker, missing worker ID or lost completion event
+  could leave a wait blocked indefinitely without a caller-supplied timeout.
+- A cancellation received while waiting for resources was not observed until
+  after resource acquisition and could allow the agent to start.
+
+The new `tests/task_inbox/test_worker_recovery.py` baseline ran 13 test
+methods and recorded 13 assertion failures and seven timeout errors across
+subtests. The failing evidence remains in
+`generated-artifacts/worker-recovery-baseline.log`; it is not a passing run.
+
+### Repairs and boundaries
+
+- Reuse requires a versioned identity covering the complete rendered brief,
+  read-only envelope and ordered resource requirements. Stored inputs must
+  match that identity, and a usable terminal result must exist. Legacy
+  task-only keys and unverifiable records are rerun, not silently trusted.
+  Reuse is confined to a previous coordinator for the same parent; duplicate
+  subtasks consume distinct prior workers. Steering invalidates original-brief
+  reuse. Identical inputs do **not** certify external sources are still fresh.
+- Worker waits first consult persisted state and share recreated completion
+  events. Events remain the normal wake-up mechanism, with one-second
+  reconciliation for lost notifications. Missing IDs return empty records;
+  timeout or cancelling a waiter never cancels the actual worker. A stale
+  signalled event cannot spin the event loop.
+- Resource acquisition observes cancellation while retaining the resource
+  waiter between cancellation checks. Cancellation releases both previously
+  held and queued claims. A final check before entering the agent also covers
+  pre-start cancellation and admission through a queued worker slot.
+
+These changes do not widen worker permissions, alter Muse Always Allow,
+replay uncertain effects, reset shared request budgets or bypass approvals.
+There is no claim of atomic cancellation of an effect already in flight.
+
+### Verification and reproduction
+
+The final checks passed:
+
+| Command | Result |
+| --- | --- |
+| `python tests/task_inbox/test_worker_recovery.py` | 17 tests |
+| `python tests/task_inbox/run_workers_test.py` | 43 checks |
+| `python tests/task_inbox/run_phase3_test.py` | 25 checks, including unchanged completed-worker reuse after restart |
+| `python tests/task_inbox/run_worker_outcome_reconcile_test.py` | 9 checks |
+| `python tests/task_inbox/run_worker_judgment_test.py` | 5 checks |
+| `python tests/task_inbox/run_worker_loop_continuation_test.py` | 10 checks |
+| `python tests/task_inbox/run_worker_tool_recovery_test.py` | 9 checks |
+| `python tests/task_inbox/run_worker_transcript_integrity_test.py` | 6 checks |
+| `python scripts/verify_agent.py --profile all --output generated-artifacts/worker-recovery-agent-verification.json` | 15 groups, including the 17 recovery tests above |
+
+There are **22 distinct passing groups**: the 15-group verifier plus seven
+supplementary worker/resource commands. The 17 new tests are included in the
+verifier, not an additional group. Existing token-aware execution (23 tests),
+task-stop (5 tests), run-observability (17 tests), worker lifecycle (13 tests),
+and Muse/Partner approval checks passed within that verifier.
+
+On this Replit wrapped interpreter, stripping inherited environment and
+isolating HOME hid installed packages in an initial launcher attempt.
+`PYTHONPATH` alone did not fix discovery. Only failed groups were rerun with
+the parent's resolved package search paths injected into `sys.path` before
+application imports, keeping HOME/XDG isolation and excluding credentials.
+No product checks were removed or weakened to make the run pass.
+
+Retained reports:
+
+- `generated-artifacts/worker-recovery-regressions.json`
+- `generated-artifacts/worker-recovery-agent-verification.json`
+- `generated-artifacts/worker-recovery-regressions-environment-baseline.json`
+- `generated-artifacts/worker-recovery-agent-verification-environment-baseline.json`
+
+The preview workflow restarted successfully and the first-run setup screen
+rendered. This is a startup check only, not proof of interactive agent
+operation, an installed model, native controls or authenticated connectors.
+No new provider calls or extended soak ran in this pass. Earlier live-model
+evidence and the proof gaps below remain separate.
+
 ## Remaining proof gaps
 
 - Real long-context behavior through all chat routing and mission-planning

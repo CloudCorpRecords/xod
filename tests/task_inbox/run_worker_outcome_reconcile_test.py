@@ -62,12 +62,18 @@ async def case_r1_terminal_done_not_reported_failed():
         "failures": [],
     }
     now = time.time()
+    brief = W.render_brief(task_text, "A clear, sourced answer.", [], [], "read_only")
     c = W._conn()
     c.execute(
-        "INSERT INTO workers (id, parent_id, parent_type, role, brief, envelope, state, created_at, finished_at, last_activity_at, job_key, result_json) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-        (wid, prev_cid, "coordinator", "worker", task_text, "read_only", "done", now, now, now, task_text,
-         __import__("json").dumps(result_json)),
+        "INSERT INTO workers (id,parent_id,parent_type,role,brief,envelope,state,created_at,last_activity_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (prev_cid, "parent-r1", "task", "coordinator", "Moon counts", "read_only", "interrupted", now, now),
+    )
+    c.execute(
+        "INSERT INTO workers (id, parent_id, parent_type, role, brief, envelope, state, created_at, finished_at, last_activity_at, job_key, result_json, needs) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (wid, prev_cid, "coordinator", "worker", brief, "read_only", "done", now, now, now,
+         W._job_key(brief, []), __import__("json").dumps(result_json), "[]"),
     )
     c.commit()
     c.close()
@@ -79,6 +85,7 @@ async def case_r1_terminal_done_not_reported_failed():
     try:
         res = await W.coordinate("parent-r1", "Moon counts", [{"task": task_text}], reuse_from=prev_cid, timeout=5.0)
         row = W.get(wid)
+        check("R1: reused the verified complete brief without calling a model", res["reused"] == [wid])
         check("R1: workers table row is terminal done", row["state"] == "done" and row["result"]["outcome"] == "done", str(row))
         check("R1: coordinate per-worker outcome matches table ('done', not 'failed')",
               res["workers"][0]["outcome"] == "done" and res["outcome"] == "done",

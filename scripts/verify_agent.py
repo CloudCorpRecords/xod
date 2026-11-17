@@ -22,6 +22,7 @@ CHECKS = (
     ("tool context", "tests/runtime/test_tool_context.py"),
     ("long step sequences", "tests/runtime/test_long_running.py"),
     ("worker and crew lifecycle", "tests/runtime/test_runtime.py"),
+    ("worker recovery boundaries", "tests/task_inbox/test_worker_recovery.py"),
     ("task stop boundaries", "tests/runtime/test_task_stop.py"),
     ("run observability", "tests/runtime/test_run_observability.py"),
     ("fleet scheduling", "tests/runtime/benchmark_team.py", "--check"),
