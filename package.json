@@ -1,0 +1,15 @@
+{
+  "name": "xod-fleet-bridge",
+  "private": true,
+  "description": "Optional, pinned published fleet gate tools for Xod's local MCP fallback",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@reneturcios/cidiff": "0.1.2",
+    "@reneturcios/contextbudget": "0.1.0",
+    "@reneturcios/reprocheck": "0.2.0",
+    "@reneturcios/skillcheck": "0.1.0",
+    "@reneturcios/testdelta": "0.1.0"
+  }
+}

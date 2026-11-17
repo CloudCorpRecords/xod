@@ -64,6 +64,12 @@ python tests/smoke/run_models_test.py
 
 ## Runtime checks
 
+Fleet discovery, the pinned optional npm fallback and per-operation trust rules
+are documented in `docs/FLEET-BRIDGE.md`. Do not broaden read-only trust from
+server names or annotations. The separate fleet workflow runs deterministic
+policy tests plus real published MCP round trips with missing tools treated
+as failures. Preserve existing same-name user connections at automatic startup.
+
 For the proposed 8 GB always-on budget and repeatable idle CPU/RSS collection,
 see `docs/LIGHTWEIGHT-FOOTPRINT.md`. Linux dry runs do not validate the native
 Partner/watchdog, desktop Accessibility watcher, Electron shell or loaded model.

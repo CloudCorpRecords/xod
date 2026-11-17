@@ -1,0 +1,53 @@
+{
+  "cidiff": {
+    "version": "0.1.2",
+    "files": {
+      "dist/cli.js": "d6630bdd5a65313ffc667ad671805787e4f884f0591f4f3366721aafad7e4d9a",
+      "dist/diff.js": "d4e8af43d1b0d6e137da8ceeeef8532ce236befdca098182e111643520328f59",
+      "dist/index.js": "ccf19e87a260c91a93f2770145955c76786775d9bb1164408f9d79607d44794f",
+      "dist/mcp.js": "f48834b2e262711990d9f65447af7062a7e6f796c923a0f0a849ebbf65592e8e",
+      "dist/types.js": "2b478879b5c549a8deb8819f6e320ffc069dc2b877f1a8cce948ea1389652b5b"
+    }
+  },
+  "reprocheck": {
+    "version": "0.2.0",
+    "files": {
+      "dist/cli.js": "d1cc48bad2a3d53b7eb23245f2c201c798c462f4cc8832e698f0a2c81ea01475",
+      "dist/index.js": "36326925f8f26d6e22c332066095613d303785e3319f9fb820f93a05b0183960",
+      "dist/mcp.js": "9fe41098134572f84aedeca96b978c6f7643a5e536781ce565ed74a6812e14af",
+      "dist/repro.js": "1dbf3a063cc5194cef864e2bcd9e07f07595804b36f427bcb746e7fd6b9a66a4",
+      "dist/runners.js": "414d3da8f8da2fec21730ced5aefde23960f00cab234cd9f1250918372c37425",
+      "dist/types.js": "4893df8e94af35ce019403a02af77f3038eaf3823cd38c4c2311fd03a9d29551"
+    }
+  },
+  "testdelta": {
+    "version": "0.1.0",
+    "files": {
+      "dist/cli.js": "0bed2cd05a3d3fceb518c2e8b6ccbad65086f40cf112aed9214fe6c2f1789504",
+      "dist/core.js": "3212146aed051f6463ef99845d49c47f41cdd907a2bc4ba6618314896d704e63",
+      "dist/index.js": "b69be7e9e4a65879c8f1400339f4ca2bd8215e01cad4c6d20a72777e623ee63d",
+      "dist/mcp.js": "85009bddf1b1170ee2c5e06c9aa5d76b986eebfa2ab25347782d91d733c4cbc8",
+      "dist/types.js": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2"
+    }
+  },
+  "skillcheck": {
+    "version": "0.1.0",
+    "files": {
+      "dist/cli.js": "f1e8561c579d20b8cb32ee0680ba03239776304f20145123fd29b45c62add41e",
+      "dist/core.js": "91ba97f937f804b16ad153b39c78984e73e9ef6f66fe746865e77a12077dc683",
+      "dist/index.js": "b69be7e9e4a65879c8f1400339f4ca2bd8215e01cad4c6d20a72777e623ee63d",
+      "dist/mcp.js": "00cda3328f8a08d9f90db9c48dfd73c38635064088224e9ea2d7782209ff0488",
+      "dist/types.js": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2"
+    }
+  },
+  "contextbudget": {
+    "version": "0.1.0",
+    "files": {
+      "dist/cli.js": "1dd543cfc6dae08616d449bde2a4ab36587797603168afcc706bf05770911442",
+      "dist/core.js": "5096e7248154b9af5c6a9ae85946a1cb59ece9268f3df14ec75ea6411f644bbc",
+      "dist/index.js": "b69be7e9e4a65879c8f1400339f4ca2bd8215e01cad4c6d20a72777e623ee63d",
+      "dist/mcp.js": "7bf853d0407facb0bd9a380b5ed6a02ed1194bd9ff603937d451acf2520e968c",
+      "dist/types.js": "01ae2a5b120382f9a648ced7ee8507493a134f216d100fc61600c6c9738235d2"
+    }
+  }
+}

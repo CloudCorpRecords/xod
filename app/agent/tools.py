@@ -3327,9 +3327,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         _mcp_ro = None
         if name.startswith("mcp__"):
             try:
-                from app.services.mcp_client import mcp_hub, _read_only
-                _, _t = mcp_hub._find(name)
-                _mcp_ro = _read_only(_t) if _t else None
+                from app.services.mcp_client import mcp_hub
+                _mcp_ro = mcp_hub.read_only(name)
             except Exception:
                 pass
         refusal = _workers.allowed(name, _mcp_ro)
@@ -3339,9 +3338,8 @@ async def execute_tool(name: str, arguments: Dict[str, Any], active_workspace_pa
         read_only = None
         if name.startswith("mcp__"):
             try:
-                from app.services.mcp_client import mcp_hub, _read_only
-                _, t = mcp_hub._find(name)
-                read_only = _read_only(t) if t else None
+                from app.services.mcp_client import mcp_hub
+                read_only = mcp_hub.read_only(name)
             except Exception:
                 pass
         hit = sentinel.review(name, arguments or {}, read_only)

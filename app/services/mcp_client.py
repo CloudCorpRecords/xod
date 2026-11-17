@@ -22,6 +22,7 @@ import re
 import shutil
 import sys
 import time
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -38,6 +39,7 @@ KEYCHAIN = "Xod MCP"
 TRUST_LEVELS = ("ask", "read_only", "always")
 SECRETISH = re.compile(r"(key|token|secret|password|passwd|auth|credential|cookie)", re.I)
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9_-]")
+_CONFIG_LOCK = threading.RLock()
 
 
 def _attr(obj: Any, snake: str, camel: str, default: Any = None) -> Any:
@@ -166,18 +168,27 @@ def stdio_env(name: str, spec: Dict[str, Any]):
     return env, command, cwd
 
 
-def add_servers(block: Dict[str, Any]) -> Dict[str, Any]:
+def add_servers(block: Dict[str, Any], overwrite: bool = True) -> Dict[str, Any]:
+    """Explicit user imports may replace; automatic bridges must opt out."""
+    with _CONFIG_LOCK:
+        return _add_servers(block, overwrite)
+
+
+def _add_servers(block: Dict[str, Any], overwrite: bool) -> Dict[str, Any]:
     """Adds servers from a Claude-Desktop-style block ({"mcpServers": {...}} or {name: spec}).
     Secret-looking env values go to the Keychain."""
     servers = block.get("mcpServers") or block.get("servers") or block
     if not isinstance(servers, dict) or not servers:
         return {"success": False, "error": "Paste a JSON block like {\"mcpServers\": {\"name\": {\"command\": …}}}."}
     current = load_config()
-    added = []
+    added, preserved = [], []
     for raw_name, spec in servers.items():
         if not isinstance(spec, dict) or not (spec.get("command") or spec.get("url")):
             continue
         name = _clean(raw_name)
+        if not overwrite and name in current:
+            preserved.append(name)
+            continue
         env, secret_env = {}, []
         for k, v in (spec.get("env") or {}).items():
             if SECRETISH.search(k) and v:
@@ -191,8 +202,10 @@ def add_servers(block: Dict[str, Any]) -> Dict[str, Any]:
             "enabled": True, "trust": spec.get("trust") if spec.get("trust") in TRUST_LEVELS else "ask",
         }.items() if v is not None}
         added.append(name)
-    _save_config(current)
-    return {"success": bool(added), "added": added, "error": None if added else "No servers with a command or url found."}
+    if added:
+        _save_config(current)
+    return {"success": bool(added or preserved), "added": added, "preserved": preserved,
+            "error": None if added or preserved else "No servers with a command or url found."}
 
 
 def update_server(name: str, enabled: Optional[bool] = None, trust: Optional[str] = None) -> bool:
@@ -325,6 +338,10 @@ class ServerConn:
             else:
                 inner = _first_leaf(e)
                 self.error = f"{type(inner).__name__}: {inner}"[:300]
+                from app.services.fleet_policy import PACKAGES
+                if self.name in PACKAGES:
+                    self.error += (" Fleet startup never downloads packages. Check Node.js 20+ and "
+                                   "run npm ci --ignore-scripts in the Xod checkout, or configure a local CLI.")
                 logger.warning(f"MCP {self.name} failed: {self.error}")
             if isinstance(e, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
                 raise
@@ -387,7 +404,7 @@ class MCPHub:
                         "signing_in": name in mcp_oauth.sign_in_pages,
                         "connected": bool(c and c.client), "error": c.error if c else None,
                         "tools": [{"name": t.name, "description": (t.description or "")[:160],
-                                   "read_only": _read_only(t)}
+                                    "read_only": self.read_only(f"mcp__{name}__{t.name}")}
                                   for t in (c.tools if c else [])]})
         return out
 
@@ -428,6 +445,19 @@ class MCPHub:
         return c, t
 
     # ---------------------------------------------------------- calling
+    def read_only(self, full_name: str) -> bool:
+        """Effective policy shared by approval, sentinel and worker envelopes."""
+        try:
+            c, t = self._find(full_name)
+        except ValueError:
+            return False
+        if not c or not t:
+            return False
+        from app.services.fleet_policy import PACKAGES, verified_read_only
+        if c.name in PACKAGES:
+            return verified_read_only(c.name, c.spec, t.name)
+        return _read_only(t)
+
     async def call(self, full_name: str, args: Dict[str, Any], approved: bool = False) -> Dict[str, Any]:
         try:
             c, t = self._find(full_name)
@@ -436,9 +466,13 @@ class MCPHub:
         if not c or not c.client or not t:
             return {"success": False, "error": f"The {full_name.split('__')[1]} tool server isn't connected (Tools → Connections → MCP)."}
         trust = (load_config().get(c.name) or {}).get("trust", "ask")   # current setting, not the one at connect time
-        read_only = _read_only(t)
+        read_only = self.read_only(full_name)
+        from app.services.fleet_policy import PACKAGES
+        # Even an inaccurate external readOnlyHint or "always" setting cannot
+        # turn repro commands / unreviewed fleet operations into read-only work.
+        fleet_hold = c.name in PACKAGES and not read_only
         destructive = _destructive(t)
-        if not approved and (destructive or not (trust == "always" or (trust == "read_only" and read_only))):
+        if not approved and (fleet_hold or destructive or not (trust == "always" or (trust == "read_only" and read_only))):
             # A call that can't run as written goes back to the model to fix, not to you to approve first.
             schema = getattr(t, "inputSchema", None) or getattr(t, "input_schema", None) or {}
             missing = [k for k in schema.get("required", []) if k not in (args or {})]

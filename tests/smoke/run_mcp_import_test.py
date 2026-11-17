@@ -25,6 +25,17 @@ os.environ.setdefault("XOD_SPEECH", "off")  # tests never reach the speakers (se
 sys.path.insert(0, str(ROOT))
 TMP = tempfile.mkdtemp(prefix="xod-mcpimport-")
 os.environ["XOD_DATA_DIR"] = os.path.join(TMP, "data")
+os.environ.update(
+    HOME=TMP, XDG_CONFIG_HOME=os.path.join(TMP, "config"),
+    XDG_DATA_HOME=os.path.join(TMP, "share"),
+    PYTHON_KEYRING_BACKEND="tests.support.filekeyring.FileKeyring",
+    XOD_TEST_KEYRING_FILE=os.path.join(TMP, "keys.json"),
+)
+for key in ("OPENAI_API_KEY", "AI_INTEGRATIONS_OPENAI_API_KEY", "FIREWORKS_API_KEY",
+            "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"):
+    os.environ.pop(key, None)
+from app import paths
+paths.DEV_ENV_PATH = Path(TMP) / "absent.env"
 
 import uvicorn  # noqa: E402
 from mcp.server.mcpserver import MCPServer  # noqa: E402
@@ -205,7 +216,12 @@ check("check: a key server gets a box for the key", [x["id"] for x in res["serve
 async def adding():
     out = {}
     out["open"] = await mcp_import.add(OPEN + "/sse")
-    keyed = json.dumps({"mcpServers": {"keyed": {"command": sys.executable, "args": [str(STDIO)], "env": {"DEMO_API_KEY": "<YOUR_DEMO_KEY>"}}}})
+    # This is an external Python server, not the {xod_python} built-in.
+    # Give its isolated fixture the host's resolved dependencies explicitly;
+    # Replit's wrapped interpreter otherwise loses them after HOME changes.
+    keyed = json.dumps({"mcpServers": {"keyed": {"command": sys.executable, "args": [str(STDIO)],
+        "env": {"DEMO_API_KEY": "<YOUR_DEMO_KEY>",
+                "PYTHONPATH": os.pathsep.join([str(ROOT), *[p for p in sys.path if p]])}}}})
     out["no_key"] = await mcp_import.add(keyed)
     out["keyed"] = await mcp_import.add(keyed, {"keyed": {"env:DEMO_API_KEY": "secret-123"}})
     out["whoami"] = await mcp_client.mcp_hub.call("mcp__keyed__whoami", {}, approved=True)

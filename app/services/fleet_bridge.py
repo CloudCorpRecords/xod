@@ -16,9 +16,8 @@ where they live on this machine, or that they have an MCP mode. This module is t
   register_fleet_tools()  writes those entries through mcp_client.add_servers, so the
                           hub connects them like any other outside server
 
-Discovery order per tool: $XOD_FLEET_TOOLS_DIR when set (a fleet-tools install folder,
-or a folder holding the shims directly; setting it replaces the default folder), then
-~/workspace/fleet-tools (Tree's install), then PATH.
+Discovery order: explicit folder OR default folder, then PATH, then the exact
+published packages installed by this checkout's lockfile. No startup downloads.
 
 Trust: entries are registered with trust "ask", Xod's default for outside servers, so a
 call waits for the person's OK on the approval card. That matters most for reprocheck,
@@ -58,7 +57,7 @@ def find_fleet_tools() -> Dict[str, Optional[Dict[str, Any]]]:
     """Locates each fleet CLI on this machine.
 
     Returns {tool: {"command": ..., "args": ["mcp"], "source": ...} or None}.
-    None means not found here; the caller reports it missing rather than guessing.
+    None means no usable local or pinned published install was found.
     """
     override = os.environ.get(ENV_DIR)
     if override:
@@ -77,6 +76,17 @@ def find_fleet_tools() -> Dict[str, Optional[Dict[str, Any]]]:
             on_path = shutil.which(tool)
             if on_path:
                 hit = {"command": on_path, "args": ["mcp"], "source": "path"}
+        from app.services.fleet_policy import published_spec, PACKAGE_ROOT
+        # npm may put this checkout's .bin on PATH. Use the explicit validated
+        # launcher rather than treating our published fallback as a foreign shim.
+        own_bin = False
+        if hit and hit["source"] == "path":
+            try:
+                own_bin = Path(hit["command"]).resolve() == (PACKAGE_ROOT / tool / "dist" / "cli.js").resolve()
+            except OSError:
+                pass
+        if hit is None or own_bin:
+            hit, _ = published_spec(tool)
         found[tool] = hit
     return found
 
@@ -93,22 +103,29 @@ def fleet_server_specs(trust: str = "ask") -> Dict[str, Dict[str, Any]]:
 def register_fleet_tools(trust: str = "ask") -> Dict[str, Any]:
     """Registers every found fleet tool with the MCP hub's config.
 
-    Idempotent (add_servers overwrites a same-name entry) and additive: servers the
-    person added themselves are never touched. When nothing is found, nothing is
-    written and the report says so.
+    Idempotent and additive: existing same-name connections are preserved,
+    including custom commands, disabled settings, credentials and trust.
     """
     found = find_fleet_tools()
     missing = [tool for tool, hit in found.items() if hit is None]
+    from app.services.fleet_policy import published_spec
+    errors = {tool: published_spec(tool)[1] for tool in missing}
+    for tool, error in errors.items():
+        logger.info("fleet bridge: %s unavailable: %s", tool, error)
     specs = {tool: {"command": hit["command"], "args": list(hit["args"]), "trust": trust}
              for tool, hit in found.items() if hit}
     if not specs:
         logger.info("fleet bridge: no fleet tools found on this machine; nothing registered")
         return {"success": False, "registered": [], "missing": missing,
+                "errors": errors,
                 "error": "No fleet tools found (looked in $XOD_FLEET_TOOLS_DIR, "
-                         "~/workspace/fleet-tools, and PATH)."}
+                         "~/workspace/fleet-tools, PATH, and pinned published packages). "
+                         + " ".join(str(e) for e in errors.values())}
     from app.services import mcp_client
-    result = mcp_client.add_servers({"mcpServers": specs})
+    result = mcp_client.add_servers({"mcpServers": specs}, overwrite=False)
     registered = result.get("added") or []
+    preserved = result.get("preserved") or []
     logger.info(f"fleet bridge: registered {registered}; missing {missing}")
-    return {"success": bool(registered), "registered": registered, "missing": missing,
+    return {"success": bool(registered or preserved), "registered": registered,
+            "preserved": preserved, "missing": missing, "errors": errors,
             "sources": {tool: found[tool]["source"] for tool in registered}}
