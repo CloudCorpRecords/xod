@@ -181,6 +181,11 @@ No substitute model was used.
 
 ## Reproduction and deterministic checks
 
+For the newer desktop-independent verifier, generous correctness envelope,
+cloud/local context profiles and an independent-reviewer handoff, see
+`docs/AGENT-VERIFICATION.md`. Its scripted tests are not additional live-model
+or duration evidence.
+
 These commands require an authorized `OPENAI_API_KEY` supplied through the
 environment. They may incur provider charges. Do not paste keys into
 commands or files.

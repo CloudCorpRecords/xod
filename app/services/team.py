@@ -275,7 +275,9 @@ async def run_subagent(label: str, task: str, tier: str, execute_tool: Callable,
                 emit({"type": "subagent_tool_result", "agent_id": label, "name": name, "id": cid, "summary": worker._summary(name, res), "data": res})
             log.append({"name": name, "args": args, "fp": worker._fp(name, args), "failed": worker._failed(res), "out": worker._out(res)[-2000:],
                         "exit": res.get("exit_code") if isinstance(res, dict) else None, "new": True})
-            convo.append({"role": "tool", "tool_call_id": cid, "name": name, "content": json.dumps(res, default=str)[:3000]})
+            max_tool_body = worker._worker_context_limits(force_local=_local(t))[1]
+            convo.append({"role": "tool", "tool_call_id": cid, "name": name,
+                          "content": worker._tool_content(res, max_tool_body)})
             if isinstance(res, dict) and res.get("needs_approval"):
                 approval = res
                 report = f"Stopped at a step that needs the person's OK: {res.get('message') or name}"
@@ -290,11 +292,14 @@ async def run_subagent(label: str, task: str, tier: str, execute_tool: Callable,
         worker._shrink(convo, force_local=_local(t))
     else:
         report = report or f"Ran out of steps after {len(log)} actions; last: {log[-1]['name'] if log else 'none'}."
+    all_failed = bool(log) and all(e["failed"] for e in log)
+    if all_failed and approval is None:
+        report = "Stopped: no tool action succeeded. Worker report: " + report
     ok = bool(report) and report != "It gave no answer." and not report.startswith(("Stopped", "Ran out"))
     emit({"type": "subagent_status", "agent_id": label, "status": "waiting" if approval else "completed" if ok else "partial", "message": brain,
           "findings": report[:1500], "duration_ms": int((time.time() - started) * 1000)})
     return {"success": ok, "agent": label, "brain": brain, "tier": tier, "summary": report[:3000], "steps": len(log),
-            "needs_approval": report.startswith("Stopped at a step"),
+            "needs_approval": approval is not None,
             "approval": approval,
             "verification": "worker_report",
             "evidence": [{"tool": e["name"], "ok": not e["failed"], "summary": e["out"][-600:],

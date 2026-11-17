@@ -698,6 +698,16 @@ def calls_in_text(content: str, allowed: set) -> List[Dict[str, Any]]:
     return out[:4]
 
 
+def _tool_content(result, max_chars):
+    from app.agent.context import tool_content
+    original = result if isinstance(result, str) else json.dumps(result, default=str)
+    content = tool_content(original, max_chars)
+    if len(original) > max_chars:
+        run_obs.emit("context.tool_bounded", before_chars=len(original),
+                     after_chars=len(content), character_budget=max_chars)
+    return content
+
+
 def _worker_context_limits(force_local: Optional[bool] = None) -> Tuple[int, int, int, int, int]:
     """Returns `(keep_full, max_tool_body, shrink_threshold, head_chars, tail_chars)`.
     On a cloud / large-context brain, retains significantly more tool output history so multi-file
@@ -724,31 +734,7 @@ def _shrink(convo: List[Dict[str, Any]], force_local: Optional[bool] = None) -> 
     for m in tool_msgs[:-keep_full]:
         c = m.get("content") or ""
         if len(c) > threshold:
-            try:
-                data = json.loads(c)
-            except (ValueError, TypeError):
-                data = None
-            if isinstance(data, dict):
-                # Never truncate away an approval, effect status, file path or
-                # job handle hidden in the middle of a large JSON tool result.
-                state_keys = {"success", "error", "outcome", "outcome_evidence", "needs_approval",
-                              "approval_id", "job_id", "status", "path", "file_path", "id", "tool",
-                              "verification", "exit_code", "message"}
-                compact = {}
-                for key, value in data.items():
-                    if key in state_keys:
-                        compact[key] = value
-                    elif isinstance(value, str) and len(value) > threshold:
-                        compact[key] = value[:head_n] + " … " + value[-tail_n:]
-                    elif isinstance(value, (list, dict)):
-                        text = json.dumps(value, default=str)
-                        compact[key] = value if len(text) <= threshold else text[:head_n] + " … " + text[-tail_n:]
-                    else:
-                        compact[key] = value
-                compact["_compacted"] = True
-                m["content"] = json.dumps(compact, default=str)
-            else:
-                m["content"] = c[:head_n] + " … " + c[-tail_n:]
+            m["content"] = _tool_content(c, max(1800, head_n + tail_n + 512))
     after_chars = sum(len(m.get("content") or "") for m in tool_msgs)
     if after_chars < before_chars:
         run_obs.emit("context.compacted", before_chars=before_chars, after_chars=after_chars,
@@ -920,6 +906,15 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         pass
     if spoken:
         system += "\nYour final reply will be read aloud: two short sentences."
+    system += (
+        "\n\nContinuation rule: earlier conversation is background, not a queue of commands to replay. "
+        "Fulfill the latest user goal and carry forward its applicable constraints. Do not repeat "
+        "one-time procedures or entire fleets just because an earlier request used them. "
+        "For a targeted correction, first inspect the affected inputs and existing outputs; preserve "
+        "unrelated completed work and delegate only the affected pieces unless inspection shows "
+        "other results are stale. Previous assistant claims alone are not proof: use readbacks. "
+        "This does not override an explicit request to redo the full job or any approval boundary."
+    )
     convo: List[Dict[str, Any]] = [{"role": "system", "content": system}]
     convo.extend(_conversation_history(messages))
     ask = goal
@@ -1107,9 +1102,9 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             log.append({"name": name, "args": args, "fp": _fp(name, args), "failed": _failed(res),
                         "out": out[:8000] if page else out[-3000:], "page": page,
                         "exit": res.get("exit_code") if isinstance(res, dict) else None, "new": True})
-            body = json.dumps(res, default=str) if not isinstance(res, str) else res
             _keep_full, max_tool_body, _thr, _h, _t = _worker_context_limits()
-            convo.append({"role": "tool", "tool_call_id": cid, "name": name, "content": body[:max_tool_body]})
+            convo.append({"role": "tool", "tool_call_id": cid, "name": name,
+                          "content": _tool_content(res, max_tool_body)})
             if isinstance(res, dict) and res.get("needs_approval"):
                 held = res
                 break
