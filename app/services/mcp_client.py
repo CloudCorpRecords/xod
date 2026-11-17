@@ -15,6 +15,7 @@ is held as a pending approval: the chat shows exactly what it wants to do, and i
 when you press Approve.
 """
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import logging
 import os
@@ -23,9 +24,11 @@ import shutil
 import sys
 import time
 import threading
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from app.services import keychain
 
@@ -40,6 +43,11 @@ TRUST_LEVELS = ("ask", "read_only", "always")
 SECRETISH = re.compile(r"(key|token|secret|password|passwd|auth|credential|cookie)", re.I)
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9_-]")
 _CONFIG_LOCK = threading.RLock()
+GOOGLE_ACCOUNT_PROBES = {
+    "gmailmcp.googleapis.com": ("list_labels", {}),
+    "calendarmcp.googleapis.com": ("list_calendars", {"pageSize": 1}),
+    "drivemcp.googleapis.com": ("list_recent_files", {"pageSize": 1, "excludeContentSnippets": True}),
+}
 
 
 def _attr(obj: Any, snake: str, camel: str, default: Any = None) -> Any:
@@ -111,8 +119,28 @@ def load_config() -> Dict[str, Dict[str, Any]]:
 
 
 def _save_config(servers: Dict[str, Dict[str, Any]]) -> None:
-    CONFIG.write_text(json.dumps({"servers": servers}, indent=2))
-    os.chmod(CONFIG, 0o600)
+    if CONFIG.exists():
+        try:
+            existing = json.loads(CONFIG.read_text())
+            saved = existing.get("servers", existing.get("mcpServers", {}))
+            if not isinstance(saved, dict):
+                raise ValueError()
+        except (ValueError, AttributeError):
+            raise ValueError("Connections configuration is unreadable. Restore or repair the file before saving; "
+                             "the original file was not overwritten.") from None
+    CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    pending = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=CONFIG.parent, delete=False) as f:
+            pending = Path(f.name)
+            os.chmod(pending, 0o600)
+            f.write(json.dumps({"servers": servers}, indent=2))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(pending, CONFIG)
+    finally:
+        if pending and pending.exists():
+            pending.unlink()
 
 
 def _env_for(name: str, spec: Dict[str, Any]) -> Dict[str, str]:
@@ -225,16 +253,14 @@ def remove_server(name: str) -> bool:
     spec = cfg.pop(name, None)
     if spec is None:
         return False
-    mcp_oauth.forget(name)
-    try:
-        keychain.delete_password(KEYCHAIN, f"{name}:bearer_token")
-    except Exception:
-        pass
+    if spec.get("auth") == "oauth":
+        mcp_oauth.forget(name)
+    else:
+        mcp_oauth.cancel(name)
+    if spec.get("auth") == "bearer":
+        mcp_oauth._delete(name, "bearer_token")
     for key in [*(spec.get("secret_env") or []), *(f"header:{h}" for h in spec.get("secret_headers") or [])]:
-        try:
-            keychain.delete_password(KEYCHAIN, f"{name}:{key}")
-        except Exception:
-            pass
+        mcp_oauth._delete(name, key)
     _save_config(cfg)
     return True
 
@@ -273,11 +299,13 @@ class ServerConn:
         self.ready = asyncio.Event()
         self._stop = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
+        self._oauth_provider = None
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._run())
 
-    def _http_target(self) -> Any:
+    @asynccontextmanager
+    async def _http_target(self) -> Any:
         """A Streamable HTTP connection (or SSE for older servers), signed in with OAuth, a bearer token or the
         server's own headers (an API key), from the Keychain."""
         from mcp.client.streamable_http import streamable_http_client
@@ -297,10 +325,40 @@ class ServerConn:
             if not self.interactive and not mcp_oauth.has_tokens(self.name):
                 raise mcp_oauth.SignInNeeded(self.name)
             auth = mcp_oauth.provider(self.name, url, self.redirect_uri, self.interactive, self.spec.get("scope"))
+            self._oauth_provider = auth
         if self.spec.get("type") == "sse":
             from mcp.client.sse import sse_client
-            return sse_client(url, headers=headers or None, timeout=15, auth=auth)
-        return streamable_http_client(url, http_client=create_mcp_http_client(headers=headers or None, auth=auth))
+            async with sse_client(url, headers=headers or None, timeout=15, auth=auth) as streams:
+                yield streams
+        else:
+            # A caller-provided HTTP client is NOT closed by the MCP transport.
+            async with create_mcp_http_client(headers=headers or None, auth=auth) as http:
+                async with streamable_http_client(url, http_client=http) as streams:
+                    yield streams
+
+    async def _verify_account_access(self, client: Any, tools: List[Any]) -> None:
+        """Google exposes anonymous discovery; verify a minimal authenticated read.
+
+        Connect explicitly requests this check. Its contents are discarded, not
+        persisted, logged, or returned to the agent. Never probe a write tool.
+        """
+        probe = GOOGLE_ACCOUNT_PROBES.get(urlparse(self.spec.get("url") or "").hostname)
+        if not probe:
+            return
+        if self.spec.get("auth") != "oauth" or not self._oauth_provider:
+            raise ValueError("Google account check requires OAuth. Use the official Google connector in Connections.")
+        name, args = probe
+        tool = next((t for t in tools if t.name == name), None)
+        if not tool or not _read_only(tool) or _destructive(tool):
+            raise ValueError("Google account check could not find its expected read-only tool. Check the provider setup.")
+        # This request triggers the SDK's existing OAuth/PKCE flow if discovery
+        # was anonymous. Keep interactive sign-in enabled until it completes.
+        result = await client.call_tool(name, dict(args))
+        if _attr(result, "is_error", "isError", False):
+            raise ValueError("Google account check failed. Check consent, enabled APIs and OAuth client configuration.")
+        tokens = self._oauth_provider.context.current_tokens
+        if not tokens or not tokens.access_token:
+            raise mcp_oauth.SignInNeeded(self.name)
 
     async def _run(self) -> None:
         from mcp import Client
@@ -325,73 +383,137 @@ class ServerConn:
                 target = StdioServerParameters(command=command, args=self.spec.get("args") or [], env=env,
                                                 cwd=cwd or None)
             async with Client(target, read_timeout_seconds=120) as client:
-                self.client = client
-                self.tools = (await client.list_tools()).tools
+                tools = (await client.list_tools()).tools
+                if not tools:
+                    raise ValueError("The server connected but returned no usable tools. Check account access and enabled APIs.")
+                await self._verify_account_access(client, tools)
+                if self._oauth_provider:
+                    # The user's Connect click authorizes initial sign-in only,
+                    # not surprise browser windows from later agent tool calls.
+                    self._oauth_provider.allow_interactive = False
+                self.client, self.tools = client, tools
                 self.error, self.needs_sign_in = None, False
                 self.ready.set()
                 logger.info(f"MCP {self.name}: {len(self.tools)} tools")
                 await self._stop.wait()
         except BaseException as e:   # the SDK wraps failures in exception groups
+            if isinstance(e, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
+                raise
             sign_in = _find_exc(e, mcp_oauth.SignInNeeded)
             if sign_in:
-                self.needs_sign_in, self.error = True, None
+                self.needs_sign_in, self.error = True, "Sign in again to restore this connection."
             else:
                 inner = _first_leaf(e)
-                self.error = f"{type(inner).__name__}: {inner}"[:300]
+                self.error = connection_error(inner)
                 from app.services.fleet_policy import PACKAGES
                 if self.name in PACKAGES:
                     self.error += (" Fleet startup never downloads packages. Check Node.js 20+ and "
                                    "run npm ci --ignore-scripts in the Xod checkout, or configure a local CLI.")
                 logger.warning(f"MCP {self.name} failed: {self.error}")
-            if isinstance(e, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)):
-                raise
         finally:
             self.client = None
+            self.tools = []
             self.ready.set()
 
     async def stop(self) -> None:
         self._stop.set()
-        if self._task:
+        mcp_oauth.cancel(self.name)
+        if self._task and self._task is not asyncio.current_task():
+            if not self._task.done():
+                self._task.cancel()
             try:
                 await asyncio.wait_for(self._task, 10)
-            except Exception:
-                self._task.cancel()
+            except asyncio.CancelledError:
+                if not self._task.cancelled():
+                    raise
+
+
+def connection_error(exc: BaseException) -> str:
+    """Actionable error classes without echoing token-bearing URLs or provider bodies."""
+    from mcp.client.auth.exceptions import OAuthFlowError
+    if isinstance(exc, keychain.Unreadable):
+        return "The key store is locked or unavailable. Unlock it, choose Try again, then reconnect."
+    if isinstance(exc, OAuthFlowError):
+        return "OAuth sign-in failed. Check client details, the registered callback URI, consent and account access; then sign in again."
+    response = getattr(exc, "response", None)
+    code = getattr(response, "status_code", None)
+    if code in (401, 403):
+        return f"Provider refused access (HTTP {code}). Sign in again or check account permissions and enabled services."
+    if isinstance(exc, (ValueError, RuntimeError)) and str(exc).startswith((
+            "The server connected but returned no", "OAuth callback changed.", "Sign-in was cancelled",
+            "Connections configuration is unreadable.", "Google account check")):
+        return str(exc)[:300]
+    if isinstance(exc, TimeoutError) or "timeout" in type(exc).__name__.lower():
+        return "The server timed out. Check your connection and try again."
+    return f"Connection failed ({type(exc).__name__}). Check the server address, account access and local dependencies."
 
 
 class MCPHub:
     def __init__(self) -> None:
         self.conns: Dict[str, ServerConn] = {}
         self.pending: Dict[str, Dict[str, Any]] = {}
+        self._connecting: Dict[str, asyncio.Task] = {}
 
     async def start(self) -> None:
         """(Re)connects every enabled server in the config."""
         cfg = load_config()
-        for name in list(self.conns):
-            await self.conns.pop(name).stop()
-        for name, spec in cfg.items():
-            if spec.get("enabled", True):
-                conn = ServerConn(name, spec)
-                self.conns[name] = conn
-                conn.start()
-        await asyncio.gather(*(asyncio.wait_for(c.ready.wait(), 30) for c in self.conns.values()), return_exceptions=True)
+        for name in set(self.conns) | set(self._connecting):
+            await self.disconnect(name)
+        await asyncio.gather(*(self.connect(name) for name, spec in cfg.items() if spec.get("enabled", True)),
+                             return_exceptions=True)
 
     async def connect(self, name: str, interactive: bool = False, redirect_uri: Optional[str] = None) -> Dict[str, Any]:
         """(Re)connects one server. interactive=True may open a sign-in page in the browser."""
+        existing = self._connecting.get(name)
+        if existing and not existing.done():
+            return await asyncio.shield(existing)
+        task = asyncio.create_task(self._connect(name, interactive, redirect_uri))
+        self._connecting[name] = task
+        try:
+            return await task
+        finally:
+            if self._connecting.get(name) is task:
+                self._connecting.pop(name, None)
+
+    async def _connect(self, name: str, interactive: bool, redirect_uri: Optional[str]) -> Dict[str, Any]:
         spec = load_config().get(name)
-        if not spec:
-            return {"success": False, "error": "No such server."}
+        if not spec or not spec.get("enabled", True):
+            return {"success": False, "error": "No enabled server with that name."}
         if name in self.conns:
             await self.conns.pop(name).stop()
+        for pid, request in list(self.pending.items()):
+            if request.get("server") == name:
+                self.decline(pid)
         conn = ServerConn(name, spec, interactive=interactive, redirect_uri=redirect_uri)
         self.conns[name] = conn
         conn.start()
         try:
             await asyncio.wait_for(conn.ready.wait(), mcp_oauth.SIGN_IN_TIMEOUT + 30 if interactive else 45)
         except asyncio.TimeoutError:
-            return {"success": False, "error": "It didn't answer in time."}
+            await conn.stop()
+            conn.error = "It didn't answer in time. Try connecting again."
+            return {"success": False, "error": conn.error}
+        except asyncio.CancelledError:
+            await conn.stop()
+            if self.conns.get(name) is conn:
+                self.conns.pop(name, None)
+            raise
         if conn.client:
             return {"success": True, "tools": len(conn.tools)}
         return {"success": False, "needs_sign_in": conn.needs_sign_in, "error": conn.error or "Not connected."}
+
+    async def disconnect(self, name: str) -> None:
+        task = self._connecting.pop(name, None)
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        conn = self.conns.pop(name, None)
+        if conn:
+            await conn.stop()
+        mcp_oauth.cancel(name)
+        for pid, request in list(self.pending.items()):
+            if request.get("server") == name:
+                self.decline(pid)
 
     def status(self) -> List[Dict[str, Any]]:
         out = []
@@ -402,7 +524,8 @@ class MCPHub:
                         "secret_env": spec.get("secret_env", []), "connector": spec.get("connector"),
                         "auth": spec.get("auth"), "needs_sign_in": bool(c and c.needs_sign_in),
                         "signing_in": name in mcp_oauth.sign_in_pages,
-                        "connected": bool(c and c.client), "error": c.error if c else None,
+                         "connected": bool(spec.get("enabled", True) and c and c.client and c.tools and not c.needs_sign_in),
+                         "error": c.error if c else None,
                         "tools": [{"name": t.name, "description": (t.description or "")[:160],
                                     "read_only": self.read_only(f"mcp__{name}__{t.name}")}
                                   for t in (c.tools if c else [])]})
@@ -411,8 +534,10 @@ class MCPHub:
     # ---------------------------------------------------------- tools for the model
     def tool_definitions(self) -> List[Dict[str, Any]]:
         defs = []
+        cfg = load_config()
         for name, c in self.conns.items():
-            if not c.client:
+            spec = cfg.get(name)
+            if not c.client or c.needs_sign_in or spec is None or not spec.get("enabled", True):
                 continue
             for t in c.tools:
                 schema = _attr(t, "input_schema", "inputSchema")
@@ -468,6 +593,11 @@ class MCPHub:
             return {"success": False, "error": f"Bad MCP tool name {full_name}"}
         if not c or not c.client or not t:
             return {"success": False, "error": f"The {full_name.split('__')[1]} tool server isn't connected (Tools → Connections → MCP)."}
+        current = load_config().get(c.name)
+        if current is None or not current.get("enabled", True):
+            return {"success": False, "error": "This connection is disabled or was removed. Reconnect it before using its tools."}
+        if c.needs_sign_in:
+            return {"success": False, "needs_sign_in": True, "error": "Sign in again from Connections before using this server."}
         trust = (load_config().get(c.name) or {}).get("trust", "ask")   # current setting, not the one at connect time
         read_only = self.read_only(full_name)
         from app.services.fleet_policy import PACKAGES
@@ -510,7 +640,11 @@ class MCPHub:
         try:
             res = await c.client.call_tool(t.name, args or {})
         except Exception as e:
-            return {"success": False, "error": f"{type(e).__name__}: {e}"[:400]}
+            if _find_exc(e, mcp_oauth.SignInNeeded):
+                c.needs_sign_in = True
+                c.error = "The saved sign-in expired or was revoked. Sign in again from Connections."
+                return {"success": False, "needs_sign_in": True, "error": c.error}
+            return {"success": False, "error": connection_error(_first_leaf(e))}
         texts = [getattr(x, "text", None) or json.dumps(getattr(x, "model_dump", lambda: str(x))(), default=str)[:2000]
                  for x in (res.content or [])]
         is_error = bool(_attr(res, "is_error", "isError", False))

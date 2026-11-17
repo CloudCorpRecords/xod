@@ -28,6 +28,25 @@ INIT = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
 HEADERS = {"Accept": "application/json, text/event-stream", "Content-Type": "application/json"}
 
 
+def initialize_result(text: str) -> bool:
+    """A JSON-RPC error or an HTML page is not a working MCP initialization."""
+    candidates = [text] + [line[5:].strip() for line in text.splitlines() if line.startswith("data:")]
+    for candidate in candidates:
+        try:
+            message = json.loads(candidate)
+        except ValueError:
+            continue
+        if not isinstance(message, dict):
+            continue
+        result = message.get("result")
+        if (message.get("jsonrpc") == "2.0" and message.get("id") == INIT["id"]
+                and not message.get("error") and isinstance(result, dict)
+                and result.get("protocolVersion") and isinstance(result.get("capabilities"), dict)
+                and isinstance(result.get("serverInfo"), dict)):
+            return True
+    return False
+
+
 async def _json(c: httpx.AsyncClient, url: str) -> Optional[Dict[str, Any]]:
     try:
         r = await c.get(url, headers={"Accept": "application/json"})
@@ -42,7 +61,7 @@ async def check(url: str) -> Dict[str, Any]:
             r = await c.post(url, json=INIT, headers=HEADERS)
         except Exception as e:
             return {"url": url, "kind": "down", "why": f"{type(e).__name__}"}
-        if r.status_code == 200 and ("jsonrpc" in r.text or "event:" in r.text):
+        if r.status_code == 200 and initialize_result(r.text):
             return {"url": url, "kind": "open", "why": "answers without signing in"}
         if r.status_code not in (401, 403):
             return {"url": url, "kind": "down", "why": f"HTTP {r.status_code}"}

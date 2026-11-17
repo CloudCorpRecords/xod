@@ -143,20 +143,20 @@
           </div>
         </div>
         ${c.unavailable ? `<p class="text-[12px] text-zinc-500">Not on this computer: ${esc(c.unavailable)}</p>` : ""}
-        ${c.state === "error" && c.error ? `<p class="text-[12px] text-red-300">${esc(c.error)}</p>` : ""}
+        ${(c.state === "error" || c.state === "needs_sign_in") && c.error ? `<p class="text-[12px] text-red-300">${esc(c.error)}</p>` : ""}
         ${c.cli_account && needsInput ? `<div class="flex items-center gap-2 flex-wrap"><button data-cn="cli" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 text-[12px] font-semibold hover:bg-brand-400">Connect as ${esc(c.cli_account)}</button>
           <span class="text-[11px] text-zinc-500">Uses the sign-in the GitHub CLI (gh) already has here.</span></div>` : ""}
         ${c.from_cli && c.state === "connected" ? `<label class="flex items-center gap-2 text-[11px] text-zinc-400"><input type="checkbox" data-cn="share" ${c.shared_with_agents ? "checked" : ""}> Share with Crew jobs (Claude Code, Muse)</label>` : ""}
         ${c.kind === "token" && needsInput ? `${c.cli_account ? `<details class="text-[11px] text-zinc-500"><summary class="cursor-pointer hover:text-zinc-300">Or paste a token instead</summary>` : ""}<div class="space-y-1.5${c.cli_account ? " mt-1.5" : ""}"><p class="text-[11px] text-zinc-500">${esc(c.token_help)} <a href="${esc(c.token_url)}" target="_blank" rel="noopener" class="text-brand-300 hover:underline">Make a token</a></p>
           <input type="password" data-cn-token autocomplete="off" placeholder="Paste token" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[12px] text-white focus:outline-none focus:border-brand-500">
           ${c.cli_account ? `<button data-cn="connect" class="px-3 py-1.5 rounded-lg bg-surface-700 text-zinc-200 text-[12px] hover:bg-surface-600">Connect with this token</button>` : ""}</div>${c.cli_account ? "</details>" : ""}` : ""}
-        ${c.kind === "own" && needsInput ? `<div class="space-y-1.5"><p class="text-[11px] text-zinc-500">Create a Desktop OAuth client in Google Cloud and enable the API (<a href="${esc(c.setup_url)}" target="_blank" rel="noopener" class="text-brand-300 hover:underline">Google's guide</a>). Add <span class="font-mono">${esc(location.origin)}/oauth/callback</span> as a redirect URI.</p>
-          <input data-cn-client autocomplete="off" placeholder="Client ID" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[12px] text-white">
-          <input type="password" data-cn-secret autocomplete="off" placeholder="Client secret" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[12px] text-white"></div>` : ""}
+        ${c.kind === "own" && needsInput ? `<div class="space-y-1.5"><p class="text-[11px] text-zinc-400">Google requires Workspace Developer Preview access. Enable both the product API and its MCP API, configure consent and test users, then create a <strong>Web application</strong> OAuth client with <strong>Use this client for an AI-powered agent</strong> selected (<a href="${esc(c.setup_url)}" target="_blank" rel="noopener" class="text-brand-300 hover:underline">Google's setup guide</a>). Register this exact redirect URI: <span class="font-mono">${esc(location.origin)}/oauth/callback</span>. Xod requests read-only access and offline refresh; your client secret stays in your OS key store.</p>
+          <input data-cn-client aria-label="${esc(c.name)} OAuth client ID" autocomplete="off" placeholder="Client ID" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[12px] text-white">
+          <input type="password" data-cn-secret aria-label="${esc(c.name)} OAuth client secret" autocomplete="off" placeholder="Client secret" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[12px] text-white"></div>` : ""}
         ${c.id === "mac" && !on ? `<p class="text-[11px] text-zinc-500">macOS asks once per app the first time Xod uses Calendar, Reminders, Notes or Mail.</p>` : ""}
         <div class="flex items-center gap-2 flex-wrap">
           ${needsInput && !c.unavailable && !c.cli_account ? `<button data-cn="connect" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 text-[12px] font-semibold hover:bg-brand-400">${c.kind === "oauth" || c.kind === "own" ? (on ? "Sign in again" : "Connect and sign in") : on ? "Try again" : c.kind === "open" ? "Connect (no account)" : "Connect"}</button>` : ""}
-          ${c.state === "signing_in" ? `<span class="text-[11px] text-zinc-500">A sign-in page opened in your browser.</span>` : ""}
+          ${c.state === "signing_in" ? `<span class="text-[11px] text-zinc-500">Finish signing in in your browser.${c.sign_in_url ? ` <a href="${esc(c.sign_in_url)}" target="_blank" rel="noopener noreferrer" class="text-brand-300 underline">Open sign-in page</a>` : ""}</span>` : ""}
           ${server && c.state === "connected" ? `<select data-cn="trust" class="bg-surface-900 border border-surface-700 rounded-lg px-2 py-1 text-[11px] text-white">
             ${Object.entries(TRUST).map(([k, v]) => `<option value="${k}" ${server.trust === k ? "selected" : ""}>${v}</option>`).join("")}</select>` : ""}
           ${on ? `<button data-cn="disconnect" class="px-2 py-1.5 rounded-lg text-[12px] text-zinc-400 hover:text-white hover:bg-surface-700">Disconnect</button>` : ""}
@@ -167,6 +167,7 @@
   async function onConnector(el, e) {
     const card = el.closest("[data-connector]");
     const id = card.dataset.connector;
+    try {
     if (el.dataset.cn === "share" && e.type === "change") { await api("/api/connectors/share-with-agents", "POST", { on: el.checked }); return showToast(el.checked ? "Crew jobs get GitHub too" : "Crew jobs won't get GitHub"); }
     if (el.dataset.cn === "cli" && e.type === "click") {
       el.disabled = true; el.textContent = "Connecting…";
@@ -178,7 +179,8 @@
     if (e.type !== "click") return;
     if (el.dataset.cn === "disconnect") {
       if (!confirm("Disconnect? Its sign-in is removed from your Keychain.")) return;
-      await api(`/api/connectors/${id}`, "DELETE");
+      const r = await api(`/api/connectors/${id}`, "DELETE");
+      if (!r.success) showToast(r.error || "Couldn't remove the saved sign-in");
       return render();
     }
     if (el.dataset.cn === "connect") {
@@ -191,6 +193,12 @@
       const r = await api(`/api/connectors/${id}/connect`, "POST", body);
       if (!r.success) { showToast(r.error || "Couldn't start"); }
       return render();
+    }
+    } catch (error) {
+      showToast("Couldn't reach Xod. Check the connection and try again.");
+      return render();
+    } finally {
+      el.disabled = false;
     }
   }
 

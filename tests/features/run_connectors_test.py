@@ -25,7 +25,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 TMP = Path(tempfile.mkdtemp(prefix="xod_connectors_", dir="/tmp"))
-os.environ["XOD_DATA_DIR"] = str(TMP)
+os.environ.update(XOD_DATA_DIR=str(TMP), HOME=str(TMP / "home"),
+                  XDG_CONFIG_HOME=str(TMP / "config"), XDG_DATA_HOME=str(TMP / "share"),
+                  XOD_SECRETS_SERVICE="Xod connector synthetic fixture")
 
 import keyring  # noqa: E402
 from keyring.backend import KeyringBackend  # noqa: E402
@@ -126,7 +128,7 @@ async def main():
     check("C4 GitHub with a bad token reports it", st["state"] == "error", (st.get("error") or "")[:100])
 
     # C6
-    connectors.disconnect("github")
+    await connectors.disconnect("github")
     check("C6 removing forgets the token", keychain.get_password(mcp_client.KEYCHAIN, "github:bearer_token") is None)
 
     for c in list(hub.conns.values()):

@@ -1389,16 +1389,17 @@ async def mcp_update_endpoint(name: str, req: MCPServerUpdate):
     from app.services import mcp_client
     ok = mcp_client.update_server(name, req.enabled, req.trust)
     if ok and req.enabled is not None:
-        await mcp_client.mcp_hub.start()
+        if req.enabled:
+            await mcp_client.mcp_hub.connect(name)
+        else:
+            await mcp_client.mcp_hub.disconnect(name)
     return {"success": ok}
 
 
 @app.delete("/api/mcp/servers/{name}")
 async def mcp_remove_endpoint(name: str):
-    from app.services import mcp_client
-    ok = mcp_client.remove_server(name)
-    await mcp_client.mcp_hub.start()
-    return {"success": ok}
+    from app.services import connectors
+    return await connectors.disconnect(name)
 
 
 @app.post("/api/mcp/servers/{name}/connect")
@@ -1807,10 +1808,7 @@ async def connectors_share(req: ConnectorShare):
 @app.delete("/api/connectors/{cid}")
 async def connectors_disconnect(cid: str):
     from app.services import connectors
-    from app.services.mcp_client import mcp_hub
-    if cid in mcp_hub.conns:
-        await mcp_hub.conns.pop(cid).stop()
-    return {"success": connectors.disconnect(cid)}
+    return await connectors.disconnect(cid)
 
 
 @app.get("/oauth/callback", response_class=HTMLResponse)
@@ -1819,7 +1817,7 @@ async def oauth_callback(code: str = "", state: str = "", error: str = "", iss: 
     import html as _html
     ok = mcp_oauth.fail(state, error) if error else mcp_oauth.finish(code, state, iss) if code else False
     if ok and not error:
-        title, text = "Connected", "You're signed in. You can close this tab and go back to Xod."
+        title, text = "Finishing sign-in", "Xod received the callback and is checking access and available tools. Return to Connections to see whether it connected."
     elif error:
         title, text = "Not connected", f"The sign-in was cancelled or refused ({_html.escape(error[:80])}). You can close this tab."
     else:

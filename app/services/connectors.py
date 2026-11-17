@@ -18,6 +18,7 @@ tests/features/run_connectors_test.py --all, which goes through Xod's own sign-i
 for now: Figma (refuses clients it hasn't approved), Gamma (refuses Xod's local return address), Asana and Square
 (older SSE transport), Box, Slack and HubSpot (need your own app). Each has a group, for the panel.
 """
+import asyncio
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -75,17 +76,17 @@ CATALOG: List[Dict[str, Any]] = [
     _open("deepwiki", "DeepWiki", "git-branch", "https://mcp.deepwiki.com/mcp", "Ask about any public GitHub repository: how it works, where things are."),
     _open("cloudflare-docs", "Cloudflare docs", "book-open", "https://docs.mcp.cloudflare.com/mcp", "Cloudflare's documentation."),
     {"id": "google-calendar", "name": "Google Calendar (official)", "icon": "calendar",
-     "blurb": "Google's own Calendar server. Needs your own Google Cloud OAuth client; most people should use This Mac instead.",
+     "blurb": "Read Google Calendar through Google's server. Requires your own Google Cloud OAuth client and Workspace Developer Preview access.",
      "kind": "own", "url": "https://calendarmcp.googleapis.com/mcp/v1", "trust": "read_only", "advanced": True,
      "scope": "https://www.googleapis.com/auth/calendar.events.readonly https://www.googleapis.com/auth/calendar.calendarlist.readonly",
      "setup_url": "https://developers.google.com/workspace/calendar/api/guides/configure-mcp-server"},
     {"id": "gmail", "name": "Gmail (official)", "icon": "mail",
-     "blurb": "Google's own Gmail server. Needs your own Google Cloud OAuth client; most people should use This Mac instead.",
+     "blurb": "Search and read Gmail through Google's server. Requires your own Google Cloud OAuth client and Workspace Developer Preview access. Read-only; no email is sent.",
      "kind": "own", "url": "https://gmailmcp.googleapis.com/mcp/v1", "trust": "read_only", "advanced": True,
      "scope": "https://www.googleapis.com/auth/gmail.readonly",
      "setup_url": "https://developers.google.com/workspace/guides/configure-mcp-servers"},
     {"id": "google-drive", "name": "Google Drive (official)", "icon": "hard-drive",
-     "blurb": "Google's own Drive server, read only: Xod can find your résumé and other files there to fill in forms. Needs your own Google Cloud OAuth client.",
+     "blurb": "Read Google Drive through Google's server. Requires your own Google Cloud OAuth client and Workspace Developer Preview access.",
      "kind": "own", "url": "https://drivemcp.googleapis.com/mcp/v1", "trust": "read_only", "advanced": True,
      "scope": "https://www.googleapis.com/auth/drive.readonly",
      "setup_url": "https://developers.google.com/workspace/drive/api/guides/configure-mcp-server"},
@@ -138,13 +139,21 @@ def catalog() -> List[Dict[str, Any]]:
     for c in CATALOG:
         s = servers.get(c["id"])
         state = "off"
-        if s:
+        if s and s.get("enabled", True):
             state = ("connected" if s["connected"] else "signing_in" if s["signing_in"]
                      else "needs_sign_in" if s["needs_sign_in"] else "error" if s["error"] else "connecting")
+        task = _tasks.get(c["id"])
+        if task and not task.done() and state not in ("connected", "signing_in"):
+            state = "connecting"
+        error = _errors.get(c["id"]) or (s and s["error"])
+        if (error and not (task and not task.done()) and (not s or s.get("enabled", True))
+                and state not in ("connected", "signing_in", "needs_sign_in")):
+            state = "error"
         unavailable = c.get("unavailable_why") if c.get("only_on") and not sys.platform.startswith(c["only_on"]) else None
         out.append({**{k: v for k, v in c.items() if k not in ("command", "args")}, "state": state,
-                    "error": _friendly(c, s and s["error"]), "tools": len(s["tools"]) if s else 0, "unavailable": unavailable,
+                    "error": _friendly(c, error), "tools": len(s["tools"]) if s else 0, "unavailable": unavailable,
                     "group": c.get("group") or ("More (advanced)" if c.get("advanced") else "Other")})
+        out[-1]["sign_in_url"] = mcp_oauth.sign_in_pages.get(c["id"], {}).get("url")
         if c.get("from_cli") == "gh":
             out[-1]["cli_account"] = gh_account()
             out[-1]["shared_with_agents"] = share_with_agents()
@@ -155,6 +164,9 @@ def _friendly(c: Dict[str, Any], error: Optional[str]) -> Optional[str]:
     if not error:
         return None
     low = error.lower()
+    if c["kind"] == "own" and ("403" in low or "permission" in low or "oauth" in low):
+        return (error + " For Google: check Developer Preview access, enable both the product API and MCP API, "
+                "mark the OAuth client 'Use this client for an AI-powered agent', and add your account as a test user.")
     if c["kind"] == "token" and ("401" in low or "unauthorized" in low or "error response" in low):
         return f"{c['name']} didn't accept that token. Check it has access, or make a new one."
     if "connecterror" in low or "name resolution" in low or "timed out" in low:
@@ -168,6 +180,19 @@ def _friendly(c: Dict[str, Any], error: Optional[str]) -> Optional[str]:
 
 async def connect(cid: str, redirect_uri: str, token: Optional[str] = None,
                   client_id: Optional[str] = None, client_secret: Optional[str] = None, use_cli: bool = False) -> Dict[str, Any]:
+    async with _locks.setdefault(cid, asyncio.Lock()):
+        previous = _tasks.get(cid)
+        if previous and not previous.done():
+            return {"success": True, "started": True, "already_connecting": True}
+        try:
+            return await _configure(cid, redirect_uri, token, client_id, client_secret, use_cli)
+        except Exception as exc:
+            _errors[cid] = mcp_client.connection_error(exc)
+            return {"success": False, "error": _errors[cid]}
+
+
+async def _configure(cid: str, redirect_uri: str, token: Optional[str],
+                     client_id: Optional[str], client_secret: Optional[str], use_cli: bool) -> Dict[str, Any]:
     """Adds (or re-signs-in) a connector and connects it. May open a sign-in page in the browser. use_cli: GitHub
     with the sign-in the GitHub CLI already has (no token to make and paste)."""
     c = _BY_ID.get(cid)
@@ -184,9 +209,12 @@ async def connect(cid: str, redirect_uri: str, token: Optional[str] = None,
     if c.get("only_on") and not sys.platform.startswith(c["only_on"]):
         return {"success": False, "error": c.get("unavailable_why") or "Not available on this computer."}
     from app.services import keychain
+    if c["kind"] in ("token", "oauth", "own") and keychain.problem():
+        raise keychain.Unreadable("Key store unavailable")
     cfg = mcp_client.load_config()
     spec = cfg.get(cid) or {"enabled": True, "trust": c.get("trust", "ask"), "connector": cid}
     spec["enabled"] = True
+    spec["connector"] = cid
     if c["kind"] == "local":
         spec.update(command=c["command"], args=c["args"])
     elif c["kind"] == "open":
@@ -199,23 +227,42 @@ async def connect(cid: str, redirect_uri: str, token: Optional[str] = None,
             spec["scope"] = c["scope"]
     if c["kind"] == "token":
         if token:
+            if not token.strip():
+                return {"success": False, "needs_token": True, "error": "Paste a token first."}
+            await mcp_client.mcp_hub.disconnect(cid)
             keychain.set_password(mcp_client.KEYCHAIN, f"{cid}:bearer_token", token.strip())
         elif not keychain.get_password(mcp_client.KEYCHAIN, f"{cid}:bearer_token"):
             return {"success": False, "needs_token": True, "error": "Paste a token first."}
     if c["kind"] == "own":
         if client_id:
+            if not client_secret or not client_secret.strip():
+                return {"success": False, "needs_client": True,
+                        "error": "Enter the Google Web application OAuth client ID and client secret."}
+            await mcp_client.mcp_hub.disconnect(cid)
             mcp_oauth.set_own_client(cid, client_id, client_secret or "", redirect_uri)
         elif not keychain.get_password(mcp_client.KEYCHAIN, f"{cid}:oauth_client"):
             return {"success": False, "needs_client": True, "error": "Enter your Google OAuth client ID first."}
+    cfg = mcp_client.load_config()  # another connector may have finished while the old session closed
     cfg[cid] = spec
     mcp_client._save_config(cfg)
     # Signing in can take minutes in the browser: connect in the background; the panel polls catalog().
     import asyncio
-    _tasks[cid] = asyncio.create_task(mcp_client.mcp_hub.connect(cid, interactive=True, redirect_uri=redirect_uri))
+    _errors.pop(cid, None)
+    async def attempt():
+        try:
+            result = await mcp_client.mcp_hub.connect(cid, interactive=True, redirect_uri=redirect_uri)
+        except Exception as exc:
+            result = {"success": False, "error": mcp_client.connection_error(exc)}
+        if not result.get("success"):
+            _errors[cid] = result.get("error") or "Could not connect. Try signing in again."
+        return result
+    _tasks[cid] = asyncio.create_task(attempt())
     return {"success": True, "started": True}
 
 
 _tasks: Dict[str, Any] = {}
+_locks: Dict[str, asyncio.Lock] = {}
+_errors: Dict[str, str] = {}
 
 
 # ------------------------------------------------------------------ sharing connectors with agent jobs
@@ -248,5 +295,22 @@ def for_agents() -> Dict[str, Dict[str, Any]]:
     return out
 
 
-def disconnect(cid: str) -> bool:
-    return mcp_client.remove_server(cid)
+async def disconnect(cid: str) -> Dict[str, Any]:
+    async with _locks.setdefault(cid, asyncio.Lock()):
+        task = _tasks.pop(cid, None)
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await mcp_client.mcp_hub.disconnect(cid)
+        _errors.pop(cid, None)
+        try:
+            cfg = mcp_client.load_config()
+            if cid in cfg:
+                # Even a locked key store must not leave the connection enabled.
+                cfg[cid]["enabled"] = False
+                mcp_client._save_config(cfg)
+                mcp_client.remove_server(cid)
+            return {"success": True}
+        except Exception as exc:
+            return {"success": False, "error": "Connection stopped, but removing saved sign-in failed. "
+                    + mcp_client.connection_error(exc)}
