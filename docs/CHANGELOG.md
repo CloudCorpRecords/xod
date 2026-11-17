@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.1.11
+
+A hardening release. The connector and worker stacks were reworked with their own recovery and lifecycle suites, the fleet approval guard is green again against the new MCP client, the release checker no longer flags the public fleet npm scope, and the series that landed on main since 1.1.10 (fleet bridge, computer control, footprint measurement, agent verification) ships for the first time.
+
+**Connector and worker hardening**
+- The MCP client, OAuth, and connector services were refactored, with a new connector lifecycle suite (34 checks) and a connector verification document. Worker services were reworked with a recovery suite (17 checks).
+- The MCP client call path gained two guards: a connection whose server is missing from the loaded config returns the disabled or removed error before any approval logic runs, and sign-in state is read directly from the connection object.
+
+**Fleet approval guard restored**
+- The fleet policy suite fixtures predated those guards and five approval tests errored. The fixtures now mirror the real connection defaults (error and needs_sign_in), the mocked config in the explicit approval test carries the server entry it models, and the suite is back to 19 of 19. No assertion changed and no production code was touched by the fix.
+
+**Release and verification gates**
+- The release checker whitelists the exact quoted public npm scope literal in the fleet policy module, with the reason recorded in the checker itself. The fleet policy file is no longer flagged; the only remaining flags are the two long-standing baseline test files.
+- The named-surface refusal gained regression checks driven by the exact CodeRabbit wording: with the desktop not ready, the refusal opens no sandbox or built-in browser surface, names both missing grants, and emits no approval request or executable action. The suite runs 59 of 59.
+- A larger live long-context run is recorded with its evidence file in the repo: 112,486 provider-reported input tokens on the Terra route, 10 of 10 coherence checks passed, the request ID recorded, and the exact re-run path documented with environment variable names only.
+
 ## 1.1.10
 
 A fix release for two defects found by the v1.1.9 home pass and live re-grade 5: the bundle seal still breaking at runtime through bundled-python spawn paths the first seal fix missed, and two mission verdict failures where correct worker reports were judged as failures.
