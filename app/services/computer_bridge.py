@@ -3,17 +3,16 @@ Computer-control bridge (AGE-85): registers Xod's own computer-control MCP
 server with the harness's MCP hub, in the AGE-84 fleet bridge pattern.
 
 The server (app/computer_control_mcp.py) exposes look, screenshot, click,
-type and press behind the adapter interface in
+type, press, scroll, hover, drag and allowlisted app launch behind the adapter interface in
 services/computer_control.py. The hub already knows how to run stdio MCP
 servers, offer their tools as mcp__computer-control__<tool>, hold calls for
 approval, and run the approved call: registration is the missing piece, and
 this module is only that.
 
-Trust is "ask" for the whole server in v1, reads included: a look at a real
-signed-in browser can expose private page content, and click, type and press
-act on the person's machine, so nothing here runs without the person's OK
-on the approval card. Nobody raises this server's trust silently; the person
-can change it themselves in Tools -> Connections, like any other MCP server.
+Default trust is ask because a signed-in page can contain private information.
+Explicit read_only trust permits only look through the verified built-in
+launcher; mutations and screenshots still require approval, even with always.
+Nobody raises trust silently. Existing connection settings are preserved.
 
 The adapter choice is passed through the server env, never hidden:
 XOD_COMPUTER_CONTROL_ADAPTER and XOD_COMPUTER_CONTROL_BOPS are forwarded
@@ -55,13 +54,36 @@ def register_computer_control(trust: str = "ask") -> Dict[str, Any]:
 
     Idempotent and additive: servers the person added themselves are never
     touched. Unlike the fleet bridge there is nothing to discover: the
-    server ships with Xod, so registration always writes exactly one entry.
+    server ships with Xod. Existing same-name configuration is preserved.
     """
     from app.services import mcp_client
-    result = mcp_client.add_servers({"mcpServers": {SERVER_NAME: server_spec(trust)}})
+    result = mcp_client.add_servers({"mcpServers": {SERVER_NAME: server_spec(trust)}}, overwrite=False)
     registered = result.get("added") or []
-    logger.info(f"computer bridge: registered {registered} at trust {trust}")
-    return {"success": bool(registered), "registered": registered,
-            "server": SERVER_NAME, "trust": trust,
+    preserved = result.get("preserved") or []
+    effective_trust = mcp_client.load_config().get(SERVER_NAME, {}).get("trust", "ask")
+    logger.info("computer bridge: registered %s, preserved %s", registered, preserved)
+    return {"success": bool(registered or preserved), "registered": registered, "preserved": preserved,
+            "server": SERVER_NAME, "trust": effective_trust,
             "tools": ["computer_look", "computer_screenshot", "computer_click",
-                      "computer_type", "computer_press"]}
+                       "computer_type", "computer_press", "computer_scroll",
+                       "computer_hover", "computer_drag", "computer_open_app"]}
+
+
+def verified_look(spec, tool):
+    """Operation-scoped eligibility, never inferred from a server name/hint.
+
+    The person must still explicitly choose read_only trust for this built-in
+    launcher. Its configured bops driver is part of that local trust decision.
+    """
+    from app.paths import APP_ROOT
+    if tool != "computer_look" or not isinstance(spec, dict):
+        return False
+    env = spec.get("env") or {}
+    if not isinstance(env, dict) or set(env) - {ENV_ADAPTER, ENV_BOPS}:
+        return False
+    if env.get(ENV_ADAPTER, "bops") not in ("bops", "fake"):
+        return False
+    return (spec.get("command") == "{xod_python}"
+            and spec.get("args") == ["-m", "app.computer_control_mcp"]
+            and spec.get("cwd") == str(APP_ROOT)
+            and not spec.get("url") and not spec.get("secret_env"))

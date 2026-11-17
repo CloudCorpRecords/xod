@@ -64,6 +64,17 @@ python tests/smoke/run_models_test.py
 
 ## Runtime checks
 
+Computer control's nine operations, explicit look-only trust policy, device
+configuration and native acceptance checklist are in `docs/COMPUTER-CONTROL.md`.
+Fake mode must be explicitly selected. A connected MCP server does not prove a
+real device is configured. Computer actions remain approval-gated; this does
+not change Muse auto-approval or Partner policies.
+
+```sh
+python tests/computer_control/test_control_contract.py
+python tests/computer_control/run_computer_control_test.py
+```
+
 Fleet discovery, the pinned optional npm fallback and per-operation trust rules
 are documented in `docs/FLEET-BRIDGE.md`. Do not broaden read-only trust from
 server names or annotations. The separate fleet workflow runs deterministic

@@ -1,5 +1,22 @@
 # browser-ops
 
+## Xod control extension
+
+This copy adds explicit-target `look`, `click`, `type`, `press`, `scroll`,
+`hover`, `drag` and allowlisted `open-app` commands. Deploy **all three**
+device Python files together: `src/browser_ops.py`, `src/control.py` and
+`src/control_inputs.py`. Updating only the host wrapper does not upgrade a
+remote device. Local Xod provisioning copies the sibling files automatically.
+
+The host wrapper now transports arguments in a base64 JSON envelope instead
+of interpolating typed text into a remote shell command. Base64 is transport
+encoding, not encryption; SSH supplies transport encryption. POSIX fixture
+round trips do not validate Windows shell behavior.
+
+See [`docs/COMPUTER-CONTROL.md`](../../../docs/COMPUTER-CONTROL.md) for command
+shapes, `allowed_apps`, approval scope, dependency requirements and the native
+acceptance checklist. The existing tab registry and last-tab guards remain.
+
 A modular browser operations toolkit for agents that share one Chromium
 browser on a device. It gives an agent three things a raw DevTools
 connection does not:

@@ -22,28 +22,50 @@ This module is the clean seam between the harness and any such driver:
                            bops is configured or the call fails
 
 The adapter is chosen by environment: XOD_COMPUTER_CONTROL_ADAPTER=fake forces
-the fake; =bops forces bops; unset picks bops when a bops CLI is configured
-(XOD_COMPUTER_CONTROL_BOPS or a bops on PATH) and the fake otherwise, so a
-machine with no device route still registers the tools and answers honestly
-through the fake only in tests. Production registration (computer_bridge)
+the fake; =bops and unset use bops (XOD_COMPUTER_CONTROL_BOPS or PATH).
+There is no automatic fake fallback: missing configuration is a failure.
+Production registration (computer_bridge)
 passes the adapter choice through the MCP server's env, never silently: the
 server reports which adapter is live in every result.
 
 Nothing here approves anything. Approval lives in the MCP hub: the bridge
-registers the server at trust "ask", so every call, reads included in v1,
-waits for the person's OK on the approval card before the adapter runs.
+registers at ask. Explicit read_only trust permits only targeted look through
+the verified launcher. Actions and screenshots still need approval.
 """
 import json
 import os
 import shutil
 import subprocess
+import functools
+import inspect
 from typing import Any, Dict, List, Optional
+from app.vendor.browser_ops.src.control_inputs import validate
+
+
+def validated(method):
+    """Apply identical validation to fake and real drivers before any action."""
+    signature = inspect.signature(method)
+
+    @functools.wraps(method)
+    def checked(self, *args, **kwargs):
+        try:
+            bound = signature.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+        except TypeError:
+            return self._error("Invalid arguments for " + method.__name__)
+        error = validate(method.__name__, bound.arguments)
+        return self._error(error) if error else method(self, *args, **kwargs)
+    return checked
 
 
 class ComputerControlAdapter:
     """Interface every computer-control driver implements. Methods return dicts."""
 
     name = "base"
+
+    def _error(self, message):
+        return {"success": False, "adapter": self.name, "fake": self.name == "fake",
+                "error": message}
 
     def look(self, target: str = "") -> Dict[str, Any]:
         raise NotImplementedError
@@ -60,6 +82,20 @@ class ComputerControlAdapter:
         raise NotImplementedError
 
     def press(self, target: str = "", key: str = "", modifiers: str = "") -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def scroll(self, target: str = "", delta_x: int = 0, delta_y: int = 0) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def hover(self, target: str = "", selector: str = "", text: str = "",
+              index: Optional[int] = None) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def drag(self, target: str = "", start_x: int = 0, start_y: int = 0,
+             end_x: int = 0, end_y: int = 0, steps: int = 10) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    def open_app(self, application: str = "") -> Dict[str, Any]:
         raise NotImplementedError
 
 
@@ -84,9 +120,11 @@ class FakeAdapter(ComputerControlAdapter):
                 "text": ["Fake page ready", "Save", "Home"],
                 "values": dict(self.values)}
 
+    @validated
     def look(self, target: str = "") -> Dict[str, Any]:
         return {"success": True, **self._page()}
 
+    @validated
     def screenshot(self, target: str = "") -> Dict[str, Any]:
         return {"success": True, "adapter": self.name, "fake": True,
                 "format": "none", "bytes": 0,
@@ -103,6 +141,7 @@ class FakeAdapter(ComputerControlAdapter):
                 return el
         return None
 
+    @validated
     def click(self, target: str = "", selector: str = "", text: str = "",
               index: Optional[int] = None) -> Dict[str, Any]:
         el = self._resolve(selector, text, index)
@@ -113,9 +152,12 @@ class FakeAdapter(ComputerControlAdapter):
         return {"success": True, "adapter": self.name, "fake": True,
                 "clicked": el, "actions": list(self.actions)}
 
+    @validated
     def type_text(self, target: str = "", selector: str = "", text: str = "",
                   value: str = "", clear: bool = False) -> Dict[str, Any]:
-        el = self._resolve(selector, text, None) or self.elements[1]
+        el = self._resolve(selector, text, None)
+        if el is None or el.get("kind") != "input":
+            return self._error("No fake input matches. Nothing was typed.")
         key = el.get("selector") or "#q"
         self.values[key] = value if clear else (self.values.get(key, "") + value)
         self.actions.append({"action": "type", "element": el["index"], "value": value})
@@ -124,6 +166,7 @@ class FakeAdapter(ComputerControlAdapter):
                 "read_back_verified": self.values[key].endswith(value) if value else True,
                 "actions": list(self.actions)}
 
+    @validated
     def press(self, target: str = "", key: str = "", modifiers: str = "") -> Dict[str, Any]:
         if not key:
             return {"success": False, "adapter": self.name, "fake": True,
@@ -131,6 +174,30 @@ class FakeAdapter(ComputerControlAdapter):
         self.actions.append({"action": "press", "key": key, "modifiers": modifiers})
         return {"success": True, "adapter": self.name, "fake": True,
                 "pressed": key, "modifiers": modifiers, "actions": list(self.actions)}
+
+    @validated
+    def scroll(self, target="", delta_x=0, delta_y=0):
+        self.actions.append({"action": "scroll", "delta_x": delta_x, "delta_y": delta_y})
+        return {"success": True, "adapter": self.name, "fake": True, "actions": list(self.actions)}
+
+    @validated
+    def hover(self, target="", selector="", text="", index=None):
+        el = self._resolve(selector, text, index)
+        if not el:
+            return self._error("No fake element matches. Nothing was hovered.")
+        self.actions.append({"action": "hover", "element": el["index"]})
+        return {"success": True, "adapter": self.name, "fake": True, "hovered": el}
+
+    @validated
+    def drag(self, target="", start_x=0, start_y=0, end_x=0, end_y=0, steps=10):
+        self.actions.append({"action": "drag", "start": [start_x, start_y], "end": [end_x, end_y]})
+        return {"success": True, "adapter": self.name, "fake": True, "actions": list(self.actions)}
+
+    @validated
+    def open_app(self, application=""):
+        self.actions.append({"action": "open_app", "application": application})
+        return {"success": True, "adapter": self.name, "fake": True,
+                "application": application, "note": "Fake adapter: no application was opened."}
 
 
 class BopsAdapter(ComputerControlAdapter):
@@ -160,51 +227,65 @@ class BopsAdapter(ComputerControlAdapter):
         try:
             proc = subprocess.run([self.command] + argv, capture_output=True,
                                   text=True, timeout=60)
-        except Exception as e:
-            return {"success": False, "adapter": self.name,
-                    "error": f"bops call failed: {type(e).__name__}: {e}"}
+        except subprocess.TimeoutExpired:
+            return {**self._error("bops timed out. Outcome is unknown; inspect the device before retrying."),
+                    "outcome_unknown": True}
+        except OSError as e:
+            return self._error(f"bops could not start ({type(e).__name__}). Check the configured executable.")
         out = (proc.stdout or "").strip()
         try:
-            data = json.loads(out) if out else {}
+            data = json.loads(out)
         except ValueError:
-            data = {"raw": out[:2000]}
+            return {**self._error("bops did not return a JSON object. Check its version and device configuration."),
+                    "outcome_unknown": argv[0] not in ("look", "shot-tab", "shot-desktop")}
+        if not isinstance(data, dict):
+            return {**self._error("bops returned an invalid non-object response."),
+                    "outcome_unknown": argv[0] not in ("look", "shot-tab", "shot-desktop")}
         if proc.returncode != 0:
             return {"success": False, "adapter": self.name,
-                    "error": (data.get("error") or proc.stderr or "bops error")[:500],
-                    "data": data}
-        return {"success": bool(data.get("ok", True)), "adapter": self.name, "data": data}
+                    "error": str(data.get("error") or proc.stderr or "bops error")[:500],
+                    "data": data, "outcome_unknown": data.get("outcome_unknown", False)}
+        success = data.get("ok") is True and data.get("success") is not False
+        return {"success": success, "adapter": self.name, "fake": data.get("fake") is True,
+                "outcome_unknown": data.get("outcome_unknown", False), "data": data,
+                **({} if success else {"error": str(data.get("error") or "bops did not confirm success.")[:500]})}
 
+    @validated
     def look(self, target: str = "") -> Dict[str, Any]:
         return self._run(["look", "--target", target] if target else ["look"])
 
+    @validated
     def screenshot(self, target: str = "") -> Dict[str, Any]:
         return self._run(["shot-tab", "--target", target] if target else ["shot-desktop"])
 
+    @validated
     def click(self, target: str = "", selector: str = "", text: str = "",
               index: Optional[int] = None) -> Dict[str, Any]:
         argv = ["click", "--target", target]
         if index is not None:
             argv += ["--index", str(index)]
         elif selector:
-            argv += ["--selector", selector]
+            argv += ["--selector=" + selector]
         elif text:
-            argv += ["--text", text]
+            argv += ["--text=" + text]
         else:
             return {"success": False, "adapter": self.name,
                     "error": "click needs a selector, text, or index. Nothing was clicked."}
         return self._run(argv)
 
+    @validated
     def type_text(self, target: str = "", selector: str = "", text: str = "",
                   value: str = "", clear: bool = False) -> Dict[str, Any]:
-        argv = ["type", "--target", target, "--value", value]
+        argv = ["type", "--target", target, "--value=" + value]
         if selector:
-            argv += ["--selector", selector]
+            argv += ["--selector=" + selector]
         elif text:
-            argv += ["--text", text]
+            argv += ["--text=" + text]
         if clear:
             argv += ["--clear"]
         return self._run(argv)
 
+    @validated
     def press(self, target: str = "", key: str = "", modifiers: str = "") -> Dict[str, Any]:
         if not key:
             return {"success": False, "adapter": self.name,
@@ -214,14 +295,33 @@ class BopsAdapter(ComputerControlAdapter):
             argv += ["--modifiers", modifiers]
         return self._run(argv)
 
+    @validated
+    def scroll(self, target="", delta_x=0, delta_y=0):
+        return self._run(["scroll", "--target", target, "--delta-x", str(delta_x), "--delta-y", str(delta_y)])
+
+    @validated
+    def hover(self, target="", selector="", text="", index=None):
+        argv = ["hover", "--target", target]
+        argv += (["--index", str(index)] if index is not None else
+                 ["--selector=" + selector] if selector else ["--text=" + text])
+        return self._run(argv)
+
+    @validated
+    def drag(self, target="", start_x=0, start_y=0, end_x=0, end_y=0, steps=10):
+        return self._run(["drag", "--target", target, "--start-x", str(start_x),
+                          "--start-y", str(start_y), "--end-x", str(end_x),
+                          "--end-y", str(end_y), "--steps", str(steps)])
+
+    @validated
+    def open_app(self, application=""):
+        return self._run(["open-app", "--app", application])
+
 
 def get_adapter() -> ComputerControlAdapter:
-    """Adapter selection: explicit env wins; else bops if configured; else fake."""
+    """Fake is explicit only. Missing real configuration is an honest failure."""
     choice = (os.environ.get("XOD_COMPUTER_CONTROL_ADAPTER") or "").strip().lower()
+    if choice not in ("", "fake", "bops"):
+        raise ValueError("Unsupported XOD_COMPUTER_CONTROL_ADAPTER; choose bops or explicit test-only fake.")
     if choice == "fake":
         return FakeAdapter()
-    if choice == "bops":
-        return BopsAdapter()
-    if os.environ.get("XOD_COMPUTER_CONTROL_BOPS") or shutil.which("bops"):
-        return BopsAdapter()
-    return FakeAdapter()
+    return BopsAdapter()

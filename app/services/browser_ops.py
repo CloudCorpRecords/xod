@@ -2,9 +2,10 @@
 browser-ops in Xod: the adapter between Xod's agent and the vendored module (app/vendor/browser_ops).
 
 The module is a tab registry with owners and heartbeats over a Chromium's DevTools port, a sweeper,
-per-tab and desktop screenshots, and tools.json, its agent tool surface. It is vendored unchanged and
-never imported: Xod runs its own CLI (src/browser_ops.py) and wrapper (bin/bops) as programs and reads
-their one JSON object back, exactly as the module's contract says. Everything Xod-specific lives here.
+per-tab and desktop screenshots, and tools.json, its agent tool surface. Xod runs
+the device CLI (src/browser_ops.py) and wrapper (bin/bops) as programs and reads
+their one JSON object back. The control extension ships as sibling modules.
+Tab ownership and sweep guards remain in this adapter.
 
 Where it runs ("devices"):
   local   the browser on this computer. Offered only when this computer has no screen tools of its own
@@ -143,6 +144,8 @@ def tool_definitions(devs: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     devs = devices() if devs is None else devs
     out = []
     for t in surface()["tools"]:
+        if t["name"] not in TOOL_NAMES:
+            continue  # computer-control operations use their own approval-gated MCP bridge
         schema = copy.deepcopy(t["input_schema"])
         schema.pop("anyOf", None)
         props = schema.setdefault("properties", {})
@@ -192,6 +195,8 @@ def provision_local() -> Path:
         raise ConfigError("the config turns last_tab_guard off; Xod does not run browser-ops without it")
     d = device_dir()
     _sync(MODULE_DIR / "src" / "browser_ops.py", d / "browser_ops.py")
+    for name in ("control.py", "control_inputs.py"):
+        _sync(MODULE_DIR / "src" / name, d / name)
     if sys.platform == "win32":
         _sync(MODULE_DIR / "src" / "desktop_shot.ps1", d / "desktop_shot.ps1")
     _write_json(d / "config.json", rt)

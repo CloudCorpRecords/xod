@@ -36,7 +36,7 @@ from app.services import browser_ops as B
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 # The module's PR head (CloudCorpRecords/browser-ops 6d6cadf): git blob ids of the files Xod runs or reads.
-PR_BLOBS = {"src/browser_ops.py": None, "src/desktop_shot.ps1": None, "bin/bops": None, "tools.json": None, "LANES.md": None}
+PR_UNCHANGED = ("src/desktop_shot.ps1", "LANES.md")
 results = []
 
 
@@ -167,7 +167,7 @@ def main(repeat):
         print(f"=== run {n + 1}/{repeat}")
         shutil.rmtree(B.home(), ignore_errors=True)
 
-        print("V1 vendored unchanged")
+        print("V1 upstream desktop helper and lane rules stayed unchanged")
         src = TMP / "pr"
         if not src.exists():
             subprocess.run(["git", "init", "-q", str(src)], check=True)
@@ -175,17 +175,19 @@ def main(repeat):
                                 "6d6cadffc1e6c3383cf65097627d608dcc6f2e82"], capture_output=True, text=True)
             subprocess.run(["git", "-C", str(src), "checkout", "-q", "FETCH_HEAD"], capture_output=True)
         if (src / "src" / "browser_ops.py").exists():
-            same = [f for f in PR_BLOBS if blob(src / f) == blob(B.MODULE_DIR / f)]
-            check("code, tools.json and LANES.md match the PR head byte for byte", len(same) == len(PR_BLOBS),
-                  str(set(PR_BLOBS) - set(same)))
+            same = [f for f in PR_UNCHANGED if blob(src / f) == blob(B.MODULE_DIR / f)]
+            check("desktop helper and lane rules match the PR head byte for byte", len(same) == len(PR_UNCHANGED),
+                  str(set(PR_UNCHANGED) - set(same)))
         else:
             check("the PR head could be fetched to compare (network)", False, "fetch failed")
 
         print("V2 the tool surface is tools.json's")
         surf = B.surface()
+        legacy = [t for t in surf["tools"] if t["name"] in B.TOOL_NAMES]
         defs = {t["function"]["name"]: t["function"] for t in B.tool_definitions(["local"])}
-        check("the 8 tools, names verbatim", list(defs) == [t["name"] for t in surf["tools"]] and len(defs) == 8, str(list(defs)))
-        check("descriptions verbatim", all(defs[t["name"]]["description"] == t["description"] for t in surf["tools"]))
+        check("the 8 legacy tools, no duplicate ungated computer tools",
+              list(defs) == [t["name"] for t in legacy] and len(defs) == 8, str(list(defs)))
+        check("descriptions verbatim", all(defs[t["name"]]["description"] == t["description"] for t in legacy))
         check("no top-level anyOf reaches the model; owner is not asked for",
               all("anyOf" not in f["parameters"] and "owner" not in f["parameters"].get("required", []) for f in defs.values()))
         two = {t["function"]["name"]: t["function"] for t in B.tool_definitions(["local", "remote"])}
@@ -398,9 +400,11 @@ def main(repeat):
             dev = TMP / f"device-{n}"
             dev.mkdir()
             shutil.copyfile(B.MODULE_DIR / "src" / "browser_ops.py", dev / "browser_ops.py")
+            for helper in ("control.py", "control_inputs.py"):
+                shutil.copyfile(B.MODULE_DIR / "src" / helper, dev / helper)
             (dev / "config.json").write_text(json.dumps({"cdp_host": "127.0.0.1", "cdp_port": chrome.port, "stale_minutes": 45}))
             os.environ["PATH"] = f"{fake_ssh_dir()}:{os.environ['PATH']}"
-            write_config(chrome, remote={"device": "test-device", "device_dir": str(dev).replace("/", "\\"), "python": sys.executable,
+            write_config(chrome, remote={"device": "test-device", "device_dir": str(dev), "python": sys.executable,
                                          "ssh_options": ["-o", "ConnectTimeout=5"], "ssh_user_host": "tester@device"})
             B._native.update(at=time.time(), value=True)        # this computer sees for itself: only remote is offered
             check("only remote is offered", B.devices() == ["remote"])

@@ -149,7 +149,7 @@ def stdio_env(name: str, spec: Dict[str, Any]):
     own_python = command == "{xod_python}" or command == sys.executable
     if command == "{xod_python}":
         command = sys.executable
-        env = {**env, **{k: v for k, v in os.environ.items() if k.startswith("XOD_")},
+        env = {**{k: v for k, v in os.environ.items() if k.startswith("XOD_")}, **env,
                # The host may inject dependencies outside sys.prefix (Replit,
                # for example). Own-Python children need the same import paths,
                # not just the repository; foreign MCP servers stay isolated.
@@ -456,6 +456,9 @@ class MCPHub:
         from app.services.fleet_policy import PACKAGES, verified_read_only
         if c.name in PACKAGES:
             return verified_read_only(c.name, c.spec, t.name)
+        from app.services.computer_bridge import SERVER_NAME, verified_look
+        if c.name == SERVER_NAME:
+            return verified_look(c.spec, t.name)
         return _read_only(t)
 
     async def call(self, full_name: str, args: Dict[str, Any], approved: bool = False) -> Dict[str, Any]:
@@ -471,8 +474,10 @@ class MCPHub:
         # Even an inaccurate external readOnlyHint or "always" setting cannot
         # turn repro commands / unreviewed fleet operations into read-only work.
         fleet_hold = c.name in PACKAGES and not read_only
+        from app.services.computer_bridge import SERVER_NAME
+        computer_hold = c.name == SERVER_NAME and not read_only
         destructive = _destructive(t)
-        if not approved and (fleet_hold or destructive or not (trust == "always" or (trust == "read_only" and read_only))):
+        if not approved and (fleet_hold or computer_hold or destructive or not (trust == "always" or (trust == "read_only" and read_only))):
             # A call that can't run as written goes back to the model to fix, not to you to approve first.
             schema = getattr(t, "inputSchema", None) or getattr(t, "input_schema", None) or {}
             missing = [k for k in schema.get("required", []) if k not in (args or {})]
@@ -515,7 +520,9 @@ class MCPHub:
             out["data"] = structured
         if is_error:
             out["error"] = out["content"][:500] or "The tool reported an error."
-            logger.warning(f"MCP {full_name} failed: {out['error'][:200]} (args: {json.dumps(args, default=str)[:300]})")
+            logged_args = ({k: ("[redacted]" if k == "value" else v) for k, v in args.items()}
+                           if c.name == SERVER_NAME and t.name == "computer_type" else args)
+            logger.warning(f"MCP {full_name} failed: {out['error'][:200]} (args: {json.dumps(logged_args, default=str)[:300]})")
         return out
 
     async def approve(self, pid: str) -> Dict[str, Any]:

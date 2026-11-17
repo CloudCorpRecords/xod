@@ -18,6 +18,14 @@ Usage:
   bops sweep
   bops shot-tab --target <target_id>
   bops shot-desktop
+  bops look --target <id>
+  bops click --target <id> (--selector <css> | --text <label> | --index <n>)
+  bops type --target <id> (--selector <css> | --text <label>) --value <text> [--clear]
+  bops press --target <id> --key <key> [--modifiers ctrl,shift]
+  bops scroll --target <id> --delta-x <pixels> --delta-y <pixels>
+  bops hover --target <id> (--selector <css> | --text <label> | --index <n>)
+  bops drag --target <id> --start-x <n> --start-y <n> --end-x <n> --end-y <n> [--steps <n>]
+  bops open-app --app <configured-alias>
 
 Remote connection settings come from the "remote" block of
 ~/workspace/browser-ops/config.json if present, else config.example.json.
@@ -26,6 +34,7 @@ the device-side CLI (src/browser_ops.py) and its JSON in and out.
 """
 
 import json
+import base64
 import os
 import subprocess
 import sys
@@ -57,28 +66,51 @@ def ssh_base(remote):
     return opts, remote["ssh_user_host"]
 
 
-def quote(arg):
-    if any(c in arg for c in ' \t"'):
-        return '"' + arg.replace('"', "'") + '"'
-    return arg
+def remote_command(remote, argv):
+    """Carry all user arguments as encoded data, not remote shell syntax.
+
+    The bootstrap has no dollar signs, backticks or user-provided quotes and
+    works with the documented Python device transport. Native shell proof
+    remains separate from a command-construction test.
+    """
+    executable = remote.get("python", "python")
+    if not isinstance(executable, str) or any(c in executable for c in "\"'\r\n$`;|&<>"):
+        raise ValueError("remote.python must name one Python executable, not a shell command")
+    directory = remote.get("device_dir", "")
+    if not isinstance(directory, str) or not directory:
+        raise ValueError("remote.device_dir must be configured")
+    payload = base64.b64encode(json.dumps({
+        "script": directory.rstrip("/\\") + "/browser_ops.py",
+        "argv": argv,
+    }).encode("utf-8")).decode("ascii")
+    bootstrap = ("import base64,json,runpy,sys;"
+                 "p=json.loads(base64.b64decode('" + payload + "'));"
+                 "sys.argv=[p['script']]+p['argv'];"
+                 "runpy.run_path(p['script'],run_name='__main__')")
+    return '"' + executable + '" -c "' + bootstrap + '"'
 
 
 def run_remote(remote, argv):
     opts, host = ssh_base(remote)
-    device_py = remote.get("device_dir", "") + "\\browser_ops.py"
-    remote_cmd = " ".join([remote.get("python", "python"), device_py] + [quote(a) for a in argv])
+    remote_cmd = remote_command(remote, argv)
     proc = subprocess.run(["ssh"] + opts + [host, remote_cmd],
                           capture_output=True, text=True, timeout=120)
     out = proc.stdout.strip()
     if not out:
-        print(json.dumps({"ok": False, "error": "empty response from device",
-                          "stderr": proc.stderr.strip()[:400]}))
-        return None, 1
+        return {"ok": False, "error": "Empty response from device.",
+                "outcome_unknown": True}, 1
     try:
-        return json.loads(out.splitlines()[-1]), proc.returncode
+        result = json.loads(out.splitlines()[-1])
     except json.JSONDecodeError:
-        print(out)
-        return None, proc.returncode
+        return {"ok": False, "error": "Device did not return JSON.",
+                "outcome_unknown": True}, 1
+    if not isinstance(result, dict):
+        return {"ok": False, "error": "Device returned a non-object response.",
+                "outcome_unknown": True}, 1
+    if proc.returncode:
+        result = {**result, "ok": False, "outcome_unknown": True,
+                  "error": result.get("error") or "Remote process failed; inspect before retrying."}
+    return result, proc.returncode
 
 
 def download(remote, device_path):
@@ -99,9 +131,15 @@ def main(argv):
         print(__doc__)
         return 2
     remote = load_remote()
-    result, code = run_remote(remote, argv)
-    if result is None:
-        return code
+    try:
+        result, code = run_remote(remote, argv)
+    except subprocess.TimeoutExpired:
+        print(json.dumps({"ok": False, "error": "SSH timed out; inspect the device before retrying.",
+                          "outcome_unknown": True}))
+        return 1
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": "Device transport could not start: " + type(exc).__name__}))
+        return 1
     if argv[0] in ("shot-tab", "shot-desktop") and result.get("ok") and result.get("path"):
         local = download(remote, result["path"])
         if local:
@@ -109,7 +147,7 @@ def main(argv):
         else:
             result["download_error"] = "scp of the screenshot failed"
     print(json.dumps(result))
-    return 0 if result.get("ok") else 1
+    return 0 if result.get("ok") is True and code == 0 else 1
 
 
 if __name__ == "__main__":

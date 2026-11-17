@@ -426,6 +426,7 @@ def cmd_status(args):
         return {"ok": False, "error": "CDP unreachable: %s" % exc}
     reg = registry_load()
     return {"ok": True, "browser": browser, "cdp_port": CFG["cdp_port"],
+            "control_protocol": "xod-control-v1",
             "page_tab_count": len(page_targets()),
             "registered_tabs": len(reg["tabs"]),
             "registry_path": CFG["registry_path"]}
@@ -434,6 +435,8 @@ def cmd_status(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="browser_ops", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    from control import add_commands
+    add_commands(sub, CFG, cdp_get, list_targets)
 
     p = sub.add_parser("open", help="open a new tab and register it")
     p.add_argument("--owner", required=True)

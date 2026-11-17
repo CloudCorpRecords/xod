@@ -42,3 +42,17 @@ mtime_ms = 1794880214170
 storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:e7f135e5-1239-45e8-a62a-dc8241c9c97a/a5d5f857-7c42-4d53-b1e5-a7b11dd432fb/fa7b0b04-6481-4f72-9c49-a6cb24ec6fe4"
 storage_version_token = "1794880236912937"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "k_ltQSfKFsB_tOLZd_Uwr"
+uri = "file://docs/COMPUTER-CONTROL.md"
+type = "text"
+title = "Computer-control verification and native-device checklist"
+description = "Implemented operations, permission scope, configuration, 216 passing checks and explicit native verification limits."
+logical_id = "d1fece22-bca6-4ea5-9f30-981b24d653c4"
+content_hash = "sha256:cae84e4190be860845a229b202b65faff5998d8d9d2cdd3b5a66eee3baa250e5"
+size = 10435
+mtime_ms = 1794882097979
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:e7f135e5-1239-45e8-a62a-dc8241c9c97a/d1fece22-bca6-4ea5-9f30-981b24d653c4/7a856a36-e5e4-4511-82db-ce6ca011409d"
+storage_version_token = "1794882161774601"
+content_type = "text/markdown"
