@@ -148,3 +148,29 @@ tool execution, streaming, native MLX generation, or managed integration
 provisioning. Missing access and failed requests must still be reported
 honestly. Never copy test credentials into product files or require them
 for OSS users.
+
+## Live long-context and agent evaluation
+
+The follow-up evaluation on November 16, 2026 sent a genuine 55,886-input-token
+mission through `llm_service.chat_completion()` to the configured
+`gpt-6.1-terra` OpenAI route. Request
+`req_44a13c4f0c0c456b9fa92871593834f7` returned the same model, 88 output tokens
+(55,974 total), and correct values for all eight beginning/middle/end and
+amendment checks. Duration including compatibility retries: 5.191 seconds.
+The reply stayed consistent through the final amendment in this structured
+retrieval task; this is not a claim of general comprehension or a long soak.
+
+A separate real two-turn worker conversation delegated three initial file
+jobs with peak concurrency two, synthesized a read-back total of 142,
+then applied a source correction via a fourth worker and verified 154.
+It passed nine assertions in 52.072 seconds, using 95,349 input and 1,954
+output tokens across 30 successful calls (33 HTTP attempts). The final
+completion-check request was `req_0609a874b4064bd8bfc747145f11d520`.
+Initial failures exposed and led to repairs in same-model delegation and
+parent checking of worker evidence.
+
+See `docs/LIVE-AGENT-EVALUATION.md` for reproduction, all failed-run accounting,
+operational metadata, exact limitations and the distinction between large-input
+recall, multi-turn work, synthetic compaction checks and untested long-duration
+behavior. No native, Electron, managed-key-provenance or dollar-cost claim is
+added by these results.

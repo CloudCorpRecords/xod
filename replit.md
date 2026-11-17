@@ -64,6 +64,18 @@ python tests/smoke/run_models_test.py
 
 ## Runtime checks
 
+Live context/fleet evaluation evidence, safe opt-in commands and operational
+diagnostics are in `docs/LIVE-AGENT-EVALUATION.md`. Large-input recall, sustained
+execution, live compaction and native effects require separate evidence.
+Do not use a fixture pass or model liveness reply to claim those behaviors.
+Same-model workers are explicitly opt-in in Agent > Team; do not silently
+enable them in users' settings or weaken approval policy.
+
+```sh
+python tests/runtime/test_run_observability.py
+node tests/runtime/test_agent_diagnostics.js
+```
+
 Computer control's nine operations, explicit look-only trust policy, device
 configuration and native acceptance checklist are in `docs/COMPUTER-CONTROL.md`.
 Fake mode must be explicitly selected. A connected MCP server does not prove a

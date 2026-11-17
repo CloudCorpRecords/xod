@@ -25,6 +25,7 @@ import uuid
 from typing import Any, Callable, Dict, List, Optional
 
 from app.paths import DATA_DIR
+from app.services import run_observability as run_obs
 
 logger = logging.getLogger("xod.team")
 FILE = DATA_DIR / "team.json"
@@ -41,6 +42,7 @@ def load() -> Dict[str, Any]:
     except Exception:
         s = {}
     return {"enabled": s.get("enabled", True), "tiers": s.get("tiers") or {}, "agents": s.get("agents") or [],
+            "same_model_workers": s.get("same_model_workers") is True,
             "max_parallel": _parallel_limit(s.get("max_parallel"))}
 
 
@@ -55,6 +57,10 @@ def save(**changes: Any) -> Dict[str, Any]:
     s = load()
     if "enabled" in changes:
         s["enabled"] = bool(changes["enabled"])
+    if "same_model_workers" in changes:
+        if type(changes["same_model_workers"]) is not bool:
+            raise ValueError("same_model_workers must be a boolean")
+        s["same_model_workers"] = changes["same_model_workers"]
     if isinstance(changes.get("tiers"), dict):
         for t, v in changes["tiers"].items():
             if t in TIERS:
@@ -182,6 +188,8 @@ async def team_on() -> bool:
         return False  # an admitted leaf worker cannot wait on another worker slot
     if not load()["enabled"]:
         return False
+    if load().get("same_model_workers"):
+        return True
     t = await tiers()
     return len({v["id"] for v in t.values()}) > 1 or any(a["teammate"] for a in outside_agents())
 
@@ -261,7 +269,7 @@ async def run_subagent(label: str, task: str, tier: str, execute_tool: Callable,
             else:
                 emit({"type": "subagent_tool_call", "agent_id": label, "name": name, "args": args, "id": cid})
                 try:
-                    res = worker.refused(name, args) or await execute_tool(name, args)
+                    res = worker.refused(name, args) or await run_obs.execute_tool(name, args, cid, execute_tool)
                 except Exception as e:
                     res = {"success": False, "error": f"{name} failed: {e}"}
                 emit({"type": "subagent_tool_result", "agent_id": label, "name": name, "id": cid, "summary": worker._summary(name, res), "data": res})
@@ -289,7 +297,10 @@ async def run_subagent(label: str, task: str, tier: str, execute_tool: Callable,
             "needs_approval": report.startswith("Stopped at a step"),
             "approval": approval,
             "verification": "worker_report",
-            "evidence": [{"tool": e["name"], "ok": not e["failed"], "summary": e["out"][-600:]} for e in log[-8:]]}
+            "evidence": [{"tool": e["name"], "ok": not e["failed"], "summary": e["out"][-600:],
+                          "source": "local_tool_execution",
+                          "args": {k: v for k, v in e["args"].items() if k in ("filepath", "file_path", "path")}}
+                         for e in log[-8:]]}
 
 
 async def _ask_outside(label, name, task, execute_tool, emit, started) -> Dict[str, Any]:
@@ -329,7 +340,9 @@ async def delegate_many(jobs: List[Dict[str, Any]], execute_tool: Callable, star
     batch_id = uuid.uuid4().hex
     labels = [f"sub{start_index + i}" for i in range(len(jobs))]
     t = await tiers()
-    yield {"type": "swarm_plan", "title": f"Team: {len(jobs)} subagent{'s' if len(jobs) != 1 else ''} at work", "conductor": "Xod",
+    with run_obs.scope(batch_id=batch_id):
+        run_obs.emit("fleet.started", workers=len(jobs))
+    yield {"type": "swarm_plan", "batch_id": batch_id, "title": f"Team: {len(jobs)} subagent{'s' if len(jobs) != 1 else ''} at work", "conductor": "Xod",
            "subagents": [{"id": lb, "name": f"Subagent {lb[3:].zfill(2)}", "role": str(j.get("task"))[:90],
                           "tier": "cloud" if j.get("agent") or t.get(j.get("tier") or "standard", {}).get("where") == "online" else "local",
                           "tools": [j.get("agent") or (t.get(j.get("tier") or "standard") or {}).get("model", "")], "icon": "bot"}
@@ -337,20 +350,33 @@ async def delegate_many(jobs: List[Dict[str, Any]], execute_tool: Callable, star
 
     async def one(lb, j):
         queued = time.monotonic()
+        execution_started = None
+        context = run_obs.scope(batch_id=batch_id, worker_id=lb)
+        context.__enter__()
+        outcome = "cancelled"
+        run_obs.emit("worker.queued")
         queue.put_nowait({"type": "subagent_status", "agent_id": lb, "status": "queued",
                          "message": "Waiting for a worker slot"})
         holder = f"team:{batch_id}:{lb}"
         tok = runtime_limits.resource_holder.set(holder)
         try:
             async with runtime_limits.slot("workers", runtime_limits.worker_limit()):
+                execution_started = time.monotonic()
+                run_obs.emit("worker.started", queue_wait_ms=round((time.monotonic() - queued) * 1000))
                 queue.put_nowait({"type": "subagent_status", "agent_id": lb, "status": "running",
                                  "message": "Worker slot acquired", "queue_wait_ms": int((time.monotonic() - queued) * 1000)})
-                return await run_subagent(lb, str(j.get("task") or ""), str(j.get("tier") or "standard"), execute_tool,
-                                          queue.put_nowait, j.get("agent"))
+                result = await run_subagent(lb, str(j.get("task") or ""), str(j.get("tier") or "standard"), execute_tool,
+                                           queue.put_nowait, j.get("agent"))
+                outcome = "waiting_for_approval" if result.get("needs_approval") else "reported_complete" if result.get("success") else "partial"
+                return result
         except Exception as e:
+            outcome = "error"
             logger.exception("subagent failed")
             return {"success": False, "agent": lb, "summary": "", "error": f"{type(e).__name__}: {e}"}
         finally:
+            run_obs.emit("worker.finished", outcome=outcome, duration_ms=round((time.monotonic() - queued) * 1000),
+                         execution_ms=round((time.monotonic() - execution_started) * 1000) if execution_started else None)
+            context.__exit__(None, None, None)
             runtime_limits.resource_holder.reset(tok)
             # Device claims have their own holder, but audit/effect ownership stays
             # with the parent task so its completion verifier still sees the work.
@@ -388,3 +414,6 @@ async def delegate_many(jobs: List[Dict[str, Any]], execute_tool: Callable, star
             if not child.done():
                 child.cancel()
         await asyncio.gather(*owned, return_exceptions=True)
+        with run_obs.scope(batch_id=batch_id):
+            run_obs.emit("fleet.finished", workers=len(jobs),
+                         outcome="settled" if all(t.done() and not t.cancelled() for t in tasks) else "cancelled")

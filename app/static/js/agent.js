@@ -68,6 +68,11 @@
       <h3 class="xa-sheet-title">${esc(d.title || "")}</h3>
       ${d.now && d.status !== "done" ? `<p class="xa-sub">${esc(d.now)}</p>` : ""}
       ${d.usage && d.usage.calls ? `<p class="xa-faint mt-1">${d.usage.calls} model call${d.usage.calls !== 1 ? "s" : ""} · ${num(d.usage.prompt + d.usage.completion)} tokens (${num(d.usage.prompt)} in, ${num(d.usage.completion)} out) · ${Math.round(d.usage.ms / 1000)} s of model time${d.usage.cost ? ` · ${usd(d.usage.cost)}` : ""} · ${esc((d.usage.models || []).join(", "))}</p>` : ""}
+      ${(d.observability || []).length ? `<details class="mt-3"><summary class="xa-title">Run diagnostics (${d.observability.length} recent events)</summary>
+        <p class="xa-faint">Request and worker metadata only. Returned results are not independent proof of completed work. Missing usage is unknown.</p>
+        ${d.observability.map((e) => `<div class="xa-step"><span class="min-w-0">
+          <span class="xa-step-title">${esc(e.kind)}${e.ids.worker_id ? ` · ${esc(e.ids.worker_id)}` : ""}</span>
+          <span class="xa-step-detail">${esc(JSON.stringify({ ...e.ids, ...e.payload }))}</span></span></div>`).join("")}</details>` : ""}
       ${d.result ? `<div class="xa-result">${window.marked ? marked.parse(d.result.replace(/<!--[\s\S]*?-->/g, "").slice(0, 4000)) : esc(d.result)}</div>` : ""}
       ${d.has_screenshot ? `<img class="xa-shot-big" src="/api/tasks/${esc(d.id.slice(5))}/screenshot" alt="The page at the end">` : ""}
       ${sections || `<p class="xa-sub mt-3">No steps recorded for this one.</p>`}
@@ -200,7 +205,9 @@
     body.innerHTML = `
       <p class="xa-sub">When a job has pieces that can run side by side, or a hard part, Xod hands them to subagents on these tiers. Their steps show as SUBAGENT 01, 02… in Activity. More cloud keys or local models = more choices here.</p>
       <label class="xa-toggle"><input type="checkbox" data-team-on ${d.settings.enabled ? "checked" : ""}> Let Xod use the team</label>
-      ${alone ? `<p class="xa-sub xa-wait">Right now every tier is the same model, so Xod works alone. Add another model that calls tools (AI models → Get more), a cloud key (Settings) or a teammate agent, and the team switches on.</p>` : ""}
+      <label class="xa-toggle"><input type="checkbox" data-team-same ${d.settings.same_model_workers ? "checked" : ""}> Allow workers using the same model</label>
+      <p class="xa-faint">Separate worker contexts can help independent jobs even with one model. They use additional requests and may cost more. Existing concurrency and approval limits still apply.</p>
+      ${alone && !d.settings.same_model_workers ? `<p class="xa-sub xa-wait">Every tier currently uses the same model. Enable same-model workers above, add another model, or connect a teammate to use delegation.</p>` : ""}
       ${["small", "standard", "large"].map((t) => {
         const cur = d.tiers[t];
         return `<div class="xa-row"><span class="xa-ico"><i data-lucide="${t === "small" ? "zap" : t === "large" ? "brain" : "cpu"}" class="size-4"></i></span>
@@ -269,6 +276,7 @@
       await api("/api/agent/team", "POST", { agents: chosen }); return showToast("Saved");
     }
     if (e.target.closest("[data-team-on]")) { await api("/api/agent/team", "POST", { enabled: e.target.checked }); showToast("Saved"); }
+    if (e.target.closest("[data-team-same]")) { await api("/api/agent/team", "POST", { same_model_workers: e.target.checked }); showToast("Saved"); return render(); }
   }
 
   window.openAgentPanel = (which) => {

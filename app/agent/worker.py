@@ -29,6 +29,7 @@ import time
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from app.services.llm import llm_service, parse_llm_json, JSON_MIN_TOKENS
+from app.services import run_observability as run_obs
 
 logger = logging.getLogger(__name__)
 
@@ -552,6 +553,8 @@ def _steps_text(log: List[Dict[str, Any]], limit: int = 5000, goal: str = "") ->
     for i, e in enumerate(log, 1):
         what = e["args"].get("command") or e["args"].get("filepath") or e["args"].get("query") or e["args"].get("url") or json.dumps(e["args"], default=str)[:160]
         status = "FAILED" if e["failed"] else "ok"
+        if e.get("delegated_by"):
+            status += f", tool output from {e['delegated_by']}; not independent verification"
         if e.get("exit") is not None:
             status += f", exit {e['exit']}"
         out = re.sub(r"\s+\n", "\n", e["out"]).strip()
@@ -594,6 +597,15 @@ def _step_goal(goal: str) -> str:
         after = after.split(":", 1)[1]
     after = after.split("\n\nDo only this step", 1)[0]
     return after.strip() or q
+
+
+def _delegated_tool_log(result):
+    return [{"name": e["tool"], "args": e.get("args") or {}, "fp": "",
+             "failed": not e.get("ok"), "out": str(e.get("summary") or ""),
+             "exit": None, "new": True, "delegated_by": result.get("agent")}
+            for e in result.get("evidence") or []
+            if isinstance(e, dict) and e.get("source") == "local_tool_execution"
+            and e.get("tool") in TOOLS]
 
 
 def _remaining_from_log(goal: str, log: List[Dict[str, Any]], content: str = "") -> Tuple[List[str], List[str]]:
@@ -695,7 +707,7 @@ def _worker_context_limits(force_local: Optional[bool] = None) -> Tuple[int, int
         try:
             is_local = llm_service._is_local()
         except Exception:
-            is_local = True
+            is_local = llm_service.get_endpoint_info()["provider"] in ("xod", "local", "ollama", "lm_studio")
     else:
         is_local = bool(force_local)
     if is_local:
@@ -708,6 +720,7 @@ def _shrink(convo: List[Dict[str, Any]], force_local: Optional[bool] = None) -> 
     up retention when running on a cloud / large-context brain."""
     keep_full, _max_body, threshold, head_n, tail_n = _worker_context_limits(force_local=force_local)
     tool_msgs = [m for m in convo if m.get("role") == "tool"]
+    before_chars = sum(len(m.get("content") or "") for m in tool_msgs)
     for m in tool_msgs[:-keep_full]:
         c = m.get("content") or ""
         if len(c) > threshold:
@@ -736,6 +749,46 @@ def _shrink(convo: List[Dict[str, Any]], force_local: Optional[bool] = None) -> 
                 m["content"] = json.dumps(compact, default=str)
             else:
                 m["content"] = c[:head_n] + " … " + c[-tail_n:]
+    after_chars = sum(len(m.get("content") or "") for m in tool_msgs)
+    if after_chars < before_chars:
+        run_obs.emit("context.compacted", before_chars=before_chars, after_chars=after_chars,
+                     retained_tool_results=keep_full)
+
+
+def _conversation_history(messages, force_local=None):
+    """Bounded history, preserving the original instruction and recent corrections.
+
+    Unlike silent 1,500-character prefix clipping, loss is explicitly marked.
+    This is character budgeting, not a claim to know the provider context limit.
+    """
+    if force_local is None:
+        try:
+            force_local = llm_service._is_local()
+        except AttributeError:
+            force_local = llm_service.get_endpoint_info()["provider"] in ("xod", "local", "ollama", "lm_studio")
+    budget = 12000 if force_local else 48000
+    candidates = [m for m in messages[:-1] if m.get("role") in ("user", "assistant")
+                  and isinstance(m.get("content"), str) and m["content"].strip()]
+    if not candidates:
+        return []
+    # Keep the first instruction plus the latest context, in chronological order.
+    indices = sorted({0, *range(max(1, len(candidates) - 9), len(candidates))})
+    per_message = max(1000, budget // len(indices))
+    selected = []
+    clipped = 0
+    for i in indices:
+        m = candidates[i]
+        content = re.sub(r"<!--.*?-->", "", m["content"], flags=re.S)
+        if len(content) > per_message:
+            marker = "\n[Earlier conversation excerpt omitted; reread source files for missing details.]\n"
+            keep = (per_message - len(marker)) // 2
+            content = content[:keep] + marker + content[-keep:]
+            clipped += 1
+        selected.append({"role": m["role"], "content": content})
+    if clipped or len(indices) < len(candidates):
+        run_obs.emit("context.history_bounded", clipped_messages=clipped,
+                     omitted_messages=len(candidates) - len(indices), character_budget=budget)
+    return selected
 
 
 def _summary(name: str, res: Any) -> str:
@@ -775,6 +828,7 @@ def _final_text(answer: str, verdict: Optional[Dict[str, Any]], goal: str, left:
     return text + "\n\n" + MARK + json.dumps(note) + " -->"
 
 
+@run_obs.observed_run
 async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str, Any], execute_tool,
                  spoken: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
     goal = decision["goal"]
@@ -867,10 +921,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     if spoken:
         system += "\nYour final reply will be read aloud: two short sentences."
     convo: List[Dict[str, Any]] = [{"role": "system", "content": system}]
-    for m in messages[-6:-1]:
-        c = m.get("content")
-        if m.get("role") in ("user", "assistant") and isinstance(c, str) and c.strip():
-            convo.append({"role": m["role"], "content": re.sub(r"<!--.*?-->", "", c, flags=re.S)[:1500]})
+    convo.extend(_conversation_history(messages))
     ask = goal
     if decision.get("resume"):
         ask += f"\n\n(This continues earlier work. Where it stopped: {decision['resume']})"
@@ -1007,6 +1058,10 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 answered_ids.add(cid)
                 log.append({"name": "team_delegate", "args": a, "fp": _fp("team_delegate", a), "failed": not r.get("success"),
                             "out": (r.get("summary") or r.get("error") or "")[-3000:], "exit": None, "new": True})
+                # Local worker tool outputs are execution evidence, not just the
+                # model's report. Preserve them for the existing completeness and
+                # done-check gates; never turn an outside agent's prose into proof.
+                log.extend(_delegated_tool_log(r))
                 from app.services import agent_log
                 agent_log.step("team_delegate", a, {**r, "success": r.get("success")})
                 convo.append({"role": "tool", "tool_call_id": cid, "name": "team_delegate",
@@ -1042,7 +1097,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             else:
                 yield {"type": "tool_call", "name": name, "args": args, "id": cid}
                 try:
-                    res = refused(name, args) or await execute_tool(name, args)
+                    res = refused(name, args) or await run_obs.execute_tool(name, args, cid, execute_tool)
                 except Exception as e:
                     res = {"success": False, "error": f"{name} failed: {e}"}
                 yield {"type": "tool_result", "name": name, "id": cid, "summary": _summary(name, res), "data": res}

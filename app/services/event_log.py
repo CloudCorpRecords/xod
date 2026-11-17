@@ -87,6 +87,8 @@ def ids_from_origin(origin: Any) -> Dict[str, str]:
             out["task_id"] = origin[5:]
         elif origin.startswith("mission:"):
             out["mission_id"] = origin[8:]
+        elif origin.startswith("chat:"):
+            out["chat_id"] = origin[5:]
     return out
 
 
@@ -105,9 +107,10 @@ def emit(kind: str, actor: str = "", ids: Optional[Dict[str, Any]] = None,
             if _seq is None:
                 _seq = _seed_seq()
             _seq += 1
+            from app.services.run_observability import ids as run_ids
             rec = {"seq": _seq, "ts": time.time(), "kind": str(kind),
                    "actor": str(actor or ""),
-                   "ids": {str(k): v for k, v in (ids or {}).items() if v},
+                   "ids": {str(k): v for k, v in {**run_ids(), **(ids or {})}.items() if v},
                    "payload": _small(payload or {})}
             DATA_DIR.mkdir(parents=True, exist_ok=True)
             with open(LOG, "a", encoding="utf-8") as f:
@@ -157,12 +160,13 @@ def _read_all() -> List[Dict[str, Any]]:
     return out
 
 
-_ID_ARGS = ("task_id", "mission_id", "subtask_id", "crew_job", "ref")
+_ID_ARGS = ("task_id", "mission_id", "subtask_id", "crew_job", "ref", "chat_id",
+            "run_id", "batch_id", "worker_id", "model_call_id", "tool_call_id")
 
 
 def query(since: Optional[float] = None, until: Optional[float] = None,
           kinds: Optional[List[str]] = None, limit: int = 200,
-          cursor: Optional[int] = None, **ids: Any) -> Dict[str, Any]:
+          cursor: Optional[int] = None, actor: Optional[str] = None, **ids: Any) -> Dict[str, Any]:
     """Events in sequence order, filtered. kinds are prefixes ("task" matches every
     task.* event). cursor is the last seq a previous page returned; the next page is
     strictly after it, so pages never overlap and never skip. Unknown id arguments
@@ -179,6 +183,8 @@ def query(since: Optional[float] = None, until: Optional[float] = None,
         if until is not None and ts > until:
             continue
         if kinds and not any(str(rec.get("kind") or "").startswith(k) for k in kinds):
+            continue
+        if actor and rec.get("actor") != actor:
             continue
         rec_ids = rec.get("ids") or {}
         if any(rec_ids.get(k) != v for k, v in want.items()):

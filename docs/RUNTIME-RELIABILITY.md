@@ -1,5 +1,10 @@
 # Long-running work: repair evidence and limits
 
+For the subsequent real OpenAI large-input and two-turn delegated-work
+evaluation, see `docs/LIVE-AGENT-EVALUATION.md`. It includes failed baselines,
+repairs, provider usage, worker concurrency and the remaining soak/compaction
+gaps. The short live run is not a long-duration stability result.
+
 ## Scope
 
 This pass repairs existing execution paths. It does not add another conductor,

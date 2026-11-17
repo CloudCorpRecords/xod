@@ -508,6 +508,9 @@ TOOL_SURFACE = [
               "task_id": "only this task's events (optional)", "mission_id": "only this mission's events (optional)",
               "subtask_id": "only this subtask's events (optional)", "crew_job": "only this crew job's events (optional)",
               "actor": "only this actor's events (optional)",
+              "chat_id": "only this chat's events (optional)", "run_id": "only this run's events (optional)",
+              "batch_id": "only this worker batch (optional)", "worker_id": "only this worker, scoped with run/batch (optional)",
+              "model_call_id": "only this model call (optional)", "tool_call_id": "only this tool call (optional)",
               "limit": "page size, 1 to 1000 (default 200)", "cursor": "last seq from the previous page (optional)"}},
     {"name": "task_read", "version": 1, "kind": "read",
      "description": "One task's full grading record: the queue row, its mission link if any, every recorded step with its tool calls, the wedge state (stalled, quiet seconds), and the task's own timeline events.",
@@ -641,6 +644,12 @@ def _tool_timeline(args: Dict[str, Any]) -> Dict[str, Any]:
                            mission_id=str(args.get("mission_id") or "") or None,
                            subtask_id=str(args.get("subtask_id") or "") or None,
                            crew_job=str(args.get("crew_job") or "") or None,
+                           chat_id=str(args.get("chat_id") or "") or None,
+                           run_id=str(args.get("run_id") or "") or None,
+                           batch_id=str(args.get("batch_id") or "") or None,
+                           worker_id=str(args.get("worker_id") or "") or None,
+                           model_call_id=str(args.get("model_call_id") or "") or None,
+                           tool_call_id=str(args.get("tool_call_id") or "") or None,
                            actor=str(args.get("actor") or "") or None)
 
 

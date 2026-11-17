@@ -11,6 +11,7 @@ from app.config import settings
 from app.services import ollama_context
 from app.services.runtime_limits import inference
 from app.services.model_hub import CLOUD_DEFAULTS, cloud_base_url
+from app.services import run_observability as run_obs
 
 logger = logging.getLogger("llm")
 
@@ -194,8 +195,11 @@ async def _watched(aw: Any, info: Dict[str, Any]) -> Any:
 @contextlib.asynccontextmanager
 async def _open_stream(client: httpx.AsyncClient, url: str, payload: Dict[str, Any], headers: Dict[str, str], info: Dict[str, Any]):
     """client.stream("POST", ...), with the wait for the first reply watched (see _watched)."""
+    queued = time.monotonic()
     async with inference(info):
+        run_obs.request_started(info, payload, (time.monotonic() - queued) * 1000)
         response = await _watched(client.send(client.build_request("POST", url, json=payload, headers=headers), stream=True), info)
+        run_obs.response_received(response)
         try:
             yield response
         finally:
@@ -1110,6 +1114,7 @@ class LLMService:
             logger.warning(f"Could not fetch models from {url}: {e}")
         return [{"id": info["model"], "name": info["model"], "is_loaded": True}]
 
+    @run_obs.observed_model("answer")
     async def chat_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -1193,8 +1198,11 @@ class LLMService:
         async with httpx.AsyncClient(timeout=timeout) as client:
             for attempt in range(1, (1 if is_specialist else MAX_ATTEMPTS) + 1):
                 try:
+                    queued = time.monotonic()
                     async with inference(info):
+                        run_obs.request_started(info, payload, (time.monotonic() - queued) * 1000)
                         res = await _watched(client.post(url, json=payload, headers=headers), info)
+                    run_obs.response_received(res)
                     if res.status_code in RETRYABLE_STATUS and attempt < MAX_ATTEMPTS and not is_specialist:
                         logger.warning(f"LLM HTTP {res.status_code}, retrying ({attempt}/{MAX_ATTEMPTS})")
                         await asyncio.sleep(1.5 * attempt)
@@ -1215,6 +1223,7 @@ class LLMService:
                             error = error.replace(info["api_key"], "[redacted]")
                         raise Exception(error)
                     data = res.json()
+                    run_obs.output_received(data)
                     from app.services import llm_routing
                     llm_routing.record(info["provider"], info["model"], data.get("usage"),
                                        prompt_chars=len(json.dumps(messages)), completion_chars=len(str(data)),
@@ -1240,6 +1249,9 @@ class LLMService:
                     msg["_provider"] = info["provider"]
                     msg["_model"] = info["model"]
                     msg["_response_model"] = data.get("model")
+                    msg["_request_id"] = run_obs.metadata().get("request_id")
+                    msg["_usage"] = run_obs.metadata().get("usage")
+                    msg["_finish_reason"] = run_obs.metadata().get("finish_reason")
                     if task and answered and not tools:
                         from app.services import dataset_recorder
                         msg["_example_id"] = dataset_recorder.capture(
@@ -1325,6 +1337,7 @@ class LLMService:
         except Exception:
             return False
 
+    @run_obs.observed_model("stream")
     async def stream_chat_completion(
         self,
         messages: List[Dict[str, Any]],
@@ -1423,6 +1436,7 @@ class LLMService:
                                     break
                                 try:
                                     chunk = json.loads(data_str)
+                                    run_obs.output_received(chunk)
                                     if chunk.get("error"):
                                         err_info = chunk["error"]
                                         err_msg = err_info.get("message", str(err_info)) if isinstance(err_info, dict) else str(err_info)
@@ -1506,6 +1520,7 @@ class LLMService:
                            "answer (it may have crashed or run out of memory). Try again; if it keeps happening, pick a smaller model."}
                     return
 
+    @run_obs.observed_model("deliberate")
     async def deliberate_stream(
         self,
         messages: List[Dict[str, Any]],
@@ -1600,6 +1615,7 @@ class LLMService:
                                     break
                                 try:
                                     chunk = json.loads(data_str)
+                                    run_obs.output_received(chunk)
                                     if chunk.get("error"):
                                         err_info = chunk["error"]
                                         err_msg = err_info.get("message", str(err_info)) if isinstance(err_info, dict) else str(err_info)

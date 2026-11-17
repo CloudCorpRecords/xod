@@ -75,6 +75,16 @@ def activity(limit: int = 80) -> List[Dict[str, Any]]:
 def detail(origin: str) -> Dict[str, Any]:
     steps = agent_log.steps_for(origin)
     out: Dict[str, Any] = {"id": origin, "steps": steps, "order": sorted(steps, key=lambda a: (a != "main", a))}
+    from app.services import event_log
+    correlation = event_log.ids_from_origin(origin)
+    operational_kinds = ("run.", "worker.", "fleet.", "model.started", "model.attempt",
+                         "model.response", "model.finished", "context.", "tool.started", "tool.finished")
+    out["observability"] = []
+    if correlation:
+        # The log is bounded; recent matching spans, not an unlimited prompt archive.
+        out["observability"] = [e for e in event_log._read_all()
+                                if all(e.get("ids", {}).get(k) == v for k, v in correlation.items())
+                                and e["kind"].startswith(operational_kinds)][-100:]
     try:
         from app.services import usage
         out["usage"] = usage.for_origin(origin)
