@@ -3,8 +3,8 @@
 Prepared November 16, 2026 (Pacific time). **Plan only: no branch, worktree or
 product file was deleted, moved, renamed, merged or repurposed.** The only
 tracking removal is the explicitly requested agent metadata file; its local
-copy remains. History reconstruction and all pushes are blocked pending
-separate informed approval and the prerequisites below.
+copy remains. **The owner chose to keep main unchanged.** No history rewrite
+or push is authorized; the procedure below is reference only, not queued work.
 
 ## Evidence inspected and what it does not prove
 
@@ -210,8 +210,9 @@ repository-preparation task.
 3. **DONE previously:** `requirements.txt` pins `websocket-client==1.9.0`.
    The earlier native-readiness commit records why; not reinstalled here.
 4. **BLOCKED, plan DONE:** five mixed workflow commits identified in
-   `WORKFLOW-HISTORY-PLAN.md`. No rewrite approval, verified restoration backup,
-   complete-history privacy review or renewed workflow authorization yet.
+   `WORKFLOW-HISTORY-PLAN.md`. The owner explicitly chose to keep main unchanged,
+   so no rewrite will proceed. A future proposal would also require a restored
+   backup, complete-history privacy review and confirmed workflow authorization.
    No history rewrite or remote push executed; both handoff refs unchanged.
 5. **DONE here:** only the requested metadata file untracked, whole agents
    directory ignored, all local memory retained, all three build assets intact.

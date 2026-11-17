@@ -221,8 +221,15 @@ command, credential request or push attempt is executed here.
 
 ## Current result
 
+**Owner decision: keep main unchanged.** The owner explicitly declined the
+proposed local history rewrite after reviewing its consequences. Reconstruction,
+candidate creation and remote delivery are not authorized by that decision.
+Ordinary additive commits recording this plan and tracking hygiene do not
+rewrite existing history.
+
 History analysis and the recovery/reconstruction plan are DONE. Main rewrite
-is **BLOCKED** on informed approval, owner/issue/target registration, complete
+is **NOT AUTHORIZED** and will not proceed. Any future reconsideration requires
+a new explicit request plus owner/issue/target registration, complete
 history/privacy evidence, a restored backup and candidate verification.
 Remote delivery is additionally blocked on confirmed authorization/protection.
 Both original handoff branches remain untouched. See
