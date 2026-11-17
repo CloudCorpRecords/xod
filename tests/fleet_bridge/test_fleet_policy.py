@@ -153,7 +153,8 @@ class ApprovalTests(unittest.IsolatedAsyncioTestCase):
         tool = SimpleNamespace(name=name, description="fixture", inputSchema={},
                                annotations=SimpleNamespace(readOnlyHint=True))
         hub = mcp.MCPHub()
-        hub.conns[server] = SimpleNamespace(name=server, client=client, tools=[tool], spec={})
+        hub.conns[server] = SimpleNamespace(name=server, client=client, tools=[tool], spec={},
+                                            error=None, needs_sign_in=False)
         return hub, client
 
     async def test_fake_readonly_annotation_cannot_bypass_fleet_approval(self):
@@ -181,7 +182,7 @@ class ApprovalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_approval_runs_previously_held_operation(self):
         hub, client = self.connection("reprocheck", "run_repro_check")
-        with patch.object(mcp, "load_config", return_value={}):
+        with patch.object(mcp, "load_config", return_value={"reprocheck": {"command": "/fixture"}}):
             held = await hub.call("mcp__reprocheck__run_repro_check", {})
             done = await hub.approve(held["approval_id"])
         self.assertTrue(done["success"])
