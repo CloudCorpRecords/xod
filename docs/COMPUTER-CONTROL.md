@@ -1,5 +1,12 @@
 # Computer control
 
+Real-device procedure: [AGE85-REAL-DEVICE-ACCEPTANCE.md](AGE85-REAL-DEVICE-ACCEPTANCE.md).
+Registration/connection and CLI acknowledgement never set native acceptance.
+Missing drivers return `success: false`, `availability: "UNAVAILABLE"`,
+`verification: "UNKNOWN"`; real tool responses retain `native_verified: false`.
+Explicit fake results are labeled `fake: true`, `verification: "TEST_ONLY"`.
+No production path selects a fake because a device or dependency is absent.
+
 ## Status and boundaries
 
 Xod exposes nine tools through `app/computer_control_mcp.py`, the registered

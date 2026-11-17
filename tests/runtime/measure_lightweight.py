@@ -50,11 +50,13 @@ def describe(values):
     }
 
 
-def descendants(pid):
+def descendants(pid, errors=None):
     try:
         parent = psutil.Process(pid)
         return [parent, *parent.children(recursive=True)]
-    except psutil.Error:
+    except psutil.Error as exc:
+        if errors is not None:
+            errors.append(type(exc).__name__)
         return []
 
 
@@ -86,14 +88,12 @@ def collect(args, backend, started):
     for name in ("partner", "model", "shell"):
         if getattr(args, name + "_pid"):
             roots[name] = getattr(args, name + "_pid")
-    previous, inventory, samples = {}, {}, []
+    previous, inventory, samples, root_identities = {}, {}, [], {}
     ready_at = started if args.pid else None
     next_sample = started
     initial_state = None
     while True:
         now = time.monotonic()
-        if not psutil.pid_exists(backend) or psutil.Process(backend).status() == psutil.STATUS_ZOMBIE:
-            raise RuntimeError("Backend exited before collection finished; inspect its local log.")
         if ready_at is None:
             try:
                 initial_state = api(args.port, "/api/mode")
@@ -103,25 +103,57 @@ def collect(args, backend, started):
                     raise RuntimeError("Backend did not become ready within startup timeout.")
         phase = "startup" if ready_at is None else (
             "settling" if now < ready_at + args.settle else "idle")
-        groups, seen = {}, set()
-        # Explicit separate roots take precedence over backend descendants.
+        groups, seen, trees = {}, set(), {}
         for group in ("partner", "model", "shell", "backend"):
             if group not in roots:
                 continue
-            rss = cpu_seconds = 0
-            count = 0
-            for proc in descendants(roots[group]):
+            errors = []
+            tree = descendants(roots[group], errors)
+            if not tree and not errors:
+                errors.append("RootUnavailable")
+            # Pin root identity, not just PID. Never start measuring a different
+            # program when the OS reuses a PID during a long collection.
+            if tree:
                 try:
+                    identity = (tree[0].pid, tree[0].create_time())
+                    if root_identities.setdefault(group, identity) != identity:
+                        errors.append("RootPIDReused")
+                        tree = []
+                except psutil.Error as exc:
+                    errors.append(type(exc).__name__)
+                    tree = []
+            trees[group] = (tree, errors)
+        # Count nested explicit roots before their ancestors. Electron may own
+        # the backend, or the backend may own a model/Partner: fixed group
+        # priority misattributes one of those two layouts.
+        order = sorted(trees, key=lambda g: sum(
+            any(p.pid == roots[g] for p in tree)
+            for other, (tree, _) in trees.items() if other != g), reverse=True)
+        for group in order:
+            tree, errors = trees[group]
+            rss = cpu_percent = count = 0
+            cpu_errors = []
+            for proc in tree:
+                try:
+                    if proc.pid == os.getpid():
+                        if proc.pid == roots[group]:
+                            errors.append("CollectorRootExcluded")
+                        continue
                     identity = (proc.pid, proc.create_time())
                     if identity in seen:
                         continue
                     seen.add(identity)
+                    if proc.status() == psutil.STATUS_ZOMBIE:
+                        errors.append("ZombieProcess")
+                        continue
                     mem = proc.memory_info().rss
                     cpu = proc.cpu_times()
                     total = cpu.user + cpu.system
                     old = previous.get(identity)
-                    if old:
-                        cpu_seconds += max(0, total - old[0])
+                    if old and now > old[1]:
+                        cpu_percent += 100 * max(0, total - old[0]) / (now - old[1])
+                    else:
+                        cpu_errors.append("CPUBaselineUnavailable")
                     previous[identity] = (total, now)
                     rss += mem
                     count += 1
@@ -131,12 +163,14 @@ def collect(args, backend, started):
                         "first_seen_s": inventory.get(str(identity), {}).get("first_seen_s", now - started),
                         "last_seen_s": now - started,
                     }
-                except psutil.Error:
-                    pass
-            elapsed = now - samples[-1]["monotonic"] if samples else 0
+                except psutil.Error as exc:
+                    errors.append(type(exc).__name__)
             groups[group] = {
-                "rss_mib": rss / MIB, "processes": count,
-                "cpu_percent_one_core": 100 * cpu_seconds / elapsed if elapsed else None,
+                "rss_mib": rss / MIB if not errors else None, "processes": count,
+                "cpu_percent_one_core": cpu_percent if not errors and not cpu_errors and samples else None,
+                "status": "UNAVAILABLE" if errors else "OBSERVED",
+                "unavailable_reasons": sorted(set(errors)),
+                "cpu_unavailable_reasons": sorted(set(errors + cpu_errors)),
             }
         samples.append({
             "elapsed_s": now - started, "monotonic": now, "phase": phase,
@@ -150,21 +184,30 @@ def collect(args, backend, started):
     summaries = {}
     for group in roots:
         idle = [s["groups"][group] for s in samples if s["phase"] == "idle"]
+        peaks = [s["groups"][group]["rss_mib"] for s in samples
+                 if s["phase"] != "idle" and s["groups"][group]["rss_mib"] is not None]
         summaries[group] = {
             "idle_samples": len(idle),
-            "rss_mib": describe([s["rss_mib"] for s in idle]),
+            "unavailable_samples": sum(s["status"] == "UNAVAILABLE" for s in idle),
+            "rss_mib": describe([s["rss_mib"] for s in idle if s["rss_mib"] is not None]),
             "cpu_percent_one_core": describe([
                 s["cpu_percent_one_core"] for s in idle
                 if s["cpu_percent_one_core"] is not None]),
-            "startup_and_settle_peak_rss_mib": max(
-                s["groups"][group]["rss_mib"] for s in samples if s["phase"] != "idle"
-            ) if args.settle else None,
+            "startup_and_settle_peak_rss_mib": max(peaks) if peaks else None,
         }
     totals = [s for s in samples if s["phase"] == "idle"]
+    def total_series(metric):
+        return [sum(g[metric] for g in s["groups"].values()) for s in totals
+                if all(g[metric] is not None for g in s["groups"].values())]
     summaries["observed_total"] = {
-        "rss_mib": describe([sum(g["rss_mib"] for g in s["groups"].values()) for s in totals]),
-        "cpu_percent_one_core": describe([
-            sum(g["cpu_percent_one_core"] or 0 for g in s["groups"].values()) for s in totals]),
+        "rss_mib": describe(total_series("rss_mib")),
+        "cpu_percent_one_core": describe(total_series("cpu_percent_one_core")),
+        "rss_valid_samples": len(total_series("rss_mib")),
+        "cpu_valid_samples": len(total_series("cpu_percent_one_core")),
+    }
+    summaries["whole_application"] = {
+        "verification": "UNKNOWN", "rss_mib": None, "cpu_percent_one_core": None,
+        "reason": "Observed roots are not proof of complete native application coverage. Review real-device evidence.",
     }
     final_state = {}
     for name, path in (("mode", "/api/mode"), ("approvals", "/api/crew/settings/auto-approve")):
@@ -185,6 +228,7 @@ def collect(args, backend, started):
             "interval_s": args.interval, "model_loaded_by_collector": False,
             "synthetic_backend": False, "api_polling_during_idle": False,
             "explicit_process_roots": roots,
+            "collector_pid_excluded": os.getpid(),
             "missing_components": [g for g in ("partner", "model", "shell") if g not in roots],
         },
         "ready_s": ready_at - started if not args.pid else None,
@@ -210,7 +254,14 @@ def main():
     parser.add_argument("--label", default="lightweight-idle")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if min(args.duration, args.interval, args.startup_timeout) <= 0 or args.settle < 0:
+    if any(pid is not None and pid <= 0 for pid in (
+            args.pid, args.partner_pid, args.model_pid, args.shell_pid)):
+        parser.error("Process IDs must be positive.")
+    if args.pid == os.getpid():
+        parser.error("The collector cannot be its own backend root.")
+    if (not all(math.isfinite(n) for n in (
+            args.duration, args.interval, args.startup_timeout, args.settle))
+            or min(args.duration, args.interval, args.startup_timeout) <= 0 or args.settle < 0):
         parser.error("Duration, interval and timeout must be positive; settling must be nonnegative.")
     if not args.pid and sys.platform != "linux":
         parser.error("Isolated launch is Linux-only. Use --pid to observe a native installation.")

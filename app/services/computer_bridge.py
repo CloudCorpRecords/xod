@@ -63,6 +63,7 @@ def register_computer_control(trust: str = "ask") -> Dict[str, Any]:
     effective_trust = mcp_client.load_config().get(SERVER_NAME, {}).get("trust", "ask")
     logger.info("computer bridge: registered %s, preserved %s", registered, preserved)
     return {"success": bool(registered or preserved), "registered": registered, "preserved": preserved,
+            "registration_only": True, "verification": "UNKNOWN", "native_verified": False,
             "server": SERVER_NAME, "trust": effective_trust,
             "tools": ["computer_look", "computer_screenshot", "computer_click",
                        "computer_type", "computer_press", "computer_scroll",

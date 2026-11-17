@@ -1,15 +1,9 @@
 """
 Computer control (AGE-85): the adapter layer behind the harness computer-control tools.
 
-Tree steers a real signed-in browser through bops (the browser-ops host wrapper):
-look (screenshot plus an interactive element map and visible text), click by
-selector or text or index, type with read-back, press for keys, and tab and
-desktop screenshots, all over CDP on a device browser the person is already
-signed into. Xod's vendored browser-ops copy predates that surface: it can
-register and sweep tabs and take screenshots, but it cannot look at a page's
-elements or act inside the page at all. Xod's desktop tools (services/desktop.py)
-do look, click, type and key on the LOCAL machine only, and only when the
-screen add-on is ready, which AGE-57 signing currently blocks on the Mac.
+The vendored browser-ops CLI implements explicit-target browser inspection,
+interaction and screenshots over CDP. Protocol acknowledgements and synthetic
+fixtures are not real-device acceptance; see docs/AGE85-REAL-DEVICE-ACCEPTANCE.md.
 
 This module is the clean seam between the harness and any such driver:
 
@@ -54,7 +48,10 @@ def validated(method):
         except TypeError:
             return self._error("Invalid arguments for " + method.__name__)
         error = validate(method.__name__, bound.arguments)
-        return self._error(error) if error else method(self, *args, **kwargs)
+        result = self._error(error) if error else method(self, *args, **kwargs)
+        if self.name == "fake":
+            result.update(verification="TEST_ONLY", native_verified=False)
+        return result
     return checked
 
 
@@ -65,7 +62,8 @@ class ComputerControlAdapter:
 
     def _error(self, message):
         return {"success": False, "adapter": self.name, "fake": self.name == "fake",
-                "error": message}
+                "verification": "TEST_ONLY" if self.name == "fake" else "UNKNOWN",
+                "native_verified": False, "error": message}
 
     def look(self, target: str = "") -> Dict[str, Any]:
         raise NotImplementedError
@@ -221,9 +219,9 @@ class BopsAdapter(ComputerControlAdapter):
 
     def _run(self, argv: List[str]) -> Dict[str, Any]:
         if not self.command:
-            return {"success": False, "adapter": self.name,
-                    "error": "No bops CLI is configured on this machine "
-                             "(set XOD_COMPUTER_CONTROL_BOPS). Nothing was done."}
+            return {**self._error("No bops CLI is configured on this machine "
+                                 "(set XOD_COMPUTER_CONTROL_BOPS). Nothing was done."),
+                    "availability": "UNAVAILABLE", "outcome_unknown": False}
         try:
             proc = subprocess.run([self.command] + argv, capture_output=True,
                                   text=True, timeout=60)
@@ -231,7 +229,8 @@ class BopsAdapter(ComputerControlAdapter):
             return {**self._error("bops timed out. Outcome is unknown; inspect the device before retrying."),
                     "outcome_unknown": True}
         except OSError as e:
-            return self._error(f"bops could not start ({type(e).__name__}). Check the configured executable.")
+            return {**self._error(f"bops could not start ({type(e).__name__}). Check the configured executable."),
+                    "availability": "UNAVAILABLE", "outcome_unknown": False}
         out = (proc.stdout or "").strip()
         try:
             data = json.loads(out)
@@ -242,11 +241,17 @@ class BopsAdapter(ComputerControlAdapter):
             return {**self._error("bops returned an invalid non-object response."),
                     "outcome_unknown": argv[0] not in ("look", "shot-tab", "shot-desktop")}
         if proc.returncode != 0:
-            return {"success": False, "adapter": self.name,
-                    "error": str(data.get("error") or proc.stderr or "bops error")[:500],
+            return {**self._error(str(data.get("error") or proc.stderr or "bops error")[:500]),
+                    "availability": data.get("availability", "UNKNOWN"),
                     "data": data, "outcome_unknown": data.get("outcome_unknown", False)}
         success = data.get("ok") is True and data.get("success") is not False
         return {"success": success, "adapter": self.name, "fake": data.get("fake") is True,
+                # A CLI acknowledgement, including CDP dispatch, is not native
+                # effect acceptance. Even read-back evidence is scoped to that
+                # field, not a passed real-device acceptance matrix.
+                "verification": "TEST_ONLY" if data.get("fake") is True else "UNKNOWN",
+                "native_verified": False, "driver_acknowledged": success,
+                "availability": data.get("availability", "UNKNOWN"),
                 "outcome_unknown": data.get("outcome_unknown", False), "data": data,
                 **({} if success else {"error": str(data.get("error") or "bops did not confirm success.")[:500]})}
 

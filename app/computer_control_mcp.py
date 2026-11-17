@@ -45,11 +45,16 @@ async def _call(method, *args):
     # adapter invocation serialized: parallel pointer/key gestures can corrupt
     # one another, and cancelling an await cannot stop a worker thread's action.
     result = method(*args)
+    if result.get("fake") is True:
+        result = {**result, "verification": "TEST_ONLY", "native_verified": False}
     if result.get("success") is not True:
         if method.__name__ == "type_text":
             # SDKs log tool errors. Do not put typed text or field read-back in one.
             result = {"success": False, "adapter": result.get("adapter"),
                       "fake": result.get("fake", False),
+                      "verification": result.get("verification", "UNKNOWN"),
+                      "availability": result.get("availability", "UNKNOWN"),
+                      "native_verified": False,
                       "error": "Typing was not verified. Check the field and driver configuration; inspect before retrying.",
                       "outcome_unknown": result.get("outcome_unknown", False)}
         # MCP isError must agree with the adapter, not report a failed action as success.

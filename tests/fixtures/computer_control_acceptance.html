@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Xod disposable native acceptance</title>
+<style>
+body { font:16px system-ui; margin:20px; min-height:2000px; }
+#panel { position:absolute; left:20px; top:220px; width:200px; height:110px;
+         background:#ddd; user-select:none; }
+#dot { position:absolute; left:5px; top:5px; width:16px; height:16px; background:blue; }
+#status { position:fixed; top:360px; left:20px; white-space:pre-wrap; background:white; }
+</style>
+<h1>Disposable device fixture</h1>
+<p>No external requests, logins, payments or messages.</p>
+<label>Acceptance input <input id="field"></label>
+<button id="button">Count one click</button>
+<div id="panel" role="button" tabindex="0" aria-label="Drag and hover test panel"><div id="dot"></div></div>
+<pre id="status"></pre>
+<script>
+const field=document.querySelector('#field'), panel=document.querySelector('#panel');
+const state={clicks:0,keys:0,hovers:0,drags:0,scrollY:0,value:'',lastDrag:null};
+let down=null;
+const paint=()=>document.querySelector('#status').textContent=JSON.stringify(state,null,2);
+document.querySelector('#button').onclick=()=>{state.clicks++;paint()};
+field.oninput=()=>{state.value=field.value;paint()};
+field.onkeyup=()=>{state.keys++;paint()};
+panel.onmouseenter=()=>{state.hovers++;paint()};
+panel.onmousedown=e=>{down=[e.clientX,e.clientY]};
+document.onmousemove=e=>{
+  if(down && e.buttons===1){
+    document.querySelector('#dot').style.left=(e.clientX-28)+'px';
+    document.querySelector('#dot').style.top=(e.clientY-228)+'px';
+  }
+};
+document.onmouseup=e=>{
+  if(down){state.drags++;state.lastDrag=[...down,e.clientX,e.clientY];down=null;paint()}
+};
+window.onscroll=()=>{state.scrollY=window.scrollY;paint()};
+paint();
+</script>

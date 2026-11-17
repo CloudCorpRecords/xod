@@ -423,7 +423,7 @@ def cmd_status(args):
         version = cdp_get("/json/version")
         browser = version.get("Browser", "unknown")
     except Exception as exc:
-        return {"ok": False, "error": "CDP unreachable: %s" % exc}
+        return {"ok": False, "availability": "UNAVAILABLE", "error": "CDP unreachable: %s" % exc}
     reg = registry_load()
     return {"ok": True, "browser": browser, "cdp_port": CFG["cdp_port"],
             "control_protocol": "xod-control-v1",
@@ -485,6 +485,11 @@ def main(argv=None):
         result = args.fn(args)
     except Exception as exc:  # one JSON object on stdout, always
         result = {"ok": False, "error": "%s: %s" % (type(exc).__name__, exc)}
+        if isinstance(exc, (ConnectionError, urllib.error.URLError, ModuleNotFoundError, FileNotFoundError)):
+            result["availability"] = "UNAVAILABLE"
+    # Device dispatch/read-back remains evidence for one operation only.
+    # Native acceptance is a separate observed checklist, never a CLI exit code.
+    result.update(verification="UNKNOWN", native_verified=False)
     print(json.dumps(result))
     return 0 if result.get("ok") else 1
 

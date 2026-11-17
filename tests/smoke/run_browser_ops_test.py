@@ -19,7 +19,7 @@ so the module's own wrapper (bin/bops) and the window probe are exercised end to
   V12 the agent sees the tools only where they apply, and calls them through execute_tool
   V13 remote: the same calls over (stand-in) SSH through the module's own wrapper, window guard included
 
-Run: .venv/bin/python tests/smoke/run_browser_ops_test.py [--repeat N]
+Run: python tests/smoke/run_browser_ops_test.py [--repeat N]
 """
 import asyncio, hashlib, json, os, shutil, socket, subprocess, sys, tempfile, time, urllib.request
 from pathlib import Path
@@ -27,17 +27,35 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TMP = Path(tempfile.mkdtemp(prefix="xod_bops_"))
 os.environ.update({"XOD_DATA_DIR": str(TMP / "data"), "XOD_NO_UPDATE_CHECK": "1", "XOD_SPEECH": "off",
+                   "HOME": str(TMP), "XDG_CONFIG_HOME": str(TMP / "config"),
+                   "XDG_DATA_HOME": str(TMP / "share"),
                    "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring",
                    "XOD_TEST_KEYRING_FILE": str(TMP / "keys.json"), "XOD_SECRETS_SERVICE": "Xod test keys"})
 (TMP / "data").mkdir(parents=True)
 sys.path.insert(0, str(ROOT))
 
+from app import paths
+paths.DEV_ENV_PATH = TMP / "absent.env"
 from app.services import browser_ops as B
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 # The module's PR head (CloudCorpRecords/browser-ops 6d6cadf): git blob ids of the files Xod runs or reads.
 PR_UNCHANGED = ("src/desktop_shot.ps1", "LANES.md")
 results = []
+skipped = []
+
+
+def cdp_fixture_unavailable():
+    """Only the live fixture is optional; pure contract failures still fail."""
+    try:
+        import websocket  # noqa: F401
+    except ModuleNotFoundError as exc:
+        if exc.name != "websocket":
+            raise
+        return "websocket-client is missing; install the pinned requirements on the device"
+    if not Path(CHROME).is_file():
+        return "Mac Google Chrome is unavailable; native/CDP effects remain UNKNOWN"
+    return None
 
 
 def check(name, ok, detail=""):
@@ -213,6 +231,11 @@ def main(repeat):
         check("an earlier step's target_id fills a later step's placeholder", "target_id" in AgenticResearcher._CARRY_KEYS)
         B.config_path().unlink()
 
+        reason = cdp_fixture_unavailable()
+        if reason:
+            skipped.append(reason)
+            print("SKIP live CDP fixture: " + reason, flush=True)
+            continue
         chrome = Chrome()
         try:
             print("V3 where it applies")
@@ -432,6 +455,7 @@ def main(repeat):
 
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
+    print(f"{len(skipped)} live CDP fixture(s) skipped; skipped native checks are not passes")
     if failed:
         print("FAILED:", *failed, sep="\n  ")
         sys.exit(1)

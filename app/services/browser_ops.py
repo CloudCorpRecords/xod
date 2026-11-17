@@ -221,6 +221,9 @@ def _parse(proc: subprocess.CompletedProcess) -> Dict[str, Any]:
         try:
             out = json.loads(lines[-1])
             if isinstance(out, dict):
+                if proc.returncode:
+                    return {**out, "ok": False, "outcome_unknown": True,
+                            "error": str(out.get("error") or "browser-ops exited unsuccessfully")}
                 return out
         except ValueError:
             pass
@@ -242,7 +245,11 @@ def run_cli(device: str, argv: List[str], timeout: float = CALL_TIMEOUT) -> Dict
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "error": f"browser-ops did not answer within {int(timeout)} s"}
+        return {"ok": False, "verification": "UNKNOWN", "outcome_unknown": True,
+                "error": f"browser-ops did not answer within {int(timeout)} s"}
+    except OSError as exc:
+        return {"ok": False, "verification": "UNKNOWN", "availability": "UNAVAILABLE",
+                "error": f"browser-ops could not start ({type(exc).__name__})"}
     return _parse(proc)
 
 
@@ -391,26 +398,28 @@ def argv_for(name: str, args: Dict[str, Any], owner: str) -> List[str]:
 
 
 def call_sync(name: str, args: Dict[str, Any], origin: str) -> Dict[str, Any]:
+    evidence = {"verification": "UNKNOWN", "native_verified": False}
     args = dict(args or {})
     devs = devices()
     if not devs:
-        return {"success": False, "error": "browser-ops isn't set up for this computer: add "
+        return {**evidence, "availability": "UNAVAILABLE",
+                "success": False, "error": "browser-ops isn't set up for this computer: add "
                 f"{config_path()} (the module's config.example.json format), or this computer already has "
                 "its own screen tools."}
     device = args.get("device") or devs[0]
     if device not in devs:
-        return {"success": False, "error": f"device must be one of: {', '.join(devs)}."}
+        return {**evidence, "success": False, "error": f"device must be one of: {', '.join(devs)}."}
     owner = lane_owner(origin)
     try:
         argv = argv_for(name, args, owner)
         if name in CLOSING:
             refused = window_guard(device, "close-mine" if name == "tabs_close_mine" else "sweep", owner)
             if refused:
-                return {"success": False, "device": device, **refused}
+                return {**refused, **evidence, "success": False, "device": device}
         out = run_cli(device, argv)
     except (ValueError, ConfigError) as e:
-        return {"success": False, "error": str(e)}
-    out = {"success": bool(out.get("ok")), "device": device, **out}
+        return {**evidence, "success": False, "error": str(e)}
+    out = {**out, **evidence, "success": out.get("ok") is True, "device": device}
     if args.get("owner") and args["owner"] != owner:
         out["owner_note"] = f"owner is this lane's own ({owner}); the owner given ({args['owner']}) was not used"
     if out.get("ok") is False and "error" in out:

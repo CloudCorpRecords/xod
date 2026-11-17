@@ -12,6 +12,10 @@ except ImportError:
     from control_inputs import validate
 
 
+class DriverUnavailable(RuntimeError):
+    """The device lacks a usable transport, not a successful native action."""
+
+
 # Indices refer to this bounded, currently visible interactive map. No DOM writes.
 ELEMENTS = r"""
 const all = [...document.querySelectorAll('button,a[href],input,textarea,select,[role="button"],[contenteditable="true"],[tabindex]')];
@@ -46,7 +50,7 @@ class Session:
             try:
                 from websockets.sync.client import connect
             except ImportError as exc:
-                raise RuntimeError("Install websocket-client or websockets on the device.") from exc
+                raise DriverUnavailable("Install websocket-client or websockets on the device.") from exc
             self.ws, self.ws_client = connect(url, open_timeout=10), False
         else:
             self.ws, self.ws_client = websocket.create_connection(url, timeout=10), True
@@ -223,6 +227,7 @@ viewport:{width:innerWidth,height:innerHeight}};})()""")
             return {"ok": True, "target_id": args["target"], "action": action, "dispatched": True}
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:250]}",
+                "availability": "UNAVAILABLE" if isinstance(exc, (DriverUnavailable, OSError, ImportError)) else "UNKNOWN",
                 "outcome_unknown": action != "look"}
 
 

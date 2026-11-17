@@ -1,5 +1,87 @@
 # Lightweight resource measurement
 
+## Portable read-only collection
+
+The same collector supports **attach mode on macOS, Windows and Linux**.
+Only the isolated backend launcher is Linux-specific. Attach mode never starts,
+stops, restarts or reconfigures the user's application. It requires the same
+pinned `psutil` dependency on each OS, not `/proc`, `ps`, Unix signals or a
+Linux-only resource library. The JSON `schema: 1` and metric names are identical
+on every OS; the explicit unavailability/coverage fields below are additive.
+
+Find the installed backend, Partner, model-server (if actually loaded), and
+Electron **main** process PIDs in Activity Monitor or Task Manager. Optional
+name-only discovery, which does not print environments or command arguments:
+
+```sh
+# macOS or Linux: inspect names and parent relationships, then enter real PIDs.
+ps -A -o pid=,ppid=,comm= | grep -Ei 'xod|partner|electron|python|mlx|llama'
+read -r -p "Backend PID: " BACKEND_PID
+read -r -p "Partner PID: " PARTNER_PID
+read -r -p "Electron main PID: " SHELL_PID
+python3 tests/runtime/measure_lightweight.py \
+  --pid "$BACKEND_PID" --partner-pid "$PARTNER_PID" --shell-pid "$SHELL_PID" \
+  --port 5000 --settle 30 --duration 600 --interval 1 --label native-idle \
+  --output generated-artifacts/footprint/native-idle.json
+```
+
+Run those shell commands in **bash** (`bash` first if Terminal uses zsh).
+Use the real local API port instead of 5000 if different. Leave absent optional
+PID flags out completely, rather than entering 0 or inventing a process.
+If inference runs in a separate process, also pass `--model-pid ACTUAL_PID`.
+The backend's non-model subprocesses are included recursively.
+
+```powershell
+# Windows PowerShell: names/PIDs only; select the actual installed processes.
+Get-Process | Where-Object { $_.ProcessName -match 'xod|partner|electron|python|llama' } |
+  Select-Object Id, ProcessName
+$BackendPid = [int](Read-Host 'Backend PID')
+$PartnerPid = [int](Read-Host 'Partner PID')
+$ShellPid = [int](Read-Host 'Electron main PID')
+py -3.12 tests/runtime/measure_lightweight.py `
+  --pid $BackendPid --partner-pid $PartnerPid --shell-pid $ShellPid `
+  --port 5000 --settle 30 --duration 600 --interval 1 --label windows-native-idle `
+  --output generated-artifacts/footprint/windows-native-idle.json
+```
+
+These commands **have not been run on an actual Mac or Windows host here**.
+They describe supported read-only attachment, not native measurement results.
+The Windows and Mac platform fixtures only exercise portable collector logic.
+
+Accounting and limitations:
+
+- Every explicit root includes its descendants. Nested explicit roots take
+  precedence over ancestors, including a backend that is an Electron child.
+  `(pid, create_time)` prevents duplicate charging; PID reuse is unavailable,
+  not a new application to follow. The collector PID itself is excluded.
+- CPU is percent of **one logical core**, derived from user+system CPU-time
+  deltas. The first sample/new-process baseline is unavailable, never a zero
+  inserted into totals. Process sampling is not an atomic OS-wide snapshot.
+- RSS includes shared pages in each process. Windows RSS is working set.
+  It is not private memory, GPU/Metal allocation, swap, unified-memory
+  pressure or energy use. RSS sums can count shared pages more than once.
+- Missing/exited/zombie/inaccessible trees produce `status: "UNAVAILABLE"`,
+  `unavailable_reasons`, and null metrics rather than false zeroes. Stats
+  exclude unavailable samples, with counts retained. A total is only computed
+  when every supplied group has a valid metric in that sample.
+- Omitted Partner/model/shell roots remain in `missing_components`.
+  `observed_total` is only the sum of supplied observed roots, **not whole Xod**.
+  `whole_application.verification` remains **UNKNOWN** with null metrics until
+  real-device component coverage and native evidence are reviewed separately.
+- Attach mode cannot observe startup; `ready_s` is null. Missing local API
+  endpoints do not prevent process sampling: final service state is explicitly
+  unavailable. Linux cgroup fields are null where unsupported.
+- Collect logs contain no environment/argv. Inventory contains names, PIDs,
+  parents and create times. Keep raw evidence out of source control and review
+  names/paths before sharing. Do not attach to a broad unrelated parent such
+  as your entire terminal, launchd, Explorer or system process.
+
+`python tests/runtime/test_measure_lightweight.py` tests accounting, platform
+fixtures, inaccessible and reused roots, collector exclusion, nested Electron
+ownership and the guarantee that attach mode launches/signals nothing.
+Native mouse/browser acceptance is documented separately in
+`docs/AGE85-REAL-DEVICE-ACCEPTANCE.md`.
+
 ## Scope and proposed budget
 
 This is an idle measurement, not a performance optimization or an inference
@@ -230,7 +312,7 @@ Raw process inventory, samples, platform and service-state evidence:
 `.log` files. These generated files remain outside Git/deployment. Re-run
 the documented commands to reproduce the observations on another machine.
 
-`python tests/runtime/test_measure_lightweight.py` covers eight deterministic
+`python tests/runtime/test_measure_lightweight.py` covers deterministic
 collector contracts: empty data stays UNKNOWN, nearest-rank p95, descriptive
 variance, exited-process handling, recursive root inclusion, isolated null
 keyring/environment behavior, no inference in the launcher, and CPU/RSS

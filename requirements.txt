@@ -29,6 +29,7 @@ soupsieve>=3.0.4
 
 # Agent browser (Chrome DevTools Protocol)
 websockets==17.3
+websocket-client==1.9.0
 
 # Documents
 pypdf==6.21.4
