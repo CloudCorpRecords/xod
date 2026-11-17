@@ -188,5 +188,7 @@ def identity() -> Dict[str, Any]:
 
 async def team_view() -> Dict[str, Any]:
     from app.services import team
+    from app.services import long_execution, run_checkpoint
     return {"settings": team.load(), "tiers": await team.tiers(), "brains": await team.brains(), "agents": team.outside_agents(),
+            "long_execution": long_execution.load(), "checkpoints": run_checkpoint.recent(),
             "on": await team.team_on()}

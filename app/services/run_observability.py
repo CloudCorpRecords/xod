@@ -53,6 +53,9 @@ def _counts(usage):
 
 
 def request_started(info, payload, queue_ms):
+    from app.services.long_execution import active
+    if active.get():
+        active.get().admit(info, payload)
     state = _model.get()
     if state is None:
         return
@@ -160,11 +163,16 @@ def observed_run(fn):
 async def execute_tool(name, params, call_id, execute):
     """Correlate existing tool/activity/approval events; log no params or result."""
     with scope(tool_call_id=call_id):
+        from app.services.long_execution import active
+        run = active.get()
+        intent = run.tool_started(name, params, call_id) if run else None
         started = time.monotonic()
         emit("tool.started", tool=_label(name))
         outcome = "unknown"
         try:
             result = await execute(name, params)
+            if run:
+                run.tool_returned(intent, result)
             if isinstance(result, dict):
                 outcome = ("waiting_for_approval" if result.get("needs_approval") else
                            "error" if result.get("error") or result.get("success") is False else "returned")

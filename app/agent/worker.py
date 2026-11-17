@@ -30,6 +30,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from app.services.llm import llm_service, parse_llm_json, JSON_MIN_TOKENS
 from app.services import run_observability as run_obs
+from app.services import long_execution
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,10 @@ def _last_answer(messages: List[Dict[str, Any]]) -> Tuple[str, str]:
 def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """{"goal": …} when this is a job to do on the computer (or to read the web for), or a reply that carries one on."""
     q = (query or "").strip()
+    checkpoint = re.fullmatch(r"resume checkpoint ([a-f0-9]{32})", q, flags=re.I)
+    if checkpoint:
+        return {"goal": "Resume checkpoint", "kind": "computer",
+                "checkpoint_id": checkpoint.group(1).lower()}
     match_q = q
     if "YOUR STEP NOW" in q:
         after = q.split("YOUR STEP NOW", 1)[1]
@@ -162,6 +167,7 @@ def route(query: str, messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
         kind = prev.get("kind") or "computer"
         if _CONTINUE_RE.search(q) and len(q) < 120 and (prev.get("left") or prev.get("waiting") or not _START_RE.match(q)):
             return {"goal": prev["goal"], "kind": kind, "resume": prev.get("left") or "",
+                    "checkpoint_id": prev.get("checkpoint_id"),
                     "extra": "" if _CONTINUE_RE.fullmatch(q.rstrip("!. ")) else q}
         # It stopped to ask ("which one: three.js or plain canvas?"), and this is the answer.
         if prev.get("waiting") and len(q) < 150 and not _QUESTION_RE.match(q):
@@ -713,6 +719,10 @@ def _worker_context_limits(force_local: Optional[bool] = None) -> Tuple[int, int
     On a cloud / large-context brain, retains significantly more tool output history so multi-file
     long-form tasks do not lose file contents after a few turns. On a local model, preserves the
     tight 8 GB memory budget."""
+    run = long_execution.active.get()
+    if run and force_local is not True:
+        ceiling = run.cfg["context_tokens"] - run.cfg["output_tokens"] - run.cfg["safety_tokens"]
+        return run.cfg["max_steps"] * 4 + 128, max(4000, min(500000, ceiling // 2)), 500000, 1400, 1400
     if force_local is None:
         try:
             is_local = llm_service._is_local()
@@ -728,6 +738,8 @@ def _worker_context_limits(force_local: Optional[bool] = None) -> Tuple[int, int
 def _shrink(convo: List[Dict[str, Any]], force_local: Optional[bool] = None) -> None:
     """Older tool results get short so thirty steps still fit a local model's context, while scaling
     up retention when running on a cloud / large-context brain."""
+    if long_execution.active.get() and force_local is not True:
+        return  # Full-request token compaction replaces early count-based shrinking.
     keep_full, _max_body, threshold, head_n, tail_n = _worker_context_limits(force_local=force_local)
     tool_msgs = [m for m in convo if m.get("role") == "tool"]
     before_chars = sum(len(m.get("content") or "") for m in tool_msgs)
@@ -747,6 +759,10 @@ def _conversation_history(messages, force_local=None):
     Unlike silent 1,500-character prefix clipping, loss is explicitly marked.
     This is character budgeting, not a claim to know the provider context limit.
     """
+    if long_execution.active.get():
+        return [{"role": m["role"], "content": re.sub(r"<!--.*?-->", "", m["content"], flags=re.S)}
+                for m in messages[:-1] if m.get("role") in ("user", "assistant")
+                and isinstance(m.get("content"), str) and m["content"].strip()]
     if force_local is None:
         try:
             force_local = llm_service._is_local()
@@ -807,6 +823,8 @@ def _final_text(answer: str, verdict: Optional[Dict[str, Any]], goal: str, left:
     elif verdict and verdict.get("done") and verdict.get("proof") and kind == "computer" and "**Checked:**" not in text:
         text += f"\n\n**Checked:** {str(verdict['proof']).strip()[:300]}"
     note = {"goal": goal[:600], "left": left[:600]}
+    if long_execution.active.get():
+        note["checkpoint_id"] = long_execution.active.get().state["id"]
     if kind != "computer":
         note["kind"] = kind
     if waiting:
@@ -815,10 +833,12 @@ def _final_text(answer: str, verdict: Optional[Dict[str, Any]], goal: str, left:
 
 
 @run_obs.observed_run
+@long_execution.managed
 async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str, Any], execute_tool,
                  spoken: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
-    goal = decision["goal"]
-    kind = decision.get("kind") or "computer"
+    run = long_execution.active.get()
+    goal = run.state["goal"] if run else decision["goal"]
+    kind = run.state["kind"] if run else decision.get("kind") or "computer"
     started = time.time()
 
     # Ready first: what's here, and can this model do it at all? (Reading the web only needs the model check.)
@@ -925,6 +945,11 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     convo.append({"role": "user", "content": ask})
 
     log: List[Dict[str, Any]] = []
+    if run and run.resumed:
+        convo = run.state.get("conversation") or convo
+        log = run.state.get("log") or []
+        if decision.get("extra"):
+            convo.append({"role": "user", "content": decision["extra"]})
     decisive_hits: List = []          # (tool, result) pairs; decisive evidence is delivered whole (services/decisive_evidence.py)
     told: Dict[str, int] = {}
     checks = 0
@@ -937,15 +962,24 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
     usage_log.purpose.set("worker")          # the Usage tab: these calls are the worker's
     yield {"type": "status", "content": "Working on it…"}
 
-    for step in range(MAX_STEPS):
+    step_limit = run.cfg["max_steps"] - run.state["steps"] if run else MAX_STEPS
+    for step in range(max(0, step_limit)):
+        if run:
+            run.check()
+            convo[:] = run.fit(convo, tools)
+            run.sync(convo, log)
+            run.state["steps"] += 1
+            run.persist()
         if time.time() - started > MAX_SECONDS:
-            break
+            if not run:
+                break
         hints = guidance(log, "", told)
         call_msgs = convo + ([{"role": "user", "content": "(Note from Xod, not from the person) " + " ".join(hints)}] if hints else [])
         for e in log:
             e["new"] = False
         calls, content = [], ""
-        async for ev in llm_service.deliberate_stream(messages=call_msgs, tools=tools, tool_choice="auto", temperature=0.1, max_tokens=1500):
+        async for ev in llm_service.deliberate_stream(messages=call_msgs, tools=tools, tool_choice="auto", temperature=0.1,
+                                                    max_tokens=run.cfg["output_tokens"] if run else 1500):
             if ev.get("type") == "deliberation_complete":
                 calls, content = ev.get("tool_calls") or [], ev.get("content") or ""
             elif ev.get("type") == "error":
@@ -963,7 +997,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         if not calls:
             # It says it's done (or that the person should do something). Is it, really?
             nudge = guidance(log, content, told)
-            if nudge and any("do that yourself" in n for n in nudge) and step < MAX_STEPS - 1:
+            if nudge and any("do that yourself" in n for n in nudge) and step < step_limit - 1:
                 convo.append({"role": "assistant", "content": content})
                 convo.append({"role": "user", "content": "(Note from Xod, not from the person) " + " ".join(nudge)})
                 continue
@@ -986,7 +1020,7 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             if verdict.get("done") or verdict.get("needs_person"):
                 if (verdict.get("done") and not verdict.get("needs_person")
                         and (unread_items or unwritten_deliverables or self_inc)
-                        and checks < MAX_CHECKS and step < MAX_STEPS - 1):
+                        and checks < MAX_CHECKS and step < step_limit - 1):
                     checks += 1
                     rem_parts = []
                     if unread_items:
@@ -1124,6 +1158,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
                 answered_ids.add(tid)
         convo[:] = llm_service.reconcile(convo) if hasattr(llm_service, "reconcile") else __import__("app.services.llm", fromlist=["reconcile_tool_transcript"]).reconcile_tool_transcript(convo)
         _shrink(convo)
+        if run:
+            run.sync(convo, log)
         if held:
             # The safety check (or a connected app) wants the person's OK: stop here, with the card showing.
             yield {"type": "approval_hold", "data": held}
@@ -1133,6 +1169,8 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
             break
 
     if not answer and not stopped:
+        if run:
+            raise long_execution.Pause("Run step allowance exhausted; progress checkpointed")
         # Out of steps or time while still working.
         worked = sum(1 for e in log if not e["failed"])
         left = left or (f"last step: {log[-1]['name']} {str(log[-1]['args'].get('command') or '')[:120]}" if log else "")
@@ -1155,6 +1193,10 @@ async def stream(query: str, messages: List[Dict[str, Any]], decision: Dict[str,
         answer = "Here's where it got to:\n" + "\n".join(
             f"- {'✗' if e['failed'] else '✓'} `{str(e['args'].get('command') or e['args'].get('filepath') or e['name'])[:120]}`"
             for e in log[-8:])
+    if run:
+        run.state["status"] = ("waiting_for_approval" if held or run.state["status"] == "waiting_for_approval"
+                               else "completed" if verdict and verdict.get("done") else "ended_unverified")
+        run.sync(convo, log)
     yield {"type": "content", "content": _final_text(answer, verdict, goal, left, stopped, kind,
                                                      waiting=bool(verdict and verdict.get("needs_person") and not verdict.get("done")))}
     yield {"type": "done"}

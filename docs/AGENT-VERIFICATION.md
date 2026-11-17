@@ -1,5 +1,9 @@
 # Agent verification without desktop dependencies
 
+For the subsequent opt-in execution mode, token-budget admission, private
+checkpoints and live-compaction evidence, see `docs/LONG-RUNNING-CLOUD.md`.
+The context profiles below remain separate deterministic harness envelopes.
+
 ## What this build changes
 
 This is a reliability pass on the existing parent and Team worker loops, not a

@@ -196,6 +196,46 @@
       ${(soul.lessons || []).length ? `<p class="xa-day">What it learned</p>${soul.lessons.map((l) => `<p class="xa-sub">• ${esc(l)}</p>`).join("")}` : ""}`;
   }
 
+  function longExecution(d) {
+    const c = d.long_execution || {};
+    const number = (key, label, fallback, min, max) => `<label class="xa-sub" style="display:block;margin:8px 0">${label}
+      <input type="number" data-long="${key}" min="${min}" max="${max}" step="1"
+        value="${esc(String(c[key] || fallback || ""))}" style="display:block;width:100%;padding:6px;background:transparent;border:1px solid #52525b;border-radius:6px"></label>`;
+    return `<section style="margin-top:24px;border-top:1px solid #3f3f46;padding-top:16px">
+      <h3>Long-running cloud execution</h3>
+      <p class="xa-faint">Opt in for one exact cloud model. This can use many paid requests. Limits are user-configured, not provider-verified.
+      Token admission uses a conservative UTF-8 byte estimate including tools, not an exact tokenizer. No dollar-cost cap is implied.</p>
+      <form data-long-form>
+      <label class="xa-toggle"><input type="checkbox" data-long-enabled ${c.enabled ? "checked" : ""}> Enable for this provider and model</label>
+      <label class="xa-sub">Provider <select data-long-provider>
+        <option value="">Choose a cloud provider</option>
+        ${["openai", "anthropic", "gemini", "groq", "fireworks", "openrouter", "custom"].map(p =>
+          `<option value="${p}" ${c.provider === p ? "selected" : ""}>${p}</option>`).join("")}</select></label>
+      <label class="xa-sub" style="display:block;margin-top:8px">Exact model ID
+        <input data-long-model maxlength="200" value="${esc(c.model || "")}" placeholder="Your configured cloud model ID"></label>
+      ${number("context_tokens", "Operating context ceiling, tokens (check provider support first)", 0, 8192, 2000000)}
+      ${number("output_tokens", "Output reserve per request, tokens", 4096, 512, 16384)}
+      ${number("safety_tokens", "Additional context safety reserve, tokens", 4096, 1024, 32768)}
+      ${number("max_steps", "Parent model iterations per run", 120, 1, 500)}
+      ${number("max_requests", "Shared HTTP attempts, including workers, checks and retries", 160, 1, 1000)}
+      ${number("max_seconds", "Active time allowance, seconds", 3600, 10, 14400)}
+      ${number("max_input_tokens", "Shared estimated input-token allowance", 2000000, 8192, 50000000)}
+      <button type="button" data-long-save class="xa-card">Save long-running limits</button>
+      </form>
+      <p class="xa-faint">Other models keep normal limits. Fleet requests must use this same configured model.
+      Completed exchanges are archived locally before compaction. Approvals and uncertain effects are never automatically replayed.
+      Checkpoints contain private task content in Xod's data folder; do not publish them.</p>
+      <h4>Recent checkpoints</h4>
+      ${(d.checkpoints || []).map(r => `<div class="xa-sub" style="margin-top:10px"><strong>${esc(r.status || "unknown")}</strong>
+        · ${esc(r.model || "")}
+        · ${esc(String(r.steps || 0))} iterations · ${esc(String(r.requests || 0))} requests
+        · ${esc(String(r.compactions || 0))} compactions
+        ${r.reason ? `<p>${esc(r.reason)}</p>` : ""}
+        <p class="xa-faint">In the original chat: <code>resume checkpoint ${esc(r.id)}</code></p></div>`).join("") ||
+        `<p class="xa-faint">No long-running checkpoints yet.</p>`}
+      </section>`;
+  }
+
   async function team(body) {
     body.innerHTML = `<p class="xa-faint py-6">Looking at every model and agent Xod can use…</p>`;
     const d = await api("/api/agent/team");
@@ -204,6 +244,7 @@
     const opt = (b, cur) => `<option value="${esc(b.provider)}|${esc(b.model)}" ${cur && cur.provider === b.provider && cur.model === b.model ? "selected" : ""}>${esc(b.model)} · ${esc(b.where === "online" ? b.provider : b.where)}${b.score ? ` · ${b.score}/100` : ""}</option>`;
     body.innerHTML = `
       <p class="xa-sub">When a job has pieces that can run side by side, or a hard part, Xod hands them to subagents on these tiers. Their steps show as SUBAGENT 01, 02… in Activity. More cloud keys or local models = more choices here.</p>
+      ${longExecution(d)}
       <label class="xa-toggle"><input type="checkbox" data-team-on ${d.settings.enabled ? "checked" : ""}> Let Xod use the team</label>
       <label class="xa-toggle"><input type="checkbox" data-team-same ${d.settings.same_model_workers ? "checked" : ""}> Allow workers using the same model</label>
       <p class="xa-faint">Separate worker contexts can help independent jobs even with one model. They use additional requests and may cost more. Existing concurrency and approval limits still apply.</p>
@@ -245,6 +286,21 @@
   }
 
   async function onClick(e) {
+    if (e.target.closest("[data-long-save]")) {
+      const form = document.querySelector("[data-long-form]");
+      if (!form || !form.reportValidity()) return;
+      const value = {
+        enabled: form.querySelector("[data-long-enabled]").checked,
+        provider: form.querySelector("[data-long-provider]").value,
+        model: form.querySelector("[data-long-model]").value.trim()
+      };
+      form.querySelectorAll("[data-long]").forEach(input => value[input.dataset.long] = Number(input.value));
+      try {
+        const result = await api("/api/agent/long-execution", "POST", value);
+        if (result.detail) return showToast(typeof result.detail === "string" ? result.detail : "Invalid limits");
+        showToast("Long-running limits saved"); return render();
+      } catch (_) { return showToast("Could not save long-running limits"); }
+    }
     const t = e.target.closest("[data-xa-tab]");
     if (t) { tab = t.dataset.xaTab; return render(); }
     const rg = e.target.closest("[data-range]");
@@ -302,6 +358,9 @@
       document.body.appendChild(root);
       root.addEventListener("click", onClick);
       root.addEventListener("change", onChange);
+      root.addEventListener("submit", e => {
+        if (e.target.matches("[data-long-form]")) e.preventDefault();
+      });
     }
     root.classList.remove("hidden");
     requestAnimationFrame(() => root.classList.add("is-open"));

@@ -1293,6 +1293,16 @@ async def agent_team_save(request: Request):
     return await agent_page.team_view()
 
 
+@app.post("/api/agent/long-execution")
+async def agent_long_execution_save(request: Request):
+    from app.services import long_execution
+    from fastapi import HTTPException
+    try:
+        return long_execution.save(await request.json())
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.get("/api/goals")
 async def goals_list():
     from app.services import goals

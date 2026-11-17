@@ -64,6 +64,17 @@ python tests/smoke/run_models_test.py
 
 ## Runtime checks
 
+Opt-in cloud execution controls, conservative token estimates, checkpoint
+privacy/recovery boundaries and actual live compaction evidence are in
+`docs/LONG-RUNNING-CLOUD.md`. Do not assume a provider's maximum window from a
+user-configured operating ceiling. A checkpoint with pending/uncertain effects
+or an approval hold must not be automatically replayed.
+
+```sh
+python tests/runtime/test_long_execution.py
+node tests/runtime/test_long_execution_ui.js
+```
+
 Live context/fleet evaluation evidence, safe opt-in commands and operational
 diagnostics are in `docs/LIVE-AGENT-EVALUATION.md`. Large-input recall, sustained
 execution, live compaction and native effects require separate evidence.

@@ -17,6 +17,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKS = (
+    ("token-aware cloud execution", "tests/runtime/test_long_execution.py"),
     ("verifier negative controls", "tests/runtime/test_verification_runner.py"),
     ("tool context", "tests/runtime/test_tool_context.py"),
     ("long step sequences", "tests/runtime/test_long_running.py"),
@@ -27,6 +28,7 @@ CHECKS = (
     ("Muse approval policy", "tests/smoke/run_muse_app_test.py"),
     ("approval reliability", "tests/partner/run_approval_reliability_test.py"),
     ("Partner delegation", "tests/partner/run_partner_delegation_test.py"),
+    ("long-execution controls", "tests/runtime/test_long_execution_ui.js"),
 )
 
 
@@ -37,7 +39,8 @@ def run_check(check, timeout, profile=None):
         env = dict(os.environ)
         if profile:
             env["XOD_TEST_CONTEXT_PROFILE"] = profile
-        proc = subprocess.run([sys.executable, str(ROOT / path), *args], cwd=ROOT,
+        executable = "node" if path.endswith(".js") else sys.executable
+        proc = subprocess.run([executable, str(ROOT / path), *args], cwd=ROOT,
                               capture_output=True, text=True, timeout=timeout, env=env)
         output = proc.stdout + proc.stderr
         status = "passed" if proc.returncode == 0 else "failed"

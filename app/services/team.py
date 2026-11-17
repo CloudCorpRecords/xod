@@ -224,13 +224,16 @@ async def run_subagent(label: str, task: str, tier: str, execute_tool: Callable,
     approval = None
     nudged = swapped = False
     from app.services.llm import llm_service
-    for step in range(SUB_STEPS):
+    from app.services.long_execution import active as active_long_run
+    long_run = active_long_run.get()
+    for step in range(min(40, long_run.cfg["max_steps"]) if long_run else SUB_STEPS):
         hints = worker.guidance(log, "", told)
         for e in log:
             e["new"] = False
         calls, content, err = [], "", ""
         async for ev in llm_service.deliberate_stream(messages=convo + ([{"role": "user", "content": "(Note from Xod) " + " ".join(hints)}] if hints else []),
-                                                      tools=tools, tool_choice="auto", temperature=0.1, max_tokens=1500, endpoint_override=ep):
+                                                      tools=tools, tool_choice="auto", temperature=0.1,
+                                                      max_tokens=long_run.cfg["output_tokens"] if long_run else 1500, endpoint_override=ep):
             if ev.get("type") == "deliberation_complete":
                 calls, content = ev.get("tool_calls") or [], ev.get("content") or ""
             elif ev.get("type") == "error":
