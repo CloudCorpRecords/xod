@@ -93,11 +93,11 @@ and missing macOS voice/sysctl utilities. Real OS-key-store saves and native
 generation are therefore not claimed. The localhost-only access guard remains
 enabled; external preview-proxy requests still receive 403 by design.
 
-## Live Terra result: UNKNOWN, blocked by missing access
+## Live Terra result: PASS through the configured OpenAI route
 
 Requested model ID: `gpt-6.1-terra`.
 
-The November 16, 2026 checks were:
+Initial November 16, 2026 access checks were:
 
 1. OpenAI integration discovery returned an empty integration list for this
    workspace.
@@ -108,15 +108,43 @@ The November 16, 2026 checks were:
    capability, but does not establish that an authorized route or Terra model
    access is available to this workspace.
 
-No authorized managed OpenAI route was available. **Zero live model requests
-were sent.** There is no provider request ID, live response, token count,
-latency, or proof of Terra availability to report. No different model was
-substituted, and no synthetic result is labeled a live pass.
+The user subsequently supplied `OPENAI_API_KEY` through Replit Secrets and
+explicitly authorized testing with that key. Its Replit-managed provenance
+was not established; this verifies the authorized OpenAI route, not managed
+integration provisioning.
 
-When authorized access is supplied through the approved integration/Secrets
-flow, configure that actual route, explicitly save the requested model, and
-run one saved-model check. Record timestamp, route hostname, requested and
-returned model IDs, response/request ID if available, and the redacted result.
-A missing model, rejected credential, or unsupported route stays a failure
-or UNKNOWN. Never copy test credentials into product files or require them
+Live evidence, November 16 in America/Los_Angeles:
+
+| Field | Observed value |
+| --- | --- |
+| Successful run start (UTC) | `2026-11-17T01:39:43.872413+00:00` |
+| Configured provider and route | `openai`, `https://api.openai.com/v1` |
+| Saved, dispatched, and returned model | `gpt-6.1-terra` in all three |
+| Final HTTP status | `200` |
+| Successful request ID | `req_3c5f7c9b984944c1a22387af9732e7be` |
+| Reply | `Xod live check OK` |
+| Usage | 15 prompt tokens, 19 completion tokens, 34 total; 5 reasoning tokens included in completion |
+| Run duration | 4.285 seconds including compatibility retries |
+
+The check used the real shared selection writer, persisted the selection in
+temporary isolated state, read the actual runtime endpoint, and called
+`llm_service.chat_completion()` with that explicit endpoint. Auto and
+specialist substitution were bypassed. Actual HTTP responses were observed,
+not replaced with fixtures. The key was consumed only in process memory from
+the approved Secret, never saved to a fixture keyring, env file, or database.
+The normal installation's model selection was not changed.
+
+Four live HTTP requests were sent across two invocations. The first
+invocation was capped at one attempt and received HTTP 400. The second
+allowed three attempts: OpenAI rejected `max_tokens`, then `temperature`;
+Xod's existing reactive compatibility handling changed the token-budget
+parameter to `max_completion_tokens` and omitted temperature, then received
+the successful response. No product inference logic was modified for this
+test, and no other model was substituted. These compatibility choices are
+cached for the life of the process, not across restarts.
+
+This is a small non-streaming text inference check, not evidence of live
+tool execution, streaming, native MLX generation, or managed integration
+provisioning. Missing access and failed requests must still be reported
+honestly. Never copy test credentials into product files or require them
 for OSS users.

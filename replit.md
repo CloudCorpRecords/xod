@@ -39,11 +39,14 @@ CoreFoundation permission-prompt check is explicitly skipped off macOS.
 
 ## Model testing
 
-The requested live test model is gpt-6.1-terra through Replit-managed OpenAI
-access. The November 16 discovery returned no OpenAI integration here, and
-existence-only checks found no OpenAI or managed OpenAI key. No live request
-was sent; Terra access and native MLX inference remain UNKNOWN. Do not invent
-credentials, silently substitute models, or count synthetic HTTP as live proof.
+The requested live test model is gpt-6.1-terra. Initial November 16 discovery
+found no managed OpenAI connection. After the user supplied OPENAI_API_KEY
+through Secrets and explicitly approved its use, actual Xod dispatch to
+api.openai.com returned HTTP 200, model gpt-6.1-terra, and "Xod live check OK".
+Existing compatibility retries handled rejected max_tokens and temperature.
+Managed-key provenance was not established; native MLX inference remains
+UNKNOWN. Do not invent credentials, silently substitute models, or count
+synthetic HTTP as live proof. OSS users retain BYOK and local operation.
 
 Settings > Models, setup, model panels and paired-device picks use the same
 validated install choice. Provider/model/endpoint and ownership are committed
