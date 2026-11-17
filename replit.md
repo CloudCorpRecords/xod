@@ -64,6 +64,10 @@ python tests/smoke/run_models_test.py
 
 ## Runtime checks
 
+For the proposed 8 GB always-on budget and repeatable idle CPU/RSS collection,
+see `docs/LIGHTWEIGHT-FOOTPRINT.md`. Linux dry runs do not validate the native
+Partner/watchdog, desktop Accessibility watcher, Electron shell or loaded model.
+
 ```sh
 python tests/runtime/test_runtime.py
 python tests/runtime/test_task_stop.py

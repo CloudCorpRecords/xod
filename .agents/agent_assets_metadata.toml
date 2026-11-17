@@ -28,3 +28,17 @@ mtime_ms = 1794871007881
 storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:e7f135e5-1239-45e8-a62a-dc8241c9c97a/c8c599d4-d5ea-45c1-a294-038dad937a50/d855ff1e-733c-4927-b778-35f497276e1d"
 storage_version_token = "1794871167574947"
 content_type = "text/csv"
+
+[[outputs]]
+id = "eiGkl_6lVgIaYnq7_OXqG"
+uri = "file://docs/LIGHTWEIGHT-FOOTPRINT.md"
+type = "text"
+title = "Xod lightweight resource measurement"
+description = "Two matched Linux idle runs, proposed 8 GB budget, reproducible collection protocol, and explicit native limitations."
+logical_id = "a5d5f857-7c42-4d53-b1e5-a7b11dd432fb"
+content_hash = "sha256:d8e1eb6de0d39e51db78e39654ae35ee8a1f260da496c1aa5a118d5b6c18387c"
+size = 13905
+mtime_ms = 1794880214170
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:e7f135e5-1239-45e8-a62a-dc8241c9c97a/a5d5f857-7c42-4d53-b1e5-a7b11dd432fb/fa7b0b04-6481-4f72-9c49-a6cb24ec6fe4"
+storage_version_token = "1794880236912937"
+content_type = "text/markdown"

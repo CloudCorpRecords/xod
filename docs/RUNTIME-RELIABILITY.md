@@ -83,6 +83,11 @@ activity, so it is **not a comparable idle sample**. The repair does not establi
 a smaller always-on memory footprint. A controlled weak-hardware soak and
 startup/import profile are still required before setting an idle resource budget.
 
+For the subsequent proposed 8 GB budget, reproducible process-tree collector,
+controlled Linux idle measurements and native limitations, see
+`docs/LIGHTWEIGHT-FOOTPRINT.md`. Those observations do not turn these earlier
+unmatched snapshots into a valid before/after comparison.
+
 Commands:
 
 ```sh
@@ -142,7 +147,9 @@ none was replaced with insecure credential storage or a fake success.
 - Real macOS/Windows permission continuity, Muse UI behavior under load, and
   subprocess cleanup on those operating systems need native validation.
 - Replit-managed OpenAI discovery returned no available integration here.
-  No `gpt-6.1-terra` request was made; BYOK/local support was not replaced.
+  A subsequent user-authorized key did verify live `gpt-6.1-terra` through
+  actual Xod dispatch; see `docs/MODEL-CONFIGURATION.md`. Managed provenance
+  was not established, and BYOK/local support was not replaced.
 - Gates are process-local, appropriate to the single desktop backend. They do
   not coordinate multiple backend processes or remote installations.
 - This is not yet a separate featherweight always-on relay. Heavy startup-import
