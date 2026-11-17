@@ -79,7 +79,7 @@ Thumbs.db
 
 # --- Local Scratch & Separate Projects ---
 attached_assets/
-.agents/memory/
+.agents/
 scratch/
 everythingincludedisfake/
 tmp/
