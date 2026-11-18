@@ -395,13 +395,27 @@ def _bare_creation_filenames(text: str) -> List[str]:
     step says it makes, named without a path (the lookbehind in
     _BARE_FILENAME keeps the tails of full paths out). A sentence whose
     only effect verb is a deletion verb names files to remove, not
-    creations, and does not count."""
+    creations, and does not count. The body of an exact-content
+    declaration in the sentence is not mined either: the claim parser
+    reads everything after the declaration's colon as the file's
+    dictated contents (_EXACT_CONTENT_RE), not as instruction, and a
+    filename-shaped token inside those contents (a version string
+    like 1.1.11 in a dictated line) is content the file must hold,
+    not a second file the step promised to make. Mining it resolved
+    a creation claim against the step's container for a file nobody
+    asked for and failed a task whose declared file sat byte-exact
+    on disk (AGE-87, the 2026-11-17 dogfood of the installed build).
+    Names before the declaration, the created file's own name above
+    all, are mined exactly as before."""
     out: List[str] = []
     for s in re.split(r"\.(?=\s|$)|[!?\n]", text or ""):
         if not _EFFECT_VERB.search(s):
             continue
         if _DELETE_VERB.search(s) and not re.search(r"\b(create|write|save|make)\b", s, re.I):
             continue
+        cm = _EXACT_CONTENT_RE.search(s)
+        if cm:
+            s = s[:cm.start(2)]
         out.extend(_BARE_FILENAME.findall(s))
     return out
 
