@@ -127,7 +127,10 @@ function electronDist() {
   const candidates = [];
   if (process.env.XOD_ELECTRON_BIN) candidates.push(process.env.XOD_ELECTRON_BIN);
   try {
-    const p = require.resolve("electron", { paths: [__dirname] });
+    // The electron package exports the dist binary path as a string.
+    // require.resolve returns its index.js instead, which the layout
+    // resolver treats as a dist root and can never match a real dist.
+    const p = require("electron");
     candidates.push(typeof p === "string" ? p : "");
   } catch (e) { /* not installed here */ }
   const preserved = path.join(os.homedir(), "workspace", "xod-eval", "v114-ship", "artifact", "electron-bin");
