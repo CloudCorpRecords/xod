@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 1.1.13
+
+A voice release. Talking with Xod is reworked end to end: it waits for you to finish, it no longer answers itself or the room, the wake word only answers to its real name, and the voice itself is a local neural voice instead of the system robot voice.
+
+**Turn-taking (AGE-90)**
+- End of turn is no longer a fixed 1.3 second silence timer. A segment now ends only after sustained silence scaled by how complete the live transcript looks: 1.7 seconds for a complete thought, 2.4 seconds when the ending is unclear, and 3.5 seconds with a "Go on..." prompt when the thought is unfinished. Mid-thought pauses of 1.5 to 2.5 seconds no longer cut you off.
+- Talking over Xod is gated: a new question must be at least 3 words, at your own voice level, and not an echo of what Xod just said, or it is ignored. Saying "stop" still interrupts at once, on one word.
+- Low-confidence transcripts are dropped silently instead of getting a spoken apology and a guessed answer. The follow-up listening window is 6 seconds, and one background segment ends it instead of re-arming forever.
+
+**Wake word (AGE-90)**
+- "Hey Xod" now requires the full greeting plus name. Near sounds that used to wake it ("Facade", "Hey God", "He's odd", or the name alone with no greeting) no longer do, and a transcript confidence floor of 0.5 applies before a conversation can start.
+
+**The voice (AGE-90)**
+- Spoken replies now render through Kokoro-82M, a local neural text-to-speech model that runs on this Mac at 24 kHz, when a Kokoro runtime is present. The named default voice is af_heart, and six neural voices are selectable in the speech menu. Nothing is sent to a cloud service.
+- The system voice (macOS `say`) remains only as the fallback when no Kokoro runtime is installed, and its default rate drops from 190 to 175 words per minute.
+- A speech classifier interface ships behind the turn-taking gate, so a Silero VAD model can be registered later without changing the conversation logic. The model itself is a separate gated step.
+
+**Tests**
+- New suites: run_voice_turntaking_test (31 checks: the pause set, the echo and background set, real stop, the wake cases) and run_speech_kokoro_test (8 checks: neural render at 24 kHz, engine and voice selection, fallback rate). Both fail on 1.1.12 and pass on this tree. testdelta NO-REGRESSION, reprocheck VERIFIED.
+
 ## 1.1.12
 
 A fix release for the two defects that landed on main after 1.1.11: the task completion verifier that closed correctly finished tasks as failed, and the packaged Electron bootstrap proof that failed in CI during the 1.1.11 release.
