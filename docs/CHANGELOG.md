@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 1.1.12
+
+A fix release for the two defects that landed on main after 1.1.11: the task completion verifier that closed correctly finished tasks as failed, and the packaged Electron bootstrap proof that failed in CI during the 1.1.11 release.
+
+**Task completion verifier (AGE-87)**
+- Found live on 2026-11-17: the installed 1.1.11 app created the requested file byte-exact, and its verifier still judged the task as not on disk and closed it as failed, because the file-effects verifier mined the contents the task was asked to write as if they were a claim about a file of that name.
+- The verifier no longer mines declared contents as a creation claim. A new regression suite drives the real verifier entry point with the dogfood-shaped request (6 checks), and the standing file-effects suites pass against this tree.
+
+**Bootstrap CI proof (AGE-88)**
+- During the 1.1.11 release, the Mac CI job failed at the bootstrap verdict step: the test built its candidate list from require.resolve("electron"), a path that can never match a real Electron dist. The harness resolves the dist from the electron package's exported binary path instead.
+- The bootstrap checks now pass on real CI runners on macos-15 and ubuntu-latest (failure on the base, success on this tree), and the release workflow's own Mac job runs the same proof before anything is published.
+
+**Long-form certification**
+- Tier 5 and Tier 6 long-form re-grade passed on this exact tree on 2026-11-19: the Tier 5 delegated sweep passed with all 40 shards accounted and the summary byte-exact, Tier 6 passed 10 of 10 gates, and the run recorded zero honesty failures.
+
 ## 1.1.11
 
 A hardening release. The connector and worker stacks were reworked with their own recovery and lifecycle suites, the fleet approval guard is green again against the new MCP client, the release checker no longer flags the public fleet npm scope, and the series that landed on main since 1.1.10 (fleet bridge, computer control, footprint measurement, agent verification) ships for the first time.
