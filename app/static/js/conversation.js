@@ -12,8 +12,15 @@
 // once and, if it was really you and not its own echo, stops it and
 // listens. The companion in the dock hears you (it bobs with your
 // voice), thinks, and talks with its mouth following the sound.
+//
+// Turn-taking itself (when a turn is over, what counts as interrupting)
+// lives in turntaking.js (window.XodTurnTaking): the 2026-11-19 redesign
+// replaced the fixed silence timers and the any-2-words interruption
+// rule, which between them cut Rene off mid-thought and let Xod answer
+// its own voice. The rules are tested on their own there.
 // ==============================================================
 (() => {
+  const TT = window.XodTurnTaking || null;
   const now = () => performance.now();
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const pick = (a) => a[Math.floor(Math.random() * a.length)];
@@ -39,6 +46,7 @@
     wakeOn: false,         // listening for "Hey Xod" between conversations
     muted: false,
     followUntil: 0,        // the follow-up window: talk before this, or it ends
+    followUpActive: false, // inside the post-answer follow-up window (one background segment ends it)
     turn: null,            // { text, filler, content, startedAt }
     lastAnswer: "",
     lastHeardAt: 0,
@@ -50,6 +58,8 @@
     floor: 0.004, speaking: false, above: 0, quietMs: 0,
     preroll: [], seg: [], segRms: [], segStart: 0, frameMs: 43,
     partialAt: 0, partialBusy: false, segId: 0,
+    lastPartial: "",          // the newest live transcript of this segment: the end of turn gate reads it
+    goOnShown: false,
   };
 
   async function openMic() {
@@ -112,7 +122,10 @@
       V.preroll.push(buf);
       const keep = Math.ceil(450 / V.frameMs);
       if (V.preroll.length > keep) V.preroll.splice(0, V.preroll.length - keep);
-      V.above = rms > on ? V.above + 1 : 0;
+      // The speech classifier decides (turntaking.js): a registered real
+      // classifier (Phase 2, Silero) when one is loaded, else energy.
+      const isSpeech = TT ? TT.classifySpeech(rms, { floor: V.floor, xodTalking }) : rms > on;
+      V.above = isSpeech ? V.above + 1 : 0;
       if (V.above >= (xodTalking ? 5 : 3)) {
         V.speaking = true;
         V.seg = V.preroll.slice();
@@ -120,6 +133,8 @@
         V.preroll = [];
         V.segStart = now();
         V.quietMs = 0;
+        V.lastPartial = "";
+        V.goOnShown = false;
         V.segId++;
         log("speech-start", C.state, +rms.toFixed(4), +on.toFixed(4), xodTalking);
         speechStarted();
@@ -130,9 +145,20 @@
     V.segRms.push(rms);
     V.quietMs = rms < off ? V.quietMs + V.frameMs : 0;
     const dur = now() - V.segStart;
-    // How much quiet ends what you're saying: long enough for a breath mid-thought (0.95 s cut people off).
-    const endAfter = C.state === "wake" ? 550 : (xodTalking || C.state === "thinking") ? 500 : 1300;
+    // How much quiet ends what you're saying is the turn-taking gate's call
+    // (turntaking.js): while Xod is busy or talking a segment is cut short
+    // (500 ms) because the barge-in rules judge it after transcription, and
+    // in wake mode 700 ms, but a turn you are actually taking ends only
+    // after sustained silence scaled by whether your words look finished:
+    // 1700 ms for a complete thought, 3500 ms for one that trails off
+    // mid-phrase. The old fixed 1300 ms answered half-sentences.
+    const endAfter = C.state === "wake" ? 700 : (xodTalking || C.state === "thinking" || C.state === "speaking") ? 500
+      : TT ? TT.silenceNeededMs(V.lastPartial, dur) : 1700;
     const maxMs = C.state === "wake" ? 7000 : 25000;
+    if (C.state === "listening" && V.quietMs > 1000 && !V.goOnShown && TT && TT.completeness(V.lastPartial) === "incomplete") {
+      V.goOnShown = true;               // it can see you are mid-thought: say so, and keep waiting
+      setState("listening", "Go on…");
+    }
     if (V.quietMs >= endAfter || dur > maxMs) {
       const seg = V.seg, level = loudness(V.segRms);
       V.speaking = false; V.seg = []; V.segRms = []; V.above = 0;
@@ -191,8 +217,10 @@
     if (C.state === "listening" && ++ignoredInARow >= 3) { voiceLevel *= 0.7; ignoredInARow = 0; }
     return true;
   }
-  // Ends mid-thought ("…and", "…so the", "…because"): wait a moment for the rest instead of answering half.
-  const DANGLING_RE = /\b(and|or|but|so|the|a|an|to|of|with|um|uh|like|because|that|if|my|for|then|is|are|about)\s*[.,…-]*$|(\.\.\.|…)\s*$/i;
+  // Ends mid-thought ("…and", "…so the", "…because"): wait a moment for the rest instead of
+  // answering half. The test itself lives in turntaking.js (completeness).
+  const looksIncomplete = (text) => TT ? TT.completeness(text) === "incomplete"
+    : /\b(and|or|but|so|the|a|an|to|of|with|um|uh|like|because|that|if|my|for|then|is|are|about)\s*[.,…-]*$|(\.\.\.|…)\s*$/i.test(text);
   // Said again within this long of your last words, while Xod is still on them: the rest of the same thought.
   const CONTINUE_MS = 8000;
 
@@ -215,9 +243,23 @@
     V.partialBusy = true;
     try {
       const r = await post("/api/voice/transcribe?partial=1", wav(chunks));
-      if (r.text && V.speaking && id === V.segId && C.state === "listening") caption("you", r.text + "…", true);
+      if (r.text && V.speaking && id === V.segId && C.state === "listening") {
+        V.lastPartial = r.text;         // the end of turn gate reads this: is the thought finished?
+        caption("you", r.text + "…", true);
+      }
     } catch (_) {}
     V.partialBusy = false;
+  }
+
+  // A segment that was not the user talking to Xod: room noise, background
+  // speech, a Whisper guess at silence. During the follow-up window one of
+  // these ends the re-arm instead of looping forever (the old code listened
+  // again and again, and any later noise became a turn). Returns true when
+  // it ended the conversation. Never says anything: ignoring is silent.
+  function ignoredSegment() {
+    if (window.XodSpeech) XodSpeech.duck(false);
+    if (C.followUpActive) { C.followUpActive = false; end("quiet"); return true; }
+    return false;
   }
 
   async function speechEnded(chunks, ms, level = 0) {
@@ -225,7 +267,9 @@
     if (tooQuiet(level)) {                                    // someone else, further away
       log("ignored: quieter than your voice", +level.toFixed(4), +voiceLevel.toFixed(4));
       if (window.XodSpeech) XodSpeech.duck(false);
-      if (C.state === "listening") finishPending() || setState("listening", "Listening…");
+      if (C.state === "listening" && finishPending()) return;
+      if (ignoredSegment()) return;
+      if (C.state === "listening") setState("listening", "Listening…");
       return;
     }
     if (C.state === "wake") return wakeCheck(chunks, ms);
@@ -243,16 +287,18 @@
     text = text.replace(/^\[.*?\]$|^\(.*?\)$/, "").trim();       // Whisper's "[BLANK_AUDIO]", "(music)"
     log("heard", during, text, xodWasTalking, conf);
     if (during === "listening") {
-      if (!words(text)) { if (!finishPending()) backToListening(true); return; }
-      learnVoice(level);
-      if (C.pendingText) { text = C.pendingText + " " + text; C.pendingText = ""; }
-      if (conf < 0.35 && words(text) <= 6) {                  // it isn't sure what it heard: ask, don't guess
-        caption("you", text + " (?)");
-        say("Sorry, I didn't catch that. Could you say it again?");
-        backToListening(false);
+      if (!words(text)) {                                    // nothing heard: background, not a turn
+        if (!finishPending() && !ignoredSegment()) backToListening(true);
         return;
       }
-      if (DANGLING_RE.test(text) && !/\?\s*$/.test(text)) {
+      learnVoice(level);
+      if (C.pendingText) { text = C.pendingText + " " + text; C.pendingText = ""; }
+      if (conf < 0.35) {                                     // Whisper is not sure what it heard:
+        log("dropped: low confidence, silent", text, conf);  // drop it silently, never answer a guess
+        if (!ignoredSegment()) backToListening(true);        // out loud (the old code spoke an apology
+        return;                                              // and answered guesses as questions)
+      }
+      if (looksIncomplete(text) && !/\?\s*$/.test(text)) {
         C.pendingText = text.replace(/[.…]+\s*$/, "");
         caption("you", C.pendingText + "…", true);
         setState("listening", "Go on…");
@@ -261,23 +307,28 @@
       }
       return handle(text);
     }
-    // Something was said while Xod was busy or talking.
-    if (!words(text) || isEcho(text)) { if (window.XodSpeech) XodSpeech.duck(false); return; }
+    // Something was said while Xod was busy or talking. The barge-in gate
+    // (turntaking.js classifyBargeIn) decides: a stop phrase interrupts at
+    // once on one word; anything else must be confirmed as the user (3 or
+    // more words, at the learned user level, not Xod's own echo) before it
+    // may interrupt. The old rule took any 2 words, so Xod's own voice and
+    // the TV cancelled answers and started new ones: the random talking.
+    if (!words(text)) { if (window.XodSpeech) XodSpeech.duck(false); return; }
     if (STOP_RE.test(text) || END_RE.test(text)) return handle(text);
+    const verdict = TT ? TT.classifyBargeIn({ text, level, userLevel: voiceLevel,
+      said: ((window.XodSpeech && XodSpeech.saying()) || "") + " " + (C.recentSaid || "") })
+      : (isEcho(text) ? "ignore" : "interrupt");
+    if (verdict !== "interrupt") {
+      log("ignored: not a confirmed interruption", verdict, text);
+      if (window.XodSpeech) XodSpeech.duck(false);
+      return;
+    }
     // You kept going after a pause: one thought in pieces, answered as one, not a reply to every piece.
     if (C.lastAsked && now() - C.lastAsked.at < CONTINUE_MS && words(text) >= 2) {
       log("continues", C.lastAsked.text, "+", text);
       return handle(C.lastAsked.text + " " + text, { interrupt: true });
     }
-    if (xodWasTalking || (window.XodSpeech && XodSpeech.audioPlaying())) {
-      if (words(text) >= 2) return handle(text, { interrupt: true });    // "actually, what about tomorrow?"
-      if (window.XodSpeech) XodSpeech.duck(false);
-    }
-    // While it's still thinking, a clear new question replaces the old one ("Actually, …", "Wait, …",
-    // or anything said as a question). Other chatter in the room is left alone.
-    if (words(text) >= 3 && (/^(actually|wait|no|instead|sorry|hmm|oh|also|and|but|what about|how about)\b/i.test(text) || /\?\s*$/.test(text))) {
-      return handle(text, { interrupt: true });
-    }
+    return handle(text, { interrupt: true });    // "actually, what about tomorrow?"
   }
 
   const words = (t) => (t.match(/[A-Za-z0-9']+/g) || []).length;
@@ -294,6 +345,7 @@
   // Is this just Xod's own voice coming back through the mic?
   function isEcho(text) {
     const said = ((window.XodSpeech && XodSpeech.saying()) || "") + " " + (C.recentSaid || "");
+    if (TT) return TT.echoOverlap(text, said) > 0.6;
     const a = new Set(said.toLowerCase().match(/[a-z']+/g) || []);
     const b = text.toLowerCase().match(/[a-z']+/g) || [];
     if (!b.length || !a.size) return false;
@@ -313,6 +365,7 @@
   // ---------------------------------------------------------------- what you said
   async function handle(text, { interrupt = false } = {}) {
     if (!C.active) return;
+    C.followUpActive = false;                // a real turn: no longer in the follow-up window
     if (!STOP_RE.test(text) && !END_RE.test(text)) C.lastAsked = { text, at: now() };
     caption("you", text);
     C.lastHeardAt = now();
@@ -442,8 +495,9 @@
 
   function backToListening(followUp = false) {
     C.turn = null;
+    C.followUpActive = !!followUp;
     setState("listening", followUp ? pick(["Anything else?", "Listening…", "Go ahead…"]) : "Listening…");
-    C.followMs = followUp ? 9000 : 12000;
+    C.followMs = TT ? TT.FOLLOW_UP_MS : 6000;   // 6 s (was 9 s after an answer, 12 s at the start)
     C.followUntil = now() + C.followMs;
     setFollow(1);
   }
@@ -478,6 +532,7 @@
   function end(reason = "user") {
     if (!C.active) return;
     C.active = false;
+    C.followUpActive = false;
     C.turn = null;
     clearTimeout(C.slowTimer);
     if (reason === "user") stopEverything();

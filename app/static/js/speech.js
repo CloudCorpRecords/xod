@@ -9,7 +9,7 @@
 // ==============================================================
 (() => {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  let info = { settings: { mode: "voice", voice: "", rate: 190 }, voices: [], voice: "", has_natural: true, rate: { min: 140, max: 280, default: 190 } };
+  let info = { settings: { mode: "voice", voice: "", rate: 175 }, voices: [], voice: "", has_natural: true, rate: { min: 140, max: 280, default: 175 } };
   let voiceAskedAt = 0;
 
   async function load() {
@@ -271,7 +271,7 @@
     el.className = "speech-menu";
     const s = info.settings;
     const chosen = s.voice || info.voice;
-    const groups = { premium: "Natural (Premium)", enhanced: "Natural (Enhanced)", standard: "Standard" };
+    const groups = { neural: "Neural (Kokoro, on this Mac)", premium: "Natural (Premium)", enhanced: "Natural (Enhanced)", standard: "Standard" };
     const en = info.voices.filter((v) => v.lang.startsWith("en"));
     const others = info.voices.filter((v) => !v.lang.startsWith("en"));
     const opts = (list) => Object.keys(groups).map((q) => {

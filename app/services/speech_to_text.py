@@ -198,21 +198,32 @@ async def transcribe(audio: bytes, partial: bool = False) -> Dict[str, Any]:
 # ---------------------------------------------------------------- "Hey Xod"
 # Whisper has never heard of "Xod": it writes "Hey Zod", "Hey Saud", "Hazod"… A prompt hint fixes
 # the spelling but sometimes drops the phrase altogether, so wake detection uses the plain
-# transcript and accepts the ways Whisper hears it. Near misses ("Hey Siri", "hey there",
-# "I said hey to Todd") don't count. Anything after the name is the question: "Hey Xod, what's
-# the weather tomorrow?" in one breath works.
+# transcript and accepts the ways Whisper hears the name, with a greeting in front of it.
+# Near misses ("Hey Siri", "hey there", "I said hey to Todd") don't count, and since the
+# 2026-11-19 redesign neither does the name on its own or a sound-alike clip ("Facade").
+# Anything after the name is the question: "Hey Xod, what's the weather tomorrow?" in one breath works.
 import re as _re
 
-_GREETING = r"(?:hey|hay|hi|hiya|a|eh|ey|ok|okay|yo|hello|oi)"
-# The name by its sound: an s/z/x sound, an "o" or "aw" vowel, a d or t. Zod, Sod, Saud, Sott,
-# "S got", Zahd, Xod… but not "sad" or "sat".
-_NAME = r"(?:x|ex|z|s|s\s?g)\s?(?:o|oa|au|aa|ah|aw)h?(?:d|t)(?:d|t)?s?"
-_WAKE_RE = _re.compile(rf"^(?:{_GREETING}[\s,]*)?{_NAME}\b|^(?:hazod|heyzod|hayzod|hey-zod|hazodd)\b", _re.I)
-_WAKE_ALONE_RE = _re.compile(rf"^(?:{_GREETING}[\s,]*(?:god|odd)|facade|face odd|he'?s odd)$", _re.I)
+_GREETING = r"(?:hey|hay|hi|hiya|ok|okay|yo|hello)"
+# The name the way Whisper writes it, as a whole word: Xod, Zod and its close
+# mishearings. The full phrase is required (2026-11-19 redesign): a greeting
+# AND the name, at the start of the clip. The old pattern matched the name
+# alone by its sounds, and a second pattern woke on whole clips like
+# "Facade", "Hey God" or "he's odd"; those false wakes opened conversations
+# that then spoke to room noise, which is the random talking Rene reported.
+_NAME = r"(?:xod|zod|zodd|xodd|zahd|saud|sod)"
+_WAKE_RE = _re.compile(rf"^(?:{_GREETING})[\s,]+{_NAME}\b|^hazod\b|^heyzod\b", _re.I)
+WAKE_CONFIDENCE_MIN = 0.5   # a transcript Whisper is unsure of never wakes Xod
 
 
-def wake_match(text: str, seconds: float = 0.0) -> Dict[str, Any]:
-    """{"wake": bool, "rest": the words after the wake phrase}."""
+def wake_match(text: str, seconds: float = 0.0, confidence: float = None) -> Dict[str, Any]:
+    """{"wake": bool, "rest": the words after the wake phrase}.
+
+    A wake needs the full "Hey Xod" phrase and, when the transcription
+    reports one, a confidence at or above WAKE_CONFIDENCE_MIN. Anything
+    less is ignored silently: a false wake must never produce speech."""
+    if confidence is not None and confidence < WAKE_CONFIDENCE_MIN:
+        return {"wake": False, "rest": ""}
     t = " ".join((text or "").replace("…", " ").split())
     norm = _re.sub(r"[^\w\s,'-]", " ", t).strip().lower()
     norm = " ".join(norm.split())
@@ -227,9 +238,6 @@ def wake_match(text: str, seconds: float = 0.0) -> Dict[str, Any]:
             rest_orig = rest_orig.split(w, 1)[-1] if w in rest_orig else rest_orig
         rest_orig = rest_orig.lstrip(" ,.!?-")
         return {"wake": True, "rest": (rest_orig[:1].upper() + rest_orig[1:]) if rest else ""}
-    # Short clips Whisper turns into other words ("Facade.", "Hey God.") only count on their own.
-    if seconds <= 2.4 and _WAKE_ALONE_RE.match(norm.strip(" ,")):
-        return {"wake": True, "rest": ""}
     return {"wake": False, "rest": ""}
 
 
@@ -237,7 +245,8 @@ async def wake(audio: bytes) -> Dict[str, Any]:
     r = await transcribe(audio)
     if not r.get("success"):
         return {**r, "wake": False, "rest": ""}
-    return {**r, **wake_match(r.get("text", ""), r.get("seconds", 0))}
+    conf = r.get("confidence")
+    return {**r, **wake_match(r.get("text", ""), r.get("seconds", 0), conf if isinstance(conf, (int, float)) else None)}
 
 
 _prepared = False
