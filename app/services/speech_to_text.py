@@ -210,7 +210,7 @@ _GREETING = r"(?:hey|hay|hi|hiya|ok|okay|yo|hello)"
 # AND the name, at the start of the clip. The old pattern matched the name
 # alone by its sounds, and a second pattern woke on whole clips like
 # "Facade", "Hey God" or "he's odd"; those false wakes opened conversations
-# that then spoke to room noise, which is the random talking Rene reported.
+# that then spoke to room noise, which is the random talking reported in the field.
 _NAME = r"(?:xod|zod|zodd|xodd|zahd|saud|sod)"
 _WAKE_RE = _re.compile(rf"^(?:{_GREETING})[\s,]+{_NAME}\b|^hazod\b|^heyzod\b", _re.I)
 WAKE_CONFIDENCE_MIN = 0.5   # a transcript Whisper is unsure of never wakes Xod

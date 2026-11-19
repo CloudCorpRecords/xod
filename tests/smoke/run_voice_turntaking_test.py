@@ -1,5 +1,5 @@
 """
-Talk voice redesign, repro tests for the two field defects Rene reported on 2026-11-19
+Talk voice redesign, repro tests for the two field defects reported on 2026-11-19
 (desktop Xod 1.1.12): voice mode starts talking on its own, and it does not wait for
 him to finish talking. Pure logic, no Mac, no Chrome, no model needed:
 

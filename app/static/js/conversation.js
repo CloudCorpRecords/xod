@@ -16,7 +16,7 @@
 // Turn-taking itself (when a turn is over, what counts as interrupting)
 // lives in turntaking.js (window.XodTurnTaking): the 2026-11-19 redesign
 // replaced the fixed silence timers and the any-2-words interruption
-// rule, which between them cut Rene off mid-thought and let Xod answer
+// rule, which between them cut the user off mid-thought and let Xod answer
 // its own voice. The rules are tested on their own there.
 // ==============================================================
 (() => {
