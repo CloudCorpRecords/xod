@@ -1,10 +1,19 @@
 """
 Spoken replies: Xod reads its answers aloud with a voice that runs on this Mac.
 
-It uses macOS's own speech engine (the `say` tool), so nothing is downloaded or sent anywhere. The
-voices are the ones in System Settings → Accessibility → Spoken Content; the downloadable
-"Premium" and "Enhanced" ones are neural voices and sound far more natural, so Xod picks one of
-those when it's there and suggests getting one when it isn't.
+Since the 2026-11-19 voice redesign the default engine is Kokoro-82M, a local
+neural voice (Apache-2.0, rendered at 24 kHz, nothing sent anywhere), when the
+Kokoro runtime is present on the machine; the named default voice is af_heart.
+Two runtimes are recognised: the `kokoro` package (KPipeline) and `kokoro_onnx`
+(model and voices files under the data folder's models/kokoro, or
+XOD_KOKORO_MODEL / XOD_KOKORO_VOICES). XOD_TTS_ENGINE=say forces the old engine.
+
+The fallback is the machine's own speech engine (macOS `say`, Windows
+System.Speech): the voices in System Settings → Accessibility → Spoken
+Content, where the downloadable "Premium" and "Enhanced" ones sound far more
+natural than the standard ones, so Xod picks one of those when it's there and
+suggests getting one when it isn't. The fallback default rate is 175 wpm
+(it was 190, which made the system voice sound rushed on top of robotic).
 
 The chat sends the reply a sentence or so at a time as it streams in (static/js/speech.js); each
 piece is cleaned of Markdown here, turned into a short WAV and played in the page, which also lets
@@ -21,6 +30,7 @@ import re
 import shutil
 import tempfile
 import time
+import wave as wave_module
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -74,7 +84,116 @@ def _silent_wav_bytes(seconds: float = 0.3) -> bytes:
     return buf.getvalue()
 CACHE = DATA_DIR / "cache" / "speech"
 MAX_CHARS = 1200
-RATE_MIN, RATE_MAX, RATE_DEFAULT = 140, 280, 190
+RATE_MIN, RATE_MAX, RATE_DEFAULT = 140, 280, 175
+
+# ---------------------------------------------------------------- Kokoro (the neural voice)
+KOKORO_SR = 24000
+KOKORO_DEFAULT_VOICE = "af_heart"
+KOKORO_VOICES = [
+    {"name": "af_heart", "lang": "en_US", "quality": "neural"},
+    {"name": "af_bella", "lang": "en_US", "quality": "neural"},
+    {"name": "am_michael", "lang": "en_US", "quality": "neural"},
+    {"name": "am_adam", "lang": "en_US", "quality": "neural"},
+    {"name": "bf_emma", "lang": "en_GB", "quality": "neural"},
+    {"name": "bm_george", "lang": "en_GB", "quality": "neural"},
+]
+KOKORO_VOICE_NAMES = {v["name"] for v in KOKORO_VOICES}
+_kokoro_cache: Dict[str, Any] = {"pipelines": {}}
+
+
+def _kokoro_installed() -> bool:
+    """Is a Kokoro runtime present? Cheap check only (module or model files);
+    the pipeline itself is built lazily on first render, because building it
+    loads the model. XOD_KOKORO_FAKE=1 stands a fake engine in for tests."""
+    if os.environ.get("XOD_KOKORO_FAKE") == "1":
+        return True
+    if (os.environ.get("XOD_TTS_ENGINE") or "").strip().lower() == "say":
+        return False
+    try:
+        import importlib.util
+        if importlib.util.find_spec("kokoro") is not None or importlib.util.find_spec("kokoro_onnx") is not None:
+            return True
+    except Exception:
+        pass
+    model = os.environ.get("XOD_KOKORO_MODEL") or str(DATA_DIR / "models" / "kokoro" / "kokoro-v1.0.onnx")
+    voices = os.environ.get("XOD_KOKORO_VOICES") or str(DATA_DIR / "models" / "kokoro" / "voices-v1.0.bin")
+    return os.path.exists(model) and os.path.exists(voices)
+
+
+def kokoro_available() -> bool:
+    return _kokoro_installed()
+
+
+class _FakeKokoro:
+    """The test engine: a soft tone at 24 kHz through the real render path, so
+    the integration is proven on machines with no Kokoro and no Apple silicon."""
+
+    def __call__(self, text, voice=None, speed=1.0):
+        import math
+        n = max(KOKORO_SR // 2, int(KOKORO_SR * min(3.0, 0.35 + 0.09 * len(text or ""))))
+        yield (None, None, [math.sin(2 * math.pi * 220 * i / KOKORO_SR) * 0.3 for i in range(n)])
+
+
+class _OnnxKokoro:
+    """kokoro_onnx behind the same yield shape as KPipeline."""
+
+    def __init__(self, model: str, voices: str):
+        from kokoro_onnx import Kokoro
+        self._k = Kokoro(model, voices)
+
+    def __call__(self, text, voice=None, speed=1.0):
+        samples, _sr = self._k.create(text, voice=voice or KOKORO_DEFAULT_VOICE,
+                                      speed=float(speed or 1.0), lang="en-gb" if (voice or "").startswith("b") else "en-us")
+        yield (None, None, samples)
+
+
+def _kokoro_pipeline(lang: str):
+    """The pipeline for a language code ("a" American, "b" British), or None."""
+    pipes = _kokoro_cache["pipelines"]
+    if lang in pipes:
+        return pipes[lang]
+    pipe = None
+    if os.environ.get("XOD_KOKORO_FAKE") == "1":
+        pipe = _FakeKokoro()
+    else:
+        try:
+            from kokoro import KPipeline
+            pipe = KPipeline(lang_code=lang)
+        except Exception:
+            try:
+                model = os.environ.get("XOD_KOKORO_MODEL") or str(DATA_DIR / "models" / "kokoro" / "kokoro-v1.0.onnx")
+                voices = os.environ.get("XOD_KOKORO_VOICES") or str(DATA_DIR / "models" / "kokoro" / "voices-v1.0.bin")
+                if os.path.exists(model) and os.path.exists(voices):
+                    pipe = _OnnxKokoro(model, voices)
+            except Exception as e:
+                logger.info(f"Kokoro not usable on this machine: {e}")
+    pipes[lang] = pipe
+    return pipe
+
+
+def _kokoro_render_sync(text: str, voice: str, speed: float) -> Optional[bytes]:
+    """One piece of text -> a 24 kHz WAV through Kokoro, or None if it can't."""
+    pipe = _kokoro_pipeline("b" if voice.startswith("b") else "a")
+    if pipe is None:
+        return None
+    samples: List[float] = []
+    for out in pipe(text, voice=voice, speed=speed):
+        audio = out[2] if isinstance(out, (tuple, list)) else getattr(out, "audio", None)
+        if audio is not None:
+            samples.extend(float(x) for x in audio)
+    if not samples:
+        return None
+    from array import array
+    pcm = array("h", (max(-32767, min(32767, int(x * 32767))) for x in samples))
+    if sys.byteorder == "big":
+        pcm.byteswap()
+    buf = io.BytesIO()
+    with wave_module.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(KOKORO_SR)
+        w.writeframes(pcm.tobytes())
+    return buf.getvalue()
 
 # Novelty and very old voices that nobody wants reading a research answer.
 NOVELTY = {
@@ -110,10 +229,13 @@ def _parse_voices(out: str) -> List[Dict[str, str]]:
 
 
 async def list_voices(refresh: bool = False) -> List[Dict[str, str]]:
+    # The neural voices ride in front of the system ones when Kokoro is present;
+    # the cache below holds the system list only.
+    kokoro = [dict(v) for v in KOKORO_VOICES] if kokoro_available() else []
     if speech_off():
-        return list(_voices_cache["list"])
+        return kokoro + list(_voices_cache["list"])
     if not refresh and _voices_cache["list"] and time.time() - _voices_cache["at"] < 300:
-        return _voices_cache["list"]
+        return kokoro + _voices_cache["list"]
     try:
         if WIN:
             proc = await asyncio.create_subprocess_exec(*_PS, _WIN_VOICES, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
@@ -137,7 +259,7 @@ async def list_voices(refresh: bool = False) -> List[Dict[str, str]]:
                                PREFERRED.index(re.sub(r"\s*\(.*\)$", "", v["name"])) if re.sub(r"\s*\(.*\)$", "", v["name"]) in PREFERRED else 99,
                                v["name"]))
     _voices_cache.update(at=time.time(), list=voices)
-    return voices
+    return kokoro + voices
 
 
 def _system_lang() -> str:
@@ -146,6 +268,8 @@ def _system_lang() -> str:
 
 
 async def best_voice() -> str:
+    if kokoro_available():
+        return KOKORO_DEFAULT_VOICE   # the neural voice is the default when it's there
     voices = await list_voices()
     if not voices:
         return "Microsoft Zira Desktop" if WIN else "Samantha"
@@ -235,6 +359,30 @@ async def synthesize(text: str, voice: Optional[str] = None, rate: Optional[int]
     if voice not in {v["name"] for v in await list_voices()}:
         voice = await best_voice()
     rate = int(min(RATE_MAX, max(RATE_MIN, int(rate or settings["rate"]))))
+    # The neural engine first, when the chosen voice is one of its voices:
+    # Kokoro at 24 kHz, speed mapped from the wpm rate (175 wpm is natural speed).
+    if voice in KOKORO_VOICE_NAMES and kokoro_available():
+        speed = max(0.7, min(1.6, rate / RATE_DEFAULT))
+        key = hashlib.sha256(f"kokoro|{voice}|{speed:.2f}|{words}".encode()).hexdigest()[:32]
+        CACHE.mkdir(parents=True, exist_ok=True)
+        cached = CACHE / f"{key}.wav"
+        if cached.exists():
+            return cached.read_bytes()
+        try:
+            data = await asyncio.to_thread(_kokoro_render_sync, words, voice, speed)
+        except Exception as e:
+            logger.warning(f"Kokoro render failed, falling back to the system voice: {e}")
+            data = None
+        if data:
+            try:
+                cached.write_bytes(data)
+                _trim_cache()
+            except Exception:
+                pass
+            return data
+        # Render failed: fall through to the system engine with its best voice.
+        system = [v["name"] for v in await list_voices() if v["name"] not in KOKORO_VOICE_NAMES]
+        voice = system[0] if system else ("Microsoft Zira Desktop" if WIN else "Samantha")
     key = hashlib.sha256(f"{voice}|{rate}|{words}".encode()).hexdigest()[:32]
     CACHE.mkdir(parents=True, exist_ok=True)
     cached = CACHE / f"{key}.wav"
@@ -281,6 +429,11 @@ async def speak_out_loud(text: str, voice: Optional[str] = None) -> bool:
     if not words:
         return False
     voice = voice if voice and voice in {v["name"] for v in await list_voices()} else (get_settings()["voice"] or await best_voice())
+    if voice in KOKORO_VOICE_NAMES:
+        # This path plays through the system engine only; a neural voice name
+        # would fail there, so use the best system voice for it.
+        system = [v["name"] for v in await list_voices() if v["name"] not in KOKORO_VOICE_NAMES]
+        voice = system[0] if system else ("Microsoft Zira Desktop" if WIN else "Samantha")
     with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
         f.write(words)
         path = f.name
@@ -320,7 +473,10 @@ async def status() -> Dict[str, Any]:
     voices = await list_voices()
     best = await best_voice()
     s = get_settings()
+    kokoro = kokoro_available()
     return {"settings": s, "voice": s["voice"] or best, "best": best, "voices": voices,
+            "engine": "kokoro" if kokoro else "system",
+            "kokoro": {"available": kokoro, "default_voice": KOKORO_DEFAULT_VOICE, "sample_rate": KOKORO_SR},
             "has_natural": any(v["quality"] != "standard" and v["lang"].startswith("en") for v in voices),
             "rate": {"min": RATE_MIN, "max": RATE_MAX, "default": RATE_DEFAULT}}
 
