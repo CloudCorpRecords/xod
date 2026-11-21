@@ -187,7 +187,7 @@ class MacBackend:
 # UIA control types -> the AX roles the core walks by.
 _UIA_ROLES = {50000: "AXButton", 50026: "AXGroup", 50020: "AXStaticText", 50032: "AXWindow",
               50033: "AXWindow", 50004: "AXStaticText", 50008: "AXGroup", 50009: "AXGroup",
-              50011: "AXGroup", 50037: "AXApplication"}
+              50011: "AXGroup", 50037: "AXApplication", 50030: "AXDocument"}
 UIA_InvokePattern = 10000
 UIA_LegacyIAccessiblePattern = 10018
 UIA_ValuePattern = 10002
@@ -211,6 +211,20 @@ class _WinEl:
             return str(self.raw.CurrentName or "")
         except Exception:
             return ""
+
+    def class_name(self) -> str:
+        try:
+            return str(self.raw.CurrentClassName or "")
+        except Exception:
+            return ""
+
+    def rect(self):
+        """(left, top, right, bottom) in screen pixels, or None when UIA can't say."""
+        try:
+            r = self.raw.CurrentBoundingRectangle
+            return (int(r.left), int(r.top), int(r.right), int(r.bottom))
+        except Exception:
+            return None
 
     def children(self) -> List["_WinEl"]:
         return self._ax.children_of(self)
@@ -283,6 +297,10 @@ class WinAX:
             return el.children()
         if name == "AXParent":
             return el.parent()
+        if name == "UIAClassName":
+            return el.class_name()
+        if name == "UIABoundingRectangle":
+            return el.rect()
         return None
 
     def perform(self, el, action) -> int:

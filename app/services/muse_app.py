@@ -193,6 +193,11 @@ def _apply() -> Dict[str, Any]:
         except Exception:
             pass
         start()
+        try:
+            from app.services import muse_chrome
+            muse_chrome.start()  # the Chrome extension target (dry run) rides the same switch
+        except Exception:
+            pass
     else:
         try:
             from app.services import power
@@ -222,6 +227,11 @@ def status() -> Dict[str, Any]:
         out["partner"] = partner_client.summary()
     except Exception:
         out["partner"] = None
+    try:
+        from app.services import muse_chrome
+        out["chrome_extension"] = muse_chrome.status()
+    except Exception:
+        out["chrome_extension"] = None
     if m == "away" and not until:
         out["you"] = user_away()
     from app.services import run_mode
