@@ -133,6 +133,108 @@ function installedVersionOf(appPath) {
 }
 
 // ---------------------------------------------------------------------------
+// Repair loop hardening (2026-11-22). The field failure that day: an update
+// guardian rolled a healthy install back to a two-week-old build whose own
+// bootstrap cannot read its archive under Electron, so every launch showed
+// the repair dialog and every repair failed the same way — an endless loop
+// with no memory of having tried. Two mechanisms break that class of loop:
+//
+//   1. A repair attempt counter, persisted in the app's data dir (which no
+//      app swap touches): after MAX_REPAIR_ATTEMPTS failed repairs against
+//      the same installed version, the bootstrap stops offering repairs,
+//      writes one plain report file, and says so once. A healthy launch
+//      clears the counter for that version.
+//   2. A healthy-launch marker: every packaged launch whose verdict is
+//      "launch" writes bootstrap-health.json (version + time) into the
+//      data dir. The macOS repair swap script waits for a FRESH marker
+//      naming the new version before it deletes the previous bundle, so a
+//      swapped-in copy that cannot actually start rolls itself back
+//      instead of stranding the install (see buildSwapScriptMac).
+// ---------------------------------------------------------------------------
+const MAX_REPAIR_ATTEMPTS = 3;
+
+function xodDataDir(home = os.homedir(), platform = process.platform) {
+  if (platform === "darwin") return path.join(home, "Library", "Application Support", "Xod");
+  if (platform === "win32") {
+    return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "Xod");
+  }
+  return path.join(home, ".local", "share", "Xod");
+}
+
+function healthMarkerPath(dataDir) { return path.join(dataDir, "bootstrap-health.json"); }
+function repairStatePath(dataDir) { return path.join(dataDir, "bootstrap-repair.json"); }
+
+function readRepairState(dataDir) {
+  try {
+    const data = JSON.parse(fs.readFileSync(repairStatePath(dataDir), "utf8"));
+    if (data && typeof data === "object" && data.attempts) return data;
+  } catch (e) { /* no state yet is a clean slate */ }
+  return { attempts: {} };
+}
+
+function repairAttempts(dataDir, version) {
+  const n = Number((readRepairState(dataDir).attempts || {})[String(version || "unknown")]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+function recordRepairAttempt(dataDir, version) {
+  const key = String(version || "unknown");
+  const state = readRepairState(dataDir);
+  state.attempts[key] = repairAttempts(dataDir, version) + 1;
+  state.last_attempt = { version: key, at: new Date().toISOString() };
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(repairStatePath(dataDir), JSON.stringify(state, null, 1));
+  } catch (e) { /* the counter is best-effort; a failed write must not block a repair */ }
+  return state.attempts[key];
+}
+
+function clearRepairAttempts(dataDir, version) {
+  const key = String(version || "unknown");
+  const state = readRepairState(dataDir);
+  if (!state.attempts[key]) return;
+  delete state.attempts[key];
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(repairStatePath(dataDir), JSON.stringify(state, null, 1));
+  } catch (e) { /* best-effort, same as recordRepairAttempt */ }
+}
+
+// A packaged launch whose verdict was "launch": prove it in the data dir
+// (the repair swap script watches for exactly this) and forgive any repair
+// attempts recorded against this version.
+function noteHealthyLaunch(dataDir, version) {
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(healthMarkerPath(dataDir),
+      JSON.stringify({ version: String(version || "unknown"), at: new Date().toISOString() }));
+  } catch (e) { /* a marker that cannot be written must not stop a healthy launch */ }
+  clearRepairAttempts(dataDir, version);
+}
+
+function writeRepairReport(dataDir, verdict, attempts) {
+  const lines = [
+    "Xod self-repair is paused for this copy.",
+    "",
+    `The installed package failed its integrity check ${attempts} times and repairs`,
+    "have not produced a copy that starts, so Xod has stopped trying on its own",
+    "instead of showing the repair prompt on every launch.",
+    "",
+    `Package problems: ${(verdict.problems || []).join("; ") || "none recorded"}`,
+    `Reasons: ${(verdict.reasons || []).join("; ") || "none recorded"}`,
+    "",
+    `Download the current version once from ${RELEASES_PAGE} and reinstall it;`,
+    "your data (in this folder) is not touched by a reinstall.",
+    "",
+  ].join("\n");
+  try {
+    fs.mkdirSync(dataDir, { recursive: true });
+    fs.writeFileSync(path.join(dataDir, "bootstrap-repair-report.txt"), lines);
+  } catch (e) { /* the dialog still carries the message */ }
+  return lines;
+}
+
+// ---------------------------------------------------------------------------
 // The asar walk. Same format parsing and the same resolution order Node uses,
 // matching scripts/check_asar.py so the release gate and the launch check can
 // never disagree about whether a package can run its own main process.
@@ -385,7 +487,7 @@ async function repair(appPath, io) {
       return fail("repair", "the update guardian is in the middle of its post-update health check on this install; the repair swap is deferred until that verdict lands, and nothing was replaced");
     }
     io.report(`repairing Xod: the new copy checks out, swapping it in`);
-    await io.swapAndRelaunch({ stagedApp, targetApp: appPath, workDir });
+    await io.swapAndRelaunch({ stagedApp, targetApp: appPath, workDir, version: latest.version });
     return { ok: true, stage: "done", version: latest.version };
   } catch (e) {
     return fail("repair", e);
@@ -502,32 +604,65 @@ async function stageAppMac(artifactPath, workDir) {
 }
 
 // macOS swap: a small script waits for this process to exit, moves the staged
-// bundle into place (the old bundle is kept as a backup until the new one is
-// verified in place, and restored if the move fails), then opens the app.
+// bundle into place, opens it, and then VERIFIES the swap the only way that
+// counts: the new copy must prove a healthy launch by writing a fresh
+// bootstrap-health.json marker naming its version (noteHealthyLaunch runs
+// on every healthy packaged launch) within the wait window. Only then is
+// the previous bundle deleted. If the marker never lands — the new copy
+// cannot start, the exact stranding this bootstrap exists to prevent — the
+// previous bundle is restored and relaunched, and the log says so. Before
+// this verification existed, the script deleted the backup the moment an
+// app.asar file existed in place, so a swapped-in copy that could not
+// actually start left nothing to roll back to.
 // Returns immediately; the caller quits so the script can proceed.
-async function swapAndRelaunchMac({ stagedApp, targetApp, workDir }, pid) {
-  const script = path.join(workDir, "swap.sh");
+function buildSwapScriptMac({ stagedApp, targetApp, workDir, pid, version, dataDir }) {
   const q = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
-  const body = [
+  const marker = healthMarkerPath(dataDir);
+  const startedAt = Math.floor(Date.now() / 1000);
+  return [
     "#!/bin/sh",
     `LOG=${q(path.join(workDir, "swap.log"))}`,
     `while kill -0 ${pid} 2>/dev/null; do sleep 0.5; done`,
     `BACKUP=${q(targetApp + ".bootstrap-backup")}`,
+    `MARKER=${q(marker)}`,
+    `WANT=${q(String(version || ""))}`,
     `rm -rf "$BACKUP"`,
     `if mv ${q(targetApp)} "$BACKUP" && mv ${q(stagedApp)} ${q(targetApp)}; then`,
     `  if [ -f ${q(path.join(targetApp, "Contents", "Resources", "app.asar"))} ]; then`,
-    `    rm -rf "$BACKUP"`,
     `    /usr/bin/open ${q(targetApp)} >> "$LOG" 2>&1`,
-    "    exit 0",
+    "    ok=0",
+    "    for i in $(seq 1 240); do",
+    `      if [ -f "$MARKER" ]; then`,
+    `        mver=$(sed -n 's/.*"version"[^"]*"\\([^"]*\\)".*/\\1/p' "$MARKER" | head -1)`,
+    `        mtime=$(stat -f %m "$MARKER" 2>/dev/null || echo 0)`,
+    `        if [ "$mver" = "$WANT" ] && [ "$mtime" -ge ${startedAt - 5} ]; then ok=1; break; fi`,
+    "      fi",
+    "      sleep 0.5",
+    "    done",
+    "    if [ $ok = 1 ]; then",
+    `      rm -rf "$BACKUP"`,
+    `      echo "swap verified: the new copy proved a healthy launch" >> "$LOG"`,
+    "      exit 0",
+    "    fi",
+    `    echo "the new copy did not prove a healthy launch within 120s; restoring the previous install" >> "$LOG"`,
     "  fi",
     "fi",
     `rm -rf ${q(targetApp)}`,
     `mv "$BACKUP" ${q(targetApp)}`,
-    `echo "swap failed, previous install restored" >> "$LOG"`,
+    `/usr/bin/open ${q(targetApp)} >> "$LOG" 2>&1`,
+    `echo "swap failed verification, previous install restored and relaunched" >> "$LOG"`,
     "exit 1",
     "",
   ].join("\n");
-  fs.writeFileSync(script, body, { mode: 0o755 });
+}
+
+async function swapAndRelaunchMac({ stagedApp, targetApp, workDir, version }, pid) {
+  const script = path.join(workDir, "swap.sh");
+  fs.writeFileSync(script, buildSwapScriptMac({
+    stagedApp, targetApp, workDir, pid,
+    version: version || null,
+    dataDir: xodDataDir(),
+  }), { mode: 0o755 });
   const { spawn } = require("child_process");
   spawn("/bin/sh", [script], { detached: true, stdio: "ignore" }).unref();
 }
@@ -614,7 +749,12 @@ function electronEntry() {
   }
   const asarPath = path.join(process.resourcesPath, "app.asar");
   const verdict = decide(asarPath);
+  const dataDir = xodDataDir();
   if (verdict.action === "launch") {
+    // Prove the healthy launch in the data dir: a repair swap script may
+    // be waiting for exactly this marker before it deletes the previous
+    // bundle, and a healthy launch forgives this version's repair count.
+    noteHealthyLaunch(dataDir, verdict.version);
     loadMain();
     return;
   }
@@ -623,6 +763,24 @@ function electronEntry() {
   // repair instead, in plain words, and never load the broken entry.
   app.whenReady().then(async () => {
     const bundle = path.resolve(path.dirname(app.getPath("exe")), "..", "..");
+    // Loop guard: repairs against this same broken copy are counted in
+    // the data dir, which no swap touches. After MAX_REPAIR_ATTEMPTS the
+    // bootstrap stops offering repairs — the 2026-11-22 loop showed this
+    // same dialog on every launch with no memory of having tried — and
+    // leaves one plain report instead.
+    const versionKey = verdict.version || "unknown";
+    if (repairAttempts(dataDir, versionKey) >= MAX_REPAIR_ATTEMPTS) {
+      const report = writeRepairReport(dataDir, verdict, repairAttempts(dataDir, versionKey));
+      dialog.showMessageBoxSync({
+        type: "error",
+        message: "Xod repairs are paused",
+        detail: report,
+        buttons: ["Quit"],
+      });
+      app.quit();
+      return;
+    }
+    recordRepairAttempt(dataDir, versionKey);
     dialog.showMessageBoxSync({
       type: "warning",
       message: "Xod needs to repair itself",
@@ -668,6 +826,16 @@ if (typeof module !== "undefined" && module.exports) {
     guardianBatteryActive,
     guardianStateDir,
     installedVersionOf,
+    MAX_REPAIR_ATTEMPTS,
+    xodDataDir,
+    healthMarkerPath,
+    repairStatePath,
+    repairAttempts,
+    recordRepairAttempt,
+    clearRepairAttempts,
+    noteHealthyLaunch,
+    writeRepairReport,
+    buildSwapScriptMac,
   };
 }
 
