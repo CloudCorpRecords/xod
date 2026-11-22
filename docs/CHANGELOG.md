@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 1.1.15
+
+The self-repair release. One flaky probe in the 1.1.14 update battery rolled a healthy install back to a two-week-old build that could not read its own archive, and the machine looped on the repair dialog. This release hardens the guardian and the bootstrap so that failure shape cannot recur, presses the connector action cards that used to pile up, and puts a model review in front of every approval press: Xod now reads each card, forms its own judgment, and logs its reason.
+
+**Approver loop: a model reviews every approval card before it is pressed**
+- A new review step (services/muse_review.py) gates both press paths in the Muse app watcher. Each showing of a card gets one review call to the backend's own configured model, in-process (the API key is reachable only inside the app process, which is also why reviews cannot be replayed from outside it). The model answers with a strict {decision: approve|deny|leave, reason}; anything malformed, any transport failure and any timeout resolves to leave, never to an approval.
+- The reviewer judges as the owner's proxy with no category exclusions: payments, passwords, contracts and identity checks are judged on their merits against the request the card itself names, per the owner's policy. An acted press is verified by re-reading the panel, and every review and outcome is written to an audit log (~/Library/Application Support/Xod/muse_approver/audit.jsonl) with the decision, the reason, the model and a screenshot reference.
+- The setting muse_review_mode is read live: act (review, then press on approve), decide (review and log only), off (pre-review behavior). The watcher's own pause also forces decide-only behavior at the gate.
+- The Partner's button picker learned the same action verbs as the backend picker (Reply, Create, Pay, Sign, ...), and the backend picker's single-candidate fallback can no longer pick an unscoped "Allow always" grant against its own rule.
+- New suite run_muse_review_test (25 checks: mode switch, the gate in both directions, answer validation, one review per showing, audit rows, pause, Partner verbs). The Muse app (65), option widget (14) and Partner suites pass unchanged. Screenshots are attempted per review; on a machine whose Screen Recording grant for Xod has gone stale the audit records the refusal instead of a path, and re-granting restores captures with no code change.
 
 **Self-repair and update-guardian hardening (the 2026-11-22 rollback incident)**
 - What happened in the field: the 1.1.14 snapshot failed verification (a byte-for-byte copy of the live app tree raced the running backend's own writes), so the Partner's update guardian kept a retained snapshot of 1.1.4 from two weeks earlier. When 1.1.14 then failed its health battery on a single probe (the file round trip; health, chat and permission probes all passed), the guardian rolled the install back to that stale 1.1.4 — a build whose own bootstrap cannot read its archive under Electron — and left it there when it failed every post-rollback probe. The machine looped on the self-repair dialog.
