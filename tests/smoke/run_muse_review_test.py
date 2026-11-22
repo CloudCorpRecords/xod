@@ -121,12 +121,12 @@ def main():
     check("validate: a well-formed answer passes, reason tidied",
           good == {"decision": "approve", "reason": "matches the task"})
 
-    # ---- the prompt carries the card and Rene's standing context
+    # ---- the prompt carries the card and the owner's standing context
     prompt = muse_review._card_prompt(CARD)
     check("the review prompt carries the card text and the button Xod would press",
           "reticle issue #2094" in prompt and "Reply" in prompt)
-    check("the system prompt judges as Rene's proxy with no category refusals",
-          "Rene's proxy" in muse_review._SYSTEM and "no category of" in muse_review._SYSTEM)
+    check("the system prompt judges as the owner's proxy with no category refusals",
+          "owner's proxy" in muse_review._SYSTEM and "no category of" in muse_review._SYSTEM)
 
     # ---- the watcher's pause is decide-only even in act mode
     calls["reply"] = {"decision": "approve", "reason": "Matches the task."}
