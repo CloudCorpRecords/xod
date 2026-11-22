@@ -60,6 +60,11 @@ SAFETY POSTURE:
 - A widget is pressed at most once per showing: pressed ids are kept in state (and the
   log id is a hash of question + options), so a widget that stays on screen after a
   press is never pressed again by this watcher.
+- A widget Xod cannot resolve escalates to Tree (services/muse_escalate.py), once per
+  showing: a held review (unavailable or no clear pick) escalates as
+  option_widget_held, a failed press as option_widget_unpressable. Switch-off, away
+  and dry-run holds are the owner's intent or a test mode and never escalate. The
+  escalation expires when the showing ends (the review-cache prune above).
 - Read-back: after a press the tree is re-walked; verification is recorded as confirmed
   only when the widget is gone or the surrounding text changed. A widget still showing
   unchanged is logged as pressed-but-unconfirmed, never as verified.
@@ -414,6 +419,9 @@ def _log(entry: Dict[str, Any]) -> bool:
             lines.append(f"model reason: {entry['model_reason']}")
         if entry.get("held_reason"):
             lines.append(f"held: {entry['held_reason']}")
+        if entry.get("escalation"):
+            lines.append(f"escalated to Tree: {entry['escalation']} "
+                         f"({entry.get('escalation_note') or 'sent'})")
         if entry.get("reason"):
             lines.append(f"reason: {entry['reason']}")
         lines.append(f"read-back: {entry.get('readback') or 'not pressed'}")
@@ -444,8 +452,10 @@ def scan_tree(ax, root, press: bool = True) -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
     widgets = find_widgets(ax, root)
     live_ids = {_widget_id(w["question"], list(w["buttons"])) for w in widgets}
+    from app.services import muse_escalate
     for stale in [k for k in _state["review_cache"] if k not in live_ids]:
         del _state["review_cache"][stale]   # showing ended: forget its verdict
+        muse_escalate.expire(stale)         # and close any escalation it had open
     for w in widgets:
         labels = list(w["buttons"])
         heur = heuristic_pick(labels)
@@ -475,6 +485,20 @@ def scan_tree(ax, root, press: bool = True) -> List[Dict[str, Any]]:
             if verdict.get("held_reason"):
                 entry["held_reason"] = verdict["held_reason"]
                 entry["reason"] = verdict["held_reason"]
+                # A held widget is an unanswered instruction to an agent:
+                # escalate it to Tree (once per showing) instead of letting
+                # it wait on the owner. Switch-off and away holds never
+                # reach this branch; they are the owner's intent.
+                esc = muse_escalate.escalate(
+                    "option_widget_held", wid, surface="muse_app_options",
+                    title=w["question"], text=w["question"], options=labels,
+                    tried=[f"AI review by {entry['model'] or 'the configured model'}",
+                           f"heuristic ranking (log only) topped: {heur['picked'] or '(none)'}"],
+                    reason=verdict["held_reason"], capture=True)
+                if esc:
+                    entry["escalation"] = esc["escalation_id"]
+                    entry["escalation_note"] = (f"message {esc.get('message_id') or '(no id)'} "
+                                                 f"({esc.get('transport') or 'sent'})")
             else:
                 entry["picked"] = labels[verdict["pick_index"]]
                 if dry_run() or not press:
@@ -501,6 +525,23 @@ def scan_tree(ax, root, press: bool = True) -> List[Dict[str, Any]]:
                     else:
                         entry["reason"] = f"press failed: AXPress returned {err}"
                         entry["readback"] = "not verified: the press did not report success"
+                        # Xod can see this widget and knows the answer, but
+                        # its press did not land: Tree's hands take it from
+                        # here (once per showing).
+                        esc = muse_escalate.escalate(
+                            "option_widget_unpressable", wid, surface="muse_app_options",
+                            title=w["question"], text=w["question"], options=labels,
+                            button=entry["picked"],
+                            tried=[f"AI review picked: {entry['picked']} "
+                                   f"({entry['model_reason']})",
+                                   f"AXPress on that option, which returned {err}"],
+                            reason=f"the press failed: AXPress returned {err}",
+                            capture=True)
+                        if esc:
+                            entry["escalation"] = esc["escalation_id"]
+                            entry["escalation_note"] = (
+                                f"message {esc.get('message_id') or '(no id)'} "
+                                f"({esc.get('transport') or 'sent'})")
         entries.append(entry)
         _log(entry)
     _state["seen"] += len(entries)

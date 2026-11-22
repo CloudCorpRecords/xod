@@ -580,15 +580,31 @@ def _verify_gone(cid: str, via_partner: bool, want_front: bool) -> str:
 def _review_outcome(entry: Dict[str, Any], cid: str, action: str,
                     via_partner: bool, want_front: bool) -> None:
     """The outcome half of the audit for one acted press: what was done and
-    what the re-read showed. Marks the entry so it is written exactly once."""
+    what the re-read showed. Marks the entry so it is written exactly once.
+    A card still showing after its press is the one outcome Xod cannot
+    resolve itself: it escalates to Tree (services/muse_escalate.py),
+    once per showing, so the approval never just waits on the owner."""
     from app.services import muse_review
     review = entry.get("review")
     if not review or entry.get("_audited"):
         return
     entry["_audited"] = True
+    verify = _verify_gone(cid, via_partner, want_front)
     muse_review.audit({"phase": "outcome", "card_id": cid, "type": entry.get("type"),
-                       "action": action, "verify": _verify_gone(cid, via_partner, want_front),
+                       "action": action, "verify": verify,
                        "decision": review.get("decision"), "reason": review.get("reason")})
+    if verify == "card still showing":
+        from app.services import muse_escalate
+        muse_escalate.escalate(
+            "card_press_unverified", cid, surface="muse_app",
+            title=entry.get("title") or "", text=entry.get("what") or "",
+            button=entry.get("button"),
+            tried=[f"rubber-stamp approve ({review.get('policy') or 'rubberstamp'})",
+                   action, "panel re-read about a second after the press"],
+            reason="the press was stamped and reported, but the card is still "
+                   "showing on the re-read; the approval may not have taken effect",
+            screenshot=review.get("screenshot"),
+            screenshot_error=review.get("screenshot_error"))
 
 
 def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
@@ -1090,6 +1106,22 @@ async def scan_once() -> List[Dict[str, Any]]:
                     _state["fail_logged"].add(cid)
                     _log({**c, "_id": cid + "-stuck", "pressed": False,
                           "reason": "confirmation missing: card still showing; check Muse before retrying"})
+                    # The same failure the outcome re-read escalates, seen
+                    # from the confirmation side (the re-read may have raced
+                    # a slow panel). Dedupe in muse_escalate keeps it to
+                    # one escalation per showing either way.
+                    from app.services import muse_escalate
+                    creview = c.get("review") or {}
+                    muse_escalate.escalate(
+                        "card_press_unverified", cid, surface="muse_app",
+                        title=c.get("title") or "", text=c.get("what") or "",
+                        button=c.get("button"),
+                        tried=["rubber-stamp approve", f"pressed {c.get('button')}",
+                               "repeated confirmation scans up to the retry cap"],
+                        reason="the card is still showing after the press and "
+                               "the retry cap; the approval may not have taken effect",
+                        screenshot=creview.get("screenshot"),
+                        screenshot_error=creview.get("screenshot_error"))
                 if (c.get("title") or "", c.get("what") or "") not in _state["present"]:
                     _log(c)
             if any(str(c.get("reason") or "").startswith("press failed") for c in cards):
@@ -1122,11 +1154,14 @@ async def scan_once() -> List[Dict[str, Any]]:
             with _intent_lock:
                 _save_pending(_pending_presses() & _state["present_ids"])
             _state["no_button_ids"] = no_button
+            from app.services import muse_escalate
             for pid in [pid for pid in marks if pid not in _state["present_ids"]]:
                 marks.pop(pid, None)          # the showing ended; an identical card later is a new showing
                 _state["fail_logged"].discard(pid)
+                muse_escalate.expire(pid)     # close any escalation that showing had open
             for pid in [pid for pid in _state["reviews"] if pid not in _state["present_ids"]]:
                 _state["reviews"].pop(pid, None)   # the showing ended; its review is spent
+                muse_escalate.expire(pid)
             fronted &= _state["present_ids"]
             _state["primed"] = True
             _state["error"] = None

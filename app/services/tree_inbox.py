@@ -15,6 +15,15 @@ Message format:
      "from_app": "xod", "kind": "note"|"task"|"result", "text": ...,
      "read": false}
 
+A sender may attach extra fields (send_message's ``extra`` parameter,
+for example the structured "escalation" payload of
+services/muse_escalate.py). Tree's watcher reads only id, ts,
+from_device and text, and ignores fields it does not know, so an extra
+field never changes today's delivery; the text must therefore always
+carry the full message in plain words, with extras as a structured
+mirror for a future consumer. Extra fields can never overwrite the
+core fields above.
+
 Inbox folder resolution, first hit wins:
   1. env XOD_TREE_INBOX_DIR
   2. setting tree_inbox_dir
@@ -140,10 +149,15 @@ def _drain_outbox(inbox: Path) -> int:
     return moved
 
 
-def send_message(kind: str, text: str) -> dict:
+CORE_FIELDS = ("id", "ts", "from_device", "from_app", "kind", "text", "read")
+
+
+def send_message(kind: str, text: str, extra: dict | None = None) -> dict:
     """Write one message for Tree. Returns where it landed:
     state "inbox" (in the shared tree-inbox, watcher will deliver it) or
-    state "queued" (local outbox; drains when the inbox is reachable)."""
+    state "queued" (local outbox; drains when the inbox is reachable).
+    ``extra`` attaches structured fields for a future consumer (see the
+    module docstring); core fields always win over extra keys."""
     kind = (kind or "note").strip().lower()
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {', '.join(KINDS)}")
@@ -161,6 +175,10 @@ def send_message(kind: str, text: str) -> dict:
         "text": text,
         "read": False,
     }
+    if extra:
+        for key, value in extra.items():
+            if key not in CORE_FIELDS:
+                message[key] = value
     inbox = inbox_dir()
     if inbox is None:
         path = _write_atomic(outbox_dir(), message)

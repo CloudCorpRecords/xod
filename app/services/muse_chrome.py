@@ -28,6 +28,14 @@ dry-run build.
 The Mac route is not built here: AGE-57 blocks Mac pressing regardless, and the Mac side
 panel's AX shape is still unprobed. On any platform without the Windows UIA backend this
 module stays quiet and its status says why.
+
+Escalation (2026-11-22, best effort): a card this watcher decides it WOULD press is one
+it can see but, being dry-run, cannot press, so it escalates to Tree through
+services/muse_escalate.py (kind chrome_card_unpressable, once per showing, expiring
+when a completed scan no longer sees the card). Cards held under this watcher's own
+policy do not escalate. Option widgets inside Chrome web pages stay invisible here by
+construction (page Documents are pruned), so they can never escalate from this surface;
+that gap is named in the Part 6 record of the approval watcher update file.
 """
 import asyncio
 import hashlib
@@ -64,7 +72,8 @@ PROTECTED_RES = [r"password", r"passkey", r"credit card", r"payment", r"credenti
 
 _state: Dict[str, Any] = {"task": None, "cards_seen": 0, "would_press": 0, "held": 0,
                           "bubbles_seen": 0, "last": None, "error": None, "signed_out": False,
-                          "warmed": False, "logged_ids": set(), "loop": None, "backstop_at": 0.0}
+                          "warmed": False, "logged_ids": set(), "loop": None, "backstop_at": 0.0,
+                          "present_ids": set()}
 
 
 # ------------------------------------------------------------------ tree access
@@ -389,6 +398,32 @@ def scan(ax=None, pid: Optional[int] = None) -> Dict[str, Any]:
     decided_bubbles = [_evaluate(b) for b in bubbles]
     for entry in decided + decided_bubbles:
         _log(entry)
+    # Best effort escalation (2026-11-22): this watcher is dry-run by
+    # design, so a card it decides it WOULD press is one it can see but
+    # cannot press. Those escalate to Tree, once per showing, through
+    # services/muse_escalate.py. Cards held under this watcher's own
+    # policy (protected, safety, unlisted bubble origin) do not
+    # escalate; they stay logged as before. Expiry runs only on a
+    # completed scan like this one: a cold read proves nothing, so it
+    # never reaches here and never expires a showing.
+    from app.services import muse_escalate
+    for raw, entry in zip(cards + bubbles, decided + decided_bubbles):
+        if entry.get("decision") == "would_press":
+            muse_escalate.escalate(
+                "chrome_card_unpressable", _card_id(entry), surface="chrome_extension",
+                title=entry.get("title") or "", text=entry.get("what") or "",
+                options=list((raw.get("buttons") or {}).keys()), button=entry.get("button"),
+                tried=["read the card in the Chrome extension surface (Windows UIA)",
+                       f"policy decision: would press {entry.get('button')}"],
+                reason="the Chrome extension watcher is dry-run in this build: it can "
+                       "see this card and knows the approving button, but it never "
+                       "presses; Tree's hands take it from here",
+                extra={"origin": entry.get("origin") or "",
+                       "permission": entry.get("permission") or ""})
+    live_ids = {_card_id(e) for e in decided + decided_bubbles}
+    for stale in [i for i in _state["present_ids"] if i not in live_ids]:
+        muse_escalate.expire(stale)
+    _state["present_ids"] = live_ids
     _state["cards_seen"] += len(decided)
     _state["bubbles_seen"] += len(decided_bubbles)
     _state["would_press"] += sum(1 for e in decided + decided_bubbles if e["decision"] == "would_press")

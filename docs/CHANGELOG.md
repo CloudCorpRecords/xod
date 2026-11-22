@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.16
+
+The widget release. 1.1.15 never reached the owner's machine (its release run was superseded the same day), so this release carries everything in 1.1.15, the rubber-stamp approver, the self-repair hardening, and the connector action cards, plus the one piece 1.1.15 did not have: Xod now answers Muse chat option widgets by judgment instead of by keyword score.
+
+**Muse chat option widgets: AI review picks**
+- The choice buttons an assistant message offers in Muse chat (the dotted tap-to-answer widgets) are no longer scored by keyword weights. Xod's own configured model reads the question and every option in-process and returns one strict verdict: which option to press, and a one-line reason that is written to the log next to the question, every option, and the old heuristic scores for comparison.
+- The review decides the way the owner decides: the option that authorizes the most work and the broadest scope wins, and a deferral or no-op option is never picked while an action option exists. There are no topic exclusions; the model judges every widget on its merits.
+- A review that cannot happen holds, always: a model error, a timeout, a malformed answer, or the model returning no clear pick means nothing is pressed and the log says why. There is no fallback to the keyword score as a blind guess. One review per showing; a widget is still pressed at most once, and the read-back after a press is unchanged.
+- Tests: the option widget suite grows to 18 checks (a model pick beats the heuristic loser, a no-pick holds, an unavailable review holds and is retried next scan, a malformed answer holds, the switch is checked before the model is consulted). The Muse app (65), Chrome (16) and Connect (21) suites pass unchanged.
+
+**Escalate to Tree: what Xod cannot press, Tree answers**
+- When Xod meets a widget it has to hold, or a card whose press does not clear, it no longer just logs the hold and leaves the owner stuck: it writes one escalation per showing into the tree-inbox for Tree, the family's Muse agent, carrying the question or card text, the options it saw, what it tried, and a screenshot reference when one exists. Tree answers or clicks it from the Muse side, so the work continues instead of waiting on the owner.
+- Escalations dedupe per showing and expire when the widget or card leaves the screen. Every escalation is an audit row, so Tree's resolution can be matched against what Xod saw. The Muse app suite grows to 66 checks.
+
 ## 1.1.15
 
 The self-repair release. One flaky probe in the 1.1.14 update battery rolled a healthy install back to a two-week-old build that could not read its own archive, and the machine looped on the repair dialog. This release hardens the guardian and the bootstrap so that failure shape cannot recur, and it makes good on Xod's promise about approvals: you approved Xod once, so Xod never asks you to approve the same work again.

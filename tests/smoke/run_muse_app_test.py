@@ -459,10 +459,18 @@ def main():
     muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [hidden_card])]))
     before = len(agent_log.approvals(500))
     cards = _asyncio.run(muse_app.scan_once())
-    rows = agent_log.approvals(500)[:len(agent_log.approvals(500)) - before]
+    new_rows = agent_log.approvals(500)[:len(agent_log.approvals(500)) - before]
+    # The card's own history row is what "logged once" counts. The fake tree
+    # never removes the pressed card, so the outcome re-read honestly reports
+    # "card still showing" and the escalation feature adds its own separate
+    # muse_escalation row next to it (covered in run_muse_review_test.py).
+    rows = [r for r in new_rows if r["kind"] == "muse_app"]
     check("a card showing no buttons: Muse comes forward, its Allow is pressed in the same look, logged once",
           allow9.pressed and fronts == ["forward", ("back", 99)] and len(rows) == 1 and rows[0]["decision"] == "allowed by Xod"
-          and "front" in rows[0]["detail"], f"{fronts} {[(r['decision'], r['detail'][:80]) for r in rows]}")
+          and "front" in rows[0]["detail"], f"{fronts} {[(r['decision'], r['detail'][:80]) for r in new_rows]}")
+    check("…and the still-showing card escalated to Tree in its own row",
+          any(r["kind"] == "muse_escalation" and "card_press_unverified" in r["detail"]
+              for r in new_rows), str([(r["kind"], r["detail"][:60]) for r in new_rows]))
     muse_app._bring_forward = real_forward
 
     print("M13 off / always / away, pause, and changing it from chat or the phone")
