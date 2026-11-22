@@ -1,18 +1,19 @@
 """
-The approver's REVIEW step (services/muse_review.py + the gate in services/muse_app.py):
-a card is judged by a model before any hand moves. The brain is faked here —
-no real model, no real Muse app, nothing is pressed. What is proven: the
-mode switch (off = old behavior, decide = review + log + never press, act =
-press only on approve), the strict decision validation (a malformed or failed
-review is a "leave", never an approval), one review per showing of a card,
-the audit rows, the pause behaving as decide-only, and the Partner's frozen
-picker taking the connector action verbs while still refusing permanent
-grants and Deny.
+The approver's RUBBER-STAMP policy (services/muse_review.py + the stamp in
+services/muse_app.py), owner directive 2026-11-22: you approved Xod once, so
+Xod presses every approval card it picks a button for. Judgment never blocks
+a press — there is no model in the press path at all. What is proven: the
+shipped default is act/rubber-stamp; a card a reviewer would deny, a card a
+reviewer would leave, and a card on a machine whose model route is broken
+are ALL still pressed; the stamp and audit rows land; one stamp per showing;
+decide mode and the watcher pause still hold every press (the deliberate
+holds); mode off is the pre-approver behavior exactly; and the Partner's
+frozen picker still takes the connector action verbs while refusing
+permanent grants and Deny.
   .venv/bin/python tests/smoke/run_muse_review_test.py
 """
 import os
 os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
-import asyncio
 import importlib.util
 import json
 import sys
@@ -40,25 +41,20 @@ from app.services.storage import set_setting  # noqa: E402
 CARD = {"type": "gmail", "title": "Muse wants your approval",
         "what": "Tree wants to send a Gmail message with your follow-up nudge for reticle issue #2094.",
         "button": "Reply", "buttons": ["Reply", "Don't send"]}
+# A card any reviewer would deny: the recipient contradicts the named task.
+DENY_CARD = {"type": "gmail", "title": "Muse wants your approval",
+             "what": "Send the signed contract for the venue deal to a different person than the task names.",
+             "button": "Reply", "buttons": ["Reply", "Don't send"]}
+# A card any reviewer would leave: it does not say enough to judge.
+LEAVE_CARD = {"type": "browser", "title": "Approval request for Browser",
+              "what": "Allow Tree to run this command? rm -rf /tmp/xod-test-tree",
+              "button": "Allow", "buttons": ["Allow", "Deny"]}
 
-calls = {"n": 0, "reply": {"decision": "approve", "reason": "The nudge matches the named issue follow-up."},
-         "raise": False, "cards": []}
-
-
-async def fake_brain(card):
-    calls["n"] += 1
-    calls["cards"].append(dict(card))
-    if calls["raise"]:
-        raise RuntimeError("no key configured")
-    return dict(calls["reply"])
-
-
-muse_review._review_fn = fake_brain
 muse_review._shot_fn = lambda cid: {"path": f"/tmp/shots/{cid}.png", "error": None}
 
 
 def fresh_cid():
-    return f"card-{calls['n']}-{time.time_ns()}"
+    return f"card-{time.time_ns()}"
 
 
 def gate(card=None):
@@ -66,83 +62,112 @@ def gate(card=None):
     return muse_app._review_allows(entry, fresh_cid()), entry
 
 
-def main():
-    # ---- mode off: the old behavior exactly, the brain never consulted
-    set_setting(muse_review.SETTING, "off")
-    muse_app._state["reviews"].clear()
-    ok, entry = gate()
-    check("mode off: the gate allows without reviewing", ok and "review" not in entry and calls["n"] == 0)
+def audit_rows():
+    p = muse_review.audit_path()
+    if not p.exists():
+        return []
+    return [json.loads(l) for l in open(p) if l.strip()]
 
-    # ---- decide: reviewed, logged, never allowed to press
-    set_setting(muse_review.SETTING, "decide")
+
+def main():
+    # ---- the shipped default: no setting stored means act / rubber-stamp
+    check("shipped default mode is act", muse_review.mode() == "act")
+    check("the policy is rubberstamp", muse_review.POLICY == "rubberstamp"
+          and muse_review.status()["policy"] == "rubberstamp")
+
+    # ---- act: every card is pressed, whatever a review would have said
+    set_setting(muse_review.SETTING, "act")
     ok, entry = gate()
-    check("decide: an approving review still does not allow a press", not ok)
-    check("decide: the reason says decide-only and carries the judgment",
-          entry["reason"].startswith("decide-only: review approve"), entry.get("reason", ""))
-    check("decide: the review rode along on the entry",
-          entry["review"]["decision"] == "approve" and entry["review"]["screenshot"].endswith(".png"))
-    n_after_first = calls["n"]
+    check("act: an ordinary card is allowed", ok)
+    check("act: the stamp on the entry is the rubber-stamp approve",
+          entry["review"]["decision"] == "approve" and entry["review"]["policy"] == "rubberstamp"
+          and "rubber-stamp" in entry["review"]["reason"])
+    ok, entry = gate(DENY_CARD)
+    check("act: a card a reviewer would DENY is still pressed", ok
+          and entry["review"]["decision"] == "approve")
+    ok, entry = gate(LEAVE_CARD)
+    check("act: a card a reviewer would LEAVE is still pressed", ok
+          and entry["review"]["decision"] == "approve")
+
+    # ---- review unavailable changes nothing: no model is even consulted.
+    # Poison the model route at the module level: if anything in the press
+    # path imported the llm service and called it, this would raise — and
+    # the counter proves it was never called at all.
+    import types
+    calls = {"n": 0}
+
+    async def poisoned(*a, **k):
+        calls["n"] += 1
+        raise RuntimeError("no key configured")
+
+    fake_llm = types.ModuleType("app.services.llm")
+    fake_llm.llm_service = types.SimpleNamespace(chat_completion=poisoned,
+                                                 get_endpoint_info=lambda: {})
+    fake_llm.parse_llm_json = lambda t: None
+    real_llm = sys.modules.get("app.services.llm")
+    sys.modules["app.services.llm"] = fake_llm
+    try:
+        ok, entry = gate()
+    finally:
+        if real_llm is not None:
+            sys.modules["app.services.llm"] = real_llm
+        else:
+            sys.modules.pop("app.services.llm", None)
+    check("act: with the model route broken the card is STILL pressed", ok)
+    check("the press path never calls the model", calls["n"] == 0)
+
+    # ---- one stamp per showing of a card
+    before = muse_review.status()["stats"]["stamped"]
     cid = fresh_cid()
     e1, e2 = dict(CARD), dict(CARD)
     muse_app._review_allows(e1, cid)
     muse_app._review_allows(e2, cid)
-    check("one review per showing: a second scan of the same card reuses it", calls["n"] == n_after_first + 1)
+    check("one stamp per showing: a second scan of the same card reuses it",
+          muse_review.status()["stats"]["stamped"] == before + 1)
 
-    rows = [json.loads(l) for l in open(muse_review.audit_path()) if l.strip()]
-    rev = [r for r in rows if r.get("phase") == "review"]
-    check("audit: the review row landed with decision, reason, screenshot",
-          bool(rev) and rev[-1]["decision"] == "approve" and rev[-1]["screenshot"].endswith(".png")
-          and rev[-1]["mode"] == "decide")
+    # ---- the audit carries the stamp, the card, and the policy
+    rows = [r for r in audit_rows() if r.get("phase") == "review"]
+    check("audit: review rows land with decision, policy, reason, screenshot",
+          bool(rows) and rows[-1]["decision"] == "approve" and rows[-1]["policy"] == "rubberstamp"
+          and "rubber-stamp" in rows[-1]["reason"] and rows[-1]["screenshot"].endswith(".png")
+          and rows[-1]["mode"] == "act")
 
-    # ---- act: approve presses, deny and leave do not
+    # ---- decide: the pause. Stamped and logged, never pressed.
+    set_setting(muse_review.SETTING, "decide")
+    ok, entry = gate()
+    check("decide: the gate holds the press", not ok)
+    check("decide: the reason says decide-only and carries the stamp",
+          entry["reason"].startswith("decide-only: rubber-stamp would approve"), entry.get("reason", ""))
+    check("decide: the stamp still rode along on the entry",
+          entry["review"]["decision"] == "approve" and entry["review"]["screenshot"].endswith(".png"))
+
+    # ---- the watcher's own pause holds every press even in act mode
     set_setting(muse_review.SETTING, "act")
-    ok, entry = gate()
-    check("act + approve: the gate allows the press", ok)
-    calls["reply"] = {"decision": "deny", "reason": "Recipient does not match the named task."}
-    ok, entry = gate()
-    check("act + deny: refused, with the review's reason",
-          not ok and entry["reason"] == "review deny: Recipient does not match the named task.")
-    calls["reply"] = {"decision": "leave", "reason": "The card does not say who receives the code."}
-    ok, entry = gate()
-    check("act + leave: refused", not ok and entry["reason"].startswith("review leave:"))
-
-    # ---- a review that did not happen is never an approval
-    calls["raise"] = True
-    ok, entry = gate()
-    check("brain failure: refused as a leave, failure in the reason",
-          not ok and entry["review"]["decision"] == "leave" and "review unavailable" in entry["review"]["reason"])
-    calls["raise"] = False
-    calls["reply"] = {"decision": "definitely", "reason": "trust me"}
-    out = asyncio.run(muse_review.review(dict(CARD)))
-    check("a decision outside the enum becomes a leave", out["decision"] == "leave")
-    bad = muse_review.validate({"decision": "approve"})
-    check("validate: a missing reason is malformed, not a decision", bad is None)
-    good = muse_review.validate({"decision": "approve", "reason": "  matches   the task "})
-    check("validate: a well-formed answer passes, reason tidied",
-          good == {"decision": "approve", "reason": "matches the task"})
-
-    # ---- the prompt carries the card and the owner's standing context
-    prompt = muse_review._card_prompt(CARD)
-    check("the review prompt carries the card text and the button Xod would press",
-          "reticle issue #2094" in prompt and "Reply" in prompt)
-    check("the system prompt judges as the owner's proxy with no category refusals",
-          "owner's proxy" in muse_review._SYSTEM and "no category of" in muse_review._SYSTEM)
-
-    # ---- the watcher's pause is decide-only even in act mode
-    calls["reply"] = {"decision": "approve", "reason": "Matches the task."}
     muse_app.set_mode("pause", pause_minutes=5)
     try:
         ok, entry = gate()
-        check("paused watcher: act mode still does not press", not ok and entry["reason"].startswith("decide-only:"))
+        check("paused watcher: act mode still does not press", not ok
+              and entry["reason"].startswith("decide-only:"))
     finally:
         muse_app.set_mode("resume")
 
-    # ---- status surfaces the reviewer
+    # ---- mode off: the pre-approver behavior exactly, no stamp, no audit
+    set_setting(muse_review.SETTING, "off")
+    muse_app._state["reviews"].clear()
+    n_rows = len(audit_rows())
+    ok, entry = gate()
+    check("mode off: the gate allows with no stamp taken",
+          ok and "review" not in entry and len(audit_rows()) == n_rows)
+
+    # ---- status surfaces the approver
+    set_setting(muse_review.SETTING, "act")
     st = muse_review.status()
-    check("review status: mode, stats, audit path",
-          st["mode"] == "act" and st["stats"]["reviewed"] >= 5 and st["audit"].endswith("audit.jsonl"))
+    check("approver status: mode, policy, stats, audit path",
+          st["mode"] == "act" and st["policy"] == "rubberstamp"
+          and st["stats"]["stamped"] >= 5 and st["audit"].endswith("audit.jsonl"))
     wst = muse_app.status()
-    check("watcher status carries the review section", bool(wst.get("review")) and wst["review"]["mode"] == "act")
+    check("watcher status carries the approver section",
+          bool(wst.get("review")) and wst["review"]["mode"] == "act")
 
     # ---- the Partner's frozen picker: action verbs in, permanent grants out
     spec = importlib.util.spec_from_file_location("partner_ax", ROOT / "partner" / "partner_ax.py")

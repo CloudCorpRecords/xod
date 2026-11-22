@@ -81,7 +81,10 @@ def main():
         # trusted Partner: the whole scan goes through it, Xod's walk never runs
         _install(FakePartner(trusted=True))
         res = muse_app._scan_dispatch(set(), False)
-        assert _calls["own_scan"] == 0 and _calls["scan"] == 1, _calls
+        # scan == 2: the dispatch scan plus the approver's post-press verify
+        # re-read, which also goes through the Partner (the approver is
+        # enabled by default since the 2026-11-22 rubber-stamp policy).
+        assert _calls["own_scan"] == 0 and _calls["scan"] == 2, _calls
         assert muse_app._state["last_path"] == "partner", muse_app._state.get("last_path")
         entry = res["approved"][0]
         assert entry["pressed"] is True and entry["button"] == "Allow", entry
