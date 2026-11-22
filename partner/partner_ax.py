@@ -264,15 +264,50 @@ class CtypesAx:
 
 
 # ------------------------------------------------------------------ the card rules (frozen port of muse_app)
+# Ported from muse_app's picker as of 2026-11-22, connector action cards
+# included: on those cards the primary action is a verb (Reply on a send
+# card, Create on an event card), and the card's own description is one big
+# button holding the whole request text. Neither that body-text button, nor
+# the details toggles, nor the Don't/Deny twins are ever the pick. What is
+# left, in muse_app's preference order, is what gets pressed.
+_TOGGLE_LABELS = {"hide details", "show details", "details", "learn more"}
+_NEGATIVE_LABELS = {"deny", "deny all", "cancel", "block", "dismiss", "no", "not now"}
+_ACTION_VERBS = ("reply", "create", "post", "share", "continue", "approve", "confirm",
+                 "upload", "submit", "accept", "proceed", "pay", "sign", "verify",
+                 "grant", "enable", "book", "schedule", "invite", "add", "save",
+                 "join", "follow", "react", "update", "remove", "delete", "manage")
+
+
+def _candidate_buttons(labels):
+    """A card's plausible primary actions: real buttons only — no body text,
+    no toggles, no Don't/Deny side, no unscoped Always allow."""
+    out = []
+    for l in labels:
+        s = str(l).strip()
+        if not s:
+            continue
+        low = s.lower()
+        if len(s) > 80:  # the request text itself, rendered as one big button
+            continue
+        if low in _TOGGLE_LABELS or low.endswith(" hide details") or low.endswith(" show details"):
+            continue
+        if low in _NEGATIVE_LABELS or low.startswith("don't ") or low.startswith("deny"):
+            continue
+        if low.startswith("always allow"):
+            continue  # unscoped permanent grants are never the pick (scoped ones are chosen earlier)
+        if low.startswith("allow always"):
+            continue  # the same permanent grant, other word order
+        out.append(s)
+    return out
+
+
 def pick_button(labels, policy=APPROVAL_POLICY):
-    """The approving button to press, or None. Same order as Xod's _pick_button:
-    a scoped recipient/site Always allow (unless using one-time-v1), then Allow all once, then the
-    one-time approvals (Send / Allow once / Allow for this task / Allow), then
-    any other task-scoped approval (an Allow... button ending in 'for this
-    task', e.g. 'Allow all web access for this task': it approves this task
-    only and expires with it, so it belongs with the one-time approvals, and
-    it beats an unscoped 'Allow always', which is never picked). Deny and
-    friends are never picked."""
+    """The approving button to press, or None. muse_app's order: a scoped
+    recipient/site Always allow (unless using one-time-v1), then Allow all
+    once, then the one-time approvals (Send / Allow once / Allow for this
+    task / Allow), then any other task-scoped approval (an Allow... button
+    ending in 'for this task'), then the card's primary action verb, then a
+    single remaining candidate. Deny and friends are never picked."""
     if policy not in (APPROVAL_POLICY, ONE_TIME_POLICY):
         return None
     clean = [str(l).strip() for l in labels if str(l).strip()]
@@ -289,8 +324,16 @@ def pick_button(labels, policy=APPROVAL_POLICY):
                 return l
     for l in clean:
         low = l.lower()
-        if low.startswith("allow") and low.endswith("for this task"):
+        if low.startswith("allow ") and low.endswith(" for this task"):
             return l
+    cands = _candidate_buttons(clean)
+    for want in _ACTION_VERBS:
+        for l in cands:
+            low = l.lower()
+            if low == want or low.startswith(want + " "):
+                return l
+    if len(cands) == 1:
+        return cands[0]
     return None
 
 
