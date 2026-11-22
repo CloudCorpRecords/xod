@@ -315,8 +315,45 @@ def _describe_error(e: Exception) -> str:
 
 
 # ------------------------------------------------------------------ the buttons on a card
+# On the connector action cards (a Gmail send, a calendar create, a code share, ...), the
+# card's own description is rendered as one big button whose label is the whole request
+# (often ending in "Hide details"), next to the real actions and their Don't/Deny twins.
+# None of those are the primary action: not the body text, not the details toggles, not
+# the negative side. What is left is what Xod presses (owner, 2026-11-22: Xod clicks every
+# approval card; a card is held only when two real actions compete and no preference
+# order separates them, and the hold is logged with the reason).
+_TOGGLE_LABELS = {"hide details", "show details", "details", "learn more"}
+_NEGATIVE_LABELS = {"deny", "deny all", "cancel", "block", "dismiss", "no", "not now"}
+_ACTION_VERBS = ("reply", "create", "post", "share", "continue", "approve", "confirm",
+                 "upload", "submit", "accept", "proceed", "pay", "sign", "verify",
+                 "grant", "enable", "book", "schedule", "invite", "add", "save",
+                 "join", "follow", "react", "update", "remove", "delete", "manage")
+
+
+def _candidate_buttons(labels: List[str]) -> List[str]:
+    """A card's plausible primary actions: real buttons only — no body text, no toggles,
+    no Don't/Deny side."""
+    out: List[str] = []
+    for l in labels:
+        s = str(l).strip()
+        if not s:
+            continue
+        low = s.lower()
+        if len(s) > 80:  # the request text itself, rendered as one big button
+            continue
+        if low in _TOGGLE_LABELS or low.endswith(" hide details") or low.endswith(" show details"):
+            continue
+        if low in _NEGATIVE_LABELS or low.startswith("don't ") or low.startswith("deny"):
+            continue
+        if low.startswith("always allow"):
+            continue  # unscoped permanent grants are never the pick (scoped ones are chosen earlier)
+        out.append(s)
+    return out
+
+
 def _pick_button(labels: List[str]) -> Optional[str]:
-    """Prefer recipient/site Always allow, then one-time/task approvals."""
+    """Prefer recipient/site Always allow, then one-time/task approvals, then the primary
+    action on a connector action card (Reply on a send card, Create on an event card)."""
     clean = [str(l).strip() for l in labels if str(l).strip()]
     for l in clean:
         if l.casefold() in ("always allow for this recipient", "always allow for this site"):
@@ -332,6 +369,14 @@ def _pick_button(labels: List[str]) -> Optional[str]:
         low = l.lower()
         if low.startswith("allow ") and low.endswith(" for this task"):
             return l
+    cands = _candidate_buttons(clean)
+    for want in _ACTION_VERBS:
+        for l in cands:
+            low = l.lower()
+            if low == want or low.startswith(want + " "):
+                return l
+    if len(cands) == 1:
+        return cands[0]
     return None
 
 
@@ -531,16 +576,7 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
             elif chosen is not None and press and _card_id(entry) in (skip_ids or set()):
                 entry["reason"] = "already pressed: not pressing again"
             elif chosen is None:
-                labs = [l for l in buttons if l.lower() in ("deny", "don't send", "deny all")]
-                others = [l for l in buttons if l.lower() not in ("deny", "don't send", "deny all")]
-                if others:
-                    entry["reason"] = "no button Xod may press (saw: %s)" % ", ".join(others)
-                elif labs == ["Deny"]:
-                    entry["reason"] = "only a Deny button"
-                elif labs:
-                    entry["reason"] = "only negative buttons (%s)" % ", ".join(labs)
-                else:
-                    entry["reason"] = "no button Xod may press"
+                entry["reason"] = _no_button_reason(list(buttons))
             elif press and DRY_RUN:
                 entry["reason"] = "dry run: not pressed (test mode)"
             elif press:
@@ -581,8 +617,9 @@ def _partner_delegated() -> bool:
 
 
 def _no_button_reason(labels: List[str]) -> str:
-    labs = [l for l in labels if l.lower() in ("deny", "don't send", "deny all")]
-    others = [l for l in labels if l.lower() not in ("deny", "don't send", "deny all")]
+    labs = [l for l in labels if l.lower() in ("deny", "don't send", "deny all")
+            or l.lower().startswith("don't ")]
+    others = _candidate_buttons(labels)
     if others:
         return "no button Xod may press (saw: %s)" % ", ".join(others)
     if labs == ["Deny"]:
