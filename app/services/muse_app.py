@@ -32,6 +32,12 @@ is logged as expired and never pressed.
 
 Test mode: XOD_MUSE_APP_DRY_RUN=1 makes scans read-only (nothing is ever pressed), so the switch and the
 UI can be click-tested without touching real cards.
+
+Since 2026-11-22 a press is also gated on a model review (services/muse_review.py): when the review mode
+is "decide" or "act", each card is read and judged by Xod's own model before any hand moves — decide
+logs the judgment and presses nothing (it is the approver's pause), act presses only on an approve.
+Every review and acted outcome lands in the approver audit (DATA_DIR/muse_approver/audit.jsonl) and in
+the card's approvals-history row. Review mode "off" restores the pre-review behavior exactly.
 """
 import asyncio
 import hashlib
@@ -70,7 +76,7 @@ DRY_RUN = bool(os.environ.get("XOD_MUSE_APP_DRY_RUN"))
 _state: Dict[str, Any] = {"task": None, "warned": False, "last": None, "count": 0, "error": None,
                           "present": set(), "pressed_ids": set(), "press_marks": {}, "fail_logged": set(), "scan_lock": None,
                           "observer": None, "observer_pid": None, "debouncer": None,
-                          "loop": None, "backstop_at": 0.0}
+                          "loop": None, "backstop_at": 0.0, "reviews": {}}
 _intent_lock = threading.RLock()
 
 
@@ -242,6 +248,11 @@ def status() -> Dict[str, Any]:
         out["chat_options"] = muse_options.status()
     except Exception:
         out["chat_options"] = None
+    try:
+        from app.services import muse_review
+        out["review"] = muse_review.status()
+    except Exception:
+        out["review"] = None
     if m == "away" and not until:
         out["you"] = user_away()
     from app.services import run_mode
@@ -268,6 +279,13 @@ def status() -> Dict[str, Any]:
         reason = "Waiting until you are away."
     elif DRY_RUN:
         reason = "Dry run: desktop cards are read but no approval buttons are pressed."
+    if reason is None:
+        try:
+            from app.services import muse_review
+            if muse_review.mode() == "decide":
+                reason = "Approver is decide-only: cards are reviewed and logged, not pressed."
+        except Exception:
+            pass
     out["watcher_running"] = bool(task is not None and not task.done())
     out["watcher_notice"] = reason
     out["pressing_now"] = reason is None and not DRY_RUN
@@ -347,6 +365,8 @@ def _candidate_buttons(labels: List[str]) -> List[str]:
             continue
         if low.startswith("always allow"):
             continue  # unscoped permanent grants are never the pick (scoped ones are chosen earlier)
+        if low.startswith("allow always"):
+            continue  # the same permanent grant, other word order
         out.append(s)
     return out
 
@@ -493,6 +513,80 @@ def _release_press(cid: str) -> None:
         _save_pending(_pending_presses() - {cid})
 
 
+# ------------------------------------------------------------------ the approver's REVIEW step
+# Since 2026-11-22 a press is gated on a model review (services/muse_review.py):
+# the card is read, screenshotted where the screen grant allows, and judged by
+# Xod's own model before any hand moves. The review runs once per showing of a
+# card (cached here, pruned when the showing ends). Decide mode is the pause:
+# reviews are taken and logged, nothing is pressed. Off mode is the old
+# behavior exactly: no review, the picker presses as it always did.
+def _review_allows(entry: Dict[str, Any], cid: str) -> bool:
+    """True when this card may be pressed now. Sets entry['review'] and, when
+    refusing, entry['reason']. Called by both press paths after every other
+    refusal (expired, no button, dry run, already attempted) has had its say,
+    and before the press claim, so a decide-only review never spends a claim."""
+    from app.services import muse_review
+    if not muse_review.enabled():
+        return True
+    review = _state["reviews"].get(cid)
+    if review is None:
+        shot = muse_review.capture(cid)
+        review = muse_review.review_sync(entry)
+        review = {**review, "screenshot": shot.get("path"), "screenshot_error": shot.get("error")}
+        _state["reviews"][cid] = review
+        muse_review.audit({"phase": "review", "card_id": cid, "type": entry.get("type"),
+                           "title": entry.get("title"), "what": (entry.get("what") or "")[:1000],
+                           "button": entry.get("button"), "decision": review["decision"],
+                           "reason": review["reason"], "model": review.get("model"),
+                           "provider": review.get("provider"), "latency_s": review.get("latency_s"),
+                           "screenshot": review.get("screenshot"),
+                           "screenshot_error": review.get("screenshot_error"),
+                           "mode": muse_review.mode()})
+    entry["review"] = {k: review.get(k) for k in
+                       ("decision", "reason", "model", "latency_s", "screenshot")}
+    if muse_review.mode() == "decide" or paused_until():
+        entry["reason"] = f"decide-only: review {review['decision']} — {review['reason']}"
+        return False
+    if review["decision"] != "approve":
+        entry["reason"] = f"review {review['decision']}: {review['reason']}"
+        return False
+    return True
+
+
+def _verify_gone(cid: str, via_partner: bool, want_front: bool) -> str:
+    """VERIFY, a beat after a press: re-read the panel and say whether the
+    card is still on it. The watcher's own confirmation scan re-checks a few
+    seconds later regardless; this is the approver audit's immediate read."""
+    time.sleep(1.0)
+    try:
+        if via_partner:
+            from app.services import partner_client
+            res = partner_client.scan(front=want_front)
+            if not res or res.get("_status"):
+                return "verify unavailable: the Partner did not answer the re-read"
+            ids = {c.get("card_id") for c in res.get("cards") or []}
+        else:
+            res = _scan(False)
+            ids = {_card_id(c) for c in res.get("approved") or []}
+        return "card gone" if cid not in ids else "card still showing"
+    except Exception as e:
+        return f"verify failed: {str(e)[:120]}"
+
+
+def _review_outcome(entry: Dict[str, Any], cid: str, action: str,
+                    via_partner: bool, want_front: bool) -> None:
+    """The outcome half of the audit for one acted press: what was done and
+    what the re-read showed. Marks the entry so it is written exactly once."""
+    from app.services import muse_review
+    review = entry.get("review")
+    if not review or entry.get("_audited"):
+        return
+    entry["_audited"] = True
+    muse_review.audit({"phase": "outcome", "card_id": cid, "type": entry.get("type"),
+                       "action": action, "verify": _verify_gone(cid, via_partner, want_front),
+                       "decision": review.get("decision"), "reason": review.get("reason")})
+
+
 def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
     """Find each approval card (a group named "Approval request for …"), read what it asks, choose its
     approving button, and press it when press=True (and this isn't a dry run). press=False only reads."""
@@ -581,8 +675,11 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
                 entry["reason"] = "dry run: not pressed (test mode)"
             elif press:
                 cid = _card_id(entry)
+                entry["buttons"] = list(buttons)
                 pending = _pending_presses()
-                if cid in pending:
+                if not _review_allows(entry, cid):
+                    pass  # the approver's review refused, or decide-only: the reason says which
+                elif cid in pending:
                     entry["reason"] = "approval already attempted: waiting for card to disappear"
                 elif not active():
                     entry["reason"] = "approval paused or user presence changed"
@@ -683,6 +780,8 @@ def _partner_scan_press(skip_ids: Optional[set] = None, want_front: bool = False
             entry["reason"] = "approval already attempted: waiting for card to disappear"
         elif not active():
             entry["reason"] = "approval paused or user presence changed"
+        elif not _review_allows(entry, cid):
+            pass  # the approver's review refused, or decide-only: the reason says which
         elif not _claim_press(cid):
             entry["reason"] = "approval already attempted or paused"
         else:
@@ -713,6 +812,8 @@ def _partner_scan_press(skip_ids: Optional[set] = None, want_front: bool = False
                     if entry["reason"] in ("card not showing", "Muse app not running", "expired before Xod got to it"):
                         entry["uncertain"] = False
                         _release_press(cid)
+        if entry.get("pressed") and entry.get("review") is not None:
+            _review_outcome(entry, cid, f"pressed {entry.get('button')}", True, want_front)
         entries.append(entry)
     return {"running": bool(first.get("running", True)), "approved": entries}
 
@@ -749,6 +850,13 @@ def _log(card: Dict[str, Any]) -> bool:
         ctype = card.get("type") or _card_type(card.get("title") or "")
         fields = {**_card_fields(what), **{k: card.get(k) for k in ("from", "to", "subject", "attachments") if card.get(k)}}
         lines = [f"type: {ctype}", f"button: {card.get('button') or '(none)'}"]
+        review = card.get("review") or {}
+        if review:
+            lines.append(f"review: {review.get('decision')} — {review.get('reason')}")
+            if review.get("model"):
+                lines.append(f"review model: {review['model']}")
+            if review.get("screenshot"):
+                lines.append(f"screenshot: {review['screenshot']}")
         for k in ("from", "to", "subject"):
             if fields.get(k):
                 lines.append(f"{k}: {fields[k]}")
@@ -950,6 +1058,10 @@ async def scan_once() -> List[Dict[str, Any]]:
                     await asyncio.sleep(FRONT_SETTLE)
                     await asyncio.to_thread(_put_back, prev)
             cards = res.get("approved") or []
+            for c in cards:
+                if c.get("pressed") and c.get("review") is not None and not c.get("_audited"):
+                    _review_outcome(c, _card_id(c), f"pressed {c.get('button')}",
+                                    _state.get("last_path") == "partner", want_front)
             if want_front:
                 # Bound the retry even if Partner vanished and the direct
                 # fallback could not reveal a button.
@@ -1009,6 +1121,8 @@ async def scan_once() -> List[Dict[str, Any]]:
             for pid in [pid for pid in marks if pid not in _state["present_ids"]]:
                 marks.pop(pid, None)          # the showing ended; an identical card later is a new showing
                 _state["fail_logged"].discard(pid)
+            for pid in [pid for pid in _state["reviews"] if pid not in _state["present_ids"]]:
+                _state["reviews"].pop(pid, None)   # the showing ended; its review is spent
             fronted &= _state["present_ids"]
             _state["primed"] = True
             _state["error"] = None
@@ -1053,6 +1167,11 @@ def _schedule_burst() -> None:
 
 async def _watch() -> None:
     _state["loop"] = asyncio.get_running_loop()
+    try:
+        from app.services import muse_review
+        muse_review.bind_loop(_state["loop"])
+    except Exception:
+        pass
     if _state.get("debouncer") is None:
         _state["debouncer"] = _Debouncer(DEBOUNCE_SEC, _fire_scan)
     while True:
