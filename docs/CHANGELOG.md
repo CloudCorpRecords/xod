@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+**Approval watcher: connector action cards are pressed now**
+- The Muse app watcher only knew Allow/Send-style buttons, so the connector action cards piled up unpressed: a Gmail send card (its primary button is "Reply"), a calendar card ("Create"), and their kin were logged "no button Xod may press" while Allow-style cards around them were approved. On those cards the request text itself is rendered as one big button (often ending in "Hide details"), next to the real actions and their Don't/Deny twins.
+- The button choice now filters the body text, the details toggles and the negative side out of candidacy, then picks the card's primary action verb (Reply, Create, Post, Share, Continue, Approve, Pay, Sign, ...), or the one affirmative button left. Per the owner's policy (2026-11-22) every approval card on the watched surfaces is clicked; a card is held only when two real actions compete with no preference order between them, and the hold is logged with the candidates it saw. Unscoped permanent grants ("Always allow for all sites" and kin) are still never the pick; scoped recipient/site Always allow remains the first preference.
+- Verified against the real pending cards on the owner's Mac before going live: the live Gmail nudge card maps to "Reply", the Johnny Oz calendar card to "Create", the devin.ai code-share card to "Allow". The Muse app suite grows to 65 checks (the three new ones cover the action-card choice, the ambiguity hold, and a full scan pressing Reply on a Gmail action card); the Chrome extension (16) and option widget (14) suites pass unchanged, and the Chrome target inherits the wider button choice for its dry-run decisions.
+
 ## 1.1.14
 
 A Muse chat release. Xod now answers the choice buttons an assistant message offers in Muse chat, and the Chrome extension approval watcher from the AGE-91 work ships for the first time.

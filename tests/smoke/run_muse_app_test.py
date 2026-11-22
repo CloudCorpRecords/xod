@@ -138,6 +138,28 @@ def main():
           muse_app._pick_button(["Always allow for all sites", "Allow once"]) == "Allow once"
           and muse_app._pick_button(["Always allow for every recipient", "Send"]) == "Send"
           and muse_app._pick_button(["Always allow for this site and all recipients"]) is None)
+    check("action cards: the primary verb wins over the body text and the Don't twin",
+          muse_app._pick_button(["Tree wants to send a Gmail reply with your nudge message. "
+                                 "This task comes from the side chat “Join GitHub organizations”. Hide details",
+                                 "Reply", "Don't reply"]) == "Reply"
+          and muse_app._pick_button(["Tree wants to create a calendar event and send an invitation "
+                                     "to Johnny Oz to set up a meeting. Hide details",
+                                     "Create", "Don't create"]) == "Create"
+          and muse_app._pick_button(["Pay $25", "Don't pay"]) == "Pay $25"
+          and muse_app._pick_button(["Sign", "Don't sign"]) == "Sign"
+          and muse_app._pick_button(["Continue", "Cancel"]) == "Continue")
+    check("action cards: held only when there is no real action, or two unranked actions compete",
+          muse_app._pick_button(["Tree wants to do a thing. Hide details", "Don't do it"]) is None
+          and muse_app._pick_button(["Frobnicate", "Zangle"]) is None
+          and muse_app._pick_button(["Hide details", "Don't reply"]) is None)
+    body_btn = El("AXButton", "Tree wants to send a Gmail reply with your nudge message. Hide details")
+    reply_btn, dont_btn = El("AXButton", "Reply"), El("AXButton", "Don't reply")
+    gmail3 = El("AXGroup", "Approval request for Gmail",
+                [El("AXStaticText", "Allow Tree to send this email in Gmail?"), body_btn, reply_btn, dont_btn])
+    muse_app._ax_api = lambda: FakeAX(El("AXApplication", "Muse", [El("AXWindow", "Muse", [gmail3])]))
+    got = muse_app._scan(True)["approved"][0]
+    check("a Gmail action card: Reply is pressed, not the body text or Don't reply",
+          got["button"] == "Reply" and reply_btn.pressed and not dont_btn.pressed and not body_btn.pressed, str(got))
 
     allow2 = El("AXButton", "Allow")
     card4 = El("AXGroup", "Approval request for Browser", [El("AXStaticText", "Allow an upload?"), allow2])
