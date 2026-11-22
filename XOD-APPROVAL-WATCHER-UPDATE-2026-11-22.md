@@ -93,3 +93,45 @@ No approval cards are currently pending: the last watcher row is the 12:02:03 Gm
 ### Approver agent loop — status
 
 Per Rene's architecture direction (trigger → perceive/screenshot → model review with a logged opinion → act → verify; "build it like you"), the loop is **not yet built** — the repair incident preempted it, on Rene's own re-prioritization. Inventory already established for it: Xod's own configured model route is **unproven** (an SSH-side probe hit "No API key configured for OPENAI" but also a Keychain access failure, so the key's absence inside the real backend process is not proven either way — the retest must go through the running backend's own API); the Xod Connect route to the paired Muse is asynchronous (signed offer + tree-inbox + Agent Mail), not a synchronous ask. The picker fix above becomes the loop's ACT-step button locator. Next step when the approver phase resumes: settle the model route with evidence through the live backend, then DECIDE-ONLY over the next real cards before enabling acting.
+
+---
+
+## Part 3 — the approver loop, built and deployed (2026-11-22, ~12:40–13:20 PT)
+
+Rene's call at 12:32 PT: hold v1.1.15, build the approver loop first. It is built, tested, deployed live on the Mac the same way the guardian hardening was (file swap on the installed apps, backups kept), and left RUNNING in acting mode. Commit `3f566a6c` on `tree/muse-option-widgets-2026-11-22` (local only, not pushed).
+
+### Step 1 — the brain, proven and characterized
+
+- **POST /api/chat on the live backend answered a real review request in 10.3s** with a real judgment (`{"decision":"deny","reason":"The follow-up is addressed to GitHub's no-reply notification address."}`) — but wrapped in agentic prose, and it browsed github.com during the review. Route works; endpoint is an agent, not a reviewer. **Decision: the loop calls `llm_service.chat_completion` in-process** — the same endpoint/key the backend itself uses, no tools, strict JSON out.
+- The running backend's endpoint info: **provider openai, model gpt-6.1-terra** (also what /api/llm/models serves; HTTP 200).
+- **The Keychain confound, settled:** a fresh SSH-launched python on the Mac, even with the backend's env mimicked, resolves the key as "missing" ("No API key configured for OPENAI") — the key is reachable only inside the app process (bundle/Keychain identity). Conclusion: the review MUST run in-process, which is how it is built; any out-of-process replay honestly returns "review unavailable". The Partner brain was checked too: shadow mode, no key — not a route.
+
+### Step 2 — the loop (services/muse_review.py + gate in services/muse_app.py)
+
+- TRIGGER: the existing watcher (AX observation + backstop scan) and the verb-aware picker, unchanged.
+- PERCEIVE: card text/type/buttons extracted as before; a screenshot is attempted per review via the backend's own `desktop._screenshot()` into the audit dir. **Currently failing**: the Xod backend's Screen Recording TCC row is stale/false after the reinstall, so captures record `"macOS didn't give Xod the screen…"` in the audit instead of a path — recorded, never faked. Rene re-granting Screen Recording to Xod restores captures with no code change.
+- REVIEW: `muse_review.review_sync` — one model call per showing of a card (cached in watcher state, pruned when the showing ends), strict validation (`{decision: approve|deny|leave, reason}`; anything malformed, any transport failure, any timeout → **leave**, never an approval). The prompt judges as Rene's proxy with **no category exclusions** — payments/passwords/contracts/identity are judged on their merits, per Rene's explicit removal of Tree's never-list.
+- ACT: the gate sits in both press paths (Partner-delegated and own walk) after every existing refusal and **before** the press claim, so a refused review never spends a claim. Act mode presses only on approve, through the Partner's AX press (whose frozen picker was taught the action verbs — Reply/Create/Pay/Sign — with policy semantics unchanged: scoped Always allow preferred under always-allow-v1, skipped under one-time-v1, unscoped permanent grants never picked; the backend picker's candidate filter also now excludes the "Allow always" word order, which its single-candidate fallback could previously pick against its own docstring).
+- VERIFY: after an acted press, the panel is re-read (~1s) and the outcome audit row records "card gone" / "card still showing" / the failure; the watcher's existing confirmation scan re-checks seconds later regardless.
+- AUDIT: `~/Library/Application Support/Xod/muse_approver/audit.jsonl` (review rows + outcome rows), plus the review decision/reason/model/screenshot lines in the approvals-history rows the watcher already writes.
+- PAUSE: setting `muse_review_mode` = `decide` is decide-only (reviews taken and logged, nothing pressed); the watcher's own pause also forces decide-only behavior at the gate. Mode is read live from the settings store — flips need no restart (proven below). `off` restores pre-review behavior exactly.
+- Tests: new `tests/smoke/run_muse_review_test.py` **25/25** (mode switch, gate in both directions, validation, one-review-per-showing, audit rows, pause, Partner verbs). Existing suites green: muse_app 65/65, muse_options 14/14, partner, partner_ax, partner delegation, partner brain, updates hardening, approval reliability.
+
+### Deployment (Mac, live)
+
+Backups: `*.bak-2026-11-22-approver` beside each replaced file. Deployed `partner/xod_partner.py` + `partner/partner_ax.py` to the Partner app and `app/services/muse_app.py` + `app/services/muse_review.py` to the Xod backend (shas verified equal to the worktree after transfer). Partner restarted via its LaunchAgent; Xod cold-relaunched. Verified at the destination: Partner running + trusted, **approval_compatible: true** (was false, with a stale-update notice — now gone), watcher running, **pressing_now: true**, accessibility_error cleared.
+
+### Step 3 — rollout evidence, honestly stated
+
+- **(a) DECIDE-ONLY:** mode set to `decide` on the live backend (its status confirmed the flip). The three real morning cards (Gmail nudge Reply for reticle #2094; Johnny Oz calendar Create; Devin one-time-code Allow — texts from this report and the smoke-test record) were replayed through the deployed review module on the Mac. All three audit rows read **leave — "review unavailable: No API key configured for OPENAI"**: the replay ran out-of-process, where the key provably does not exist (Step 1). Those are NOT model judgments and are not presented as such; they do prove the fail-soft (a review that didn't happen never approves) and the audit trail. The watcher then sat in decide mode for ~5.5 minutes of polling: **no live card appeared** (reviewed=0 throughout), so no in-process decide-only judgment was captured in this window either. The gate's decide-only behavior itself is unit-proven (25/25) and the mode flip was observed live on the running backend.
+- **(b) LIVE ACT CYCLE:** **not proven — no real card appeared during the run, and a card cannot be synthesized.** The one staging attempt (asking Xod's own chat agent via /api/chat to send the test Gmail) never raised a card: that agent works through the browser, hit a Google bot check, and sent nothing. Muse-app cards are raised by the fleet's connector work in the Muse app, which produced none in this window. Nothing was fabricated: no fake card, no simulated press. The first real card the fleet raises from now on will be the live cycle: reviewed by gpt-6.1-terra in-process, pressed on approve, outcome-audited with a panel re-read.
+- **(c) END STATE (verified after the flip):** `muse_review_mode=act`, watcher_running true, pressing_now true, Partner trusted + approval-compatible, brain openai/gpt-6.1-terra, no cards pending.
+
+### Honest gaps
+
+1. **No live end-to-end cycle yet** (above) — the loop's first real card is still ahead of it; watch the audit file's first non-replay rows.
+2. **Review latency/reliability unmeasured on real cards.** The only live model evidence is the /api/chat probe (10.3s for an agent turn, not a bare completion). The review call is capped (60s model timeout, 75s gate wait) and fails to leave, but real-card latency stats do not exist yet.
+3. **Screenshots blocked** until Rene re-grants Screen Recording to Xod (stale TCC row after reinstall); audit records the failure per review.
+4. **The brain is identity-bound to the app process** — by design here, but it means no out-of-process review/replay tooling can ever work; decide-only evidence can only come from live cards.
+5. Xod Connect (async tree-inbox) was not used — the in-process route made it unnecessary; it remains the only fallback if the in-process key ever disappears, and its wait would need honest design.
+6. Everything ships in the held v1.1.15's file set eventually; until a release carries it, the live deploy is file-swapped on stock 1.1.14 (same exposure as the guardian hardening: a future self-update would replace these files).
