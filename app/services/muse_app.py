@@ -198,6 +198,11 @@ def _apply() -> Dict[str, Any]:
             muse_chrome.start()  # the Chrome extension target (dry run) rides the same switch
         except Exception:
             pass
+        try:
+            from app.services import muse_options
+            muse_options.start()  # chat option widgets: pick the most expansive, same switch
+        except Exception:
+            pass
     else:
         try:
             from app.services import power
@@ -232,6 +237,11 @@ def status() -> Dict[str, Any]:
         out["chrome_extension"] = muse_chrome.status()
     except Exception:
         out["chrome_extension"] = None
+    try:
+        from app.services import muse_options
+        out["chat_options"] = muse_options.status()
+    except Exception:
+        out["chat_options"] = None
     if m == "away" and not until:
         out["you"] = user_away()
     from app.services import run_mode

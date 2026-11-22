@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 1.1.14
+
+A Muse chat release. Xod now answers the choice buttons an assistant message offers in Muse chat, and the Chrome extension approval watcher from the AGE-91 work ships for the first time.
+
+**Muse chat option widgets**
+- Assistant messages in Muse chat can end with a set of dotted-outline option buttons (the muse.create_options widget). The approval watchers never saw them: approval cards are groups named "Approval request for ...", and these buttons are sentence-length labels in ordinary chat flow, so no approving button could be picked for them.
+- A new watcher (services/muse_options.py) detects option widgets structurally in the Muse app tree: two or more sibling sentence-labelled buttons in one container, plus the question above them, with approval and navigation buttons excluded. It reads the question and every option, scores each option for how much work and scope it authorizes, and presses the most expansive one (the owner's policy, 2026-11-22). In the first real case, "Send the 7 queued DMs via my Mac main Chrome LinkedIn tab" beats "Keep building the employer list first, no DMs yet".
+- Every detection is logged with the question, every option's score and factors, why the picked one is the most expansive, and a read-back after the press: confirmed only when the widget leaves the screen, unconfirmed when it still shows. A widget is never pressed twice while it stays showing.
+- The safety posture matches the approval watchers: it runs only under the Muse approvals switch, protected topics (passwords, payment, signing, credentials) are held for the person, and a near-tie between options is held as ambiguous instead of guessed.
+
+**Chrome extension approval watcher (AGE-91)**
+- The Muse Chrome extension's approval cards get a second watcher target through the Windows UIA tree, scoped to the extension side panel so page content can never present a fake card. It is dry run in this release: cards are read, the auto-approve policy is applied, and the decision is logged, but nothing in Chrome is pressed. Permission bubbles are detected and held unless their origin is on an allowlist that starts empty.
+
+**Tests**
+- New suite run_muse_options_test (14 checks: the real screenshot widget, no double press, scope scoring, approval cards and navigation excluded, ambiguity and protected holds, switch off, dry run, the log record). It fails on 1.1.13 (the module is absent) and passes here. The Muse app suite (62) and Chrome extension suite (16) pass unchanged.
+
 ## 1.1.13
 
 A voice release. Talking with Xod is reworked end to end: it waits for you to finish, it no longer answers itself or the room, the wake word only answers to its real name, and the voice itself is a local neural voice instead of the system robot voice.
