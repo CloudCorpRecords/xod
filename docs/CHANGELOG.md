@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.1.17
+
+The guardian learns to doubt its own probe. 1.1.16 published clean, installed, and cold-launched healthy, and minutes later the update guardian rolled it back to 1.1.14 and blocked it, on one failed probe: the file round trip. That probe judges the backend by creating an agent task through the backend itself, so when the agent stack is overloaded (a mail rate-limit burst plus recall indexing), the task dies inside the task system and the probe reads that as a broken build. The confirmation battery then re-ran the same probe through the same overloaded stack and got the same answer. This release fixes the probe, not the build.
+
+**The file round-trip probe can no longer convict on task-system weather**
+- Probe and battery verdicts are now three-valued: pass, fail, or inconclusive. The file probe retries in place with backoff, and only a completed task whose bytes come back wrong or missing counts as a failure. A task that ends failed or cancelled, an API error, or a task that never reaches a terminal state is inconclusive: the file was never judged, so the build is not judged either.
+- An inconclusive battery holds the update unverified and retries on an interval. It can never roll back a build that passed health and launched. A rollback now requires a conclusive failure confirmed by the confirmation battery on every code path, including the mixed-install path, which previously rolled back with no confirmation at all.
+- Every block record now carries the full battery history (which battery failed, per-probe results) and a guardian build stamp, and guardian status exposes the build and the last battery verdict, so the next field incident is diagnosable from the record alone instead of by archaeology.
+- Regression coverage: the hardening suite gains a case that replays the 1.1.16 incident exactly (health, chat, and permissions pass while every file task dies in the task system). It fails against the 1.1.16 guardian at the assertion "a task-system failure rolled back a healthy install" and passes against this one. A second case pins the other side: a real content mismatch in both batteries still rolls back, byte for byte.
+
+**Recovery note**
+- The guardian block on 1.1.16 stays in place as the incident record; this release supersedes it. The Partner helper must be reinstalled from this tree before the update is judged, so the guardian judging the swap is the fixed build; its status now reports the guardian build stamp that proves it.
+
 ## 1.1.16
 
 The widget release. 1.1.15 never reached the owner's machine (its release run was superseded the same day), so this release carries everything in 1.1.15, the rubber-stamp approver, the self-repair hardening, and the connector action cards, plus the one piece 1.1.15 did not have: Xod now answers Muse chat option widgets by judgment instead of by keyword score.
