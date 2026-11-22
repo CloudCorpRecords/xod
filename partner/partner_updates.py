@@ -46,11 +46,29 @@ The guardian's job around that swap:
    read back from disk and compared, the T5 shape), and a read of the
    auto-approve settings (Xod's own trust and the partner block are
    recorded; that check fails only if the endpoint itself fails).
-3. On battery failure: roll back. Write the planned-shutdown signal
-   first (the v1.1 marker protocol, so the revival accounting stays
-   honest), quit the app, restore the snapshot over the app path,
-   relaunch, re-run the battery, and write a block marker naming the bad
-   payload version, the time, and the failure. The restore is staged:
+3. On battery failure: roll back. A single failed battery never rolls
+   anything back: the battery is re-run once as a confirmation, and only
+   a second consecutive failure acts (2026-11-22: a healthy 1.1.14 whose
+   health, chat and permission probes all passed was rolled back on one
+   failed file-round-trip probe). And a rollback may only restore the
+   snapshot of the install the payload actually replaced: when no fresh
+   verified snapshot of that pre-update install exists (the snapshot
+   copy failed verification, or was refused, or is held), the snapshot
+   on disk is STALE by definition, and restoring it moves the install
+   backwards past the replaced version (2026-11-22: the 1.1.14 snapshot
+   failed verification, the retained snapshot stayed at 1.1.4 from two
+   weeks earlier, and the rollback landed the machine on 1.1.4, a build
+   whose own self-repair is known-broken, in an endless repair loop).
+   In that case the guardian leaves the new install in place, blocks
+   the payload, and writes a guardian report instead. Write the
+   planned-shutdown signal first (the v1.1 marker protocol, so the
+   revival accounting stays honest), quit the app, restore the snapshot
+   over the app path, relaunch, re-run the battery, and write a block
+   marker naming the bad payload version, the time, and the failure.
+   If the restored build then fails its own post-rollback battery, the
+   pre-rollback build (kept aside during the restore) is put back: a
+   build that passed most of its battery is a better known state than
+   a restored build that cannot start at all. The restore is staged:
    the snapshot is copied aside and verified byte for byte before the
    app path is touched, then swapped in — a copy that dies halfway
    leaves a complete tree in place, never a half-copied husk. And after
@@ -128,16 +146,38 @@ def read_version(app_path):
         return None
 
 
-def tree_manifest(root):
+VOLATILE_DIR_NAMES = {"__pycache__"}
+VOLATILE_SUFFIXES = (".pyc", ".pyo", ".log")
+
+
+def _is_volatile(rel):
+    """A path whose bytes a running app legitimately rewrites under a
+    byte-for-byte copy: bytecode caches and logs inside the bundle.
+    Copying a LIVE app tree and then demanding every one of these bytes
+    match is what failed the 1.1.14 snapshot verification on 2026-11-22
+    (the copy raced the running backend's own writes), which silently
+    left a two-week-old snapshot as the rollback target. Volatile paths
+    are still copied; copy VERIFICATION compares the load-bearing tree
+    and ignores them."""
+    parts = str(rel).split("/")
+    if any(p in VOLATILE_DIR_NAMES for p in parts):
+        return True
+    return str(rel).endswith(VOLATILE_SUFFIXES)
+
+
+def tree_manifest(root, ignore_volatile=False):
     """{relative path: (kind, size, sha256 or link target)} for a tree,
     used to verify copies byte for byte. Symlinks are recorded, not
-    followed."""
+    followed. With ignore_volatile, paths a running app rewrites on its
+    own (see _is_volatile) are left out of the comparison."""
     root = Path(root)
     out = {}
     if not root.exists():
         return out
     for path in sorted(root.rglob("*")):
         rel = str(path.relative_to(root))
+        if ignore_volatile and _is_volatile(rel):
+            continue
         if path.is_symlink():
             out[rel] = ("link", 0, str(path.readlink()))
         elif path.is_file():
@@ -305,6 +345,8 @@ class UpdateGuardian:
         return {
             "last_payload_version": self.state.get("last_payload_version"),
             "pending_version": (self.state.get("pending") or {}).get("payload_version"),
+            "pending_snapshot_ok": (self.state.get("pending") or {}).get("snapshot_ok"),
+            "last_guardian_report": self.state.get("last_guardian_report"),
             "snapshot_version": self.state.get("snapshot_version"),
             "snapshot_present": self._snapshot_path().exists(),
             "last_battery_ok": battery.get("ok"),
@@ -369,7 +411,8 @@ class UpdateGuardian:
         incoming = snap_dir / ".incoming"
         shutil.rmtree(incoming, ignore_errors=True)
         shutil.copytree(app, incoming, symlinks=True)
-        if tree_manifest(incoming) != tree_manifest(app) or read_version(incoming) != pre_version:
+        if (tree_manifest(incoming, ignore_volatile=True) != tree_manifest(app, ignore_volatile=True)
+                or read_version(incoming) != pre_version):
             shutil.rmtree(incoming, ignore_errors=True)
             self.log("updates guardian: snapshot for payload %s FAILED verification; "
                      "the retained snapshot was not touched" % payload_version)
@@ -558,7 +601,8 @@ class UpdateGuardian:
         shutil.rmtree(staging, ignore_errors=True)
         try:
             shutil.copytree(snapshot, staging, symlinks=True)
-            staged_ok = (tree_manifest(staging) == tree_manifest(snapshot)
+            staged_ok = (tree_manifest(staging, ignore_volatile=True)
+                         == tree_manifest(snapshot, ignore_volatile=True)
                          and read_version(staging) == want)
         except Exception as exc:
             self.log("updates guardian: restore copy raised: %s" % exc)
@@ -588,13 +632,20 @@ class UpdateGuardian:
                 shutil.move(str(self.app_path), str(aside))
                 moved_aside = True
             shutil.move(str(staging), str(self.app_path))
-            restored = (tree_manifest(self.app_path) == tree_manifest(snapshot)
+            restored = (tree_manifest(self.app_path, ignore_volatile=True)
+                        == tree_manifest(snapshot, ignore_volatile=True)
                         and read_version(self.app_path) == want)
         except Exception as exc:
             self.log("updates guardian: restore swap raised: %s" % exc)
             restored = False
         if restored:
-            shutil.rmtree(aside, ignore_errors=True)
+            # The replaced (battery-failed) build stays in the aside tree
+            # until the restored build passes its post-rollback battery:
+            # if the restored build turns out to be the one that cannot
+            # start, the guardian puts the replaced build back rather
+            # than leaving a dead app installed (2026-11-22: the restored
+            # 1.1.4 could not start at all and was simply left there).
+            self.state["replaced_kept"] = str(aside)
             return True
         self.log("updates guardian: RESTORE FAILED verification; the replaced app "
                  "is kept at %s" % aside)
@@ -606,6 +657,82 @@ class UpdateGuardian:
             except Exception as exc:
                 self.log("updates guardian: putting the pre-rollback build back raised: %s" % exc)
         return False
+
+    def _record_block(self, bad_version, failure, restored_version):
+        blocked = self.state.setdefault("blocked", {})
+        entry = blocked.get(bad_version) or {"rollbacks": 0}
+        entry["rollbacks"] = int(entry.get("rollbacks", 0)) + 1
+        entry["at"] = _iso(self.now_fn())
+        entry["failure"] = failure
+        blocked[bad_version] = entry
+        marker = {"version": bad_version, "at": entry["at"], "failure": failure,
+                  "rollbacks": entry["rollbacks"],
+                  "restored_version": restored_version}
+        self._block_path(bad_version).write_text(json.dumps(marker, indent=1, sort_keys=True))
+        self.log("updates guardian: block marker written for payload %s (rollback %d): %s"
+                 % (bad_version, entry["rollbacks"], self._block_path(bad_version)))
+        if entry["rollbacks"] >= 2:
+            self.log("updates guardian: BLOCKED: payload %s has now failed the update battery "
+                     "%d times; it is flagged in status and will never be silently accepted"
+                     % (bad_version, entry["rollbacks"]))
+        return entry
+
+    def _write_guardian_report(self, kind, version, detail):
+        """One clear report file per guardian incident that left the app
+        in a state other than a clean accept or a clean rollback, so a
+        human finds the story in one place instead of a looping dialog."""
+        report = {"kind": kind, "version": version, "at": _iso(self.now_fn()),
+                  "detail": detail}
+        safe = "".join(c if (c.isalnum() or c in "._-") else "_" for c in str(version))
+        path = self.state_dir / ("guardian-report-%s.json" % safe)
+        try:
+            path.write_text(json.dumps(report, indent=1, sort_keys=True))
+        except Exception as exc:
+            self.log("updates guardian: guardian report write failed: %s" % exc)
+        self.state["last_guardian_report"] = {"kind": kind, "version": version,
+                                              "at": report["at"]}
+        return path
+
+    def _swap_back_replaced(self, pending):
+        """Put the pre-rollback build (kept aside by _restore_snapshot)
+        back at the app path. Used when the restored build fails its own
+        post-rollback battery: the pre-rollback build, which passed most
+        of its battery, is the better known state."""
+        kept = self.state.pop("replaced_kept", None)
+        if not kept or not Path(kept).exists():
+            return False
+        kept = Path(kept)
+        if read_version(kept) != pending.get("payload_version"):
+            return False
+        try:
+            self.quit_app()
+        except Exception as exc:
+            self.log("updates guardian: quit before put-back raised: %s" % exc)
+        aside = self._snap_dir() / ".failed-restore"
+        shutil.rmtree(aside, ignore_errors=True)
+        try:
+            if self.app_path.exists():
+                shutil.move(str(self.app_path), str(aside))
+            shutil.move(str(kept), str(self.app_path))
+            ok = read_version(self.app_path) == pending.get("payload_version")
+        except Exception as exc:
+            self.log("updates guardian: put-back swap raised: %s" % exc)
+            ok = False
+        if ok:
+            shutil.rmtree(aside, ignore_errors=True)
+        else:
+            if aside.exists() and not self.app_path.exists():
+                try:
+                    shutil.move(str(aside), str(self.app_path))
+                except Exception:
+                    pass
+            self.log("updates guardian: PUT-BACK FAILED; what sits at the app path "
+                     "needs a human: %s" % self.app_path)
+        try:
+            self.relaunch_app()
+        except Exception as exc:
+            self.log("updates guardian: relaunch after put-back raised: %s" % exc)
+        return ok
 
     def _rollback(self, pending, checks):
         bad_version = pending.get("payload_version")
@@ -626,68 +753,123 @@ class UpdateGuardian:
             self.state["last_action"] = "rollback aborted: installed moved to %s" % installed_now
             return False
         failure = "; ".join("%s: %s" % (c["name"], c["detail"]) for c in checks if not c["ok"])
+        # Freshness gate (2026-11-22): a rollback may only restore the
+        # snapshot of the install this payload actually replaced. If the
+        # retained snapshot is anything else (an older cycle's copy, left
+        # in place because this cycle's snapshot failed verification or
+        # was refused or held), restoring it moves the install backwards
+        # past the replaced version. That is how a healthy 1.1.14 became
+        # a stranded 1.1.4: the 1.1.13 snapshot failed verification, the
+        # retained 1.1.4 snapshot was restored instead, and 1.1.4's own
+        # self-repair is known-broken, so the machine looped on a repair
+        # dialog. Refuse: leave the new install running, block the
+        # payload, write one clear report.
+        snapshot = self._snapshot_path()
+        snap_version = pending.get("snapshot_version")
+        if not snapshot.exists() or snap_version != pending.get("pre_version"):
+            self.log("updates guardian: ROLLBACK REFUSED for %s: the retained snapshot is "
+                     "%s, not the %s this payload replaced; restoring it would move the "
+                     "install backwards past the replaced version. The new install is left "
+                     "in place, the payload is blocked, and a guardian report was written"
+                     % (bad_version, snap_version, pending.get("pre_version")))
+            self._record_block(bad_version, failure, None)
+            self._write_guardian_report(
+                "stale-snapshot-rollback-refused", bad_version,
+                "battery failure: %s. The retained snapshot is %s but the install this "
+                "payload replaced was %s, so no restore was attempted and %s stays "
+                "installed. A human should check the app; the payload stays blocked."
+                % (failure, snap_version, pending.get("pre_version"), bad_version))
+            self.state["last_action"] = ("rollback refused (stale snapshot): %s left installed"
+                                         % bad_version)
+            return False
         self.log("updates guardian: update to %s FAILED the battery (%s); rolling back to %s"
-                 % (bad_version, failure, pending.get("snapshot_version")))
+                 % (bad_version, failure, snap_version))
         self._write_planned_signal("update rollback: %s failed the health battery" % bad_version)
         self.log("updates guardian: planned-shutdown signal written ahead of the rollback quit")
         try:
             self.quit_app()
         except Exception as exc:
             self.log("updates guardian: quit before rollback raised: %s" % exc)
-        snapshot = self._snapshot_path()
-        restored = False
-        if snapshot.exists():
-            restored = self._restore_snapshot(snapshot, pending)
-            if not restored:
-                # The installed state is suspect now: whatever sits at the app
-                # path must never be snapshotted over the retained last-good
-                # copy (the 0.9.24 incident: a failed restore left a husk in
-                # place and the NEXT payload's snapshot overwrote the good
-                # 0.9.23 snapshot with it). Snapshots hold until a battery
-                # passes for the installed version again.
-                self.state["snapshot_hold"] = True
-                self.log("updates guardian: snapshot hold set: after the failed restore, "
-                         "later payloads will not overwrite the retained snapshot of %s"
-                         % pending.get("snapshot_version"))
-        else:
-            self.log("updates guardian: no snapshot is retained, so there is nothing to "
-                     "restore; the bad version stays installed and the block marker still lands")
+        restored = self._restore_snapshot(snapshot, pending)
+        if not restored:
+            # The installed state is suspect now: whatever sits at the app
+            # path must never be snapshotted over the retained last-good
+            # copy (the 0.9.24 incident: a failed restore left a husk in
+            # place and the NEXT payload's snapshot overwrote the good
+            # 0.9.23 snapshot with it). Snapshots hold until a battery
+            # passes for the installed version again.
+            self.state["snapshot_hold"] = True
+            self.log("updates guardian: snapshot hold set: after the failed restore, "
+                     "later payloads will not overwrite the retained snapshot of %s"
+                     % snap_version)
         try:
             self.relaunch_app()
         except Exception as exc:
             self.log("updates guardian: relaunch after rollback raised: %s" % exc)
         if restored:
-            ok2, checks2 = self.run_battery(pending.get("snapshot_version"))
+            ok2, checks2 = self.run_battery(snap_version)
             self.log("updates guardian: post-rollback battery for the restored %s: %s"
-                     % (pending.get("snapshot_version"), "PASS" if ok2 else "FAIL"))
-            # AGE-72 property (c): a restored bundle whose backend still
-            # reports a different version is a mixed install even after
-            # the rollback. Surface it as a defect state in status; do
-            # not loop another rollback over it.
-            agree, detail = self._version_agreement(pending.get("snapshot_version"))
-            if not agree:
-                self.state["mixed_install"] = {
-                    "at": _iso(self.now_fn()), "detail": detail,
-                    "after": "rollback to %s" % pending.get("snapshot_version")}
-                self.log("updates guardian: MIXED INSTALL after rollback: %s; "
-                         "recorded as a defect state in status" % detail)
-        blocked = self.state.setdefault("blocked", {})
-        entry = blocked.get(bad_version) or {"rollbacks": 0}
-        entry["rollbacks"] = int(entry.get("rollbacks", 0)) + 1
-        entry["at"] = _iso(self.now_fn())
-        entry["failure"] = failure
-        blocked[bad_version] = entry
-        marker = {"version": bad_version, "at": entry["at"], "failure": failure,
-                  "rollbacks": entry["rollbacks"],
-                  "restored_version": pending.get("snapshot_version") if restored else None}
-        self._block_path(bad_version).write_text(json.dumps(marker, indent=1, sort_keys=True))
-        self.log("updates guardian: block marker written for payload %s (rollback %d): %s"
-                 % (bad_version, entry["rollbacks"], self._block_path(bad_version)))
-        if entry["rollbacks"] >= 2:
-            self.log("updates guardian: BLOCKED: payload %s has now failed the update battery "
-                     "and been rolled back %d times; it is flagged in status and will keep "
-                     "being rolled back, never silently accepted"
-                     % (bad_version, entry["rollbacks"]))
+                     % (snap_version, "PASS" if ok2 else "FAIL"))
+            if ok2:
+                kept = self.state.pop("replaced_kept", None)
+                if kept:
+                    shutil.rmtree(kept, ignore_errors=True)
+                # AGE-72 property (c): a restored bundle whose backend still
+                # reports a different version is a mixed install even after
+                # the rollback. Surface it as a defect state in status; do
+                # not loop another rollback over it.
+                agree, detail = self._version_agreement(snap_version)
+                if not agree:
+                    self.state["mixed_install"] = {
+                        "at": _iso(self.now_fn()), "detail": detail,
+                        "after": "rollback to %s" % snap_version}
+                    self.log("updates guardian: MIXED INSTALL after rollback: %s; "
+                             "recorded as a defect state in status" % detail)
+            else:
+                # The restored build failed its own battery. That alone is
+                # not a reason to undo the rollback: a restored build that
+                # ANSWERS health but fails agent probes is a working app
+                # with an unhappy backend, and it stays. The put-back is
+                # only for the 2026-11-22 shape: the restored build cannot
+                # start at all (its health probe fails) while the build it
+                # replaced had passed health — a dead install is strictly
+                # worse than the better-known state that was rolled back.
+                fail2 = "; ".join("%s: %s" % (c["name"], c["detail"])
+                                  for c in checks2 if not c["ok"])
+                restored_starts = any(c["name"] == "health" and c["ok"] for c in checks2)
+                replaced_started = any(c["name"] == "health" and c["ok"] for c in checks)
+                if restored_starts or not replaced_started:
+                    self.log("updates guardian: the restored %s failed its post-rollback "
+                             "battery (%s) but %s, so the rollback stands and the failure "
+                             "is on record" % (snap_version, fail2,
+                                                "it answers health, so it is a working app"
+                                                if restored_starts else
+                                                "the replaced build had not passed health either, "
+                                                "so there is no better known state to put back"))
+                elif self._swap_back_replaced(pending):
+                    self.log("updates guardian: the restored %s FAILED its post-rollback "
+                             "battery (%s), so the pre-rollback build %s was put back: it "
+                             "is the better known state. The payload is blocked and a "
+                             "guardian report was written" % (snap_version, fail2, bad_version))
+                    self._write_guardian_report(
+                        "restored-build-failed-put-back", bad_version,
+                        "battery failure: %s. The rollback restored %s, which then failed "
+                        "its own battery (%s), so %s was put back in place. A human should "
+                        "check the app; the payload stays blocked."
+                        % (failure, snap_version, fail2, bad_version))
+                    restored = False
+                else:
+                    self.log("updates guardian: the restored %s FAILED its post-rollback "
+                             "battery (%s) and the pre-rollback build could not be put "
+                             "back; what sits at the app path needs a human"
+                             % (snap_version, fail2))
+                    self._write_guardian_report(
+                        "restored-build-failed-put-back-failed", bad_version,
+                        "battery failure: %s. The rollback restored %s, which failed its "
+                        "own battery (%s), and putting %s back failed too."
+                        % (failure, snap_version, fail2, bad_version))
+        self._record_block(bad_version, failure,
+                           snap_version if restored else None)
         self.state["last_action"] = "rolled back %s" % bad_version
         return restored
 
@@ -714,6 +896,7 @@ class UpdateGuardian:
         blocked = (self.state.get("blocked") or {}).get(version)
         pending = {"payload_version": version, "pre_version": installed,
                    "snapshot_version": self.state.get("snapshot_version"),
+                   "snapshot_ok": False,
                    "staged_at": _iso(now), "pre_start_token": self.app_start_token(),
                    "blocked_repeat": bool(blocked)}
         if blocked:
@@ -730,6 +913,13 @@ class UpdateGuardian:
         else:
             if self._take_snapshot(installed, version):
                 pending["snapshot_version"] = self.state.get("snapshot_version")
+                pending["snapshot_ok"] = True
+        if not pending["snapshot_ok"]:
+            self.log("updates guardian: ROLLBACK PROTECTION UNAVAILABLE for payload %s: "
+                     "no verified snapshot of the installed %s exists for this cycle "
+                     "(see the snapshot lines above), so if %s fails its battery it will "
+                     "be left in place and blocked, never restored to a stale snapshot"
+                     % (version, installed, version))
         self.state["seen_identity"] = identity
         self.state["last_payload_version"] = version
         self.state["pending"] = pending
@@ -806,6 +996,22 @@ class UpdateGuardian:
             self._save_state()
             return
         ok, checks = self.run_battery(current)
+        if not ok:
+            # Confirmation (2026-11-22): one failed battery never rolls an
+            # install back. The battery's probes lean on the agent stack
+            # itself (a chat reply, a file task the model must perform),
+            # so a single transient failure is weak evidence; a healthy
+            # 1.1.14 was rolled back on exactly one failed file-round-trip
+            # probe while health, chat and permissions all passed. Re-run
+            # the whole battery once; only a second consecutive failure
+            # acts.
+            self.log("updates guardian: battery for %s failed; running a confirmation "
+                     "battery before any rollback (a single failed battery never rolls "
+                     "an install back)" % current)
+            ok, checks = self.run_battery(current)
+            if ok:
+                self.log("updates guardian: confirmation battery for %s PASSED; the first "
+                         "failure is treated as transient and no rollback happens" % current)
         if ok:
             self.state.pop("snapshot_hold", None)   # the installed build just proved itself
             self.log("updates guardian: update accepted: Xod %s to %s passed the health "
