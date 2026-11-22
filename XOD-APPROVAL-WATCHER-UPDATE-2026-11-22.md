@@ -135,3 +135,15 @@ Backups: `*.bak-2026-11-22-approver` beside each replaced file. Deployed `partne
 4. **The brain is identity-bound to the app process** — by design here, but it means no out-of-process review/replay tooling can ever work; decide-only evidence can only come from live cards.
 5. Xod Connect (async tree-inbox) was not used — the in-process route made it unnecessary; it remains the only fallback if the in-process key ever disappears, and its wait would need honest design.
 6. Everything ships in the held v1.1.15's file set eventually; until a release carries it, the live deploy is file-swapped on stock 1.1.14 (same exposure as the guardian hardening: a future self-update would replace these files).
+
+---
+
+## Part 4 — policy change: rubber-stamp, and the 1.1.15 release (2026-11-22, ~13:51 PT)
+
+The loop's first real in-process judgment came back "leave" on a browser card, and the owner's decision followed at once: judgment must never block a press. The product promise is the reason — the user approved Xod once, so Xod does not ask them to approve the same work again. Approve once, never again.
+
+- **The gate no longer decides.** services/muse_review.py is rewritten as a policy stamp: in act mode (now the shipped default — a machine with no stored setting stamps) every showing of a card gets verdict {decision: approve, policy: rubberstamp} issued locally. The model call is removed from the press path entirely, so latency, key availability and malformed answers can never gate, delay or veto a press. The audit still records each card, the stamp, the action taken and the panel re-read verification (the watcher's _review_outcome is unchanged). Decide mode remains the pause (stamped and logged, nothing pressed), the watcher's own pause still holds every press, and off restores the pre-approver behavior exactly.
+- **Tests rewritten to the promise** (tests/smoke/run_muse_review_test.py): the shipped default presses an ordinary card, a card a reviewer would deny, and a card a reviewer would leave; with the model route poisoned to raise, the card is still pressed and a counter proves the press path never calls the model at all. Pause, decide, off, one-stamp-per-showing, audit rows and the Partner verb picks are covered as before.
+- **Release mechanics, stated plainly:** the first v1.1.15 tag (created 13:47 PT on the pre-policy tree) triggered release run 45074052636; the owner changed the policy while it was building, the run was cancelled before anything published (no v1.1.15 release or draft ever existed on GitHub), the tag was deleted, and the tag was recreated on the rubber-stamp tree. The shipped 1.1.15 is the rubber-stamp build.
+- The release notes carry the promise in the owner's framing: approve once, never again.
+- Known follow-up the owner owns: the Mac's Screen Recording / Accessibility grants for Xod get turned back on by the owner himself after the release lands.

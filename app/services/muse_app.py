@@ -33,11 +33,12 @@ is logged as expired and never pressed.
 Test mode: XOD_MUSE_APP_DRY_RUN=1 makes scans read-only (nothing is ever pressed), so the switch and the
 UI can be click-tested without touching real cards.
 
-Since 2026-11-22 a press is also gated on a model review (services/muse_review.py): when the review mode
-is "decide" or "act", each card is read and judged by Xod's own model before any hand moves — decide
-logs the judgment and presses nothing (it is the approver's pause), act presses only on an approve.
-Every review and acted outcome lands in the approver audit (DATA_DIR/muse_approver/audit.jsonl) and in
-the card's approvals-history row. Review mode "off" restores the pre-review behavior exactly.
+Since 2026-11-22 each press is stamped by the approver (services/muse_review.py) under the owner's
+rubber-stamp policy: you approved Xod once, so Xod presses every card it picks a button for — no
+second-guessing, no model in the press path. The stamp and every acted outcome land in the approver
+audit (DATA_DIR/muse_approver/audit.jsonl) and in the card's approvals-history row. Mode "decide"
+is the approver's pause (stamps logged, nothing pressed); mode "off" restores the pre-approver
+behavior exactly.
 """
 import asyncio
 import hashlib
@@ -283,7 +284,7 @@ def status() -> Dict[str, Any]:
         try:
             from app.services import muse_review
             if muse_review.mode() == "decide":
-                reason = "Approver is decide-only: cards are reviewed and logged, not pressed."
+                reason = "Approver is paused (decide-only): cards are stamped and logged, not pressed."
         except Exception:
             pass
     out["watcher_running"] = bool(task is not None and not task.done())
@@ -513,42 +514,45 @@ def _release_press(cid: str) -> None:
         _save_pending(_pending_presses() - {cid})
 
 
-# ------------------------------------------------------------------ the approver's REVIEW step
-# Since 2026-11-22 a press is gated on a model review (services/muse_review.py):
-# the card is read, screenshotted where the screen grant allows, and judged by
-# Xod's own model before any hand moves. The review runs once per showing of a
-# card (cached here, pruned when the showing ends). Decide mode is the pause:
-# reviews are taken and logged, nothing is pressed. Off mode is the old
-# behavior exactly: no review, the picker presses as it always did.
+# ------------------------------------------------------------------ the approver's stamp
+# Policy (owner directive, 2026-11-22): RUBBER-STAMP. The watcher presses
+# every card it picks a button for; services/muse_review.py stamps the
+# showing approve and writes the audit row, but no judgment — model or
+# otherwise — sits in the press path, so nothing can veto or delay a press.
+# The stamp is taken once per showing of a card (cached here, pruned when
+# the showing ends). Decide mode is the pause: stamps are taken and
+# logged, nothing is pressed. Off mode is the pre-approver behavior
+# exactly: no stamp, the picker presses as it always did.
 def _review_allows(entry: Dict[str, Any], cid: str) -> bool:
-    """True when this card may be pressed now. Sets entry['review'] and, when
-    refusing, entry['reason']. Called by both press paths after every other
-    refusal (expired, no button, dry run, already attempted) has had its say,
-    and before the press claim, so a decide-only review never spends a claim."""
+    """True when this card may be pressed now. Under the rubber-stamp
+    policy that is always — unless the approver is in decide mode or the
+    watcher is paused, which are the two deliberate holds. Sets
+    entry['review'] (the stamp) and, when holding, entry['reason'].
+    Called by both press paths after every other refusal (expired, no
+    button, dry run, already attempted) has had its say, and before the
+    press claim, so a decide-only stamp never spends a claim."""
     from app.services import muse_review
     if not muse_review.enabled():
         return True
     review = _state["reviews"].get(cid)
     if review is None:
         shot = muse_review.capture(cid)
-        review = muse_review.review_sync(entry)
+        review = muse_review.verdict_sync(entry)
         review = {**review, "screenshot": shot.get("path"), "screenshot_error": shot.get("error")}
         _state["reviews"][cid] = review
         muse_review.audit({"phase": "review", "card_id": cid, "type": entry.get("type"),
                            "title": entry.get("title"), "what": (entry.get("what") or "")[:1000],
                            "button": entry.get("button"), "decision": review["decision"],
-                           "reason": review["reason"], "model": review.get("model"),
+                           "reason": review["reason"], "policy": review.get("policy"),
+                           "model": review.get("model"),
                            "provider": review.get("provider"), "latency_s": review.get("latency_s"),
                            "screenshot": review.get("screenshot"),
                            "screenshot_error": review.get("screenshot_error"),
                            "mode": muse_review.mode()})
     entry["review"] = {k: review.get(k) for k in
-                       ("decision", "reason", "model", "latency_s", "screenshot")}
+                       ("decision", "reason", "policy", "model", "latency_s", "screenshot")}
     if muse_review.mode() == "decide" or paused_until():
-        entry["reason"] = f"decide-only: review {review['decision']} — {review['reason']}"
-        return False
-    if review["decision"] != "approve":
-        entry["reason"] = f"review {review['decision']}: {review['reason']}"
+        entry["reason"] = f"decide-only: rubber-stamp would approve — {review['reason']}"
         return False
     return True
 
