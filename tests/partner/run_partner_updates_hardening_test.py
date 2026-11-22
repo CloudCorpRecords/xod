@@ -21,10 +21,31 @@ out of that incident:
      replaced build had passed health, the replaced build is put back:
      the install is left in its best known state, never a dead one.
 
-Every case FAILS against the pre-hardening guardian and passes against
-the hardened one. Fully simulated, same rig shape as
+The same day brought a second incident: a healthy 1.1.16, installed and
+cold-launched, was rolled back to 1.1.14 and blocked because the file
+round-trip probe's agent task ended with status 'failed' while the
+backend was under a burst of mail-endpoint 429s. The confirmation
+battery could not save it: it re-runs the same probe through the same
+overloaded task system, so the same false failure came back twice. Two
+more rules came out of that one:
+
+  D. A file probe whose task system produces no verdict (the task ends
+     failed or cancelled, the task API errors, no terminal state in
+     time) is INCONCLUSIVE, never a failure. An inconclusive battery
+     neither accepts nor rolls back: the verdict waits, and when the
+     task system recovers the re-run battery can still accept.
+  E. A genuine file failure still rolls back: when both batteries see
+     the task complete with the wrong bytes (a content mismatch, the
+     one file result that is evidence about the build), the rollback
+     happens and the block record carries the full battery history.
+
+Cases A to C FAIL against the pre-hardening guardian and pass against
+the hardened one; case D fails against the 1.1.16 guardian (which
+counted a task-end 'failed' status as a probe failure) and passes
+against the probe-fix guardian. Fully simulated, same rig shape as
 run_partner_updates_test.py: fake app trees, a fake updates dir, a fake
-backend with a health budget and a task-tamper counter.
+backend with a health budget, a task-tamper counter, and a task-failure
+counter.
 
 Run: python3 tests/partner/run_partner_updates_hardening_test.py
 """
@@ -79,13 +100,18 @@ class FakeBackend:
     """health budget: the first `health_passes` GET / calls answer 200,
     later ones 500 (a build that cannot start). chat_mode 'wrong' breaks
     the exact reply. tamper_tasks: the first N task writes are tampered
-    (a transient file-round-trip failure), later writes are exact."""
+    (a transient file-round-trip failure), later writes are exact.
+    fail_tasks: the first N created tasks end with status 'failed' and
+    write nothing (the task system itself failing to produce a verdict,
+    the 1.1.16 incident shape)."""
 
-    def __init__(self, health_passes=10 ** 9, chat_mode="healthy", tamper_tasks=0):
+    def __init__(self, health_passes=10 ** 9, chat_mode="healthy", tamper_tasks=0,
+                 fail_tasks=0):
         self.health_passes = health_passes
         self.health_calls = 0
         self.chat_mode = chat_mode
         self.tamper_tasks = tamper_tasks
+        self.fail_tasks = fail_tasks
         self.tasks = {}
 
     def handler(self):
@@ -137,12 +163,17 @@ class FakeBackend:
                                  r"this, with no extra words and no extra lines: (.*)$",
                                  text, re.DOTALL)
                     path, content = m.group(1), m.group(2)
+                    tid = "task-%d" % (len(outer.tasks) + 1)
+                    if outer.fail_tasks > 0:
+                        outer.fail_tasks -= 1
+                        outer.tasks[tid] = {"id": tid, "status": "failed",
+                                            "result": "the task system is overloaded"}
+                        return self._send(200, json.dumps({"task": {"id": tid}}))
                     data = content
                     if outer.tamper_tasks > 0:
                         outer.tamper_tasks -= 1
                         data = content + " TAMPERED"
                     Path(path).write_text(data)
-                    tid = "task-%d" % (len(outer.tasks) + 1)
                     outer.tasks[tid] = {"id": tid, "status": "done", "result": "ok"}
                     return self._send(200, json.dumps({"task": {"id": tid}}))
                 if self.path.startswith("/api/tasks/") and self.path.endswith("/approve"):
@@ -167,7 +198,8 @@ def rig(tmp, backend, free=10 ** 12):
            "update_api_base": "http://127.0.0.1:%d" % server.server_address[1],
            "update_health_timeout_s": 5, "update_health_poll_s": 0.05,
            "update_chat_timeout_s": 10, "update_task_timeout_s": 10,
-           "update_task_poll_s": 0.05}
+           "update_task_poll_s": 0.05,
+           "update_file_probe_backoff_s": 0.1}
     guardian = PU.UpdateGuardian(
         cfg, state, lines.append,
         quit_app=lambda: calls.__setitem__("quit", calls["quit"] + 1),
@@ -253,10 +285,110 @@ def case_c_restored_build_dead_put_back():
               "better-known pre-rollback build, with a report", flush=True)
 
 
+def case_d_task_system_failure_is_inconclusive():
+    """The 2026-11-22 1.1.16 incident, replayed: the new build is
+    healthy (health, chat and permission probes pass) but every file
+    task ends with status 'failed' because the task system behind the
+    probe is overloaded. That is no verdict on the build: the install
+    must be left in place, unaccepted and unblocked, and once the task
+    system recovers the re-run battery accepts it. Against the 1.1.16
+    guardian this case fails at the first assertion: there a task-end
+    'failed' counted as a probe failure, both batteries 'failed' on
+    that one probe, and the healthy install was rolled back."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FakeBackend(fail_tasks=10 ** 9)  # every task ends 'failed'
+        guardian, state, app_path, lines, calls, token, server = rig(tmp, backend)
+        stage_payload(Path(tmp) / "updates", "0.9.13", "new-0.9.13")
+        guardian.tick()  # snapshot of 0.9.12 taken
+        swap_in(app_path, "0.9.13", "new-0.9.13", token, "pid2:start2")
+        new_bytes = tree_bytes(app_path)
+        guardian.tick()  # battery: file probe can get no verdict
+        assert tree_bytes(app_path) == new_bytes, \
+            "a task-system failure rolled back a healthy install"
+        assert calls["quit"] == 0, calls
+        assert not (state / "blocked-update-0.9.13.json").exists(), \
+            "an inconclusive battery blocked the payload"
+        st = guardian.status()
+        assert st["pending_version"] == "0.9.13", st
+        assert st["last_battery_verdict"] == "inconclusive", st
+        checks = guardian.state["last_battery"]["checks"]
+        file_check = [c for c in checks if c["name"] == "file round trip"][0]
+        assert file_check["verdict"] == "inconclusive", file_check
+        assert all(c["verdict"] == "pass" for c in checks
+                   if c["name"] != "file round trip"), checks
+        assert any("INCONCLUSIVE" in ln for ln in lines), lines
+        # an immediate re-tick does not hammer the task system: the
+        # retry interval gates the next battery
+        battery_at = guardian.state["last_battery"]["at"]
+        guardian.tick()
+        assert guardian.state["last_battery"]["at"] == battery_at, \
+            "the inconclusive retry gate did not hold the battery back"
+        assert tree_bytes(app_path) == new_bytes
+        # the task system recovers; past the retry interval the re-run
+        # battery passes and the update is accepted, still in place
+        backend.fail_tasks = 0
+        attempt = guardian.state["last_battery_attempt"]
+        attempt["at_epoch"] = attempt["at_epoch"] - \
+            (guardian.cfg["update_battery_retry_min_s"] + 1)
+        guardian.tick()
+        st = guardian.status()
+        assert st["pending_version"] is None, st
+        assert st["last_battery_ok"] is True, st
+        assert tree_bytes(app_path) == new_bytes, "the accepted build moved"
+        assert not (state / "blocked-update-0.9.13.json").exists()
+        server.shutdown()
+        print("PASS D: a file task ending 'failed' is inconclusive, never a "
+              "rollback; the held update is accepted once the task system "
+              "recovers", flush=True)
+
+
+def case_e_content_mismatch_still_rolls_back():
+    """The other side of case D: the file task COMPLETES but writes the
+    wrong bytes, in the first battery and in the confirmation battery.
+    A content mismatch is evidence about the build, so the rollback
+    still happens, and the block record carries the full battery
+    history (which battery failed, per-probe verdicts, guardian build)
+    so the next field incident is diagnosable from the record alone."""
+    with tempfile.TemporaryDirectory() as tmp:
+        backend = FakeBackend(tamper_tasks=10 ** 9)  # every write tampered
+        guardian, state, app_path, lines, calls, token, server = rig(tmp, backend)
+        good_bytes = tree_bytes(app_path)
+        stage_payload(Path(tmp) / "updates", "0.9.13", "bad-0.9.13")
+        guardian.tick()  # snapshot of 0.9.12 taken
+        swap_in(app_path, "0.9.13", "bad-0.9.13", token, "pid2:start2")
+        guardian.quit_app = lambda: (calls.__setitem__("quit", calls["quit"] + 1),
+                                     setattr(backend, "tamper_tasks", 0))
+        guardian.tick()  # both batteries fail the file probe on content
+        assert tree_bytes(app_path) == good_bytes, \
+            "a two-battery content mismatch did not roll back"
+        assert PU.read_version(app_path) == "0.9.12"
+        marker = json.loads((state / "blocked-update-0.9.13.json").read_text())
+        assert marker["rollbacks"] == 1, marker
+        assert marker["restored_version"] == "0.9.12", marker
+        assert "file round trip" in marker["failure"], marker
+        assert marker["failed_battery"] == "confirmation", marker
+        assert [b["which"] for b in marker["batteries"]] == ["first", "confirmation"], \
+            marker
+        for batt in marker["batteries"]:
+            assert batt["verdict"] == "fail", batt
+            fc = [c for c in batt["checks"] if c["name"] == "file round trip"][0]
+            assert fc["verdict"] == "fail" and "mismatch" in fc["detail"], fc
+        assert marker["guardian_build"] == PU.GUARDIAN_BUILD, marker
+        st = guardian.status()
+        assert st["guardian_build"] == PU.GUARDIAN_BUILD, st
+        assert st["blocked_batteries"]["0.9.13"] == marker["batteries"], st
+        server.shutdown()
+        print("PASS E: a content mismatch in both batteries still rolls back, "
+              "and the block record carries the battery history and the "
+              "guardian build", flush=True)
+
+
 def main():
     case_a_stale_snapshot_refused()
     case_b_transient_battery_failure()
     case_c_restored_build_dead_put_back()
+    case_d_task_system_failure_is_inconclusive()
+    case_e_content_mismatch_still_rolls_back()
     print("ALL HARDENING CASES PASS")
     return 0
 

@@ -268,7 +268,12 @@ def main():
         assert st["blocked_versions"] == ["0.9.13"], st
         assert st["pending_version"] is None, st
         assert any("rolling back" in ln for ln in lines), lines
-        server.shutdown()
+        # NOTE: no server.shutdown() here. This scenario continues in
+        # the same block (the blocked restage below runs against this
+        # same backend); an earlier copy of this scenario shut the
+        # server down at this point and the second half silently ran
+        # against a dead backend, passing only because the old guardian
+        # treated every timeout as a battery failure.
         print("PASS: unhealthy swap fails the battery, rolls back byte for byte, block marker written", flush=True)
 
         # the same bad version stages again: snapshot NOT overwritten, a

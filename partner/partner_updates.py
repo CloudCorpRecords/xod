@@ -47,10 +47,33 @@ The guardian's job around that swap:
    auto-approve settings (Xod's own trust and the partner block are
    recorded; that check fails only if the endpoint itself fails).
 3. On battery failure: roll back. A single failed battery never rolls
-   anything back: the battery is re-run once as a confirmation, and only
-   a second consecutive failure acts (2026-11-22: a healthy 1.1.14 whose
-   health, chat and permission probes all passed was rolled back on one
-   failed file-round-trip probe). And a rollback may only restore the
+   anything back, on ANY path: the battery is re-run once as a
+   confirmation, and only a second consecutive failure acts (2026-11-22:
+   a healthy 1.1.14 whose health, chat and permission probes all passed
+   was rolled back on one failed file-round-trip probe). The
+   version-agreement failure takes the same road: it is a first failed
+   verdict, and only a confirmation battery that also fails (or an
+   agreement re-check that still disagrees) may act on it.
+   A battery verdict is three-valued. A check FAILS only on evidence
+   about the build itself (wrong chat reply, wrong file bytes, a dead
+   health endpoint). The file round-trip probe separates that from the
+   task system failing to produce a verdict at all: when the agent task
+   ends in a failed or cancelled state, the task API errors, or no
+   terminal state arrives in time, the probe is INCONCLUSIVE. Task-end
+   failures retry in place with backoff before the probe reports; a
+   content failure is conclusive for that battery and its retry is the
+   confirmation battery, so a file failure is only counted toward a
+   rollback when the retry also fails. A battery with no failed check
+   but an inconclusive one is itself inconclusive: the update is
+   neither accepted nor rolled back, the pending verdict waits, and
+   the battery re-runs on a later tick. (2026-11-22, second incident:
+   a healthy 1.1.16 was rolled back to 1.1.14 and blocked because the
+   file task ended 'failed' while the backend was under a burst of
+   mail-endpoint 429s; the task system was overloaded, which says
+   nothing about the build.) Every block record carries the full
+   battery history (which battery, its verdict, and the per-probe
+   results) plus the guardian build stamp, so a field incident is
+   diagnosable from the record alone. And a rollback may only restore the
    snapshot of the install the payload actually replaced: when no fresh
    verified snapshot of that pre-update install exists (the snapshot
    copy failed verification, or was refused, or is held), the snapshot
@@ -103,6 +126,13 @@ from pathlib import Path
 DEFAULT_UPDATES_DIR = Path.home() / "Library" / "Caches" / "Xod" / "updates"
 DEFAULT_APP_PATH = Path("/Applications/Xod.app")
 
+# The guardian build stamp. The Partner imports this module once at
+# process start, so the file on disk and the code a long-running
+# Partner actually executes can differ after a deploy; the stamp is
+# exposed in status and written into every block record so a field
+# incident names the code that acted, not just the code on disk.
+GUARDIAN_BUILD = "2026-11-22-probe-fix-1"
+
 DEFAULTS = {
     "update_updates_dir": str(DEFAULT_UPDATES_DIR),
     "update_app_path": str(DEFAULT_APP_PATH),
@@ -113,6 +143,9 @@ DEFAULTS = {
     "update_chat_timeout_s": 120,
     "update_task_timeout_s": 180,
     "update_task_poll_s": 2,
+    "update_file_probe_retries": 2,
+    "update_file_probe_backoff_s": 2,
+    "update_battery_retry_min_s": 120,
     "update_http_timeout_s": 15,
     "update_quit_wait_s": 30,
 }
@@ -343,6 +376,7 @@ class UpdateGuardian:
         blocked = self.state.get("blocked") or {}
         battery = self.state.get("last_battery") or {}
         return {
+            "guardian_build": GUARDIAN_BUILD,
             "last_payload_version": self.state.get("last_payload_version"),
             "pending_version": (self.state.get("pending") or {}).get("payload_version"),
             "pending_snapshot_ok": (self.state.get("pending") or {}).get("snapshot_ok"),
@@ -350,10 +384,13 @@ class UpdateGuardian:
             "snapshot_version": self.state.get("snapshot_version"),
             "snapshot_present": self._snapshot_path().exists(),
             "last_battery_ok": battery.get("ok"),
+            "last_battery_verdict": battery.get("verdict"),
             "last_battery_at": battery.get("at"),
             "last_battery_for": battery.get("for_version"),
             "blocked_versions": sorted(blocked.keys()),
             "blocked": {v: (blocked[v] or {}).get("rollbacks", 0) for v in sorted(blocked)},
+            "blocked_batteries": {v: (blocked[v] or {}).get("batteries")
+                                  for v in sorted(blocked)},
             "last_action": self.state.get("last_action"),
             "battery_in_progress": bool(self.state.get("battery_in_progress")),
             "superseded": self.state.get("superseded"),
@@ -437,7 +474,19 @@ class UpdateGuardian:
                 return False, "health endpoint did not answer within %ss" % self.cfg["update_health_timeout_s"]
             time.sleep(min(poll, max(0.1, deadline - time.time())))
 
-    def _battery_file_round_trip(self, nonce):
+    def _battery_file_round_trip_once(self, nonce):
+        """One file round-trip attempt, as a three-valued verdict:
+        "pass" (the task completed and the bytes matched), "fail" (the
+        task completed but the bytes are wrong or the file is absent:
+        evidence about the build), or "inconclusive" (the task system
+        produced no verdict on the file at all: the task ended failed
+        or cancelled, the task API errored, or no terminal state
+        arrived in time). The probe rides the same agent task system
+        the update is judging, so a task that dies because the backend
+        is overloaded (the 2026-11-22 1.1.16 incident: the file task
+        ended 'failed' during a burst of mail-endpoint 429s) is a
+        statement about load, not about the build, and must never be
+        counted as a build failure."""
         sandbox = self.state_dir / "update-battery-sandbox"
         sandbox.mkdir(parents=True, exist_ok=True)
         target = sandbox / "proof.txt"
@@ -449,40 +498,79 @@ class UpdateGuardian:
         text = ("Automated update check task. Create a plain text file at %s whose entire "
                 "contents are exactly this, with no extra words and no extra lines: %s"
                 % (target, content))
-        _, created = self.http.post_json("/api/tasks", {"request": text})
-        task = created.get("task") or {}
-        tid = task.get("id") or created.get("id")
+        try:
+            _, created = self.http.post_json("/api/tasks", {"request": text})
+        except Exception as exc:
+            return "inconclusive", "task create raised %s: %s" % (type(exc).__name__, exc)
+        task = created.get("task") or {} if isinstance(created, dict) else {}
+        tid = task.get("id") or (created.get("id") if isinstance(created, dict) else None)
         if not tid:
-            return False, "task create returned no id"
+            return "inconclusive", "task create returned no id"
         deadline = time.time() + float(self.cfg["update_task_timeout_s"])
         approved = False
         status = None
         while time.time() < deadline:
-            _, listing = self.http.get_json("/api/tasks")
+            try:
+                _, listing = self.http.get_json("/api/tasks")
+            except Exception as exc:
+                return "inconclusive", "task list raised %s: %s" % (type(exc).__name__, exc)
             tasks = listing.get("tasks", listing if isinstance(listing, list) else [])
             mine = next((t for t in tasks if t.get("id") == tid), None)
             if mine is None:
-                return False, "task %s vanished from the task list" % tid
+                return "inconclusive", "task %s vanished from the task list" % tid
             status = mine.get("status")
             if status in ("done", "failed", "cancelled"):
                 break
             if status == "waiting" and mine.get("waiting_kind") == "approval" and not approved:
-                self.http.post_json("/api/tasks/%s/approve" % tid, {})
+                try:
+                    self.http.post_json("/api/tasks/%s/approve" % tid, {})
+                except Exception as exc:
+                    return "inconclusive", "task approve raised %s: %s" % (type(exc).__name__, exc)
                 approved = True
             time.sleep(float(self.cfg["update_task_poll_s"]))
+        if status in ("failed", "cancelled"):
+            return "inconclusive", ("file task ended with status %r: the task system "
+                                    "produced no verdict on the file contents" % status)
         if status != "done":
-            return False, "file task ended with status %r" % status
+            return "inconclusive", ("file task %s reached no terminal state within %ss "
+                                    "(last status %r)" % (tid, self.cfg["update_task_timeout_s"],
+                                                          status))
         try:
             observed = target.read_bytes()
         except Exception:
-            return False, "the file the task was told to write is not on disk"
+            return "fail", "the task reported done but the file it was told to write is not on disk"
         if observed != content.encode():
-            return False, "file bytes mismatch: expected %r, observed %r" % (content, observed[:120])
+            return "fail", "file bytes mismatch: expected %r, observed %r" % (content, observed[:120])
         try:
             target.unlink()
         except Exception:
             pass
-        return True, "task wrote the exact bytes and the read-back matched (task %s)" % tid
+        return "pass", "task wrote the exact bytes and the read-back matched (task %s)" % tid
+
+    def _battery_file_round_trip(self, nonce):
+        """The file round-trip probe. Inconclusive attempts (the task
+        system produced no verdict) retry in place with backoff: a
+        transient overload gets its chance to clear before the probe
+        reports, and the probe can only ever report inconclusive for
+        that class, never a counted failure. A content failure is a
+        verdict about the build and is conclusive for this battery;
+        its retry is the confirmation battery, so a file failure counts
+        toward a rollback only when the retry also fails."""
+        retries = max(0, int(self.cfg["update_file_probe_retries"]))
+        backoff = float(self.cfg["update_file_probe_backoff_s"])
+        verdict, detail = self._battery_file_round_trip_once(nonce)
+        attempts = 1
+        while verdict == "inconclusive" and attempts <= retries:
+            wait = backoff * attempts
+            self.log("updates guardian: file round trip attempt %d inconclusive (%s); "
+                     "retrying in %ss" % (attempts, detail, wait))
+            if wait > 0:
+                time.sleep(wait)
+            verdict, detail = self._battery_file_round_trip_once(nonce)
+            attempts += 1
+        if attempts > 1:
+            detail = "%s (after %d attempts)" % (detail, attempts)
+        return verdict, detail
 
     def _battery_permissions(self):
         status, data = self.http.get_json("/api/crew/settings/auto-approve")
@@ -534,18 +622,42 @@ class UpdateGuardian:
         finally:
             self._mark_battery_end()
 
+    @staticmethod
+    def _verdict_of(ok, checks):
+        """The battery verdict behind the (ok, checks) pair: "pass"
+        when ok, "fail" when any check failed (a conclusive failure is
+        evidence about the build and dominates: an inconclusive probe
+        elsewhere in the same battery does not dilute it), otherwise
+        "inconclusive" when nothing failed but at least one check
+        produced no verdict."""
+        if ok:
+            return "pass"
+        if any(c.get("verdict") == "fail" for c in checks):
+            return "fail"
+        if any(c.get("verdict") == "inconclusive" for c in checks):
+            return "inconclusive"
+        return "fail"
+
     def _run_battery_checks(self, for_version):
         nonce = secrets.token_hex(3).upper()
         checks = []
 
         def run(name, fn):
             try:
-                ok, detail = fn()
+                first, detail = fn()
             except Exception as exc:
-                ok, detail = False, "%s: %s" % (type(exc).__name__, exc)
-            checks.append({"name": name, "ok": bool(ok), "detail": str(detail)})
+                first, detail = False, "%s: %s" % (type(exc).__name__, exc)
+            if isinstance(first, bool):
+                verdict = "pass" if first else "fail"
+            else:
+                verdict = str(first)
+            ok = verdict == "pass"
+            checks.append({"name": name, "ok": ok, "verdict": verdict,
+                           "detail": str(detail)})
+            label = {"pass": "PASS", "fail": "FAIL: ", "inconclusive": "INCONCLUSIVE: "}
             self.log("updates guardian: battery [%s] %s: %s"
-                     % (for_version, name, "PASS" if ok else "FAIL: " + str(detail)))
+                     % (for_version, name,
+                        "PASS" if ok else label.get(verdict, "FAIL: ") + str(detail)))
             return ok
 
         results = [
@@ -558,7 +670,9 @@ class UpdateGuardian:
             run("permission reads", self._battery_permissions),
         ]
         ok = all(results)
+        verdict = self._verdict_of(ok, checks)
         self.state["last_battery"] = {"at": _iso(self.now_fn()), "ok": ok,
+                                      "verdict": verdict,
                                       "for_version": for_version, "checks": checks}
         return ok, checks
 
@@ -658,16 +772,28 @@ class UpdateGuardian:
                 self.log("updates guardian: putting the pre-rollback build back raised: %s" % exc)
         return False
 
-    def _record_block(self, bad_version, failure, restored_version):
+    def _record_block(self, bad_version, failure, restored_version, batteries=None):
         blocked = self.state.setdefault("blocked", {})
         entry = blocked.get(bad_version) or {"rollbacks": 0}
         entry["rollbacks"] = int(entry.get("rollbacks", 0)) + 1
         entry["at"] = _iso(self.now_fn())
         entry["failure"] = failure
+        # The full battery history rides in the record (2026-11-22,
+        # second incident): which battery failed, its verdict, and the
+        # per-probe results, plus the guardian build that acted. The
+        # old record carried only the final failure string, in a shape
+        # identical across guardian builds, so the field record could
+        # not say which battery or which code produced it.
+        entry["batteries"] = batteries or []
+        entry["failed_battery"] = (batteries[-1].get("which") if batteries else None)
+        entry["guardian_build"] = GUARDIAN_BUILD
         blocked[bad_version] = entry
         marker = {"version": bad_version, "at": entry["at"], "failure": failure,
                   "rollbacks": entry["rollbacks"],
-                  "restored_version": restored_version}
+                  "restored_version": restored_version,
+                  "failed_battery": entry["failed_battery"],
+                  "batteries": entry["batteries"],
+                  "guardian_build": GUARDIAN_BUILD}
         self._block_path(bad_version).write_text(json.dumps(marker, indent=1, sort_keys=True))
         self.log("updates guardian: block marker written for payload %s (rollback %d): %s"
                  % (bad_version, entry["rollbacks"], self._block_path(bad_version)))
@@ -734,7 +860,7 @@ class UpdateGuardian:
             self.log("updates guardian: relaunch after put-back raised: %s" % exc)
         return ok
 
-    def _rollback(self, pending, checks):
+    def _rollback(self, pending, checks, batteries=None):
         bad_version = pending.get("payload_version")
         # AGE-72: never restore over a completed newer swap. The battery
         # ran against bad_version, but the installed version is re-read
@@ -772,7 +898,7 @@ class UpdateGuardian:
                      "install backwards past the replaced version. The new install is left "
                      "in place, the payload is blocked, and a guardian report was written"
                      % (bad_version, snap_version, pending.get("pre_version")))
-            self._record_block(bad_version, failure, None)
+            self._record_block(bad_version, failure, None, batteries)
             self._write_guardian_report(
                 "stale-snapshot-rollback-refused", bad_version,
                 "battery failure: %s. The retained snapshot is %s but the install this "
@@ -869,7 +995,7 @@ class UpdateGuardian:
                         "own battery (%s), and putting %s back failed too."
                         % (failure, snap_version, fail2, bad_version))
         self._record_block(bad_version, failure,
-                           snap_version if restored else None)
+                           snap_version if restored else None, batteries)
         self.state["last_action"] = "rolled back %s" % bad_version
         return restored
 
@@ -976,27 +1102,101 @@ class UpdateGuardian:
             self.state["last_action"] = "superseded swap: installed %s" % current
             self._save_state()
             return
+        # Inconclusive retry gate: after an inconclusive battery the
+        # verdict waits for a later tick, but not every tick: the task
+        # system that produced no verdict needs time to shed its load
+        # before the battery leans on it again.
+        attempt = self.state.get("last_battery_attempt") or {}
+        if (attempt.get("for_version") == current
+                and attempt.get("verdict") == "inconclusive"
+                and now - float(attempt.get("at_epoch") or 0)
+                < float(self.cfg["update_battery_retry_min_s"])):
+            self.log("updates guardian: the battery for %s was inconclusive at %s; "
+                     "the next attempt waits for the retry interval"
+                     % (current, attempt.get("at")))
+            return
         self.log("updates guardian: swap detected: installed Xod went %s to %s and restarted; "
                  "running the health battery" % (pending.get("pre_version"), current))
+        batteries = []
+
+        def run_and_record(which):
+            ok_, checks_ = self.run_battery(current)
+            verdict_ = self._verdict_of(ok_, checks_)
+            batteries.append({"which": which, "at": _iso(now), "verdict": verdict_,
+                              "ok": ok_, "checks": checks_})
+            self.state["last_battery_attempt"] = {
+                "for_version": current, "verdict": verdict_,
+                "at": _iso(now), "at_epoch": now}
+            return verdict_, checks_
+
+        def accept():
+            self.state.pop("snapshot_hold", None)   # the installed build just proved itself
+            self.log("updates guardian: update accepted: Xod %s to %s passed the health "
+                     "battery; the snapshot of %s is retained until the next payload"
+                     % (pending.get("pre_version"), current, pending.get("snapshot_version")))
+            self.state["pending"] = None
+            self.state["last_action"] = "update accepted: %s" % current
+
+        def inconclusive():
+            # No verdict either way: the update is NOT accepted (the
+            # build has not proved itself) and NEVER rolled back (there
+            # is no evidence against it). The pending cycle stays open
+            # and the battery re-runs on a later tick.
+            self.log("updates guardian: battery for %s is INCONCLUSIVE: a probe produced "
+                     "no verdict (the task system did not answer for the build), so the "
+                     "update is neither accepted nor rolled back; the battery re-runs "
+                     "on a later tick" % current)
+            self.state["last_action"] = "battery inconclusive for %s; verdict pending" % current
+
         agree, detail = self._version_agreement(current)
         if not agree:
             # AGE-72 property (c): the swap landed a bundle whose backend
             # reports a different version. That is a defect state, not a
-            # pass: fail the cycle on a version-agreement check and roll
-            # back, so the mixed install never sits silent.
-            checks = [{"name": "version agreement", "ok": False, "detail": detail}]
+            # pass. It is a FIRST failed verdict, not a verdict: the
+            # confirmation rule applies here exactly as it does to a
+            # failed battery, so the cycle runs a confirmation battery
+            # and re-checks agreement before anything rolls back. A
+            # single agreement read never rolls an install back.
+            checks = [{"name": "version agreement", "ok": False, "verdict": "fail",
+                       "detail": detail}]
             self.state["last_battery"] = {"at": _iso(now), "ok": False,
+                                          "verdict": "fail",
                                           "for_version": current, "checks": checks}
             self.state["mixed_install"] = {"at": _iso(now), "detail": detail,
                                            "bundle_version": current}
-            self.log("updates guardian: MIXED INSTALL detected: %s; failing the cycle "
-                     "and rolling back to %s" % (detail, pending.get("snapshot_version")))
-            self._rollback(pending, checks)
-            self.state["pending"] = None
+            batteries.append({"which": "first", "at": _iso(now), "verdict": "fail",
+                              "ok": False, "checks": checks})
+            self.state["last_battery_attempt"] = {
+                "for_version": current, "verdict": "fail",
+                "at": _iso(now), "at_epoch": now}
+            self.log("updates guardian: MIXED INSTALL detected: %s; running a confirmation "
+                     "battery before any rollback (a single failed verdict never rolls "
+                     "an install back)" % detail)
+            verdict2, checks2 = run_and_record("confirmation")
+            agree2, detail2 = self._version_agreement(current)
+            if verdict2 == "pass" and agree2:
+                self.log("updates guardian: confirmation for %s passed and the versions "
+                         "agree on re-check; the first agreement read is treated as "
+                         "transient and no rollback happens" % current)
+                accept()
+            elif verdict2 == "inconclusive":
+                inconclusive()
+            else:
+                final_checks = list(checks2)
+                if not agree2:
+                    final_checks = final_checks + [
+                        {"name": "version agreement", "ok": False, "verdict": "fail",
+                         "detail": detail2}]
+                self._rollback(pending, final_checks, batteries)
+                self.state["pending"] = None
             self._save_state()
             return
-        ok, checks = self.run_battery(current)
-        if not ok:
+        verdict, checks = run_and_record("first")
+        if verdict == "inconclusive":
+            inconclusive()
+            self._save_state()
+            return
+        if verdict == "fail":
             # Confirmation (2026-11-22): one failed battery never rolls an
             # install back. The battery's probes lean on the agent stack
             # itself (a chat reply, a file task the model must perform),
@@ -1004,22 +1204,22 @@ class UpdateGuardian:
             # 1.1.14 was rolled back on exactly one failed file-round-trip
             # probe while health, chat and permissions all passed. Re-run
             # the whole battery once; only a second consecutive failure
-            # acts.
+            # acts. A confirmation battery that comes back inconclusive
+            # does not act either: the verdict waits for a later tick.
             self.log("updates guardian: battery for %s failed; running a confirmation "
                      "battery before any rollback (a single failed battery never rolls "
                      "an install back)" % current)
-            ok, checks = self.run_battery(current)
-            if ok:
+            verdict, checks = run_and_record("confirmation")
+            if verdict == "pass":
                 self.log("updates guardian: confirmation battery for %s PASSED; the first "
                          "failure is treated as transient and no rollback happens" % current)
-        if ok:
-            self.state.pop("snapshot_hold", None)   # the installed build just proved itself
-            self.log("updates guardian: update accepted: Xod %s to %s passed the health "
-                     "battery; the snapshot of %s is retained until the next payload"
-                     % (pending.get("pre_version"), current, pending.get("snapshot_version")))
-            self.state["pending"] = None
-            self.state["last_action"] = "update accepted: %s" % current
+            elif verdict == "inconclusive":
+                inconclusive()
+                self._save_state()
+                return
+        if verdict == "pass":
+            accept()
         else:
-            self._rollback(pending, checks)
+            self._rollback(pending, checks, batteries)
             self.state["pending"] = None
         self._save_state()
