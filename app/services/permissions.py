@@ -271,6 +271,27 @@ def gui_screen() -> Optional[bool]:
     except Exception:
         return None
 
+
+# The microphone is the third half of the same story (AGE-98): the wake
+# listener lives or dies on this grant, and a dead listener used to leave no
+# evidence anywhere. The GUI writes its own microphone verdict beside the
+# other two (electron/main.js, getMediaAccessStatus("microphone")).
+GUI_MIC_FILE = "mic_trust.json"
+
+
+def _gui_mic_path() -> Path:
+    from app.paths import DATA_DIR
+    return DATA_DIR / GUI_MIC_FILE
+
+
+def gui_mic() -> Optional[bool]:
+    """The GUI main process's own microphone verdict, when it has left a
+    current one for this build. None when it has not."""
+    try:
+        return _read_gui_verdict(_gui_mic_path(), time.time(), "granted")
+    except Exception:
+        return None
+
 # ------------------------------------------------------------------ which app is this process?
 def bundle_id_for_executable(executable: Optional[str] = None) -> Optional[str]:
     """The bundle id of the .app a python executable belongs to, from its

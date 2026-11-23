@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1.21
+
+Screen capture moves into the app, and a blocked microphone stops failing silently (AGE-98).
+
+**Capture runs in the identity that holds the grant**
+- New electron/capture_bridge.js: the Electron main process serves screen and window captures over a loopback-only, per-launch-token HTTP endpoint (desktopCapturer), and leaves its coordinates in capture_bridge.json in the data folder, the same pattern as its trust verdict files.
+- New app/services/capture_bridge.py: the backend reads that file and asks the GUI for captures. app/services/desktop.py and app/services/iphone_mirror.py no longer capture on their own: the /usr/sbin/screencapture paths are removed, because macOS attributed them to the backend child's identity, which holds no Screen Recording grant, so the app read denied while its own Settings switch stood on.
+- electron/main.js also writes a mic_trust.json verdict beside ax_trust.json and screen_trust.json, and desktop permissions now surface the GUI microphone verdict and whether the capture bridge is up.
+
+**Voice: a dead wake listener is visible and diagnosable**
+- conversation.js no longer flips wakeOn off when the microphone will not open. "Hey Xod" stays on, a banner says in plain words that the mic is blocked and where to allow it, and clicking the banner retries.
+- New POST /api/voice/log: the voice UI reports mic open results and wake listener start, stop, block and detect, and they land in event_log.jsonl as voice.* events. A launch where the listener never started is now provable from the log instead of invisible.
+
+**Tests**
+- New electron/capture_bridge.test.js (node --test): the bridge serves screen and window captures to the token holder only, writes and removes its bridge file.
+- New tests/smoke/run_capture_bridge_test.py: 24 checks over the backend bridge client (bytes round trip, missing bridge, bad token, unknown window), source-level proof the backend capture paths are gone, and the voice log endpoint landing allowlisted events in event_log.jsonl.
+- Existing suites re-run green: run_desktop_test.py 75/75, run_voice_turntaking_test.py 31/31.
+
 ## 1.1.20
 
 Xod can borrow Tree's logins. Until now a site Tree already had a saved login for still dead-ended Xod at a Take Over prompt, because Xod only knew its own vault and the user's 1Password. This release adds the broker: on a local miss, Xod asks Tree for the login at use time, uses it in the session, and keeps nothing.

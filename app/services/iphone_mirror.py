@@ -6,8 +6,9 @@ that window with the same Accessibility walk the Muse card watcher uses
 (services/muse_backends.py: MacAX), and taps by pressing the element under
 a point (AXUIElementCopyElementAtPosition + AXPress), falling back to no
 press at all rather than moving your real mouse. Reading also returns a
-screenshot of just that window (screencapture -R on its bounds), so a model
-can see the phone as well as read its text.
+screenshot of just that window, captured by the Xod app's GUI process over
+the capture bridge (services/capture_bridge.py), so a model can see the
+phone as well as read its text.
 
 Rules:
 - Off unless you switch it on (setting 'iphone_mirroring', default off).
@@ -111,24 +112,31 @@ def _screenshot(pid: Optional[int]) -> Optional[str]:
     if "screenshot" in _injected:
         return _injected["screenshot"]()
     try:
-        from app.services import desktop
+        # Captured by the GUI main process over the capture bridge, like every
+        # Mac capture now: the old /usr/sbin/screencapture call was attributed
+        # to this backend's identity, which holds no Screen Recording grant.
+        from app.services import capture_bridge, desktop
+        try:
+            png = capture_bridge.capture_window_png(APP_NAME)
+            return "data:image/png;base64," + base64.b64encode(png).decode()
+        except capture_bridge.CaptureBridgeError:
+            pass
+        # The bridge has no window by that name (its title may differ): take
+        # the whole screen from the bridge and crop the window's bounds.
         win = next((w for w in desktop.windows() if w.get("app") == APP_NAME), None)
         if not win:
             return None
-        fd, path = tempfile.mkstemp(suffix=".png", prefix="xod-mirror-")
-        os.close(fd)
-        try:
-            rect = f"{win['x']},{win['y']},{win['w']},{win['h']}"
-            r = subprocess.run(["/usr/sbin/screencapture", "-x", "-R", rect, "-t", "png", path],
-                               capture_output=True, timeout=15)
-            if r.returncode != 0 or os.path.getsize(path) == 0:
-                return None
-            return "data:image/png;base64," + base64.b64encode(open(path, "rb").read()).decode()
-        finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+        import io
+        from PIL import Image
+        img = Image.open(io.BytesIO(capture_bridge.capture_screen_png())).convert("RGB")
+        img.load()
+        d = desktop._display()
+        scale = img.width / d["w"] if d.get("w") else 1.0
+        box = (int(win["x"] * scale), int(win["y"] * scale),
+               int((win["x"] + win["w"]) * scale), int((win["y"] + win["h"]) * scale))
+        out = io.BytesIO()
+        img.crop(box).save(out, format="PNG")
+        return "data:image/png;base64," + base64.b64encode(out.getvalue()).decode()
     except Exception:
         return None
 

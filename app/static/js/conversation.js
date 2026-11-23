@@ -28,6 +28,33 @@
   const desktop = window.xodDesktop || null;     // the desktop app's bridge (electron/preload.js)
   const log = (...a) => { if (window.__xodTalkLog) window.__xodTalkLog.push([Math.round(performance.now()), ...a]); };
 
+  // Voice lifecycle events also land in the backend's event log (AGE-98): the
+  // in-memory log above dies with the window, and a wake listener that never
+  // started used to leave no evidence anywhere. Fire and forget; a failed
+  // post must never break the conversation.
+  const vlog = (event, payload) => {
+    log("voice." + event, payload || {});
+    try {
+      fetch("/api/voice/log", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event, payload: payload || {} }) }).catch(() => {});
+    } catch (_) { /* logging never breaks the conversation */ }
+  };
+
+  // The wake-blocked banner: when "Hey Xod" is on but the microphone will not
+  // open, that used to fail silently (wakeOn flipped off, no trace). Now it
+  // stays visible until the mic opens, and clicking it retries.
+  let wakeBanner = null;
+  function showWakeBanner() {
+    if (wakeBanner) return;
+    wakeBanner = document.createElement("div");
+    wakeBanner.id = "xodWakeBlocked";
+    wakeBanner.textContent = "“Hey Xod” is on, but Xod can't open the microphone, so it isn't listening. Allow the microphone for Xod in System Settings → Privacy & Security → Microphone, then click here to retry.";
+    wakeBanner.style.cssText = "position:fixed;left:50%;bottom:84px;transform:translateX(-50%);z-index:9999;max-width:520px;padding:10px 14px;border-radius:10px;background:#7a2d12;color:#fff;font:13px/1.45 system-ui,sans-serif;box-shadow:0 4px 18px rgba(0,0,0,.35);cursor:pointer;text-align:center";
+    wakeBanner.addEventListener("click", () => { setWake(true); });
+    document.body.appendChild(wakeBanner);
+  }
+  function hideWakeBanner() { if (wakeBanner) { wakeBanner.remove(); wakeBanner = null; } }
+
   // ---------------------------------------------------------------- what it says without thinking
   const FILLERS = {
     search: ["Let me look that up.", "One sec, checking.", "Let me check.", "Looking that up."],
@@ -44,6 +71,8 @@
     state: "off",          // off | wake | listening | transcribing | thinking | speaking
     active: false,         // in a conversation (not just waiting for the wake word)
     wakeOn: false,         // listening for "Hey Xod" between conversations
+    wakeBlocked: false,    // wake is wanted but the microphone would not open (AGE-98)
+    micError: null,        // the last microphone open failure, in words
     muted: false,
     followUntil: 0,        // the follow-up window: talk before this, or it ends
     followUpActive: false, // inside the post-answer follow-up window (one background segment ends it)
@@ -69,11 +98,15 @@
       try {
         M.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false } });   // no auto-gain: it lifts a far-off TV to your level
       } catch (e) {
+        C.micError = ((e && e.name) ? e.name + ": " : "") + ((e && e.message) ? String(e.message).slice(0, 200) : "microphone open failed");
+        vlog("mic_open_fail", { error: (e && e.name) || "unknown", message: C.micError });
         toast("Xod can't hear you: microphone access is blocked. Allow it in System Settings → Privacy & Security → Microphone.");
         return false;
       }
       M.ctx = new AudioContext();
       M.rate = M.ctx.sampleRate;
+      C.micError = null;
+      vlog("mic_open_ok", { rate: M.rate });
       const src = M.ctx.createMediaStreamSource(M.stream);
       M.proc = M.ctx.createScriptProcessor(2048, 1, 1);
       V.frameMs = (2048 / M.rate) * 1000;
@@ -358,6 +391,7 @@
     let r;
     try { r = await post("/api/voice/wake", wav(chunks)); } catch (_) { return; }
     if (!r || !r.wake || C.active) return;
+    vlog("wake_detected", {});
     await start({ source: "wake", quiet: !!(r.rest && words(r.rest) >= 2) });
     if (r.rest && words(r.rest) >= 2) handle(r.rest);      // "Hey Xod, what's the weather tomorrow?" in one breath
   }
@@ -515,7 +549,8 @@
   // ---------------------------------------------------------------- starting and ending
   async function start({ source = "button", quiet = false } = {}) {
     if (C.active) return;
-    if (!(await openMic())) { setState("off"); return; }
+    if (!(await openMic())) { setState("off"); if (C.wakeOn) { C.wakeBlocked = true; showWakeBanner(); } return; }
+    if (C.wakeBlocked) { C.wakeBlocked = false; hideWakeBanner(); }
     C.active = true;
     C.endAfterSpeech = false;
     stopEverything();
@@ -540,9 +575,9 @@
     try { window.XodMascot && XodMascot.setVoiceMood(null); } catch (_) {}
     if (reason === "quiet") { try { XodMascot.puppet(dockMascot())?.fidget("stretch"); } catch (_) {} }
     hideDock();
-    if (C.wakeOn) setState("wake");
-    else { setState("off"); closeMic(); }
-    if (desktop) try { desktop.setListening(C.wakeOn); } catch (_) {}
+    if (C.wakeOn && !C.wakeBlocked) setState("wake");
+    else { setState("off"); closeMic(); if (C.wakeBlocked) showWakeBanner(); }
+    if (desktop) try { desktop.setListening(C.wakeOn && !C.wakeBlocked); } catch (_) {}
   }
 
   function toggle(source = "button") { if (C.active) end("user"); else start({ source }); }
@@ -553,11 +588,30 @@
     if (C.wakeOn && !C.active) {
       fetch("/api/voice/prepare", { method: "POST" }).catch(() => {});
       prepareLines();
-      if (await openMic()) setState("wake");
-      else { C.wakeOn = false; document.body.classList.remove("xod-wake-on"); }
+      if (await openMic()) {
+        C.wakeBlocked = false;
+        hideWakeBanner();
+        setState("wake");
+        vlog("wake_start", {});
+      } else {
+        // The wake word stays ON: it is what the user asked for. The failure
+        // is shown, not swallowed: a banner stays up until the mic opens,
+        // and the event log records that the listener is blocked (AGE-98).
+        // The old code flipped wakeOn off here and said nothing, so "Hey
+        // Xod" died invisibly on every launch where the mic was blocked.
+        C.wakeBlocked = true;
+        setState("off");
+        showWakeBanner();
+        vlog("wake_blocked", { error: C.micError });
+      }
     }
-    if (!C.wakeOn && !C.active) { setState("off"); closeMic(); }
-    if (desktop) try { desktop.setListening(C.wakeOn || C.active); } catch (_) {}
+    if (!C.wakeOn && !C.active) {
+      if (C.wakeBlocked || C.state === "wake") vlog("wake_stop", {});
+      C.wakeBlocked = false;
+      hideWakeBanner();
+      setState("off"); closeMic();
+    }
+    if (desktop) try { desktop.setListening((C.wakeOn && !C.wakeBlocked) || C.active); } catch (_) {}
   }
 
   // ---------------------------------------------------------------- the dock
@@ -732,7 +786,7 @@
 
   window.XodConversation = {
     start: (o) => start(o), end: (r) => end(r), toggle, setWake, active: () => C.active,
-    state: () => ({ state: C.state, active: C.active, wake: C.wakeOn, muted: C.muted }),
+    state: () => ({ state: C.state, active: C.active, wake: C.wakeOn, wakeBlocked: C.wakeBlocked, micError: C.micError, muted: C.muted }),
     // For tests and recordings: as if this had just been said.
     __heard: (text) => (C.state === "wake" ? wakeCheckText(text) : handle(text)),
   };

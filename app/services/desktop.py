@@ -751,14 +751,24 @@ def permissions() -> Dict[str, Any]:
         from app.services import permissions as _perms
         _gui_access = _perms.gui_trusted()
         _gui_screen = _perms.gui_screen()
+        _gui_mic = _perms.gui_mic()
     except Exception:
-        _gui_access = _gui_screen = None
+        _gui_access = _gui_screen = _gui_mic = None
     if _gui_access is not None:
         access = _gui_access
     if _gui_screen is not None:
         screen = _gui_screen
+    # Whether capture can actually run right now: the GUI capture bridge is
+    # up (AGE-98). Capture moved into the GUI process, so this, not the child
+    # readings, is the operational answer for screenshots.
+    try:
+        from app.services import capture_bridge as _bridge
+        bridge_up = _bridge.available()
+    except Exception:
+        bridge_up = False
     return {"supported": True, "screen": screen, "accessibility": access, "enabled": enabled(),
-            "ready": screen and access and enabled(), "app": _host_app(), "app_path": host_bundle()}
+            "ready": screen and access and enabled(), "app": _host_app(), "app_path": host_bundle(),
+            "microphone": _gui_mic, "capture_bridge": bridge_up}
 
 
 _fresh: Dict[str, Any] = {"at": 0.0, "value": (False, False)}
@@ -1039,20 +1049,20 @@ def _screenshot() -> Tuple[Any, float]:
     """The main display as a PIL image scaled to SHOT_WIDTH, and points per image pixel."""
     if WIN:
         return _win_screenshot()
+    # Mac capture runs in the GUI main process, the identity macOS credits with
+    # the app's Screen Recording grant, and arrives over the capture bridge
+    # (services/capture_bridge.py). This backend capturing on its own (the old
+    # /usr/sbin/screencapture path) was attributed to the backend's identity,
+    # which holds no grant, so the app read denied while its switch stood on.
+    import io
     from PIL import Image
-    fd, path = tempfile.mkstemp(suffix=".png", prefix="xod-screen-")
-    os.close(fd)
+    from app.services import capture_bridge
     try:
-        r = subprocess.run(["/usr/sbin/screencapture", "-x", "-m", "-t", "png", path], capture_output=True, timeout=15)
-        if r.returncode != 0 or os.path.getsize(path) == 0:
-            raise DesktopError("macOS didn't give Xod the screen: allow Screen Recording for it in System Settings → Privacy & Security.")
-        img = Image.open(path).convert("RGB")
-        img.load()
-    finally:
-        try:
-            os.remove(path)
-        except OSError:
-            pass
+        png = capture_bridge.capture_screen_png()
+    except capture_bridge.CaptureBridgeError as e:
+        raise DesktopError(f"macOS didn't give Xod the screen: {e} If the app is running, allow Screen Recording for Xod in System Settings → Privacy & Security.")
+    img = Image.open(io.BytesIO(png)).convert("RGB")
+    img.load()
     d = _display()
     if img.width > SHOT_WIDTH:
         img = img.resize((SHOT_WIDTH, round(img.height * SHOT_WIDTH / img.width)), Image.LANCZOS)

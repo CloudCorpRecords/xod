@@ -12,6 +12,7 @@ const net = require("net");
 const path = require("path");
 const updater = require("./updater");
 const { resolveMode, shouldShedOnClose } = require("./mode");
+const { startCaptureBridge } = require("./capture_bridge");
 
 // Electron's own cache goes in a subfolder; Xod's data (xod.db, projects, models…) is next to it.
 // A run from source with its own data folder (XOD_DATA_DIR) keeps its cache there too, so a dev
@@ -63,6 +64,8 @@ let prefs = loadPrefs();
 // app/services/desktop.py surfaces it the same way.
 const AX_TRUST_FILE = path.join(DATA_DIR, "ax_trust.json");
 const SCREEN_TRUST_FILE = path.join(DATA_DIR, "screen_trust.json");
+const MIC_TRUST_FILE = path.join(DATA_DIR, "mic_trust.json");
+let captureBridge = null;
 function writeAxTrust() {
   if (process.platform !== "darwin" || !PACKAGED) return;
   try {
@@ -76,6 +79,15 @@ function writeAxTrust() {
     const sStatus = systemPreferences.getMediaAccessStatus("screen");
     fs.writeFileSync(sTmp, JSON.stringify({ granted: sStatus === "granted", status: sStatus, checked_at: Date.now() / 1000, app_version: app.getVersion() }));
     fs.renameSync(sTmp, SCREEN_TRUST_FILE);
+  } catch (e) { /* a missing verdict reads as unknown in the backend, never as false */ }
+  // The microphone verdict too (AGE-98): a dead wake listener used to leave no
+  // evidence anywhere. The backend surfaces this beside the other two, so a
+  // blocked mic is diagnosable from the data dir without opening the app.
+  try {
+    const mTmp = MIC_TRUST_FILE + ".tmp";
+    const mStatus = systemPreferences.getMediaAccessStatus("microphone");
+    fs.writeFileSync(mTmp, JSON.stringify({ granted: mStatus === "granted", status: mStatus, checked_at: Date.now() / 1000, app_version: app.getVersion() }));
+    fs.renameSync(mTmp, MIC_TRUST_FILE);
   } catch (e) { /* a missing verdict reads as unknown in the backend, never as false */ }
 }
 // Started by "Start Xod when I log in": stay in the tray, don't open the window.
@@ -682,6 +694,12 @@ app.whenReady().then(async () => {
   lockDown();
   writeAxTrust();
   setInterval(writeAxTrust, 15000).unref();
+  // Screen capture belongs to this process: it is the identity macOS credits
+  // with the app's Screen Recording grant. The backend asks this bridge for
+  // captures instead of capturing on its own (AGE-98).
+  if (process.platform === "darwin") {
+    captureBridge = startCaptureBridge({ dataDir: DATA_DIR, appVersion: app.getVersion() });
+  }
   if (!HEADLESS) showSplash();
   try {
     appUrl = await startServer();
@@ -725,4 +743,4 @@ app.on("before-quit", (e) => {
 // Asked to stop by a signal (kill, logout, a terminal's Ctrl+C): quit the usual way, so the
 // server this shell started stops with it, instead of the shell vanishing and the server staying.
 for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => app.quit());
-app.on("will-quit", () => globalShortcut.unregisterAll());
+app.on("will-quit", () => { globalShortcut.unregisterAll(); if (captureBridge) { captureBridge.stop(); captureBridge = null; } });

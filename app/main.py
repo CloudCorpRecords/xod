@@ -5391,6 +5391,32 @@ async def voice_wake_endpoint(request: Request):
     from app.services import speech_to_text
     return await speech_to_text.wake(await request.body())
 
+
+VOICE_LOG_EVENTS = {"mic_open_ok", "mic_open_fail", "wake_start", "wake_stop", "wake_detected", "wake_blocked"}
+
+
+@app.post("/api/voice/log")
+async def voice_log_endpoint(request: Request):
+    """The voice UI reports its own lifecycle here (AGE-98): mic open results
+    and wake listener start, stop, block and detect. A wake listener that
+    never started used to leave no evidence anywhere; now event_log.jsonl
+    shows exactly which of these happened after every launch. Allowlisted
+    event names only, small payloads only."""
+    try:
+        body = await request.json()
+    except Exception:
+        return {"ok": False, "error": "bad json"}
+    event = str((body or {}).get("event") or "")
+    if event not in VOICE_LOG_EVENTS:
+        return {"ok": False, "error": "unknown voice event"}
+    payload = (body or {}).get("payload")
+    if not isinstance(payload, dict):
+        payload = {}
+    payload = {str(k)[:40]: (str(v)[:200] if isinstance(v, str) else v) for k, v in list(payload.items())[:8]}
+    from app.services import event_log
+    event_log.emit("voice." + event, actor="voice-ui", payload=payload)
+    return {"ok": True}
+
 @app.post("/api/voice/command")
 async def voice_command_endpoint(req: VoiceCommandRequest):
     """Executes spoken computer command with sub-400ms regex routing and trace capture."""
