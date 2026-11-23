@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.1.19
+
+Long-form context. Xod's chat path had exactly one answer to a long conversation: summarize it and lose the detail, and when summarizing failed it sent the whole history anyway. This release gives Xod a real long-form memory: long inputs are stored verbatim in chunks, the relevant pieces are recalled inside a hard token budget, and compaction keeps the detail retrievable instead of discarding it.
+
+**A chunk store for long inputs**
+- New app/services/longform_context.py (stdlib only): ingest_text() and ingest_messages() write long documents and histories into a SQLite store (longform.db) with paragraph-aware chunks (about 1,200 characters, 150-character overlap) and a per-chunk token estimate recorded at ingest. Re-ingesting a source replaces its chunks. Full-text search via FTS5. Design: docs/LONGFORM-CONTEXT-DESIGN.md (AGE-96).
+
+**Budgeted recall with a hard guarantee**
+- recall(query, budget_tokens) ranks chunks by BM25 (with a scan fallback), assembles whole chunks greedily, returns them in document order with their sources named, and never exceeds the budget: tokens_used <= budget_tokens is guaranteed by construction.
+
+**Compaction that keeps the receipts**
+- fit_budget() runs in the chat path right after checkpointing. Under budget it is the identity. Over budget it ingests the full history into the store first, keeps system messages plus the newest verbatim tail, and replaces the middle through the existing summarizer seam, falling back to a deterministic extractive digest if summarizing fails. It never sends the full history and never truncates silently, so a detail compacted out of the live history is still one recall away, verbatim.
+
+**Tests**
+- New tests/smoke/run_longform_context_test.py: 26 checks covering chunking, ingest and replace, recall (rare-term hit, hard budget, document order, session scoping), fit_budget with an injected summarizer, the digest fallback, structured content, and the round trip that matters: a detail removed by compaction comes back verbatim from recall.
+
 ## 1.1.18
 
 The reliability release for the two press systems. 1.1.17 fixed the guardian's probe; this release fixes the quieter failure next to it: the option-widget watcher could silently never start, so a held widget waited on the owner without anyone knowing. It also makes escalations visible where the owner actually looks, and puts the newest systems under dedicated test coverage.

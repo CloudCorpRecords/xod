@@ -1,7 +1,7 @@
 # Long-form context: design (AGE-96)
 
 Branch `tree/longform-context-2026-11-22`, base 55bf0860 (v1.1.18). Merge target: main.
-Rene's directive (2026-11-22): Xod should hold and use long conversations and long
+Owner directive (2026-11-22): Xod should hold and use long conversations and long
 documents without losing the thread. This is the smallest working version of that:
 a chunked persistent store, budgeted recall, and compaction instead of truncation.
 
