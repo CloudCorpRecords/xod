@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.20
+
+Xod can borrow Tree's logins. Until now a site Tree already had a saved login for still dead-ended Xod at a Take Over prompt, because Xod only knew its own vault and the user's 1Password. This release adds the broker: on a local miss, Xod asks Tree for the login at use time, uses it in the session, and keeps nothing.
+
+**The Tree credential broker**
+- New app/services/muse_vault.py: get_login() asks Tree over the same tree-inbox route the escalations use, with the answer returned as a response file Xod deletes on read. An injectable provider seam covers the Xod Connect path. Brokered logins are never written to Xod's own vault and never logged; the audit (DATA_DIR/muse_vault/audit.jsonl) records site, source, and outcome only.
+- Fail closed everywhere: unknown site, provider failure, timeout, or a mismatched reply all return no login and surface through escalation. Xod never guesses or generates a sign-in password.
+- Design and browser audit: docs/BROWSER-VAULT-DESIGN.md (AGE-97). The audit found Xod's page mechanics already strong; the gaps were identity-shaped, and this release closes the credential one. Driving the user's real Chrome for Handshake-class work is designed there as the follow-up; it needs a live session to verify and is not in this release.
+
+**Vault resolution order**
+- credential_vault.get_login now resolves local Keychain vault first, then the Tree broker, then 1Password. A machine with no Tree route behaves exactly as before, and the mission login path picks the new order up with no mission-code changes.
+
+**Tests**
+- New tests/smoke/run_muse_vault_test.py: 24 checks over the provider seam, the tree-inbox round trip (request shape, response read and deleted, value-free audit), the negative cache, fail-closed paths, and the vault wiring (a brokered login is provably not saved into Xod's vault).
+
 ## 1.1.19
 
 Long-form context. Xod's chat path had exactly one answer to a long conversation: summarize it and lose the detail, and when summarizing failed it sent the whole history anyway. This release gives Xod a real long-form memory: long inputs are stored verbatim in chunks, the relevant pieces are recalled inside a hard token budget, and compaction keeps the detail retrievable instead of discarding it.

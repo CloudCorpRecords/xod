@@ -1,6 +1,6 @@
 # Browser strength + shared password vault: audit and design
 
-Owner directive (Rene, 2026-11-22 18:54 PT): Xod's browser capabilities must
+Owner directive (2026-11-22 18:54 PT): Xod's browser capabilities must
 be extremely strong, able to do anything, including heavy JavaScript web
 applications like Handshake AI / SuperAnnotate; and Xod must share the same
 password system Tree has, so when Xod needs a credential Tree already holds,
