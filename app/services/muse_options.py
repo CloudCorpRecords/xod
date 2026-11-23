@@ -143,9 +143,10 @@ RESTRICT_RES: List[Tuple[str, float, str]] = [
 
 _state: Dict[str, Any] = {"task": None, "seen": 0, "pressed": 0, "held": 0, "would_press": 0,
                           "last": None, "error": None, "logged_ids": set(), "pressed_ids": set(),
-                          "loop": None, "review_cache": {},
+                          "loop": None, "thread": None, "review_cache": {},
                           "reviews": {"reviewed": 0, "picked": 0, "no_pick": 0, "unavailable": 0},
                           "last_review": None}
+_start_lock = threading.Lock()
 
 from app.services import muse_app as _core  # noqa: E402
 from app.services import muse_backends as _backends  # noqa: E402
@@ -570,10 +571,22 @@ def _ax_api():
 
 
 # ------------------------------------------------------------------ status + watcher
+def _task_running(task: Any) -> bool:
+    """True when task is active on an open event loop."""
+    if task is None or task.done():
+        return False
+    if isinstance(task, asyncio.Task):
+        try:
+            if task.get_loop().is_closed():
+                return False
+        except Exception:
+            pass
+    return True
+
+
 def status() -> Dict[str, Any]:
-    task = _state.get("task")
     return {"target": "chat_options", "label": "Muse chat options (AI review, most expansive)",
-            "watching": bool(task is not None and not task.done()),
+            "watching": _task_running(_state.get("task")),
             "dry_run": dry_run(), "seen": _state["seen"], "pressed": _state["pressed"],
             "would_press": _state["would_press"], "held": _state["held"],
             "policy": "AI review picks the most expansive option (authorizes the most work / "
@@ -595,16 +608,63 @@ async def _watch() -> None:
         await asyncio.sleep(BACKSTOP_SEC)
 
 
+def _run_watcher_loop(ready: threading.Event) -> None:
+    """Run _watch() on a module-owned event loop when start() is called off-loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        task = loop.create_task(_watch())
+        _state["task"] = task
+        loop.call_soon(ready.set)
+        loop.run_until_complete(task)
+    except asyncio.CancelledError:
+        pass
+    except Exception as e:
+        logger.warning(f"Muse option watcher loop stopped: {e}")
+    finally:
+        try:
+            pending = [p for p in asyncio.all_tasks(loop) if not p.done()]
+            for p in pending:
+                p.cancel()
+            if pending and not loop.is_closed():
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except Exception:
+            pass
+        if _state.get("loop") is loop:
+            _state["loop"] = None
+        if _state.get("thread") is threading.current_thread():
+            _state["thread"] = None
+        ready.set()
+        try:
+            if not loop.is_closed():
+                loop.close()
+        except Exception:
+            pass
+
+
+def _start_thread_locked() -> None:
+    existing = _state.get("thread")
+    if existing is not None and existing is not threading.current_thread() and existing.is_alive():
+        existing.join(timeout=1.0)
+    ready = threading.Event()
+    t = threading.Thread(target=_run_watcher_loop, args=(ready,), daemon=True, name="xod-muse-options")
+    _state["thread"] = t
+    t.start()
+    ready.wait(timeout=5.0)
+
+
 def start() -> None:
     from app.services import run_mode
     if run_mode.skip("muse_app"):
         return
     if _backends.backend() is None:
         return
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    t = _state["task"]
-    if t is None or t.done():
+    with _start_lock:
+        if _task_running(_state.get("task")):
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            _start_thread_locked()
+            return
         _state["task"] = asyncio.create_task(_watch())

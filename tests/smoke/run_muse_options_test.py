@@ -16,10 +16,12 @@ removes the pressed widget from the tree so the read-back path can be proven
 both ways.
   .venv/bin/python tests/smoke/run_muse_options_test.py
 """
+import asyncio
 import os
 os.environ.setdefault("PYTHON_KEYRING_BACKEND", "tests.support.filekeyring.FileKeyring")
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -269,6 +271,189 @@ def main():
           and "0. Send all 100" in muse_options._widget_prompt("Q?", ["Send all 100 emails now and share everything",
                                                                       "Send the 3 queued emails to the client"]),
           muse_options._SYSTEM[:80])
+
+    print("O12 start() from a loop-less thread watches, keeps early returns, binds loop, and dedupes")
+    from app.services import muse_backends, run_mode
+
+    def watcher_threads():
+        return [t for t in threading.enumerate() if t.name == "xod-muse-options" and t.is_alive()]
+
+    def stop_watcher():
+        task = muse_options._state.get("task")
+        loop = muse_options._state.get("loop")
+        thread = muse_options._state.get("thread")
+        if task is not None and not task.done() and loop is not None and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(task.cancel)
+            except Exception:
+                pass
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+        muse_options._state["task"] = None
+        muse_options._state["loop"] = None
+        muse_options._state["thread"] = None
+
+    def run_in_worker(fn):
+        err = []
+
+        def target():
+            try:
+                fn()
+            except BaseException as e:
+                err.append(e)
+
+        t = threading.Thread(target=target)
+        t.start()
+        t.join(timeout=5.0)
+        if t.is_alive():
+            raise AssertionError("worker thread timed out")
+        if err:
+            raise err[0]
+
+    class FakeBackend:
+        name = "fake"
+
+        def ax_api(self):
+            return FakeAX(chat())
+
+    orig_backend = muse_backends.backend
+    orig_pid = muse_app._muse_pid
+    orig_skip = run_mode.skip
+    orig_review_fn = muse_options._review_fn
+    scan_ran = threading.Event()
+    try:
+        muse_backends.backend = lambda platform=None: FakeBackend()
+        muse_app._muse_pid = lambda: (scan_ran.set(), None)[1]
+
+        run_mode.skip = lambda name: name == "muse_app"
+        run_in_worker(muse_options.start)
+        check("run_mode.skip('muse_app') keeps start() from watching",
+              not muse_options.status()["watching"]
+              and muse_options._state["task"] is None
+              and muse_options._state["thread"] is None,
+              str(muse_options.status()))
+        run_mode.skip = orig_skip
+
+        muse_backends.backend = lambda platform=None: None
+        run_in_worker(muse_options.start)
+        check("missing platform backend keeps start() from watching",
+              not muse_options.status()["watching"]
+              and muse_options._state["task"] is None
+              and muse_options._state["thread"] is None,
+              str(muse_options.status()))
+        muse_backends.backend = lambda platform=None: FakeBackend()
+
+        run_in_worker(muse_options.start)
+        first_task = muse_options._state.get("task")
+        first_loop = muse_options._state.get("loop")
+        first_thread = muse_options._state.get("thread")
+        check("start() with no running loop starts watching on a daemon thread loop",
+              muse_options.status()["watching"] is True
+              and first_task is not None and not first_task.done()
+              and first_loop is not None and first_loop.is_running()
+              and first_thread is not None and first_thread.daemon and first_thread.is_alive()
+              and len(watcher_threads()) == 1,
+              str(muse_options.status()))
+        check("dedicated watcher thread drives _watch() scan cycle",
+              scan_ran.wait(timeout=2.0))
+
+        review_threads = []
+
+        async def record_review(q, labels):
+            review_threads.append(threading.current_thread())
+            return {"pick_index": 0, "reason": "from watcher loop", "model": "fake-model",
+                    "provider": "fake", "latency_s": 0.01, "raw": "{}"}
+
+        muse_options._review_fn = record_review
+        verdict = muse_options.review_sync("Q?", ["Action option one", "Defer option two"])
+        check("review_sync() runs on the loop bound by _watch()",
+              verdict.get("pick_index") == 0 and review_threads == [first_thread],
+              f"verdict={verdict} threads={review_threads}")
+
+        run_in_worker(muse_options.start)
+        check("second loop-less start() does not spawn a second watcher",
+              muse_options._state.get("task") is first_task
+              and muse_options._state.get("loop") is first_loop
+              and muse_options._state.get("thread") is first_thread
+              and len(watcher_threads()) == 1
+              and muse_options.status()["watching"] is True)
+
+        async def call_from_loop():
+            muse_options.start()
+
+        asyncio.run(call_from_loop())
+        check("start() on a loop thread after loop-less start() keeps the existing watcher",
+              muse_options._state.get("task") is first_task
+              and muse_options._state.get("loop") is first_loop
+              and muse_options._state.get("thread") is first_thread
+              and len(watcher_threads()) == 1
+              and muse_options.status()["watching"] is True)
+
+        print("O13 start() on a running loop keeps loop mode, dedupes off-loop, and handles concurrent starts")
+        stop_watcher()
+        check("stopping the watcher clears watching status",
+              not muse_options.status()["watching"]
+              and muse_options._state.get("loop") is None
+              and muse_options._state.get("thread") is None)
+
+        scan_ran.clear()
+        review_threads.clear()
+
+        async def loop_first():
+            running_loop = asyncio.get_running_loop()
+            loop_thread = threading.current_thread()
+            muse_options.start()
+            loop_task = muse_options._state.get("task")
+            await asyncio.sleep(0)
+            check("start() on a running loop creates the watcher task on that loop",
+                  muse_options.status()["watching"] is True
+                  and loop_task is not None and not loop_task.done()
+                  and loop_task.get_loop() is running_loop
+                  and muse_options._state.get("loop") is running_loop
+                  and muse_options._state.get("thread") is None)
+            await asyncio.to_thread(muse_options.start)
+            muse_options.start()
+            check("subsequent off-loop and on-loop start() calls do not spawn a duplicate watcher",
+                  muse_options._state.get("task") is loop_task
+                  and muse_options._state.get("loop") is running_loop
+                  and muse_options._state.get("thread") is None
+                  and len(watcher_threads()) == 0
+                  and muse_options.status()["watching"] is True)
+            v = await asyncio.to_thread(muse_options.review_sync, "Q?", ["Action one", "Wait two"])
+            check("review_sync() uses the running loop bound by _watch()",
+                  v.get("pick_index") == 0 and review_threads == [loop_thread],
+                  f"verdict={v} threads={review_threads}")
+            await asyncio.to_thread(scan_ran.wait, 2.0)
+
+        asyncio.run(loop_first())
+        check("after the caller's loop ends, status() reports not watching",
+              not muse_options.status()["watching"])
+
+        scan_ran.clear()
+        barrier = threading.Barrier(3)
+
+        def barrier_start():
+            barrier.wait(timeout=2.0)
+            muse_options.start()
+
+        workers = [threading.Thread(target=barrier_start) for _ in range(3)]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join(timeout=5.0)
+        check("concurrent off-loop start() calls create exactly one watcher",
+              muse_options.status()["watching"] is True
+              and muse_options._state.get("task") is not None
+              and not muse_options._state["task"].done()
+              and len(watcher_threads()) == 1,
+              f"threads={watcher_threads()} status={muse_options.status()}")
+        scan_ran.wait(timeout=2.0)
+    finally:
+        stop_watcher()
+        muse_backends.backend = orig_backend
+        muse_app._muse_pid = orig_pid
+        run_mode.skip = orig_skip
+        muse_options._review_fn = orig_review_fn
 
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")
