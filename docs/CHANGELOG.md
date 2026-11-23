@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.1.18
+
+The reliability release for the two press systems. 1.1.17 fixed the guardian's probe; this release fixes the quieter failure next to it: the option-widget watcher could silently never start, so a held widget waited on the owner without anyone knowing. It also makes escalations visible where the owner actually looks, and puts the newest systems under dedicated test coverage.
+
+**The option-widget watcher now starts from any thread**
+- muse_options.start() was called from a settings apply path wrapped in a swallowed try/except, and when the calling thread had no running event loop the watcher silently never started: chat_options.watching stayed false until something re-applied the switch. start() now serializes under a lock, keeps the on-loop behavior when a loop exists, and otherwise owns a named daemon thread running its own event loop, which is also the loop review_sync() binds to. Duplicate and concurrent starts still yield exactly one watcher.
+- Tests: the option suite grows from 18 to 31 checks, covering the loop-less start, duplicate suppression in both directions, review routing onto the bound loop, and exactly one watcher across concurrent starts.
+
+**Escalations are visible in the status surface**
+- muse_escalate.status() existed but nothing called it. The auto-approve status now carries an "escalations" block (live count, sent/queued/failed/expired stats, and the open escalations with their kinds and targets), so a widget or card waiting on Tree is visible in the same payload as the rest of the watcher state. A failure inside the escalate module degrades that one block to null, like its siblings.
+- Tests: the Muse app suite grows from 66 to 69 checks, including a live escalation appearing in status with its id and kind.
+
+**The escalate-to-Tree fallback gets its own suite**
+- New tests/smoke/run_muse_escalate_test.py: 31 checks over payload shape for all four escalation kinds, dedupe per showing, transport failure not recorded (with a retry succeeding after recovery), queued transports counting as sent, expiry re-arming an id and closing its audit rows, unknown kinds refused, and the approver audit rows written only for unverified card presses.
+
+**Test hygiene**
+- The Partner repair suite's fake Partner now advertises the always-allow-v1 approval policy, the contract current Partners report. The approval-compatibility notice added after that suite was written made its re-pair case fail against the outdated rig; the suite is green again with no production change.
+
 ## 1.1.17
 
 The guardian learns to doubt its own probe. 1.1.16 published clean, installed, and cold-launched healthy, and minutes later the update guardian rolled it back to 1.1.14 and blocked it, on one failed probe: the file round trip. That probe judges the backend by creating an agent task through the backend itself, so when the agent stack is overloaded (a mail rate-limit burst plus recall indexing), the task dies inside the task system and the probe reads that as a broken build. The confirmation battery then re-ran the same probe through the same overloaded stack and got the same answer. This release fixes the probe, not the build.
