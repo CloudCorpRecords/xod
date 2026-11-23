@@ -2128,6 +2128,13 @@ async def chat_endpoint(request: ChatRequest):
             # A long chat goes in as a stored checkpoint plus its recent turns (services/memory_layers.py).
             from app.services import memory_layers
             chat_messages = await memory_layers.checkpointed(session_id, request.messages)
+            # Then it is fitted to a token budget (services/longform_context.py): the full history is
+            # chunked into the long-form store first, so compacting the middle loses nothing for good.
+            try:
+                from app.services import longform_context
+                chat_messages = await longform_context.fit_budget(session_id, chat_messages)
+            except Exception as e:
+                logger.debug(f"longform fit: {e}")
             async for event in researcher.run_research_stream(
                 messages=chat_messages,
                 active_workspace_path=request.active_workspace_path,
