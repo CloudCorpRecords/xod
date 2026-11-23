@@ -4,6 +4,8 @@ Saved website logins for browser missions.
 Passwords live in the macOS Keychain (via `keyring`), never in files, logs, or LLM
 prompts. A small index in data/vault_index.json records which sites have a login
 and the username, so the agent can be told "a saved login exists" without seeing it.
+On a miss here, get_login asks Tree's shared vault (services/muse_vault.py) and
+then 1Password; a brokered login is used once and never stored in this vault.
 """
 import json
 import logging
@@ -106,7 +108,17 @@ def get_login(url_or_domain: str) -> Optional[Tuple[str, str]]:
     site = site_key(url_or_domain)
     entry = _read_index().get(site)
     if not entry:
-        from app.services import onepassword     # none saved here: the site's login in 1Password, if that's on
+        # None saved here: ask Tree (the shared vault, services/muse_vault.py;
+        # a brokered login is used once and never stored here), then the
+        # site's login in 1Password, if that's on.
+        try:
+            from app.services import muse_vault
+            brokered = muse_vault.get_login(site)
+        except Exception:
+            brokered = None
+        if brokered:
+            return brokered
+        from app.services import onepassword
         return onepassword.get_login(site)
     try:
         pw = keyring.get_password(_service(site), entry["username"])
