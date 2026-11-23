@@ -4509,6 +4509,13 @@ class BrowserMissionRequest(BaseModel):
     start_url: Optional[str] = None
     max_steps: Optional[int] = 6
 
+class BrowserRunRequest(BaseModel):
+    steps: list
+    owner: Optional[str] = "browser-run"
+    stop_on_failure: Optional[bool] = True
+    max_recoveries: Optional[int] = 2
+
+
 class BrowserTabActionRequest(BaseModel):
     action: str = "list"
     target_id: Optional[str] = None
@@ -4768,6 +4775,23 @@ async def browser_mission_endpoint(req: BrowserMissionRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/run")
+async def browser_run_endpoint(req: BrowserRunRequest):
+    """Runs a deterministic long-form browser run (AGE-99): scripted steps across tabs,
+    each verified against the live page, with recovery when a step misses."""
+    from app.services.browser_run import run_browser_steps
+    try:
+        return await run_browser_steps(
+            browser_sandbox_service,
+            req.steps,
+            owner=req.owner or "browser-run",
+            stop_on_failure=bool(req.stop_on_failure if req.stop_on_failure is not None else True),
+            max_recoveries=int(req.max_recoveries or 2),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/api/browser/observe")
 async def browser_observe_endpoint(req: Optional[BrowserObserveRequest] = None):

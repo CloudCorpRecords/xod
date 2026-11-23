@@ -708,6 +708,11 @@ class BrowserSandboxService:
         self.indexed_elements: List[Dict[str, Any]] = []
         self.active_workspace_path: Optional[str] = None
         self.active_tab_id: Optional[str] = None
+        # Tab claim (AGE-99): while a claim is held, the primitives drive the claimed tab only.
+        # If that tab disappears, they fail loudly instead of silently adopting another tab.
+        # Only an explicit manage_tabs action (new, switch, close, claim, release) may move or clear it.
+        self.claimed_tab_id: Optional[str] = None
+        self.claim_owner: Optional[str] = None
         self.headless: bool = True
         # Background tabs the web reader (services/web_reader.py) has open; never treated as the page being driven.
         self.reader_tabs: set = set()
@@ -890,6 +895,16 @@ class BrowserSandboxService:
     async def _get_active_tab_ws_url(self) -> str:
         tabs = json.loads(await self._devtools(f"http://127.0.0.1:{DEBUG_PORT}/json", 2.0))
 
+        if self.claimed_tab_id:
+            for t in tabs:
+                if t.get("id") == self.claimed_tab_id and t.get("webSocketDebuggerUrl"):
+                    self.active_tab_id = self.claimed_tab_id
+                    return t["webSocketDebuggerUrl"]
+            raise RuntimeError(
+                f"Claimed tab {self.claimed_tab_id} (owner {self.claim_owner}) is gone; "
+                "refusing to drive a different tab. Release the claim or claim another tab explicitly."
+            )
+
         if self.active_tab_id:
             for t in tabs:
                 if t.get("id") == self.active_tab_id and t.get("webSocketDebuggerUrl"):
@@ -988,6 +1003,11 @@ class BrowserSandboxService:
                 self.headless = headless
             self.proc = None
             self.active_tab_id = None
+            # A restart kills every tab, so any tab claim is definitionally gone (AGE-99).
+            # Clearing it here lets the navigate self-heal retry drive the fresh browser
+            # instead of raising the claim error at itself; runners re-claim per step.
+            self.claimed_tab_id = None
+            self.claim_owner = None
             self.current_url = "about:blank"
             self.current_title = "Empty Tab"
             self.indexed_elements = []
@@ -3401,6 +3421,35 @@ class BrowserSandboxService:
                     "url": self.current_url
                 }
 
+    async def claim_tab(self, tab_id: Optional[str] = None, owner: str = "run") -> Dict[str, Any]:
+        """Pins this service to one tab (AGE-99). While the claim is held, every primitive
+        (navigate, click, type, observe, ...) drives the claimed tab and only that tab; if the
+        tab is closed behind the run's back, the next primitive raises instead of silently
+        adopting the first page tab. Explicit manage_tabs actions may move the claim and say so."""
+        await self.ensure_browser_running()
+        tabs = json.loads(await self._devtools(f"http://127.0.0.1:{DEBUG_PORT}/json", 2.0))
+        pages = [t for t in tabs if t.get("type") == "page" and t.get("id") not in self.reader_tabs]
+        if tab_id is None:
+            tab_id = self.active_tab_id or (pages[0].get("id") if pages else None)
+        match = next((t for t in pages if t.get("id") == tab_id), None)
+        if match is None:
+            return {"success": False, "error": f"Tab {tab_id} not found among open page tabs",
+                    "claimed_tab_id": self.claimed_tab_id}
+        self.claimed_tab_id = tab_id
+        self.claim_owner = owner
+        self.active_tab_id = tab_id
+        self.current_url = match.get("url", self.current_url)
+        self.current_title = match.get("title", self.current_title)
+        return {"success": True, "action": "claim", "claimed_tab_id": tab_id, "owner": owner,
+                "url": self.current_url, "title": self.current_title}
+
+    def release_tab_claim(self) -> Dict[str, Any]:
+        """Drops the tab claim; primitives go back to following the active tab."""
+        was = self.claimed_tab_id
+        self.claimed_tab_id = None
+        self.claim_owner = None
+        return {"success": True, "action": "release", "released_tab_id": was}
+
     async def manage_tabs(self, action: str = "list", target_id: Optional[str] = None, url: Optional[str] = "about:blank") -> Dict[str, Any]:
         """
         Manages browser tabs (list, new, switch, close).
@@ -3430,7 +3479,12 @@ class BrowserSandboxService:
                     self.active_tab_id = new_tab.get("id")
                     self.current_url = url or "about:blank"
                     self.current_title = new_tab.get("title", "New Tab")
-                return {"success": True, "action": "new", "tab": new_tab, "active_tab_id": self.active_tab_id}
+                claim_moved = False
+                if self.claimed_tab_id and new_tab.get("id"):
+                    self.claimed_tab_id = new_tab.get("id")
+                    claim_moved = True
+                return {"success": True, "action": "new", "tab": new_tab, "active_tab_id": self.active_tab_id,
+                        "claim_moved": claim_moved, "claimed_tab_id": self.claimed_tab_id}
 
             elif action == "switch" and target_id:
                 activate_url = f"{endpoint}/activate/{target_id}"
@@ -3445,14 +3499,32 @@ class BrowserSandboxService:
                             break
                 except Exception:
                     pass
-                return {"success": True, "action": "switch", "target_id": target_id, "result": res, "active_tab_id": self.active_tab_id}
+                claim_moved = False
+                if self.claimed_tab_id and self.claimed_tab_id != target_id:
+                    self.claimed_tab_id = target_id
+                    claim_moved = True
+                return {"success": True, "action": "switch", "target_id": target_id, "result": res,
+                        "active_tab_id": self.active_tab_id, "claim_moved": claim_moved,
+                        "claimed_tab_id": self.claimed_tab_id}
 
             elif action == "close" and target_id:
                 close_url = f"{endpoint}/close/{target_id}"
                 res = await self._devtools(close_url, 2.0)
                 if self.active_tab_id == target_id:
                     self.active_tab_id = None
-                return {"success": True, "action": "close", "target_id": target_id, "result": res}
+                claim_cleared = False
+                if self.claimed_tab_id == target_id:
+                    self.claimed_tab_id = None
+                    self.claim_owner = None
+                    claim_cleared = True
+                return {"success": True, "action": "close", "target_id": target_id, "result": res,
+                        "claim_cleared": claim_cleared}
+
+            elif action == "claim":
+                return await self.claim_tab(tab_id=target_id, owner="tabs")
+
+            elif action == "release":
+                return self.release_tab_claim()
 
             return {"success": False, "error": f"Unknown tab action: {action}"}
         except Exception as e:
