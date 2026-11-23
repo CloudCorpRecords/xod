@@ -59,7 +59,7 @@ class _Rig:
             if rig.trusted is None:
                 return None
             return {"partner_trusted": rig.trusted, "version": "1.2",
-                    "bundle_id": "dev.xod.partner"}
+                    "bundle_id": "dev.xod.partner", "approval_policy": PC.APPROVAL_POLICY}
 
         PC.status = fake_status
         PC.build_identity = lambda state_dir=None: rig.build
