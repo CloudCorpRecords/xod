@@ -558,6 +558,55 @@ def main():
     check("status shows no warning when off", muse_app.status()["accessibility_error"] is None,
           str(muse_app.status()))
 
+    print("M14 watcher status surfaces live escalations")
+    from app.services import muse_escalate
+    saved_live = dict(muse_escalate._state["live"])
+    saved_stats = dict(muse_escalate._state["stats"])
+    saved_send = muse_escalate._send_fn
+    saved_esc_status = muse_escalate.status
+    try:
+        muse_escalate._state["live"].clear()
+        muse_escalate._state["stats"].update({"sent": 0, "queued": 0, "failed": 0, "expired": 0})
+        st_empty = muse_app.status()
+        esc_empty = st_empty.get("escalations")
+        check("status includes escalations dict with live, stats, and escalations keys when empty",
+              isinstance(esc_empty, dict)
+              and all(k in esc_empty for k in ("live", "stats", "escalations"))
+              and esc_empty["live"] == 0
+              and isinstance(esc_empty["stats"], dict)
+              and esc_empty["escalations"] == [],
+              str(esc_empty))
+
+        muse_escalate._send_fn = lambda kind, body, payload: {"state": "inbox", "id": "fake-msg-1"}
+        esc_payload = muse_escalate.escalate(
+            "option_widget_held", "m14-widget-1", surface="muse_app_options",
+            title="Pick one", text="Which option should Tree pick?",
+            options=["Option A", "Option B"], reason="test live escalation in status")
+        st_live = muse_app.status()
+        esc_live = st_live.get("escalations")
+        check("status reports live count 1 with that escalation's id and kind",
+              isinstance(esc_payload, dict)
+              and isinstance(esc_live, dict)
+              and esc_live["live"] == 1
+              and len(esc_live["escalations"]) == 1
+              and esc_live["escalations"][0]["escalation_id"] == esc_payload["escalation_id"]
+              and esc_live["escalations"][0]["kind"] == "option_widget_held",
+              str(esc_live))
+
+        def broken_status():
+            raise RuntimeError("escalation status unavailable")
+        muse_escalate.status = broken_status
+        st_err = muse_app.status()
+        check("status sets escalations to None when muse_escalate.status raises",
+              "escalations" in st_err and st_err["escalations"] is None, str(st_err))
+    finally:
+        muse_escalate.status = saved_esc_status
+        muse_escalate._send_fn = saved_send
+        muse_escalate._state["live"].clear()
+        muse_escalate._state["live"].update(saved_live)
+        muse_escalate._state["stats"].clear()
+        muse_escalate._state["stats"].update(saved_stats)
+
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")
     return 1 if failed else 0

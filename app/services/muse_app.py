@@ -254,6 +254,11 @@ def status() -> Dict[str, Any]:
         out["review"] = muse_review.status()
     except Exception:
         out["review"] = None
+    try:
+        from app.services import muse_escalate
+        out["escalations"] = muse_escalate.status()
+    except Exception:
+        out["escalations"] = None
     if m == "away" and not until:
         out["you"] = user_away()
     from app.services import run_mode
