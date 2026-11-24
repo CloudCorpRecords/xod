@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.23
+
+Self-repair waits for the download to settle before judging it, and the computer-control server honors your always-approve choice.
+
+**Self-repair no longer fails on a good download**
+- Fixed the 2026-11-24 field failure: the repair integrity check read the staged app.asar before the staged copy had finished landing, failed with ENOENT, and left the install on the old version behind a "could not repair itself" dialog, even though the staged copy was byte-identical to the published release.
+- The staged verdict now waits until the staged archive is present, readable, and the same size on two consecutive checks (bounded at about 20 seconds), and retries a bounded number of times when the package cannot be read yet.
+- A staged copy that stays unreadable now fails the repair as a read failure, in those words, instead of being reported as failing an integrity check it never got to take. Nothing is replaced until a staged copy passes, and a genuinely incomplete copy still fails on every read, so the wait can never clear a real defect.
+
+**Your always-approve choice now covers your own computer calls**
+- The computer-control server ignored its trust setting: with every other server set to "always", your own screenshot, click, and typing calls still parked on an "Approve and run" card. The gate held every non-look computer call outright, and the destructive classification held the rest, so "always" could never take effect for your own hands.
+- At trust "always", computer-control calls now run without a card, like any other server under your standing approval. "ask" still holds everything, and "read_only" still frees only the verified look. The fleet package hold and the destructive hold for other servers are unchanged.
+
+**Tests**
+- electron/bootstrap.test.js 22/22, including a staged copy still landing when staging returns and a never-readable copy's honest error; the 3 new tests fail on the previous bootstrap. Sibling Electron suites 37/37.
+- tests/computer_control/run_computer_control_test.py 43/43; the two new "always runs with no approval card" checks fail on the previous gate.
+
 ## 1.1.22
 
 Major browser intelligence, signed-in Chrome adoption, concurrent multi-browser pool, live mid-mission steering, and fixes for the 40-test browser benchmark.
