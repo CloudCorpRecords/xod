@@ -225,6 +225,23 @@ class FakeRun:
         return {"success": True}
 
 
+class FlakyVerify(FakeRun):
+    """evaluate_js raises TimeoutError, the way a CDP read does on a busy page
+    mid-navigation. fail_first=N: only the first N reads raise."""
+
+    def __init__(self, fail_first=0, fail_always=False):
+        super().__init__()
+        self._eval_calls = 0
+        self._fail_first = fail_first
+        self._fail_always = fail_always
+
+    async def evaluate_js(self, expression):
+        self._eval_calls += 1
+        if self._fail_always or self._eval_calls <= self._fail_first:
+            raise TimeoutError("simulated CDP read timeout")
+        return await super().evaluate_js(expression)
+
+
 async def part_b():
     sb = FakeRun()
     steps = [
@@ -262,6 +279,28 @@ async def part_b():
     check("B8 an impossible expectation fails, attempts recorded",
           rec2["status"] == "incomplete" and rec2["steps"][0]["status"] == "failed"
           and len(rec2["steps"][0]["attempts"]) >= 2, str(rec2["steps"]))
+
+    # Round 2 regression: a verification read that raises (a CDP timeout on a
+    # busy page) is a miss with its cause recorded, never an exception that
+    # kills the run. The live suite crashed exactly here before the fix.
+    sb3 = FlakyVerify(fail_first=1)
+    rec3 = await BR.run_browser_steps(sb3, [
+        {"action": "type", "selector": "#q", "text": "hello"},
+    ], owner="unit")
+    step3 = rec3["steps"][0]
+    check("B9 a timed-out verification read is a miss, recovered on re-check",
+          rec3["status"] == "completed" and step3["status"] == "recovered"
+          and any("verification error" in str(a.get("detail", "")) for a in step3["attempts"]),
+          str(step3))
+
+    sb4 = FlakyVerify(fail_always=True)
+    rec4 = await BR.run_browser_steps(sb4, [
+        {"action": "type", "selector": "#q", "text": "hello"},
+    ], owner="unit")
+    check("B10 verification that always times out fails the step, run record intact",
+          rec4["status"] == "incomplete" and rec4["steps"][0]["status"] == "failed"
+          and any("verification error" in str(a.get("detail", "")) for a in rec4["steps"][0]["attempts"]),
+          str(rec4["steps"]))
 
 
 async def main():

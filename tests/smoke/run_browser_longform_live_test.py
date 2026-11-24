@@ -22,7 +22,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 TMP = Path(tempfile.mkdtemp(prefix="xod_longform_"))
 os.environ.update({"XOD_DATA_DIR": str(TMP / "data"), "XOD_NO_UPDATE_CHECK": "1", "XOD_SPEECH": "off",
-                   "HOME": str(TMP), "XDG_CONFIG_HOME": str(TMP / "config"),
+                   # NOTE: HOME is deliberately NOT redirected to the temp dir.
+                   # Chrome (v158, verified 2026-11-23) starts and answers CDP
+                   # under a fake HOME but Page.navigate never commits: its
+                   # child processes stall on the missing real home. Isolation
+                   # comes from XOD_DATA_DIR and the file keyring below.
+                   "XDG_CONFIG_HOME": str(TMP / "config"),
                    "XDG_DATA_HOME": str(TMP / "share"),
                    "PYTHON_KEYRING_BACKEND": "tests.support.filekeyring.FileKeyring",
                    "XOD_TEST_KEYRING_FILE": str(TMP / "keys.json"), "XOD_SECRETS_SERVICE": "Xod test keys"})

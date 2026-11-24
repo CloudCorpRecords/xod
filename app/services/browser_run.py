@@ -252,22 +252,58 @@ async def _do_action(sb, step: Dict[str, Any], state: Dict[str, Any],
 
 async def _verify(sb, step: Dict[str, Any], before: Dict[str, Any],
                   result: Dict[str, Any]) -> (bool, str, Dict[str, Any]):
-    state = await page_state(sb)
-    if step.get("expect"):
-        ok, detail = await check_expect(sb, step["expect"], state)
-    else:
-        ok, detail = await _default_check(sb, step, before, state, result)
+    """Verify a step's landing. Exception-safe by contract: a state read or a
+    check that times out (a busy page, a socket mid-navigation) is a miss with
+    its cause recorded, never an exception that kills the run."""
+    try:
+        state = await page_state(sb)
+    except Exception as e:
+        return False, f"state read failed: {type(e).__name__}: {e}", dict(before)
+    try:
+        if step.get("expect"):
+            ok, detail = await check_expect(sb, step["expect"], state)
+        else:
+            ok, detail = await _default_check(sb, step, before, state, result)
+    except Exception as e:
+        return False, f"verification error: {type(e).__name__}: {e}", state
     return ok, detail, state
+
+
+async def _recheck(sb, step: Dict[str, Any], before: Dict[str, Any],
+                   state: Dict[str, Any]) -> (bool, str):
+    """The settle rung's bare re-check, with the same exception contract as
+    _verify: a timed-out read is a miss, not a crash."""
+    try:
+        if step.get("expect"):
+            return await check_expect(sb, step["expect"], state)
+        return await _default_check(sb, step, before, state, {})
+    except Exception as e:
+        return False, f"verification error: {type(e).__name__}: {e}"
 
 
 async def _run_step(sb, step: Dict[str, Any], extracts: Dict[str, Any],
                     max_recoveries: int) -> Dict[str, Any]:
     rec: Dict[str, Any] = {"action": step.get("action"), "attempts": []}
-    before = await page_state(sb)
+    try:
+        before = await page_state(sb)
+    except Exception as e:  # even the opening state read can time out on a busy browser
+        rec["attempts"].append({"strategy": "primary",
+                                "error": f"state read failed: {type(e).__name__}: {e}"})
+        rec["status"] = "failed"
+        rec["detail"] = f"state read failed: {type(e).__name__}: {e}"
+        rec["url_before"] = rec["url_after"] = None
+        rec["title_after"] = None
+        rec["active_tab_id"] = None
+        return rec
     rec["url_before"] = before.get("url")
 
     async def attempt(strategy: str) -> (bool, str, Dict[str, Any]):
-        state = await page_state(sb)
+        try:
+            state = await page_state(sb)
+        except Exception as e:
+            rec["attempts"].append({"strategy": strategy,
+                                    "error": f"state read failed: {type(e).__name__}: {e}"})
+            return False, f"state read failed: {type(e).__name__}: {e}", before
         try:
             result = await _do_action(sb, step, state, extracts, strategy)
         except StepFailed as e:
@@ -289,11 +325,15 @@ async def _run_step(sb, step: Dict[str, Any], extracts: Dict[str, Any],
         rungs += 1
         # Rung 1: settle and re-verify only. The action may have landed late.
         await asyncio.sleep(0.8)
-        state_now = await page_state(sb)
-        if step.get("expect"):
-            ok2, detail2 = await check_expect(sb, step["expect"], state_now)
+        try:
+            state_now = await page_state(sb)
+        except Exception as e:  # a timed-out read is a miss; fall back to the last known state
+            rec["attempts"].append({"strategy": "settle-recheck",
+                                    "error": f"state read failed: {type(e).__name__}: {e}"})
+            state_now = after
+            ok2 = False
         else:
-            ok2, detail2 = await _default_check(sb, step, before, state_now, {})
+            ok2, detail2 = await _recheck(sb, step, before, state_now)
         if ok2:
             rec["attempts"].append({"strategy": "settle-recheck", "verified": True, "detail": detail2})
             ok, detail, after = True, f"landed late ({detail2})", state_now
@@ -301,7 +341,15 @@ async def _run_step(sb, step: Dict[str, Any], extracts: Dict[str, Any],
         # Rung 2: re-pin the claim if the active tab drifted, then retry once.
         claimed = getattr(sb, "claimed_tab_id", None)
         if claimed and state_now.get("active_tab_id") != claimed:
-            await sb.manage_tabs("switch", target_id=claimed)
+            try:
+                await sb.manage_tabs("switch", target_id=claimed)
+            except Exception as e:  # re-pin failed; the alternate rung still gets its turn
+                rec["attempts"].append({"strategy": "repin",
+                                        "error": f"{type(e).__name__}: {e}"})
+                ok, detail, after = await attempt("alternate")
+                if ok:
+                    break
+                continue
             ok, detail, after = await attempt("primary-after-repin")
             if ok:
                 break
@@ -367,8 +415,11 @@ async def _run_steps_unlocked(sb, steps, owner, stop_on_failure, max_recoveries,
             if claim and getattr(sb, "claimed_tab_id", None) is None:
                 # A browser restart or the close of the claimed tab took the claim;
                 # re-pin to the tab the run is actually on and say so in the record.
-                re = await sb.claim_tab(owner=owner)
-                reclaimed = bool(_ok(re))
+                try:
+                    re = await sb.claim_tab(owner=owner)
+                    reclaimed = bool(_ok(re))
+                except Exception:
+                    reclaimed = False
             rec = await _run_step(sb, step, record["extracts"], max_recoveries)
             rec["step_num"] = i + 1
             if reclaimed:
@@ -380,7 +431,10 @@ async def _run_steps_unlocked(sb, steps, owner, stop_on_failure, max_recoveries,
         record["steps_landed"] = landed
         record["steps_total"] = len(steps)
         record["status"] = "completed" if landed == len(steps) and len(record["steps"]) == len(steps) else "incomplete"
-        final_state = await page_state(sb)
+        try:
+            final_state = await page_state(sb)
+        except Exception:  # the run record stands even if the last state read times out
+            final_state = {}
         record["final_url"] = final_state.get("url")
         record["final_title"] = final_state.get("title")
         record["final_tabs"] = [{"id": t.get("id"), "title": t.get("title"), "url": t.get("url")}
