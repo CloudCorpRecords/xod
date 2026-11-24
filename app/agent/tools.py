@@ -5408,9 +5408,17 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
                              "what's wrong", "whats wrong", "keeps failing", "self heal", "self-heal", "check yourself", "stuck"]):
         affinities.append("xod_doctor")
 
-    # The person's paired phone (the Xod phone app)
-    if any(k in q for k in ["my phone", "on my android", "my android", "on the phone", "my galaxy", "my samsung", "on my cell", "tiktok", "instagram",
-                            "facebook", "cellphone", "cell phone", "my mobile", "android phone", "s25"]):
+    # The person's paired phone (the Xod phone app).
+    # NEVER route to phone when the user explicitly asks for Chrome / browser / desktop / Google account!
+    wants_desktop_browser = any(k in q for k in [
+        "chrome", "browser", "tab", "tabs", "google account", "on my mac", "on my computer",
+        "on desktop", "on my laptop", "in chrome", "my chrome",
+    ])
+    wants_phone_explicit = any(k in q for k in [
+        "my phone", "on my android", "my android", "on the phone", "my galaxy", "my samsung",
+        "on my cell", "cellphone", "cell phone", "my mobile", "android phone", "s25", "iphone",
+    ])
+    if wants_phone_explicit or (not wants_desktop_browser and any(k in q for k in ["tiktok"])):
         affinities.append("phone")
 
     # The Muse approvals switch
@@ -5438,18 +5446,28 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
             "computer_manage_file", "locate_files"
         ])
 
-    # Autonomous Browser Sandbox affinities
-    if any(k in q for k in ["browser", "browse", "navigate", "page", "webpage", "url", "click", "dom", "headless", "chrome", "scrape", "screenshot", "snapshot", "fill", "input", "site", "mission", "scroll", "observe", "interact", "som", "form", "snoop", "network", "cookie", "extract", "pdf", "tab", "tabs", "upload", "download", "aria", "ax", "wait", "hover", "press", "key", "overlay", "popup", "visible", "captcha", "turnstile", "cloudflare", "stuck", "restart", "reboot", "unfreeze", "solve"]):
+    # Autonomous Browser & Signed-In Chrome affinities
+    if any(k in q for k in [
+        "browser", "browse", "navigate", "page", "webpage", "url", "click", "dom", "headless", "chrome",
+        "scrape", "screenshot", "snapshot", "fill", "input", "site", "mission", "scroll", "observe",
+        "interact", "som", "form", "snoop", "network", "cookie", "extract", "pdf", "tab", "tabs",
+        "upload", "download", "aria", "ax", "wait", "hover", "press", "key", "overlay", "popup",
+        "visible", "captcha", "turnstile", "cloudflare", "stuck", "restart", "reboot", "unfreeze",
+        "facebook", "fb", "linkedin", "instagram", "twitter", "x.com", "gmail", "google account",
+        "post on", "post to", "drag", "dropdown", "steer", "parallel",
+    ]):
         affinities.extend([
-            "browser_observe", "browser_interact", "browser_extract_data",
-            "browser_fill_form", "browser_smart_inspect", "browser_dismiss_overlays",
-            "browser_handle_captcha", "browser_unstuck", "browser_restart",
+            "browser_find_tab", "browser_adopt", "browser_detach", "browser_tabs",
+            "browser_observe", "browser_interact", "browser_select", "browser_drag",
+            "browser_extract_data", "browser_fill_form", "browser_smart_inspect",
+            "browser_dismiss_overlays", "browser_unstuck", "browser_restart",
             "browser_press_key", "browser_hover", "browser_set_visibility",
             "browser_snoop_network", "browser_manage_cookies",
             "browser_manage_tabs", "browser_wait_for", "browser_export_pdf",
             "browser_upload_file", "browser_get_downloads", "browser_extract_ax_tree",
             "browser_navigate", "browser_extract_content", "browser_extract_markdown",
-            "browser_snapshot", "browser_click", "browser_type", "browser_scroll", "browser_run_mission"
+            "browser_snapshot", "browser_click", "browser_type", "browser_scroll",
+            "browser_run_mission", "browser_run_parallel", "browser_steer_mission",
         ])
 
     # Job Application, Form Filling & Embodied Web Action affinities

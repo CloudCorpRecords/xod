@@ -154,9 +154,9 @@ async def part_b_find_tab():
           str(r_li))
 
 
-# ================================================================ Part C: Agent Tool Registry
+# ================================================================ Part C: Agent Tool Registry & Routing
 def part_c_agent_tools():
-    from app.agent.tools import TOOL_DEFINITIONS
+    from app.agent.tools import TOOL_DEFINITIONS, select_tools_for_query
     names = {t["function"]["name"] for t in TOOL_DEFINITIONS if isinstance(t, dict) and "function" in t}
     expected = {
         "browser_find_tab", "browser_adopt", "browser_detach", "browser_tabs",
@@ -164,6 +164,21 @@ def part_c_agent_tools():
     }
     missing = expected - names
     check("C1 app/agent/tools.py registers all 8 new browser/tab/pool/steer tools", not missing, f"missing={missing}")
+
+    fb_chrome = {t["function"]["name"] for t in select_tools_for_query("go to fb on my chrome and make a post")}
+    check("C2 'go to fb on my chrome' selects browser_find_tab/browser_adopt and NOT phone",
+          "browser_find_tab" in fb_chrome and "browser_adopt" in fb_chrome and "phone" not in fb_chrome,
+          f"selected={sorted(fb_chrome)}")
+
+    fb_google = {t["function"]["name"] for t in select_tools_for_query("make a post on Facebook. Try to see if you can go to my Google account")}
+    check("C3 'post on Facebook ... my Google account' selects browser_find_tab and NOT phone",
+          "browser_find_tab" in fb_google and "phone" not in fb_google,
+          f"selected={sorted(fb_google)}")
+
+    fb_phone = {t["function"]["name"] for t in select_tools_for_query("open Facebook on my phone")}
+    check("C4 explicit 'open Facebook on my phone' still selects phone",
+          "phone" in fb_phone,
+          f"selected={sorted(fb_phone)}")
 
 
 async def main():
