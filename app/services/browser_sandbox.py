@@ -375,10 +375,11 @@ Reply with ONLY a JSON object, with only the keys you need. Examples:
 {"reasoning": "Both prices noted", "action": "finish", "answer": "Shop B is cheaper: $79.50 vs $89.99 at Shop A."}
 
 Keys:
-- "action": click | type | select | choose | check | uncheck | hover | upload_resume | log_in | create_password | scroll | read_more |
-  extract | press_key | navigate | back | switch_tab | close_tab | wait | ask_user | finish
-- "index": element number (click/type/select/choose/check/uncheck/hover/upload_resume). "text": text to type, option to pick, key to press,
-  or for extract what to pull out of the page. "press_enter": true only for search boxes. "url": for navigate. "tab": for switch_tab/close_tab.
+- "action": click | type | select | choose | check | uncheck | hover | drag | upload | upload_resume | log_in | create_password | scroll | read_more |
+  extract | press_key | navigate | back | forward | open_tab | switch_tab | close_tab | wait | ask_user | finish
+- "index": element number (click/type/select/choose/check/uncheck/hover/drag/upload/upload_resume). "target_index": drop target element number for drag.
+  "text": text to type, option to pick, key to press, or for extract what to pull out of the page. "file_path": local file path for upload.
+  "press_enter": true for search boxes and local list-entry inputs (e.g. TodoMVC). "url": for navigate/open_tab. "tab": for switch_tab/close_tab.
   "direction": "down"/"up" for scroll. "username_index"/"password_index" for log_in; "username" for create_password.
   "question" for ask_user. "answer" for finish: the result for the user, built from NOTES and the page.
 - "reasoning": one short sentence (under 15 words).
@@ -390,18 +391,18 @@ Keys:
 - "think": true (with no action) if this step is tricky or high-stakes and you want time to think it through first.
 
 How to work:
-- Research / comparison / "find out" goals: visit every page or site needed and "remember" each fact you'll need. On a long page, "extract"
-  with what you're looking for pulls it out of the whole page at once (faster than read_more). Finish only when NOTES cover the whole goal,
-  with a clear answer that cites the numbers and where they came from.
+- Research / comparison / "find out" goals: visit every page or site needed and "remember" each fact you'll need. When the goal asks to use multiple tabs or compare two pages in separate tabs, use "open_tab" with "url" and "switch_tab" between them. On a long page, "extract" with what you're looking for pulls it out of the whole page at once (faster than read_more). Finish only when NOTES cover the whole goal, with a clear answer that cites the numbers and where they came from.
 - Close cookie banners or pop-ups that block the page.
 - Dropdowns: a real <select> uses "select". A custom dropdown (a button or div that opens a list) uses "choose" with the dropdown's index and the option text.
 - Menus that open on mouse-over: "hover" first, then click the item.
+- Drag and drop: use "drag" with "index" (source element) and "target_index" (drop target element).
+- Key presses: use "press_key" with "text" (e.g. "A", "B", "7", "Enter", "Escape"); read the page result afterwards instead of re-clicking the same input.
 - Long pages: "read_more" shows the next part of the page text; "scroll" moves the view so more elements appear ([below] = below the visible area).
 - If a link opened a new tab, it shows in OPEN TABS; "switch_tab" to the one you need.
 - Forms: fill EVERY field the USER PROFILE or the user's messages cover (including optional ones) before Continue/Next/Submit. Empty fields show no val=.
 - Every value you type or select must come from USER PROFILE, the GOAL, or the user's messages. Never invent or assume names, emails, numbers, history, or answers to questions (yes/no included). If a field asks something none of those cover, "ask_user" with the exact question; don't guess, even for optional fields.
-- Resume/CV upload fields: "upload_resume".
-- Passwords: you never see or type them. On a login form with SAVED LOGIN = yes, use "log_in" then click sign in. No saved login: sign up if the site allows it (type the profile email, then "create_password"), otherwise "ask_user" and suggest the user logs in once with Take Over.
+- File upload fields: if the GOAL gives a specific local file path, use "upload" with the file input's "index" and "file_path". Only use "upload_resume" for résumé/CV upload fields when no explicit file path is in the GOAL.
+- Passwords: on a login form with SAVED LOGIN = yes, use "log_in" then click sign in. If the user's GOAL explicitly hands you a username and password (e.g. a demo/practice login or wrong-password test), you may "type" those exact credentials directly into the username and password fields and click login (do NOT try to create a new account when the goal asks to log in with given credentials). Otherwise, if no saved login exists and no credentials were handed, sign up if asked or "ask_user" to log in once with Take Over.
 - If already signed in (avatar, account menu, "Sign out"), don't log in again.
 - Use the log. Each step has a "result:" line saying what your action changed. If it shows the action worked (e.g. "Added to cart", your message appears, you moved to the next page), do NOT do it again; move on. Never repeat an action that failed or changed nothing; try another element, scroll, search, or navigate.
 - Sending, submitting, paying, posting, messaging, deleting: just do the click. The system pauses and asks the user first.
@@ -3819,23 +3820,41 @@ class BrowserSandboxService:
                 return {"success": True, "drag": val, "url": self.current_url, "title": self.current_title}
 
     async def press_key(self, key: str) -> Dict[str, Any]:
-        """Dispatches key event (e.g. Enter, Escape, Tab, ArrowDown, Backspace)."""
+        """Dispatches key event (Enter, Escape, Tab, arrows, or any printable character like A, B, 7)."""
         key_map = {
-            "enter": (13, "Enter", "\r"),
-            "escape": (27, "Escape", ""),
-            "tab": (9, "Tab", "\t"),
-            "backspace": (8, "Backspace", ""),
-            "space": (32, "Space", " "),
-            "arrowdown": (40, "ArrowDown", ""),
-            "arrowup": (38, "ArrowUp", ""),
-            "arrowleft": (37, "ArrowLeft", ""),
-            "arrowright": (39, "ArrowRight", ""),
-            "pagedown": (34, "PageDown", ""),
-            "pageup": (33, "PageUp", "")
+            "enter": (13, "Enter", "Enter", "\r"),
+            "return": (13, "Enter", "Enter", "\r"),
+            "escape": (27, "Escape", "Escape", ""),
+            "esc": (27, "Escape", "Escape", ""),
+            "tab": (9, "Tab", "Tab", "\t"),
+            "backspace": (8, "Backspace", "Backspace", ""),
+            "delete": (46, "Delete", "Delete", ""),
+            "space": (32, " ", "Space", " "),
+            "arrowdown": (40, "ArrowDown", "ArrowDown", ""),
+            "arrowup": (38, "ArrowUp", "ArrowUp", ""),
+            "arrowleft": (37, "ArrowLeft", "ArrowLeft", ""),
+            "arrowright": (39, "ArrowRight", "ArrowRight", ""),
+            "pagedown": (34, "PageDown", "PageDown", ""),
+            "pageup": (33, "PageUp", "PageUp", ""),
+            "home": (36, "Home", "Home", ""),
+            "end": (35, "End", "End", ""),
+            "shift": (16, "Shift", "ShiftLeft", ""),
+            "control": (17, "Control", "ControlLeft", ""),
+            "alt": (18, "Alt", "AltLeft", ""),
         }
 
-        k_clean = key.strip().lower()
-        vk_code, code_name, text_val = key_map.get(k_clean, (13, key, ""))
+        raw_key = str(key or "").strip()
+        k_clean = raw_key.lower()
+        if k_clean in key_map:
+            vk_code, key_name, code_name, text_val = key_map[k_clean]
+        elif len(raw_key) == 1:
+            ch = raw_key
+            vk_code = ord(ch.upper())
+            key_name = ch
+            code_name = f"Key{ch.upper()}" if ch.isalpha() else (f"Digit{ch}" if ch.isdigit() else ch)
+            text_val = ch
+        else:
+            vk_code, key_name, code_name, text_val = (0, raw_key, raw_key, "")
 
         async with self._lock:
             await self.ensure_browser_running()
@@ -3845,16 +3864,25 @@ class BrowserSandboxService:
                 await self._send_cdp(ws, "Input.dispatchKeyEvent", {
                     "type": "rawKeyDown",
                     "windowsVirtualKeyCode": vk_code,
-                    "key": code_name,
+                    "key": key_name,
                     "code": code_name,
                     "unmodifiedText": text_val,
-                    "text": text_val
+                    "text": text_val,
                 })
+                if text_val and len(raw_key) == 1:
+                    await self._send_cdp(ws, "Input.dispatchKeyEvent", {
+                        "type": "char",
+                        "windowsVirtualKeyCode": vk_code,
+                        "key": key_name,
+                        "code": code_name,
+                        "unmodifiedText": text_val,
+                        "text": text_val,
+                    })
                 await self._send_cdp(ws, "Input.dispatchKeyEvent", {
                     "type": "keyUp",
                     "windowsVirtualKeyCode": vk_code,
-                    "key": code_name,
-                    "code": code_name
+                    "key": key_name,
+                    "code": code_name,
                 })
 
                 await asyncio.sleep(0.8)
@@ -5360,7 +5388,17 @@ class BrowserSandboxService:
                 if action == "click":
                     step_res = await self.interact_by_index(index=index, action="click")
                 elif action == "type" and _is_password_field(element):
-                    step_res = {"success": False, "error": "password fields are filled with log_in or create_password, never typed"}
+                    pw_text = str(plan.get("text") or "")
+                    if pw_text and pw_text in (goal or ""):
+                        # Permissionless handed-credential policy (E7/W20): user explicitly handed
+                        # this password verbatim in the GOAL (never from page text or vault).
+                        step_res = await self.interact_by_index(
+                            index=index, action="type", text=pw_text, press_enter=False,
+                        )
+                        if step_res.get("success"):
+                            history.append("   audit: typed goal-supplied password (masked; not saved to vault).")
+                    else:
+                        step_res = {"success": False, "error": "password fields use log_in (saved vault) or a password explicitly provided verbatim in the user's GOAL"}
                 elif action == "log_in":
                     step_res = await self._mission_log_in(plan)
                     if step_res.get("needs_user"):
@@ -5422,9 +5460,9 @@ class BrowserSandboxService:
                 elif action == "navigate":
                     step_res = await self.navigate(plan.get("url") or plan.get("target") or "")
                 elif action == "back":
-                    step_res = await self.evaluate_js("history.back()")
+                    step_res = await self._navigate_history(-1)
                 elif action == "forward":
-                    step_res = await self.evaluate_js("history.forward()")
+                    step_res = await self._navigate_history(1)
                 elif action == "open_tab":
                     step_res = await self.manage_tabs("new", url=plan.get("url") or plan.get("target") or "about:blank")
                 elif action in ("switch_tab", "close_tab"):
@@ -5856,6 +5894,40 @@ class BrowserSandboxService:
                     save_site_tips(item["site"], [str(item.get("tip", ""))])
         except Exception as e:
             logger.debug(f"Site tip learning skipped: {e}")
+
+    async def _navigate_history(self, delta: int) -> Dict[str, Any]:
+        """Deterministic Back/Forward via CDP Page.getNavigationHistory + Page.navigateToHistoryEntry (E12/W22)."""
+        try:
+            async with self._lock:
+                await self.ensure_browser_running()
+                ws_url = await self._get_active_tab_ws_url()
+                async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
+                    await self._send_cdp(ws, "Page.enable")
+                    hist = await self._send_cdp(ws, "Page.getNavigationHistory")
+                    idx = int(hist.get("currentIndex", 0))
+                    entries = hist.get("entries") or []
+                    target_idx = idx + int(delta)
+                    if target_idx < 0 or target_idx >= len(entries):
+                        return {
+                            "success": False,
+                            "error": f"No {'previous' if delta < 0 else 'next'} history entry (index {idx} of {len(entries)}).",
+                        }
+                    entry = entries[target_idx]
+                    await self._send_cdp(ws, "Page.navigateToHistoryEntry", {"entryId": entry["id"]})
+                    await asyncio.sleep(0.8)
+                    url_res = await self._send_cdp(ws, "Runtime.evaluate", {"expression": "window.location.href"})
+                    title_res = await self._send_cdp(ws, "Runtime.evaluate", {"expression": "document.title"})
+                    self.current_url = url_res.get("result", {}).get("value") or entry.get("url") or self.current_url
+                    self.current_title = title_res.get("result", {}).get("value") or entry.get("title") or self.current_title
+                    return {
+                        "success": True,
+                        "url": self.current_url,
+                        "title": self.current_title,
+                        "history_index": target_idx,
+                        "history_length": len(entries),
+                    }
+        except Exception:
+            return await self.evaluate_js("history.back()" if delta < 0 else "history.forward()")
 
     async def _mission_log_in(self, plan: Dict[str, Any]) -> Dict[str, Any]:
         """Types the saved username/password straight from the Keychain; the LLM never sees them."""

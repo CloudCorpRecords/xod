@@ -65,6 +65,18 @@ PAGES = {
       </main>
       <footer>FOOTER LEGAL CHROME SPAM</footer>
     </body></html>""",
+    "/keys": """<!doctype html><html><head><title>Key Presses</title></head><body>
+      <h1>Key Presses</h1>
+      <input id="key-in" type="text" />
+      <div id="key-log"></div>
+      <script>
+        const keys = [];
+        document.addEventListener('keydown', e => {
+          keys.push(e.key);
+          document.getElementById('key-log').textContent = keys.join(',');
+        });
+      </script>
+    </body></html>""",
 }
 
 
@@ -127,6 +139,25 @@ async def part_live():
         check("E15 get_downloads lists real downloaded file in workspace root",
               dls.get("success") is True and "downloaded_report_probe.txt" in names,
               f"names={names[:10]}")
+
+        # Benchmark #22: press_key dispatches real A, B, 7 (not Enter!)
+        await sb.navigate(f"{base}/keys")
+        await sb.press_key("A")
+        await sb.press_key("B")
+        await sb.press_key("7")
+        klog = (await sb.evaluate_js("document.getElementById('key-log').textContent")).get("result")
+        check("E16_keys press_key dispatches real printable keys A, B, 7",
+              klog == "A,B,7",
+              f"klog={klog!r}")
+
+        # Benchmark #39: CDP Back/Forward navigation history
+        await sb.navigate(f"{base}/recaptcha")
+        await sb.navigate(f"{base}/turnstile")
+        r_bk = await sb._navigate_history(-1)
+        r_fw = await sb._navigate_history(1)
+        check("E12 CDP back/forward navigates history cleanly (/turnstile -> /recaptcha -> /turnstile)",
+              r_bk.get("success") and "/recaptcha" in (r_bk.get("url") or "") and r_fw.get("success") and "/turnstile" in (r_fw.get("url") or ""),
+              f"bk={r_bk.get('url')} fw={r_fw.get('url')}")
     finally:
         sb.close()
         httpd.shutdown()
@@ -160,6 +191,7 @@ async def part_mission_guards():
     sb.indexed_elements = [
         {"index": 1, "tag": "input", "type": "text", "placeholder": "What needs to be done?", "class": "new-todo", "text": ""},
         {"index": 2, "tag": "input", "type": "file", "text": "Choose File"},
+        {"index": 3, "tag": "input", "type": "password", "name": "password", "text": "Password"},
     ]
     uploaded_files = []
     typed_values = []
@@ -227,6 +259,39 @@ async def part_mission_guards():
         check("E16 repeating same no-effect step twice injects loop-detection NOTE",
               has_loop_note,
               str(rec_e16.get("log")))
+
+        # Test E7/W20a: password explicitly handed in GOAL is accepted & audit-logged (masked)
+        typed_values.clear()
+        plans_e7_ok = iter([
+            json.dumps({"action": "type", "index": 3, "text": "SuperSecretPassword!", "reasoning": "type demo pw"}),
+            json.dumps({"action": "finish", "answer": "Logged in."}),
+        ])
+        llm_mod.llm_service.chat_completion = lambda *a, **k: asyncio.sleep(0, result={"content": next(plans_e7_ok), "_provider": "fake", "_example_id": ""})
+        rec_e7_ok = await sb.run_browser_mission(
+            "Log in with username tomsmith and password SuperSecretPassword!",
+            start_url="http://t.local/login",
+            max_steps=4,
+        )
+        has_audit = any("audit: typed goal-supplied password" in h for h in (rec_e7_ok.get("log") or []))
+        check("E7a goal-supplied demo password is typed and audit-logged (masked)",
+              rec_e7_ok.get("status") == "completed" and "SuperSecretPassword!" in typed_values and has_audit,
+              f"status={rec_e7_ok.get('status')} typed={typed_values} audit={has_audit}")
+
+        # Test E7/W20b: password NOT in GOAL is still rejected
+        typed_values.clear()
+        plans_e7_bad = iter([
+            json.dumps({"action": "type", "index": 3, "text": "NotInGoal123", "reasoning": "invented pw"}),
+            json.dumps({"action": "finish", "answer": "Done"}),
+        ])
+        llm_mod.llm_service.chat_completion = lambda *a, **k: asyncio.sleep(0, result={"content": next(plans_e7_bad), "_provider": "fake", "_example_id": ""})
+        rec_e7_bad = await sb.run_browser_mission(
+            "Log into the site.",
+            start_url="http://t.local/login",
+            max_steps=4,
+        )
+        check("E7b ungrounded password NOT in goal is rejected and blocked by verdict gate",
+              rec_e7_bad.get("status") == "failed" and "NotInGoal123" not in typed_values,
+              f"status={rec_e7_bad.get('status')} typed={typed_values}")
     finally:
         llm_mod.llm_service.chat_completion = orig_chat
 
