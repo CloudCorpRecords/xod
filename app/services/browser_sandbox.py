@@ -22,12 +22,16 @@ from app.paths import DATA_DIR as XOD_DATA_DIR
 logger = logging.getLogger("xod.browser_sandbox")
 
 CHROME_BINARIES = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    os.environ.get("XOD_SANDBOX_CHROME_BIN") or "",
+    # Prefer a distinct Chromium / Chrome for Testing binary for the sandbox on macOS
+    # so AppleScript `tell application "Google Chrome"` never binds to Xod's sandbox (E8).
+    "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    shutil.which("google-chrome") or "",
     shutil.which("chromium") or "",
+    shutil.which("google-chrome") or "",
 ] + ([                       # Windows: Chrome (per machine or per user), then Edge, which every Windows PC has
     os.path.join(os.environ.get(v, ""), *rest)
     for v, rest in (("PROGRAMFILES", ("Google", "Chrome", "Application", "chrome.exe")),
@@ -724,6 +728,167 @@ def browser_idle_minutes() -> int:
         return default
 
 
+_JS_DEEP_QUERY_HELPERS = """
+const __xodIsVisible = (el, win) => {
+    if (!el || !el.getBoundingClientRect) return false;
+    try {
+        const s = (win || window).getComputedStyle(el);
+        if (!s || s.display === 'none' || s.visibility === 'hidden' || parseFloat(s.opacity) === 0) return false;
+    } catch (e) {}
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+};
+const __xodWalkRoots = (fn) => {
+    const visited = new Set();
+    const visit = (root, win, frames) => {
+        if (!root || visited.has(root)) return null;
+        visited.add(root);
+        const hit = fn(root, win, frames);
+        if (hit) return hit;
+        let nodes = [];
+        try { nodes = root.querySelectorAll('*'); } catch (e) {}
+        for (const n of nodes) {
+            if (n.shadowRoot) {
+                const sh = visit(n.shadowRoot, win, frames);
+                if (sh) return sh;
+            }
+            if (n.tagName === 'IFRAME') {
+                try {
+                    const fdoc = n.contentDocument;
+                    const fwin = n.contentWindow || win;
+                    if (fdoc) {
+                        const ih = visit(fdoc, fwin, frames.concat([n]));
+                        if (ih) return ih;
+                    }
+                } catch (e) {}
+            }
+        }
+        return null;
+    };
+    return visit(document, window, []);
+};
+const __xodViewportPoint = (hit) => {
+    const frames = hit.frames || [];
+    for (const f of frames) {
+        try { f.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); } catch (e) {}
+    }
+    try { hit.el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); } catch (e) {}
+    let ox = 0, oy = 0;
+    for (const f of frames) {
+        const fr = f.getBoundingClientRect();
+        const fs = (f.ownerDocument?.defaultView || window).getComputedStyle(f);
+        ox += fr.left + (parseFloat(fs?.borderLeftWidth) || 0) + (parseFloat(fs?.paddingLeft) || 0);
+        oy += fr.top + (parseFloat(fs?.borderTopWidth) || 0) + (parseFloat(fs?.paddingTop) || 0);
+    }
+    const rect = hit.el.getBoundingClientRect();
+    return {
+        x: Math.round(ox + rect.left + rect.width / 2),
+        y: Math.round(oy + rect.top + rect.height / 2),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+    };
+};
+const __xodQuerySelector = (selector) => {
+    let fallback = null;
+    const hit = __xodWalkRoots((root, win, frames) => {
+        let matches = [];
+        try { matches = Array.from(root.querySelectorAll(selector)); } catch (e) { return null; }
+        for (const el of matches) {
+            if (__xodIsVisible(el, win)) return { el, win, frames, root };
+            if (!fallback) fallback = { el, win, frames, root };
+        }
+        return null;
+    });
+    return hit || fallback;
+};
+const __xodCssEscape = (s) => {
+    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(s);
+    return String(s).replace(/([!"#$%&'()*+,./:;<=>?@[\\\\]^`{|}~])/g, '\\\\$1');
+};
+const __xodLabelText = (inp, root) => {
+    try {
+        if (inp.labels && inp.labels.length) {
+            return Array.from(inp.labels).map(l => (l.innerText || l.textContent || '').trim()).join(' ');
+        }
+        const id = inp.id;
+        if (id && root && root.querySelector) {
+            const lbl = root.querySelector(`label[for="${__xodCssEscape(id)}"]`);
+            if (lbl) return (lbl.innerText || lbl.textContent || '').trim();
+        }
+        const parentLbl = inp.closest && inp.closest('label');
+        if (parentLbl) return (parentLbl.innerText || parentLbl.textContent || '').trim();
+    } catch (e) {}
+    return '';
+};
+"""
+
+
+def evaluate_mission_verdict(
+    mission_record: Dict[str, Any],
+    current_url: str = "",
+    current_title: str = "",
+) -> Dict[str, Any]:
+    """Destination verdict gate (W3 / E2): no mission may close as 'completed'
+    when its attempted actions all failed, when mutating actions had zero
+    verified successes, or when it ended on a dead/blank page with zero
+    verified work."""
+    steps = list(mission_record.get("steps") or [])
+    action_steps = [
+        s for s in steps
+        if str(s.get("action") or "").lower() not in ("finish", "ask_user", "note", "wait", "")
+    ]
+    succeeded = [s for s in action_steps if s.get("status") == "success"]
+    failed = [s for s in action_steps if s.get("status") == "failed"]
+    mutating_actions = {"type", "click", "check", "uncheck", "select", "choose", "upload", "fill", "drag", "drag_and_drop"}
+    mutating = [s for s in action_steps if str(s.get("action") or "").lower() in mutating_actions]
+    mutating_ok = [s for s in mutating if s.get("status") == "success"]
+    verified_ok = [s for s in succeeded if s.get("verified") in ("read-back", "state-read")]
+
+    url_low = (current_url or "").strip().lower()
+    base: Dict[str, Any] = {
+        "passed": True,
+        "reason": "verified",
+        "action_steps": len(action_steps),
+        "succeeded_steps": len(succeeded),
+        "failed_steps": len(failed),
+        "mutating_steps": len(mutating),
+        "mutating_succeeded": len(mutating_ok),
+        "verified_steps": len(verified_ok),
+        "destination_url": current_url,
+        "destination_title": current_title,
+    }
+
+    if action_steps and not succeeded:
+        return {
+            **base,
+            "passed": False,
+            "reason": "all_actions_failed",
+            "detail": f"All {len(action_steps)} browser action(s) failed; refusing to report done.",
+        }
+    if mutating and not mutating_ok:
+        return {
+            **base,
+            "passed": False,
+            "reason": "no_verified_mutation",
+            "detail": f"None of the {len(mutating)} mutating browser step(s) landed at the destination.",
+        }
+    if url_low.startswith("chrome-error://") and not succeeded:
+        return {
+            **base,
+            "passed": False,
+            "reason": "error_page_destination",
+            "detail": f"Browser ended on error page ({current_url}) with no verified actions.",
+        }
+    if url_low in ("", "about:blank") and not succeeded and not (mission_record.get("notes") or []):
+        return {
+            **base,
+            "passed": False,
+            "reason": "blank_destination_no_work",
+            "detail": "Browser remained on about:blank with zero verified actions or extracted notes.",
+        }
+    return base
+
+
 class BrowserSandboxService:
     # Set when a mission pauses right before an irreversible submit; cleared once handled.
     pending_submit: Optional[Dict[str, Any]] = None
@@ -752,10 +917,203 @@ class BrowserSandboxService:
         self.claimed_tab_id: Optional[str] = None
         self.claim_owner: Optional[str] = None
         self.headless: bool = True
+        # Browser attachment mode (W2 / E8): "sandbox" (default isolated Chrome on DEBUG_PORT)
+        # or "user_chrome" (adopted user's real signed-in Chrome on an explicit CDP port).
+        self.browser_mode: str = "sandbox"
+        self.cdp_port: int = DEBUG_PORT
+        self.attached_identity: Optional[Dict[str, Any]] = None
+        # JS dialog handling (C15): auto-captures and resolves alert/confirm/prompt without hanging CDP
+        self.last_dialog: Optional[Dict[str, Any]] = None
+        self._next_dialog_policy: Optional[Dict[str, Any]] = None
         # Background tabs the web reader (services/web_reader.py) has open; never treated as the page being driven.
         self.reader_tabs: set = set()
         self._msg_id = 0
         self._lock = asyncio.Lock()
+
+    def active_port(self) -> int:
+        """Returns the active CDP port (adopted user Chrome port or sandbox DEBUG_PORT)."""
+        return int(self.cdp_port or DEBUG_PORT)
+
+    def _inspect_port_process(self, port: int) -> Dict[str, Any]:
+        """Inspects the OS process listening on `port` (if any) without touching it."""
+        info: Dict[str, Any] = {"pid": None, "exe": "", "cmdline": [], "user_data_dir": "", "is_headless": False}
+        try:
+            import psutil
+            for c in psutil.net_connections(kind="tcp"):
+                if c.laddr and c.laddr.port == port and c.status == psutil.CONN_LISTEN and c.pid:
+                    p = psutil.Process(c.pid)
+                    cmdline = list(p.cmdline() or [])
+                    udd = ""
+                    for arg in cmdline:
+                        if arg.startswith("--user-data-dir="):
+                            udd = arg.split("=", 1)[1].strip('"')
+                            break
+                    info = {
+                        "pid": p.pid,
+                        "exe": p.exe() or "",
+                        "cmdline": cmdline,
+                        "user_data_dir": udd,
+                        "is_headless": any("--headless" in a for a in cmdline),
+                    }
+                    break
+        except Exception:
+            pass
+        return info
+
+    async def identify_chrome(self, port: Optional[int] = None) -> Dict[str, Any]:
+        """Identifies WHICH Chrome instance is listening on `port` (W2 / E8 etiquette).
+        Classifies as 'xod_sandbox', 'other_agent_chrome', 'user_chrome', or 'unreachable'."""
+        target_port = int(port or self.active_port())
+        version_data: Dict[str, Any] = {}
+        tabs_data: List[Dict[str, Any]] = []
+        try:
+            raw_ver = await self._devtools(f"http://127.0.0.1:{target_port}/json/version", 1.5)
+            version_data = json.loads(raw_ver) if raw_ver else {}
+        except Exception:
+            return {
+                "reachable": False,
+                "port": target_port,
+                "kind": "unreachable",
+                "is_headless": False,
+                "signed_in_profile": False,
+                "tab_count": 0,
+                "sample_tabs": [],
+            }
+        try:
+            raw_tabs = await self._devtools(f"http://127.0.0.1:{target_port}/json", 1.5)
+            tabs_data = json.loads(raw_tabs) if raw_tabs else []
+        except Exception:
+            tabs_data = []
+
+        proc_info = await asyncio.to_thread(self._inspect_port_process, target_port)
+        cmdline = proc_info.get("cmdline") or []
+        udd = proc_info.get("user_data_dir") or ""
+        udd_low = udd.lower()
+        ua = str(version_data.get("User-Agent") or "")
+        is_headless = bool(proc_info.get("is_headless")) or ("headlesschrome" in ua.lower())
+
+        mine_dir = os.path.normcase(os.path.abspath(DATA_DIR)).lower()
+        udd_norm = os.path.normcase(os.path.abspath(udd)).lower() if udd else ""
+
+        other_agent_markers = (
+            "playwright", "puppeteer", "antigravity", "codex", "claude",
+            "openclaw", "selenium", "chromedriver", "tree_chrome", "tree-chrome",
+            "/tmp/", "\\temp\\", "/var/folders/", "sandbox",
+        )
+        if (
+            any("--xod-sandbox-instance" in a for a in cmdline)
+            or "xod_ai_browser_sandbox" in udd_low
+            or (udd_norm and udd_norm == mine_dir)
+            or (target_port == DEBUG_PORT and (is_headless or not udd))
+        ):
+            kind = "xod_sandbox"
+        elif any(m in udd_low for m in other_agent_markers) or is_headless:
+            kind = "other_agent_chrome"
+        else:
+            kind = "user_chrome"
+
+        pages = [t for t in tabs_data if t.get("type") == "page"]
+        return {
+            "reachable": True,
+            "port": target_port,
+            "kind": kind,
+            "is_headless": is_headless,
+            "signed_in_profile": kind == "user_chrome" and not is_headless,
+            "pid": proc_info.get("pid"),
+            "exe": proc_info.get("exe") or "",
+            "user_data_dir": udd,
+            "browser_version": version_data.get("Browser") or "",
+            "tab_count": len(pages),
+            "sample_tabs": [
+                {"id": t.get("id"), "title": (t.get("title") or "")[:80], "url": (t.get("url") or "")[:140]}
+                for t in pages[:10]
+            ],
+        }
+
+    async def adopt_user_chrome(self, port: Optional[int] = None) -> Dict[str, Any]:
+        """Safely adopts the user's real signed-in Chrome over CDP (W2 / E8).
+        Always identifies the Chrome instance before attaching; refuses to adopt
+        Xod's own sandbox or hijack another agent's Chrome transport."""
+        candidates: List[int] = []
+        if port is not None:
+            candidates.append(int(port))
+        else:
+            env_port = os.environ.get("XOD_USER_CHROME_PORT")
+            if env_port and env_port.isdigit():
+                candidates.append(int(env_port))
+            for p in (9222, 9223, 9224):
+                if p not in candidates and p != DEBUG_PORT:
+                    candidates.append(p)
+
+        inspected: List[Dict[str, Any]] = []
+        for p in candidates:
+            info = await self.identify_chrome(p)
+            inspected.append(info)
+            if not info.get("reachable"):
+                continue
+            kind = info.get("kind")
+            if kind == "xod_sandbox":
+                if port is not None:
+                    return {
+                        "success": False,
+                        "error": f"Port {p} is Xod's own sandbox Chrome, not the user's signed-in Chrome. Refusing to pretend sandbox is user Chrome.",
+                        "identity": info,
+                    }
+                continue
+            if kind == "other_agent_chrome":
+                if port is not None:
+                    return {
+                        "success": False,
+                        "error": f"Port {p} belongs to another agent or ephemeral Chrome ({info.get('user_data_dir') or 'headless'}). Refusing to hijack another agent's transport.",
+                        "identity": info,
+                    }
+                continue
+            if kind == "user_chrome":
+                async with self._lock:
+                    self.release_tab_claim()
+                    self.active_tab_id = None
+                    self.browser_mode = "user_chrome"
+                    self.cdp_port = p
+                    self.attached_identity = info
+                    if info.get("sample_tabs"):
+                        first = info["sample_tabs"][0]
+                        self.current_url = first.get("url") or self.current_url
+                        self.current_title = first.get("title") or self.current_title
+                return {
+                    "success": True,
+                    "browser_mode": "user_chrome",
+                    "cdp_port": p,
+                    "identity": info,
+                    "message": f"Adopted user's real Chrome on port {p} ({info.get('tab_count', 0)} tabs).",
+                }
+
+        return {
+            "success": False,
+            "error": "No real signed-in user Chrome with remote debugging enabled was found.",
+            "inspected": inspected,
+            "how_to_enable": (
+                "Launch your regular Google Chrome with --remote-debugging-port=9222 "
+                "(or set XOD_USER_CHROME_PORT to its CDP port), then call /api/browser/adopt again. "
+                "Xod will never hijack another agent's Chrome or pass off its sandbox as your session."
+            ),
+        }
+
+    def detach_user_chrome(self) -> Dict[str, Any]:
+        """Cleanly detaches from an adopted user Chrome back to Xod's sandbox without
+        closing or disturbing any tabs in the user's Chrome."""
+        was_mode = self.browser_mode
+        was_port = self.cdp_port
+        self.release_tab_claim()
+        self.active_tab_id = None
+        self.browser_mode = "sandbox"
+        self.cdp_port = DEBUG_PORT
+        self.attached_identity = None
+        return {
+            "success": True,
+            "detached_from": {"browser_mode": was_mode, "cdp_port": was_port},
+            "browser_mode": self.browser_mode,
+            "cdp_port": self.cdp_port,
+        }
 
     def set_workspace_path(self, path: Optional[str]):
         """Sets active workspace path for automated file downloads."""
@@ -816,7 +1174,7 @@ class BrowserSandboxService:
         (answered, no pages), "refused" (nothing listening) or "slow" (no
         answer in time; busy is not the same as gone)."""
         try:
-            with urllib.request.urlopen(f"http://127.0.0.1:{DEBUG_PORT}/json", timeout=timeout) as resp:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.active_port()}/json", timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 return "ready" if data else "empty"
         except urllib.error.URLError as e:
@@ -837,7 +1195,16 @@ class BrowserSandboxService:
         return False
 
     async def ensure_browser_running(self) -> bool:
-        """Verifies Chrome is running on DEBUG_PORT or launches it in configured mode."""
+        """Verifies Chrome is running on active_port() or launches sandbox Chrome."""
+        if self.browser_mode == "user_chrome":
+            state = await asyncio.to_thread(self._probe_devtools, 2.5)
+            if state in ("ready", "empty"):
+                self.last_used = time.time()
+                return True
+            raise RuntimeError(
+                f"Adopted user Chrome on port {self.active_port()} is no longer reachable ({state}). "
+                "Call /api/browser/detach to return to sandbox mode or reopen your Chrome with remote debugging."
+            )
         # A busy Chrome (a heavy page, a slow PC) can take more than a second to answer: ask again, longer, before
         # deciding it's gone, because what follows ends it, and with it a half-filled form waiting for the person's OK.
         state = "slow"
@@ -897,6 +1264,7 @@ class BrowserSandboxService:
             chrome_bin,
             "--no-first-run",
             "--no-default-browser-check",
+            "--xod-sandbox-instance=1",
             f"--remote-debugging-port={DEBUG_PORT}",
             f"--user-data-dir={DATA_DIR}",
             "--window-size=1440,900",
@@ -931,7 +1299,8 @@ class BrowserSandboxService:
         raise RuntimeError("Background Chrome failed to start or open remote debugging port.")
 
     async def _get_active_tab_ws_url(self) -> str:
-        tabs = json.loads(await self._devtools(f"http://127.0.0.1:{DEBUG_PORT}/json", 2.0))
+        port = self.active_port()
+        tabs = json.loads(await self._devtools(f"http://127.0.0.1:{port}/json", 2.0))
 
         if self.claimed_tab_id:
             for t in tabs:
@@ -960,7 +1329,7 @@ class BrowserSandboxService:
 
         # If no active page found, spawn a fresh blank tab via CDP HTTP API
         try:
-            new_tab = json.loads(await self._devtools(f"http://127.0.0.1:{DEBUG_PORT}/json/new", 2.0, "PUT", b""))
+            new_tab = json.loads(await self._devtools(f"http://127.0.0.1:{port}/json/new", 2.0, "PUT", b""))
             if new_tab.get("webSocketDebuggerUrl"):
                 self.active_tab_id = new_tab.get("id")
                 return new_tab["webSocketDebuggerUrl"]
@@ -969,6 +1338,27 @@ class BrowserSandboxService:
 
         raise RuntimeError("No active browser page tab found.")
 
+    def set_next_dialog(self, accept: bool = True, prompt_text: Optional[str] = None) -> Dict[str, Any]:
+        """Arms the policy for the next JavaScript alert/confirm/prompt dialog."""
+        self._next_dialog_policy = {"accept": bool(accept), "prompt_text": prompt_text}
+        return {"success": True, "policy": dict(self._next_dialog_policy)}
+
+    async def handle_dialog(self, accept: bool = True, prompt_text: Optional[str] = None) -> Dict[str, Any]:
+        """Handles any currently open JS dialog (or arms the next one if none is open)."""
+        self.set_next_dialog(accept=accept, prompt_text=prompt_text)
+        try:
+            async with self._lock:
+                await self.ensure_browser_running()
+                ws_url = await self._get_active_tab_ws_url()
+                async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
+                    params: Dict[str, Any] = {"accept": bool(accept)}
+                    if prompt_text is not None:
+                        params["promptText"] = str(prompt_text)
+                    await self._send_cdp(ws, "Page.handleJavaScriptDialog", params, timeout=3.0)
+                    return {"success": True, "handled": True, "accept": bool(accept), "last_dialog": self.last_dialog}
+        except Exception as e:
+            return {"success": True, "handled": False, "armed": True, "detail": str(e), "last_dialog": self.last_dialog}
+
     async def _send_cdp(self, ws, method: str, params: Optional[Dict[str, Any]] = None, timeout: float = 15.0) -> Dict[str, Any]:
         msg_id = self._next_id()
         payload = {"id": msg_id, "method": method, "params": params or {}}
@@ -976,8 +1366,34 @@ class BrowserSandboxService:
 
         start_t = time.time()
         while time.time() - start_t < timeout:
-            raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+            remaining = max(0.1, timeout - (time.time() - start_t))
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
             data = json.loads(raw)
+            if data.get("method") == "Page.javascriptDialogOpening":
+                dp = data.get("params") or {}
+                policy = self._next_dialog_policy or {"accept": True, "prompt_text": None}
+                self._next_dialog_policy = None
+                self.last_dialog = {
+                    "type": dp.get("type"),
+                    "message": dp.get("message"),
+                    "default_prompt": dp.get("defaultPrompt"),
+                    "url": dp.get("url"),
+                    "accepted": bool(policy.get("accept", True)),
+                    "prompt_text": policy.get("prompt_text"),
+                    "time": time.time(),
+                }
+                dlg_params: Dict[str, Any] = {"accept": bool(policy.get("accept", True))}
+                if dp.get("type") == "prompt" and policy.get("prompt_text") is not None:
+                    dlg_params["promptText"] = str(policy["prompt_text"])
+                try:
+                    await ws.send(json.dumps({
+                        "id": self._next_id(),
+                        "method": "Page.handleJavaScriptDialog",
+                        "params": dlg_params,
+                    }))
+                except Exception:
+                    pass
+                continue
             if data.get("id") == msg_id:
                 if "error" in data:
                     raise RuntimeError(f"CDP {method} error: {data['error'].get('message', str(data['error']))}")
@@ -989,8 +1405,16 @@ class BrowserSandboxService:
         """
         Hard-restarts the browser process, clears zombie locks, frees hung debugging ports,
         and optionally wipes profile cache/cookies for a pristine anti-bot fingerprint.
+        Never kills an adopted user Chrome!
         """
         async with self._lock:
+            if self.browser_mode == "user_chrome":
+                return {
+                    "success": False,
+                    "restarted": False,
+                    "browser_mode": "user_chrome",
+                    "error": "Refusing to restart/kill the user's adopted Chrome. Call detach first to manage the sandbox.",
+                }
             logger.info(f"Initiating browser restart (clear_profile={clear_profile}, force={force}, headless={headless})...")
             
             # Step 1: Terminate current child process
@@ -2741,58 +3165,61 @@ class BrowserSandboxService:
 
             find_script = f"""
             (() => {{
+                {_JS_DEEP_QUERY_HELPERS}
                 const target = {json.dumps(selector_or_text)}.trim();
-                let el = null;
+                let hit = null;
                 let strategy = 'none';
 
-                // Strategy 1: Exact CSS selector
-                try {{
-                    el = document.querySelector(target);
-                    if (el) strategy = 'css_selector';
-                }} catch (e) {{}}
+                // Strategy 1: Full CSS / attribute selector (piercing Shadow DOM and same-origin iframes)
+                hit = __xodQuerySelector(target);
+                if (hit) strategy = 'css_selector';
 
-                // Strategy 2: ARIA or Data attributes
-                if (!el) {{
-                    try {{
-                        el = document.querySelector(`[data-testid="${{target}}"], [aria-label="${{target}}"], [name="${{target}}"], [id="${{target}}"]`);
-                        if (el) strategy = 'attribute_match';
-                    }} catch (e) {{}}
+                // Strategy 2: ARIA or Data attributes (escaped safely)
+                if (!hit) {{
+                    const esc = __xodCssEscape(target);
+                    hit = __xodQuerySelector(`[data-testid="${{esc}}"], [aria-label="${{esc}}"], [name="${{esc}}"], [id="${{esc}}"]`);
+                    if (hit) strategy = 'attribute_match';
                 }}
 
-                // Strategy 3: Clickable text matching (buttons, links, inputs, headings)
-                if (!el) {{
-                    const candidates = Array.from(document.querySelectorAll('button, a, input[type="submit"], input[type="button"], [role="button"], summary, span, div, h1, h2, h3, li'));
+                // Strategy 3: Clickable text matching across document, Shadow DOM, and iframes
+                if (!hit) {{
                     const targetLower = target.toLowerCase();
-                    
-                    // Exact text match first
-                    for (const c of candidates) {{
-                        const txt = (c.innerText || c.textContent || '').trim().toLowerCase();
-                        if (txt === targetLower) {{
-                            el = c;
-                            strategy = 'exact_text';
-                            break;
+                    const selList = 'button, a, input[type="submit"], input[type="button"], input[type="checkbox"], input[type="radio"], [role="button"], [role="link"], [role="tab"], [role="menuitem"], label, summary, span, div, h1, h2, h3, li, td';
+                    // Exact text match first (preferring visible)
+                    hit = __xodWalkRoots((root, win, frames) => {{
+                        let cands = [];
+                        try {{ cands = Array.from(root.querySelectorAll(selList)); }} catch (e) {{ return null; }}
+                        for (const c of cands) {{
+                            if (!__xodIsVisible(c, win)) continue;
+                            const txt = (c.innerText || c.textContent || c.value || '').trim().toLowerCase();
+                            if (txt === targetLower) return {{ el: c, win, frames, root }};
                         }}
-                    }}
+                        return null;
+                    }});
+                    if (hit) strategy = 'exact_text';
 
                     // Substring text match if exact text failed
-                    if (!el) {{
-                        for (const c of candidates) {{
-                            const txt = (c.innerText || c.textContent || '').trim().toLowerCase();
-                            if (txt && txt.length < 80 && txt.includes(targetLower)) {{
-                                el = c;
-                                strategy = 'substring_text';
-                                break;
+                    if (!hit) {{
+                        hit = __xodWalkRoots((root, win, frames) => {{
+                            let cands = [];
+                            try {{ cands = Array.from(root.querySelectorAll(selList)); }} catch (e) {{ return null; }}
+                            for (const c of cands) {{
+                                if (!__xodIsVisible(c, win)) continue;
+                                const txt = (c.innerText || c.textContent || c.value || '').trim().toLowerCase();
+                                if (txt && txt.length < 80 && txt.includes(targetLower)) return {{ el: c, win, frames, root }};
                             }}
-                        }}
+                            return null;
+                        }});
+                        if (hit) strategy = 'substring_text';
                     }}
                 }}
 
-                if (!el) {{
+                if (!hit || !hit.el) {{
                     return {{ found: false, error: 'Element not found for selector/text: ' + target }};
                 }}
 
-                el.scrollIntoView({{ behavior: 'instant', block: 'center', inline: 'center' }});
-                const rect = el.getBoundingClientRect();
+                const el = hit.el;
+                const pt = __xodViewportPoint(hit);
 
                 return {{
                     found: true,
@@ -2800,10 +3227,10 @@ class BrowserSandboxService:
                     tagName: el.tagName,
                     id: el.id || null,
                     text: (el.innerText || el.textContent || '').trim().slice(0, 60),
-                    x: Math.round(rect.left + rect.width / 2),
-                    y: Math.round(rect.top + rect.height / 2),
-                    width: Math.round(rect.width),
-                    height: Math.round(rect.height)
+                    x: pt.x,
+                    y: pt.y,
+                    width: pt.width,
+                    height: pt.height
                 }};
             }})()
             """
@@ -2915,70 +3342,90 @@ class BrowserSandboxService:
 
             script = f"""
             (() => {{
-                const sel = {json.dumps(selector)};
+                {_JS_DEEP_QUERY_HELPERS}
+                const sel = {json.dumps(selector)}.trim();
                 const val = {json.dumps(text)};
                 const enter = {json.dumps(press_enter)};
                 const clear = {json.dumps(clear_first)};
-                let el = null;
+                let hit = null;
+                let strategy = 'none';
 
-                try {{
-                    el = document.querySelector(sel);
-                }} catch (e) {{}}
+                // Strategy 1: Full CSS / attribute selector across document, Shadow DOM, and same-origin iframes
+                hit = __xodQuerySelector(sel);
+                if (hit) strategy = 'css_selector';
 
-                if (!el) {{
-                    const inputs = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'));
-                    for (const inp of inputs) {{
-                        const placeholder = (inp.placeholder || '').toLowerCase();
-                        const name = (inp.name || '').toLowerCase();
-                        const id = (inp.id || '').toLowerCase();
-                        const aria = (inp.getAttribute('aria-label') || '').toLowerCase();
-                        const q = sel.toLowerCase();
-                        if (placeholder.includes(q) || name.includes(q) || id.includes(q) || aria.includes(q)) {{
-                            el = inp;
-                            break;
+                // Strategy 2: Semantic input fallback (placeholder, name, id, aria-label, data-testid, title, label)
+                if (!hit) {{
+                    const q = sel.toLowerCase();
+                    const inputSel = 'input:not([type="hidden"]), textarea, [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="combobox"], [role="searchbox"]';
+                    let fallback = null;
+                    hit = __xodWalkRoots((root, win, ox, oy) => {{
+                        let inputs = [];
+                        try {{ inputs = Array.from(root.querySelectorAll(inputSel)); }} catch (e) {{ return null; }}
+                        for (const inp of inputs) {{
+                            const fields = [
+                                inp.placeholder || '',
+                                inp.name || '',
+                                inp.id || '',
+                                inp.getAttribute('aria-label') || '',
+                                inp.getAttribute('data-testid') || '',
+                                inp.getAttribute('title') || '',
+                                __xodLabelText(inp, root),
+                            ].map(s => s.toLowerCase());
+                            if (fields.some(f => f && f.includes(q))) {{
+                                if (__xodIsVisible(inp, win)) return {{ el: inp, win, ox, oy, root }};
+                                if (!fallback) fallback = {{ el: inp, win, ox, oy, root }};
+                            }}
                         }}
-                    }}
+                        return null;
+                    }}) || fallback;
+                    if (hit) strategy = 'semantic_match';
                 }}
 
-                if (!el) {{
+                if (!hit || !hit.el) {{
                     return {{ found: false, error: 'Input field not found for: ' + sel }};
                 }}
 
+                const el = hit.el;
+                const ownerWin = hit.win || window;
                 el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
                 el.focus();
 
-                // Clear input first if requested
-                if (clear) {{
-                    el.value = '';
-                }}
+                const isInput = el.tagName === 'INPUT';
+                const isTextarea = el.tagName === 'TEXTAREA';
+                const nextVal = clear ? val : ((el.isContentEditable ? (el.innerText || '') : (el.value || '')) + val);
 
-                // React 16+ prototype setter bypass
-                const isInput = el instanceof HTMLInputElement;
-                const isTextarea = el instanceof HTMLTextAreaElement;
+                // React 16+ prototype setter bypass (using the element's own window so iframes work too)
                 if (isInput || isTextarea) {{
-                    const proto = isInput ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype;
-                    const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                    const proto = isInput ? ownerWin.HTMLInputElement?.prototype : ownerWin.HTMLTextAreaElement?.prototype;
+                    const setter = proto && Object.getOwnPropertyDescriptor(proto, 'value')?.set;
                     if (setter) {{
-                        setter.call(el, val);
+                        if (clear) setter.call(el, '');
+                        setter.call(el, nextVal);
                     }} else {{
-                        el.value = val;
+                        if (clear) el.value = '';
+                        el.value = nextVal;
                     }}
                 }} else if (el.isContentEditable) {{
-                    el.innerText = val;
+                    if (clear) el.innerText = '';
+                    el.innerText = nextVal;
                 }} else {{
-                    el.value = val;
+                    if (clear) el.value = '';
+                    el.value = nextVal;
                 }}
 
-                el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                el.dispatchEvent(new ownerWin.Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new ownerWin.Event('change', {{ bubbles: true }}));
 
                 // Enter is sent once as a real key press from Python (CDP); adding JS
                 // key events or form.submit() here submitted the form twice.
 
                 return {{
                     found: true,
+                    strategy: strategy,
                     tagName: el.tagName,
-                    valueLength: val.length,
+                    valueLength: nextVal.length,
+                    readBack: (el.isContentEditable ? el.innerText : el.value) || '',
                     entered: enter
                 }};
             }})()
@@ -3136,21 +3583,30 @@ class BrowserSandboxService:
 
             find_script = f"""
             (() => {{
+                {_JS_DEEP_QUERY_HELPERS}
                 const target = {json.dumps(selector_or_text)}.trim();
-                let el = null;
-                try {{ el = document.querySelector(target); }} catch(e) {{}}
-                if (!el) {{
-                    const candidates = Array.from(document.querySelectorAll('button, a, [role="button"], span, div, li'));
-                    el = candidates.find(c => (c.innerText || c.textContent || '').trim().toLowerCase().includes(target.toLowerCase()));
+                let hit = __xodQuerySelector(target);
+                if (!hit) {{
+                    const targetLower = target.toLowerCase();
+                    hit = __xodWalkRoots((root, win, frames) => {{
+                        let cands = [];
+                        try {{ cands = Array.from(root.querySelectorAll('button, a, [role="button"], span, div, li, img, figure')); }} catch (e) {{ return null; }}
+                        for (const c of cands) {{
+                            if (!__xodIsVisible(c, win)) continue;
+                            const txt = (c.innerText || c.textContent || c.getAttribute('alt') || '').trim().toLowerCase();
+                            if (txt && txt.includes(targetLower)) return {{ el: c, win, frames, root }};
+                        }}
+                        return null;
+                    }});
                 }}
-                if (!el) return {{ found: false, error: 'Element not found' }};
+                if (!hit || !hit.el) return {{ found: false, error: 'Element not found' }};
 
-                el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-                const rect = el.getBoundingClientRect();
+                const el = hit.el;
+                const pt = __xodViewportPoint(hit);
                 return {{
                     found: true,
-                    x: Math.round(rect.left + rect.width / 2),
-                    y: Math.round(rect.top + rect.height / 2),
+                    x: pt.x,
+                    y: pt.y,
                     tagName: el.tagName
                 }};
             }})()
@@ -3189,6 +3645,139 @@ class BrowserSandboxService:
                     "title": self.current_title,
                     "screenshot_uri": self.latest_screenshot_uri
                 }
+
+    async def select_option(self, selector: str, value: str) -> Dict[str, Any]:
+        """Selects an option in a <select> element by value, visible label, or index,
+        piercing Shadow DOM and same-origin iframes, and reads back the selected value."""
+        async with self._lock:
+            await self.ensure_browser_running()
+            ws_url = await self._get_active_tab_ws_url()
+            script = f"""
+            (() => {{
+                {_JS_DEEP_QUERY_HELPERS}
+                const sel = {json.dumps(selector)}.trim();
+                const want = String({json.dumps(value)});
+                const wantLow = want.toLowerCase().trim();
+                const hit = __xodQuerySelector(sel);
+                if (!hit || !hit.el) return {{ found: false, error: 'Select element not found: ' + sel }};
+                const el = hit.el;
+                if (el.tagName !== 'SELECT') return {{ found: false, error: 'Element is not a <select>: ' + el.tagName }};
+                const ownerWin = hit.win || window;
+                const opts = Array.from(el.options || []);
+                let chosen = opts.find(o => o.value === want)
+                    || opts.find(o => (o.textContent || '').trim().toLowerCase() === wantLow)
+                    || opts.find(o => (o.textContent || '').trim().toLowerCase().includes(wantLow));
+                if (!chosen && /^\\d+$/.test(want)) {{
+                    const idx = parseInt(want, 10);
+                    if (idx >= 0 && idx < opts.length) chosen = opts[idx];
+                }}
+                if (!chosen) return {{ found: false, error: 'Option not found: ' + want }};
+                el.value = chosen.value;
+                chosen.selected = true;
+                el.dispatchEvent(new ownerWin.Event('input', {{ bubbles: true }}));
+                el.dispatchEvent(new ownerWin.Event('change', {{ bubbles: true }}));
+                return {{
+                    found: true,
+                    selected_value: el.value,
+                    selected_text: (el.options[el.selectedIndex]?.textContent || '').trim(),
+                    selected_index: el.selectedIndex
+                }};
+            }})()
+            """
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
+                await self._send_cdp(ws, "Runtime.enable")
+                res = await self._send_cdp(ws, "Runtime.evaluate", {"expression": script, "returnByValue": True})
+                val = res.get("result", {}).get("value") or {}
+                if not val.get("found"):
+                    return {"success": False, "error": val.get("error", "Option not found")}
+                return {"success": True, **val, "url": self.current_url, "title": self.current_title}
+
+    async def set_checkbox(self, selector: str, checked: bool = True) -> Dict[str, Any]:
+        """Deterministically sets a checkbox or radio input to checked/unchecked with read-back."""
+        async with self._lock:
+            await self.ensure_browser_running()
+            ws_url = await self._get_active_tab_ws_url()
+            script = f"""
+            (() => {{
+                {_JS_DEEP_QUERY_HELPERS}
+                const hit = __xodQuerySelector({json.dumps(selector)}.trim());
+                if (!hit || !hit.el) return {{ found: false, error: 'Checkbox not found' }};
+                const el = hit.el;
+                const ownerWin = hit.win || window;
+                const want = {json.dumps(bool(checked))};
+                if (Boolean(el.checked) !== want) {{
+                    el.click();
+                    if (Boolean(el.checked) !== want) {{
+                        el.checked = want;
+                        el.dispatchEvent(new ownerWin.Event('input', {{ bubbles: true }}));
+                        el.dispatchEvent(new ownerWin.Event('change', {{ bubbles: true }}));
+                    }}
+                }}
+                return {{ found: true, checked: Boolean(el.checked) }};
+            }})()
+            """
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
+                await self._send_cdp(ws, "Runtime.enable")
+                res = await self._send_cdp(ws, "Runtime.evaluate", {"expression": script, "returnByValue": True})
+                val = res.get("result", {}).get("value") or {}
+                if not val.get("found"):
+                    return {"success": False, "error": val.get("error", "Checkbox not found")}
+                return {"success": True, "checked": val.get("checked"), "url": self.current_url, "title": self.current_title}
+
+    async def drag_and_drop(self, source: str, target: str) -> Dict[str, Any]:
+        """Performs HTML5 DragEvent drag-and-drop (with DataTransfer) plus CDP mouse fallback."""
+        async with self._lock:
+            await self.ensure_browser_running()
+            ws_url = await self._get_active_tab_ws_url()
+            script = f"""
+            (() => {{
+                {_JS_DEEP_QUERY_HELPERS}
+                const sHit = __xodQuerySelector({json.dumps(source)}.trim());
+                const tHit = __xodQuerySelector({json.dumps(target)}.trim());
+                if (!sHit || !sHit.el) return {{ found: false, error: 'Drag source not found: ' + {json.dumps(source)} }};
+                if (!tHit || !tHit.el) return {{ found: false, error: 'Drop target not found: ' + {json.dumps(target)} }};
+                const src = sHit.el;
+                const dst = tHit.el;
+                const win = sHit.win || window;
+                const sp = __xodViewportPoint(sHit);
+                const dp = __xodViewportPoint(tHit);
+                let html5Ok = false;
+                try {{
+                    const dt = new win.DataTransfer();
+                    src.dispatchEvent(new win.DragEvent('dragstart', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+                    dst.dispatchEvent(new win.DragEvent('dragenter', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+                    dst.dispatchEvent(new win.DragEvent('dragover', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+                    dst.dispatchEvent(new win.DragEvent('drop', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+                    src.dispatchEvent(new win.DragEvent('dragend', {{ bubbles: true, cancelable: true, dataTransfer: dt }}));
+                    html5Ok = true;
+                }} catch (e) {{}}
+                return {{
+                    found: true,
+                    html5_dispatched: html5Ok,
+                    sx: sp.x,
+                    sy: sp.y,
+                    dx: dp.x,
+                    dy: dp.y,
+                }};
+            }})()
+            """
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
+                await self._send_cdp(ws, "Runtime.enable")
+                res = await self._send_cdp(ws, "Runtime.evaluate", {"expression": script, "returnByValue": True})
+                val = res.get("result", {}).get("value") or {}
+                if not val.get("found"):
+                    return {"success": False, "error": val.get("error", "Drag source/target not found")}
+                if not val.get("html5_dispatched") and val.get("sx", 0) > 0 and val.get("dx", 0) > 0:
+                    sx, sy, dx, dy = val["sx"], val["sy"], val["dx"], val["dy"]
+                    await self._send_cdp(ws, "Input.dispatchMouseEvent", {"type": "mouseMoved", "x": sx, "y": sy})
+                    await self._send_cdp(ws, "Input.dispatchMouseEvent", {"type": "mousePressed", "button": "left", "clickCount": 1, "x": sx, "y": sy})
+                    for i in range(1, 6):
+                        mx = sx + (dx - sx) * i / 5
+                        my = sy + (dy - sy) * i / 5
+                        await self._send_cdp(ws, "Input.dispatchMouseEvent", {"type": "mouseMoved", "button": "left", "x": mx, "y": my})
+                    await self._send_cdp(ws, "Input.dispatchMouseEvent", {"type": "mouseReleased", "button": "left", "clickCount": 1, "x": dx, "y": dy})
+                await asyncio.sleep(0.3)
+                return {"success": True, "drag": val, "url": self.current_url, "title": self.current_title}
 
     async def press_key(self, key: str) -> Dict[str, Any]:
         """Dispatches key event (e.g. Enter, Escape, Tab, ArrowDown, Backspace)."""
@@ -3255,14 +3844,20 @@ class BrowserSandboxService:
         while time.time() - start_t < timeout_sec:
             state = await self.evaluate_js(f"""
             (() => {{
+                {_JS_DEEP_QUERY_HELPERS}
                 const target = {json.dumps(selector_or_text)}.trim();
-                let el = null;
-                try {{ el = document.querySelector(target); }} catch(e) {{}}
-                if (!el) {{
-                    const candidates = Array.from(document.querySelectorAll('button, a, [role="button"], span, div, h1, h2, h3, p'));
-                    el = candidates.find(c => (c.innerText || c.textContent || '').trim().toLowerCase().includes(target.toLowerCase()));
-                }}
-                return el !== null;
+                if (__xodQuerySelector(target)) return true;
+                const targetLower = target.toLowerCase();
+                const hit = __xodWalkRoots((root, win) => {{
+                    let cands = [];
+                    try {{ cands = Array.from(root.querySelectorAll('button, a, [role="button"], span, div, h1, h2, h3, h4, p, li')); }} catch (e) {{ return null; }}
+                    for (const c of cands) {{
+                        if (!__xodIsVisible(c, win)) continue;
+                        if ((c.innerText || c.textContent || '').trim().toLowerCase().includes(targetLower)) return c;
+                    }}
+                    return null;
+                }});
+                return hit !== null;
             }})()
             """)
             if state.get("result") is True:
@@ -3409,9 +4004,27 @@ class BrowserSandboxService:
                     }
                 });
 
-                // Body main text
-                let bodyText = document.body ? getCleanText(document.body) : '';
-                bodyText = bodyText.replace(/\\s+/g, ' ').slice(0, 16000);
+                // Body main text (including open Shadow DOM and reachable same-origin iframes)
+                const collectDeepText = (root, chunks, visited) => {
+                    if (!root || visited.has(root)) return;
+                    visited.add(root);
+                    const base = root === document ? (document.body ? getCleanText(document.body) : '') : getCleanText(root);
+                    if (base) chunks.push(base);
+                    let nodes = [];
+                    try { nodes = root.querySelectorAll('*'); } catch (e) {}
+                    for (const n of nodes) {
+                        if (n.shadowRoot) collectDeepText(n.shadowRoot, chunks, visited);
+                        if (n.tagName === 'IFRAME') {
+                            try {
+                                const fdoc = n.contentDocument;
+                                if (fdoc && fdoc.body) collectDeepText(fdoc.body, chunks, visited);
+                            } catch (e) {}
+                        }
+                    }
+                };
+                const deepChunks = [];
+                collectDeepText(document, deepChunks, new Set());
+                let bodyText = deepChunks.join(' ').replace(/\\s+/g, ' ').trim().slice(0, 16000);
 
                 return {
                     title,
@@ -3465,7 +4078,7 @@ class BrowserSandboxService:
         tab is closed behind the run's back, the next primitive raises instead of silently
         adopting the first page tab. Explicit manage_tabs actions may move the claim and say so."""
         await self.ensure_browser_running()
-        tabs = json.loads(await self._devtools(f"http://127.0.0.1:{DEBUG_PORT}/json", 2.0))
+        tabs = json.loads(await self._devtools(f"http://127.0.0.1:{self.active_port()}/json", 2.0))
         pages = [t for t in tabs if t.get("type") == "page" and t.get("id") not in self.reader_tabs]
         if tab_id is None:
             tab_id = self.active_tab_id or (pages[0].get("id") if pages else None)
@@ -3488,14 +4101,41 @@ class BrowserSandboxService:
         self.claim_owner = None
         return {"success": True, "action": "release", "released_tab_id": was}
 
-    async def manage_tabs(self, action: str = "list", target_id: Optional[str] = None, url: Optional[str] = "about:blank") -> Dict[str, Any]:
+    async def manage_tabs(
+        self,
+        action: str = "list",
+        target_id: Optional[str] = None,
+        url: Optional[str] = "about:blank",
+        target_index: Optional[int] = None,
+        target_url_contains: Optional[str] = None,
+        target_title_contains: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
-        Manages browser tabs (list, new, switch, close).
+        Manages browser tabs (list, new, switch, close, claim, release).
+        Supports resolving any tab by target_id, target_index, target_url_contains, or target_title_contains.
         """
         await self.ensure_browser_running()
-        endpoint = f"http://127.0.0.1:{DEBUG_PORT}/json"
+        endpoint = f"http://127.0.0.1:{self.active_port()}/json"
 
         try:
+            if not target_id and action in ("switch", "close", "claim") and (
+                target_index is not None or target_url_contains or target_title_contains
+            ):
+                tabs_all = json.loads(await self._devtools(endpoint, 2.0))
+                pages = [t for t in tabs_all if t.get("type") == "page" and t.get("id") not in self.reader_tabs]
+                if target_index is not None:
+                    if 0 <= int(target_index) < len(pages):
+                        target_id = pages[int(target_index)].get("id")
+                elif target_url_contains:
+                    q = target_url_contains.lower()
+                    hit = next((t for t in pages if q in (t.get("url") or "").lower()), None)
+                    target_id = hit.get("id") if hit else None
+                elif target_title_contains:
+                    q = target_title_contains.lower()
+                    hit = next((t for t in pages if q in (t.get("title") or "").lower()), None)
+                    target_id = hit.get("id") if hit else None
+                if not target_id:
+                    return {"success": False, "error": "No matching tab found for filter."}
             if action == "list":
                 tabs = json.loads(await self._devtools(endpoint, 2.0))
                 formatted = [
@@ -4122,11 +4762,25 @@ class BrowserSandboxService:
                 except Exception:
                     _named_fin = None
                 if _named_fin:
+                    adopted_user = (
+                        self.browser_mode == "user_chrome"
+                        and (self.attached_identity or {}).get("kind") == "user_chrome"
+                        and any(w in _named_fin.lower() for w in ("chrome", "browser", "tab"))
+                    )
+                    if not adopted_user:
+                        status = "failed"
+                        answer = (f"Not accepted: this result came from my built-in browser, but the task "
+                                  f"named {_named_fin} as the surface to work in. The built-in browser is a "
+                                  f"different surface with its own profile and sign-ins, so this is not "
+                                  f"evidence about {_named_fin} and I won't report it as the task done.")
+            if status == "completed":
+                verdict = evaluate_mission_verdict(mission_record, self.current_url, self.current_title)
+                mission_record["verdict"] = verdict
+                if not verdict.get("passed"):
                     status = "failed"
-                    answer = (f"Not accepted: this result came from my built-in browser, but the task "
-                              f"named {_named_fin} as the surface to work in. The built-in browser is a "
-                              f"different surface with its own profile and sign-ins, so this is not "
-                              f"evidence about {_named_fin} and I won't report it as the task done.")
+                    answer = f"Verdict gate blocked 'completed': {verdict.get('detail')} (Original claim: {answer})"
+            else:
+                mission_record["verdict"] = evaluate_mission_verdict(mission_record, self.current_url, self.current_title)
             dataset_recorder.set_group_outcome(mission_record["mission_id"], "browser_step", status)
             mission_record["status"] = status
             mission_record["final_answer"] = answer
@@ -4150,11 +4804,17 @@ class BrowserSandboxService:
         except Exception:
             _named_goal = None
         if _named_goal:
-            return await finish("failed", (
-                f"I stopped before starting: this task names {_named_goal} as the surface to work in, "
-                "and my built-in browser is a separate browser with its own profile and sign-ins, so "
-                f"nothing I did here would be happening in {_named_goal}. This task needs desktop "
-                "control of the real surface, not the built-in browser."))
+            adopted_user = (
+                self.browser_mode == "user_chrome"
+                and (self.attached_identity or {}).get("kind") == "user_chrome"
+                and any(w in _named_goal.lower() for w in ("chrome", "browser", "tab"))
+            )
+            if not adopted_user:
+                return await finish("failed", (
+                    f"I stopped before starting: this task names {_named_goal} as the surface to work in, "
+                    "and my built-in browser is a separate browser with its own profile and sign-ins, so "
+                    f"nothing I did here would be happening in {_named_goal}. This task needs desktop "
+                    "control of the real surface or adopting your real Chrome (/api/browser/adopt), not the built-in sandbox."))
 
         # --- Start somewhere sensible -------------------------------------------------
         target_nav_url = None if resume_here else (start_url or _guess_start_url(goal))
@@ -5223,20 +5883,26 @@ class BrowserSandboxService:
     def get_state(self) -> Dict[str, Any]:
         """Returns current browser sandbox state for live frontend observability."""
         return {
-            "is_active": self.proc is not None and self.proc.poll() is None,
+            "is_active": (self.browser_mode == "user_chrome") or (self.proc is not None and self.proc.poll() is None),
+            "browser_mode": self.browser_mode,
+            "chrome_identity": self.attached_identity,
             "current_url": self.current_url,
             "current_title": self.current_title,
             "active_tab_id": self.active_tab_id,
+            "claimed_tab_id": self.claimed_tab_id,
             "screenshot_uri": self.latest_screenshot_uri,
             "action_history": self.action_history[-15:],
             "latest_mission": self.latest_mission,
             "indexed_count": len(self.indexed_elements),
             "indexed_elements": self.indexed_elements[:40],
-            "debug_port": DEBUG_PORT
+            "debug_port": self.active_port(),
         }
 
     def close(self):
-        """Terminates background Chrome process cleanly."""
+        """Terminates background sandbox Chrome process cleanly (never closes adopted user Chrome)."""
+        if self.browser_mode == "user_chrome":
+            self.detach_user_chrome()
+            return
         if self.proc:
             try:
                 self.proc.terminate()

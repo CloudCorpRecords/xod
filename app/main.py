@@ -516,6 +516,22 @@ async def task_counts():
     return task_queue.counts()
 
 
+@app.get("/api/tasks/{task_id}")
+async def get_task(task_id: str):
+    """Fetch a single task by id (with its recent steers if stepwise)."""
+    from app.services.task_queue import task_queue
+    from app.services import orchestrator
+    t = task_queue.get(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="No such task")
+    if t.get("mode") == "stepwise":
+        t["steers"] = [
+            {k: s[k] for k in ("id", "kind", "body", "state", "applied_note", "created_at", "applied_at")}
+            for s in orchestrator.inbox(t["id"])[-6:]
+        ]
+    return {"success": True, "task": t}
+
+
 @app.post("/api/tasks")
 async def create_task(req: NewTaskRequest):
     from app.services.task_queue import task_queue
@@ -4462,6 +4478,7 @@ class BrowserTypeRequest(BaseModel):
     selector: str
     text: str
     press_enter: Optional[bool] = False
+    clear_first: Optional[bool] = True
 
 class BrowserClickCoordsRequest(BaseModel):
     x: float
@@ -4520,6 +4537,24 @@ class BrowserTabActionRequest(BaseModel):
     action: str = "list"
     target_id: Optional[str] = None
     url: Optional[str] = "about:blank"
+    target_index: Optional[int] = None
+    target_url_contains: Optional[str] = None
+    target_title_contains: Optional[str] = None
+
+class BrowserAdoptRequest(BaseModel):
+    port: Optional[int] = None
+
+class BrowserSelectRequest(BaseModel):
+    selector: str
+    value: str
+
+class BrowserDragRequest(BaseModel):
+    source: str
+    target: str
+
+class BrowserDialogRequest(BaseModel):
+    accept: Optional[bool] = True
+    prompt_text: Optional[str] = None
 
 class BrowserObserveRequest(BaseModel):
     max_elements: Optional[int] = 60
@@ -4621,8 +4656,35 @@ class ComputerFilePatchRequest(BaseModel):
 
 @app.get("/api/browser/status")
 async def get_browser_status():
-    """Returns current state of the isolated background AI browser."""
+    """Returns current state of the browser controller (sandbox or adopted user Chrome)."""
     return browser_sandbox_service.get_state()
+
+@app.get("/api/browser/identity")
+async def get_browser_identity(port: Optional[int] = None):
+    """Identifies which Chrome instance Xod currently holds (or on a specific port) — W2/E8 etiquette."""
+    try:
+        current = await browser_sandbox_service.identify_chrome(port=port)
+        return {
+            "success": True,
+            "browser_mode": browser_sandbox_service.browser_mode,
+            "active_port": browser_sandbox_service.active_port(),
+            "identity": current,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/adopt")
+async def browser_adopt_endpoint(req: Optional[BrowserAdoptRequest] = None):
+    """Safely adopts the user's real signed-in Chrome over CDP (never hijacks another agent or pretends sandbox is user Chrome)."""
+    try:
+        return await browser_sandbox_service.adopt_user_chrome(port=req.port if req else None)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/detach")
+async def browser_detach_endpoint():
+    """Detaches from an adopted user Chrome back to Xod's sandbox without touching the user's Chrome."""
+    return browser_sandbox_service.detach_user_chrome()
 
 @app.post("/api/browser/navigate")
 async def browser_navigate_endpoint(req: BrowserNavigateRequest):
@@ -4647,7 +4709,8 @@ async def browser_type_endpoint(req: BrowserTypeRequest):
         return await browser_sandbox_service.type_text(
             selector=req.selector,
             text=req.text,
-            press_enter=bool(req.press_enter)
+            press_enter=bool(req.press_enter),
+            clear_first=True if req.clear_first is None else bool(req.clear_first),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -4712,6 +4775,33 @@ async def browser_hover_endpoint(req: BrowserHoverRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/browser/select")
+async def browser_select_endpoint(req: BrowserSelectRequest):
+    """Selects an option in a <select> dropdown by value, visible label, or index."""
+    try:
+        return await browser_sandbox_service.select_option(selector=req.selector, value=req.value)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/drag")
+async def browser_drag_endpoint(req: BrowserDragRequest):
+    """Performs HTML5 / mouse drag-and-drop between source and target selectors."""
+    try:
+        return await browser_sandbox_service.drag_and_drop(source=req.source, target=req.target)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/dialog")
+async def browser_dialog_endpoint(req: BrowserDialogRequest):
+    """Handles an open JavaScript alert/confirm/prompt dialog or arms the handler for the next one."""
+    try:
+        return await browser_sandbox_service.handle_dialog(
+            accept=True if req.accept is None else bool(req.accept),
+            prompt_text=req.prompt_text,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/browser/key")
 async def browser_key_endpoint(req: BrowserKeyRequest):
     """Dispatches a keyboard event (Enter, Escape, Tab, ArrowDown, Backspace) to page."""
@@ -4757,11 +4847,14 @@ async def browser_list_tabs_endpoint():
 
 @app.post("/api/browser/tabs")
 async def browser_tabs_action_endpoint(req: BrowserTabActionRequest):
-    """Performs tab management (list, new, switch, close)."""
+    """Performs tab management (list, new, switch, close, claim, release) by id, index, URL, or title."""
     return await browser_sandbox_service.manage_tabs(
         action=req.action,
         target_id=req.target_id,
-        url=req.url
+        url=req.url,
+        target_index=req.target_index,
+        target_url_contains=req.target_url_contains,
+        target_title_contains=req.target_title_contains,
     )
 
 @app.post("/api/browser/mission")

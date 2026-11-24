@@ -42,11 +42,13 @@ missions through the same lock, so a run and a mission never drive the browser
 at the same time. The claim is released when the run ends, pass or fail.
 """
 import asyncio
+import json
 import time
 from typing import Any, Dict, List, Optional
 
 ACTIONS = ("navigate", "open_tab", "switch_tab", "close_tab", "click", "type",
-           "fill", "scroll", "press_key", "wait", "extract", "assert")
+           "fill", "scroll", "press_key", "wait", "extract", "assert",
+           "hover", "select", "check", "uncheck", "drag_and_drop", "dialog", "upload")
 
 
 class StepFailed(Exception):
@@ -74,9 +76,12 @@ async def page_state(sb) -> Dict[str, Any]:
 
 
 async def _field_value(sb, selector: str) -> Optional[str]:
+    from app.services.browser_sandbox import _JS_DEEP_QUERY_HELPERS
     res = await sb.evaluate_js(
-        f"(() => {{ const el = document.querySelector({selector!r}); "
-        f"return el ? (el.value !== undefined ? el.value : el.textContent) : null; }})()"
+        f"(() => {{ {_JS_DEEP_QUERY_HELPERS} "
+        f"const hit = __xodQuerySelector({json.dumps(selector)}); "
+        f"const el = hit && hit.el; "
+        f"return el ? (el.value !== undefined ? el.value : (el.isContentEditable ? el.innerText : el.textContent)) : null; }})()"
     )
     if isinstance(res, dict) and res.get("success"):
         return res.get("result")
@@ -108,11 +113,9 @@ async def check_expect(sb, expect: Dict[str, Any], state: Dict[str, Any]) -> (bo
         if expect["text_contains"] not in text:
             return False, f"page text does not contain {expect['text_contains']!r}"
     if "selector" in expect:
-        val = await _field_value(sb, expect["selector"])
-        # _field_value returns None only when the element is absent for value-less elements;
-        # use a presence probe so an element without a value still counts as present.
+        from app.services.browser_sandbox import _JS_DEEP_QUERY_HELPERS
         present = await sb.evaluate_js(
-            f"(() => !!document.querySelector({expect['selector']!r}))()")
+            f"(() => {{ {_JS_DEEP_QUERY_HELPERS} return !!__xodQuerySelector({json.dumps(expect['selector'])}); }})()")
         if not (isinstance(present, dict) and present.get("result") is True):
             return False, f"selector {expect['selector']!r} not present"
     if "value_equals" in expect:
@@ -253,6 +256,20 @@ async def _do_action(sb, step: Dict[str, Any], state: Dict[str, Any],
         text = await page_text(sb)
         extracts[step.get("name", "extract")] = text
         return {"success": True, "chars": len(text)}
+    if action == "hover":
+        return await sb.hover(step["target"])
+    if action == "select":
+        return await sb.select_option(step["selector"], step["value"])
+    if action == "check":
+        return await sb.set_checkbox(step["selector"], True)
+    if action == "uncheck":
+        return await sb.set_checkbox(step["selector"], False)
+    if action == "drag_and_drop":
+        return await sb.drag_and_drop(step["source"], step["target"])
+    if action == "dialog":
+        return sb.set_next_dialog(accept=bool(step.get("accept", True)), prompt_text=step.get("prompt_text"))
+    if action == "upload":
+        return await sb.upload_file(step.get("file_paths") or [], selector_or_index=step.get("selector"))
     if action == "assert":
         return {"success": True}
     raise StepFailed(f"unknown action {action!r}")

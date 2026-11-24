@@ -2856,6 +2856,13 @@ class TaskQueue:
         common = {"mission_json": snapshot, "result": report, "next_action": None}
 
         if status == "completed":
+            verdict = mission.get("verdict") if isinstance(mission, dict) else None
+            if isinstance(verdict, dict) and verdict.get("passed") is False:
+                self._finish(task_id, "failed",
+                             f"{report}\n\nNot finished: {verdict.get('detail') or verdict.get('reason') or 'verdict gate rejected completion'}".strip(),
+                             note="Verdict gate failed", **common)
+                await self._close_tab(self.get(task_id).get("tab_id"))
+                return
             problems = await asyncio.to_thread(self._verify_file_effects, task, started)
             if problems:
                 self._finish(task_id, "failed",
