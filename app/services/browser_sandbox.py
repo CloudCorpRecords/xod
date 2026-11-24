@@ -303,7 +303,45 @@ BOOTSTRAP_SCRIPT = """
 # ------------------------------------------------------------------
 MISSION_DEFAULT_STEPS = 25
 MISSION_MAX_STEPS = 40
+# AGE-100: the step ceiling is configurable for long-form work, but never past
+# the hard ceiling, and an optional wall-clock budget bounds a whole mission.
+# Both are runaway protections: a mission that cannot finish stops cleanly
+# (status incomplete) instead of driving the browser forever.
+MISSION_MAX_STEPS_HARD_CEILING = 200
+MISSION_WALL_SEC_ENV = "XOD_MISSION_WALL_SEC"
+
+
+def _mission_step_ceiling() -> int:
+    """The effective per-mission step cap: XOD_MISSION_MAX_STEPS when set,
+    clamped to [3, MISSION_MAX_STEPS_HARD_CEILING]; the historic 40 otherwise."""
+    raw = os.environ.get("XOD_MISSION_MAX_STEPS", "")
+    try:
+        v = int(raw) if raw else MISSION_MAX_STEPS
+    except ValueError:
+        v = MISSION_MAX_STEPS
+    return max(3, min(v, MISSION_MAX_STEPS_HARD_CEILING))
+
+
+def _mission_wall_sec() -> float:
+    """The per-mission wall-clock budget in seconds: XOD_MISSION_WALL_SEC when
+    set to a positive number; 0 (no budget, the historic behavior) otherwise."""
+    raw = os.environ.get(MISSION_WALL_SEC_ENV, "")
+    try:
+        v = float(raw) if raw else 0.0
+    except ValueError:
+        v = 0.0
+    return v if v > 0 else 0.0
+
+
 MISSION_HUMAN_WAIT_SEC = 120
+# AGE-100 verified step execution: mission actions with a deterministic landing
+# check (a typed field reads back, a navigation is on its URL, a tab action
+# shows in the tab list). A verifiable step counts as success only when its
+# landing check passes; a missed one gets one recovery retry first. Every
+# other action is verified by a state re-read, the same standard the scripted
+# runner (browser_run) applies to clicks.
+_MISSION_VERIFIABLE = {"navigate", "type", "select", "check", "uncheck", "switch_tab", "close_tab"}
+_MISSION_RECOVERABLE = {"navigate", "type", "select", "check", "uncheck", "switch_tab", "close_tab"}
 # Each step's reply must fit the model's thinking plus the JSON action.
 MISSION_STEP_TOKENS = 3000
 # Routine steps answer without a thinking phase (~5-10s instead of ~30s); thinking turns
@@ -3950,7 +3988,17 @@ class BrowserSandboxService:
         if self._mission_lock is None:
             self._mission_lock = asyncio.Lock()
         async with self._mission_lock:
-            return await self._run_browser_mission_unlocked(goal, start_url, max_steps, allow_submit)
+            try:
+                return await self._run_browser_mission_unlocked(goal, start_url, max_steps, allow_submit)
+            finally:
+                # finish() releases the mission's tab claim (AGE-100) on every
+                # normal exit; this covers an exception escaping the loop.
+                if getattr(self, "_mission_claim_id", None):
+                    self._mission_claim_id = None
+                    try:
+                        self.release_tab_claim()
+                    except Exception:
+                        pass
 
     @property
     def mission_busy(self) -> bool:
@@ -3981,7 +4029,8 @@ class BrowserSandboxService:
         """
         from app.services.llm import llm_service, parse_llm_json, engine_notice, EngineUnresponsive, ENGINE_RESTARTED
 
-        max_steps = max(3, min(int(max_steps or MISSION_DEFAULT_STEPS), MISSION_MAX_STEPS))
+        max_steps = max(3, min(int(max_steps or MISSION_DEFAULT_STEPS), _mission_step_ceiling()))
+        wall_sec = _mission_wall_sec()
         start_time = time.time()
         mission_record: Dict[str, Any] = {
             "mission_id": f"mission_{int(time.time() * 1000)}",
@@ -4050,6 +4099,14 @@ class BrowserSandboxService:
             )
 
         async def finish(status: str, answer: str) -> Dict[str, Any]:
+            # The mission's tab claim (AGE-100) ends with the mission, on every
+            # outcome. The wrapper's finally covers an exception escaping here.
+            if getattr(self, "_mission_claim_id", None) == mission_record["mission_id"]:
+                self._mission_claim_id = None
+                try:
+                    self.release_tab_claim()
+                except Exception:
+                    pass
             if status == "completed":
                 # Surface evidence (AGE-71): a success is only accepted when
                 # the surface it came from is consistent with the goal. A
@@ -4109,6 +4166,23 @@ class BrowserSandboxService:
             await self._wait_for_page_ready()
             record("navigate", bool(nav.get("success")), f"Opened starting page {target_nav_url}", target_nav_url)
 
+        # --- Hold one tab for the whole mission (AGE-100, the runner discipline) ------
+        # The mission pins the tab it starts on, so its primitives refuse to drift
+        # onto another tab silently. Tab actions and followed links move the claim
+        # through manage_tabs; a browser restart clears it and the step loop
+        # re-pins it. finish() releases it. A failed claim never blocks the
+        # mission: it continues unpinned, as missions did before AGE-100.
+        self._mission_claim_id = mission_record["mission_id"]
+        try:
+            claim_res = await self.claim_tab(owner=f"mission:{mission_record['mission_id']}")
+        except Exception as e:
+            claim_res = {"success": False, "error": f"{type(e).__name__}: {e}"}
+        mission_record["claim"] = claim_res
+        mission_claimed = bool(claim_res.get("success"))
+        if not mission_claimed:
+            self._mission_claim_id = None
+            history.append(f"(note) could not pin a tab for this task ({claim_res.get('error') or 'unknown'}); continuing unpinned.")
+
         def engine_note(text: str) -> None:
             # The built-in model stopped answering and is being restarted (llm.py): say so on the task.
             mission_record["now"] = text
@@ -4129,6 +4203,35 @@ class BrowserSandboxService:
         queued_url = ""
         look_next = False
         while len(mission_record["steps"]) < max_steps:
+            # Runaway protection (AGE-100): a configured wall-clock budget ends
+            # the mission cleanly instead of letting it drive the browser forever.
+            if wall_sec and time.time() - start_time > wall_sec:
+                return await finish(
+                    "incomplete",
+                    f"I stopped: this task ran past its {int(wall_sec)} second time budget. "
+                    f"I am on **{_page_name(self.current_title, self.current_url)}**. "
+                    "Ask me to continue and I'll pick up from here.")
+            # Keep the tab claim honest (AGE-100): a browser restart or the
+            # claimed tab closing behind the mission clears or stales the claim;
+            # re-pin to the tab the mission is actually on before acting.
+            if mission_claimed and self.claimed_tab_id is None:
+                try:
+                    re_claim = await self.claim_tab(owner=f"mission:{mission_record['mission_id']}")
+                except Exception:
+                    re_claim = {}
+                if re_claim.get("success"):
+                    history.append("(note) the browser restarted or its tab closed; re-pinned this task to the current tab.")
+            elif mission_claimed and self.claimed_tab_id is not None:
+                try:
+                    tabs_now = await self.manage_tabs("list")
+                    live_ids = {t.get("id") for t in tabs_now.get("tabs", []) if t.get("type") == "page"}
+                    if self.claimed_tab_id not in live_ids:
+                        self.release_tab_claim()
+                        re_claim = await self.claim_tab(owner=f"mission:{mission_record['mission_id']}")
+                        if re_claim.get("success"):
+                            history.append("(note) the pinned tab closed; re-pinned this task to the current tab.")
+                except Exception:
+                    pass
             # --- Bot checks: hand off to the human, never try to defeat them ---------
             try:
                 captcha = await self.detect_captcha()
@@ -4584,10 +4687,45 @@ class BrowserSandboxService:
                     await self._wait_for_page_ready()
                     history.append(f"NOTE: that click opened a new tab; now on it ({self.current_title}).")
 
-            ok = bool(step_res.get("success"))
-            detail = reasoning if ok else f"{reasoning} (failed: {step_res.get('error') or step_res.get('message') or 'unknown'})"
+            # --- Verified step execution (AGE-100): a step counts only when it landed ----
+            # The scripted runner's discipline (browser_run), applied to model-chosen
+            # steps: a deterministic landing check where one exists, one recovery
+            # retry through a re-resolved element when a verifiable step missed, and
+            # a state re-read for the actions no deterministic check can judge. A
+            # primitive that reported success but did not land is a failed step.
+            landed, landing_detail, landing_kind = await self._mission_step_landing(
+                action, plan, index, step_res, url_before, len(tabs_before))
+            recovered_step = False
+            if not landed and action in _MISSION_RECOVERABLE:
+                step_res2 = await self._mission_step_recover(action, plan, index, element, step_res)
+                if step_res2 is not None:
+                    step_res = step_res2
+                    landed2, landing_detail2, landing_kind2 = await self._mission_step_landing(
+                        action, plan, index, step_res, url_before, len(tabs_before))
+                    if landed2:
+                        landed, recovered_step = True, True
+                        landing_detail = f"recovered on retry ({landing_detail2})"
+                        landing_kind = landing_kind2
+                    else:
+                        landing_detail = f"{landing_detail}; retry also missed ({landing_detail2})"
+            if action in _MISSION_VERIFIABLE:
+                ok = landed
+            else:
+                ok = bool(step_res.get("success"))
+            if ok:
+                detail = reasoning
+            elif step_res.get("success"):
+                detail = f"{reasoning} (did not land: {landing_detail})"
+            else:
+                detail = f"{reasoning} (failed: {step_res.get('error') or step_res.get('message') or 'unknown'})"
             target = index if index is not None else (plan.get("url") or plan.get("tab") or plan.get("text"))
             record(action, ok, detail, target)
+            if mission_record["steps"]:
+                _audited = mission_record["steps"][-1]
+                _audited["verified"] = landing_kind
+                _audited["landing"] = landing_detail
+                if recovered_step:
+                    _audited["recovered"] = True
 
             # Tell the model what its action actually did, so it doesn't repeat things that worked.
             if action == "extract":
@@ -4779,6 +4917,110 @@ class BrowserSandboxService:
         if remaining and not self.active_tab_id:
             await self.manage_tabs("switch", target_id=remaining[-1]["id"])
         return out
+
+    async def _mission_step_landing(self, action: str, plan: Dict[str, Any], index: Any,
+                                    step_res: Dict[str, Any], url_before: str,
+                                    tab_count_before: int) -> Tuple[bool, str, str]:
+        """The deterministic landing check for one dispatched mission step (AGE-100).
+
+        Returns (landed, detail, kind). kind is "read-back" when the check read the
+        outcome out of the page or the tab list, "state-read" when no deterministic
+        predicate exists for the action (the primitive's word plus the state it left
+        is all anyone can say, the same standard browser_run applies to clicks),
+        and "none" when the action itself reported failure. A check that errors is
+        a miss with its cause recorded, never an exception into the mission loop."""
+        if not (isinstance(step_res, dict) and step_res.get("success")):
+            err = (step_res or {}).get("error") or (step_res or {}).get("message") or "action failed"
+            return False, f"action reported failure: {err}", "none"
+        try:
+            if action == "navigate":
+                want = plan.get("url") or plan.get("target") or ""
+                got = self.current_url or ""
+                if want and want.rstrip("/") not in got and got.rstrip("/") not in want:
+                    return False, f"navigated to {got!r}, want {want!r}", "read-back"
+                return True, "on the target URL", "read-back"
+            if action == "type":
+                if self.current_url != url_before:
+                    return True, "page moved after typing; read-back not applicable", "state-read"
+                want = str(plan.get("text", ""))
+                held = await self._field_state(index)
+                if not held:
+                    return False, "the field is gone after typing", "read-back"
+                shown = held.rsplit('now = "', 1)[-1].rstrip('"') if 'now = "' in held else None
+                if shown is not None and shown == want[:60]:
+                    return True, f"field read back: {held}", "read-back"
+                return False, f"field holds {held!r}, typed {want[:60]!r}", "read-back"
+            if action == "select":
+                want = str(plan.get("text", ""))
+                held = await self._field_state(index)
+                if held and want and want in held:
+                    return True, f"field read back: {held}", "read-back"
+                return False, f"field holds {held!r}, picked {want!r}", "read-back"
+            if action in ("check", "uncheck"):
+                held = await self._field_state(index)
+                want_state = "is now checked" if action == "check" else "is now not checked"
+                if held and want_state in held:
+                    return True, f"field read back: {held}", "read-back"
+                return False, f"field state is {held!r}, want {want_state}", "read-back"
+            if action == "switch_tab":
+                tabs_res = await self.manage_tabs("list")
+                tabs = [t for t in tabs_res.get("tabs", []) if t.get("type") == "page"]
+                pos = next((i + 1 for i, t in enumerate(tabs) if t.get("id") == tabs_res.get("active_tab_id")), None)
+                try:
+                    want_pos = int(plan.get("tab"))
+                except (TypeError, ValueError):
+                    want_pos = None
+                if want_pos is not None and pos != want_pos:
+                    return False, f"active tab is number {pos}, want {want_pos}", "read-back"
+                return True, "target tab is active", "read-back"
+            if action == "close_tab":
+                tabs_res = await self.manage_tabs("list")
+                count = len([t for t in tabs_res.get("tabs", []) if t.get("type") == "page"])
+                if count != tab_count_before - 1:
+                    return False, f"tab count is {count}, want {tab_count_before - 1}", "read-back"
+                return True, "tab closed", "read-back"
+        except Exception as e:
+            return False, f"landing check error: {type(e).__name__}: {e}", "read-back"
+        return True, "state re-read after the action", "state-read"
+
+    async def _mission_step_recover(self, action: str, plan: Dict[str, Any], index: Any,
+                                    element: Optional[Dict[str, Any]],
+                                    step_res: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """One recovery retry for a mission step that missed its landing (AGE-100):
+        re-read live state, re-resolve the element on the fresh page, and re-dispatch
+        through the alternate form. Returns the retry's result dict, or None when no
+        retry applies. Never repeats a call against the stale index that just missed."""
+        try:
+            if action == "navigate":
+                return await self.navigate(plan.get("url") or plan.get("target") or "")
+            if action in ("switch_tab", "close_tab"):
+                return await self._mission_tab_action(action, plan.get("tab"))
+            if action in ("type", "select", "check", "uncheck"):
+                # The primary dispatch refuses to type into password fields
+                # (log_in / create_password own those); a retry never bypasses that.
+                if action == "type" and element and _is_password_field(element):
+                    return None
+                obs = await self.observe(max_results=70)
+                match = _match_element(obs.get("elements") or [], _element_sig(element), index)
+                if match is None:
+                    return None
+                if action == "type" and _is_password_field(match):
+                    return None
+                new_index = match.get("index")
+                if action == "type":
+                    # Enter only where the primary dispatch would have allowed it:
+                    # a search box. A form field retry never submits by accident.
+                    press_enter = bool(plan.get("press_enter", False)) and _looks_like_search_box(match)
+                    return await self.interact_by_index(
+                        index=new_index, action="type", text=str(plan.get("text", "")),
+                        press_enter=press_enter)
+                if action == "select":
+                    return await self.interact_by_index(index=new_index, action="select",
+                                                        text=str(plan.get("text", "")))
+                return await self.interact_by_index(index=new_index, action=action)
+        except Exception as e:
+            return {"success": False, "error": f"recovery retry failed: {type(e).__name__}: {e}"}
+        return None
 
     async def _choose_custom_option(self, index: Any, option_text: str) -> Dict[str, Any]:
         """Opens a custom (non-<select>) dropdown, then clicks the option whose text matches."""
