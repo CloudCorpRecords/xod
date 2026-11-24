@@ -389,3 +389,70 @@ test("the checksum line is matched by exact artifact name, not by suffix", async
   const result = await B.repair(app, io);
   assert.equal(result.ok, true, `a suffix-sharing sums entry must not shadow the real one: ${JSON.stringify(result)}`);
 });
+
+test("decide marks a package it cannot read as unreadable, and only that", () => {
+  const root = tmpdir();
+  const asar = path.join(root, "app.asar");
+  fs.writeFileSync(asar, "this is not an archive");
+  const bad = B.decide(asar);
+  assert.equal(bad.unreadable, true);
+  assert.equal(bad.action, "repair");
+  writeAsar(asar, fixtureHealthy("1.1.4"));
+  const good = B.decide(asar);
+  assert.equal(good.unreadable, false);
+  assert.equal(good.action, "launch");
+  const broken = path.join(root, "broken.asar");
+  writeAsar(broken, fixture113());
+  const walk = B.decide(broken);
+  assert.equal(walk.unreadable, false, "a walk failure is a property of the copy, not a read failure");
+  assert.equal(walk.action, "repair");
+});
+
+test("a staged copy that is still landing when staging returns is waited for, not failed", async () => {
+  const root = tmpdir();
+  const app = makeApp(root, fixture113());
+  // The staged bundle exists but its app.asar lands 250ms after stageApp
+  // resolves: the 2026-11-24 field shape, where the verdict read the staged
+  // copy mid-settle, got ENOENT, and failed a checksum-verified download.
+  const stagedRoot = path.join(root, "staged-root");
+  const stagedRes = path.join(stagedRoot, "Xod.app", "Contents", "Resources");
+  fs.mkdirSync(stagedRes, { recursive: true });
+  const staged = path.join(stagedRoot, "Xod.app");
+  const { io, calls } = repairIo({
+    stageApp: async () => {
+      setTimeout(() => writeAsar(path.join(stagedRes, "app.asar"), fixtureHealthy("1.1.4")), 250);
+      return staged;
+    },
+    stagedSettle: { attempts: 100, delayMs: 25 },
+  });
+  const result = await B.repair(app, io);
+  assert.equal(result.ok, true, `the repair must wait out the settle and succeed: ${JSON.stringify(result)}`);
+  assert.equal(result.version, "1.1.4");
+  assert.ok(calls.includes("swap"), "the settled, checked copy was swapped in");
+});
+
+test("a staged copy that never becomes readable fails as a read failure, never as an integrity failure", async () => {
+  const root = tmpdir();
+  const app = makeApp(root, fixture113());
+  const stagedRoot = path.join(root, "staged-root");
+  const stagedRes = path.join(stagedRoot, "Xod.app", "Contents", "Resources");
+  fs.mkdirSync(stagedRes, { recursive: true });
+  fs.writeFileSync(path.join(stagedRes, "app.asar"), "this is not an archive, and never will be");
+  const staged = path.join(stagedRoot, "Xod.app");
+  const before = treeManifest(app);
+  const { io, calls } = repairIo({
+    stageApp: async () => staged,
+    sleep: async () => {},
+    stagedSettle: { attempts: 3, delayMs: 1 },
+    stagedReadRetries: 2,
+    stagedReadRetryDelayMs: 1,
+  });
+  const result = await B.repair(app, io);
+  assert.equal(result.ok, false);
+  assert.ok(result.error.includes("could not be read"),
+    `a persistent read failure must be reported as one: ${result.error}`);
+  assert.ok(!result.error.includes("integrity check"),
+    `a copy that was never read must not be said to fail its integrity check: ${result.error}`);
+  assert.ok(!calls.includes("swap"), "no swap was attempted");
+  assert.equal(treeManifest(app), before, "the install was not touched");
+});

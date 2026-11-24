@@ -375,6 +375,7 @@ function decide(asarPath) {
   } catch (e) {
     return {
       action: "repair",
+      unreadable: true,
       version: null,
       problems: [`cannot read the package: ${e.message}`],
       reasons: ["the installed package cannot be read as an archive"],
@@ -392,6 +393,9 @@ function decide(asarPath) {
   }
   return {
     action: reasons.length ? "repair" : "launch",
+    // The archive read and parsed, so whatever the walk found is a property
+    // of the copy itself, not of the moment it was read.
+    unreadable: false,
     version: result.version,
     problems: result.problems,
     reasons,
@@ -405,6 +409,9 @@ function decide(asarPath) {
 //     passed the checksum check AND, when the staged artifact is an app
 //     bundle, the same integrity walk as the launch gate (a staged installer
 //     carries no archive to walk; the checksum is its verification);
+//   - the staged bundle's walk waits for the staged copy to settle first
+//     (see decideStaged): a read that fails while the copy is still landing
+//     is retried, never reported as the copy failing its check;
 //   - any failure before the swap leaves the installed app byte-identical;
 //   - the result is honest: { ok, stage, error } names where it stopped.
 // ---------------------------------------------------------------------------
@@ -418,6 +425,76 @@ async function sha256File(file) {
     s.on("error", reject);
   });
   return h.digest("hex");
+}
+
+// ---------------------------------------------------------------------------
+// Staged-copy settle (2026-11-24). The field failure that day: a repair
+// downloaded 1.1.22, the release checksum matched, staging copied the bundle
+// out, and the integrity verdict read the staged app.asar before the copy
+// had settled — ENOENT, "not found in .../xod-bootstrap-WGSg8M/Xod.app/
+// Contents/Resources/app.asar" — so a good, checksum-verified download was
+// reported as failing its integrity check and the install was stranded on
+// the old version behind a "could not repair itself" dialog. The staged
+// copy's bytes are already pinned by the release checksum before staging
+// runs, so a read that fails at this point is a property of the moment,
+// never of the copy; and a copy that is genuinely incomplete fails the walk
+// identically on every read, so waiting and re-reading can never clear a
+// real defect. The staged verdict therefore waits until the staged archive
+// is present, readable through the same channel the verdict uses, and the
+// same size on two consecutive polls, and a verdict that still cannot read
+// the package is retaken a bounded number of times before the repair gives
+// up. A copy that stays unreadable fails as a READ failure, in those words —
+// never as an integrity failure it never got the chance to take.
+// ---------------------------------------------------------------------------
+const STAGED_SETTLE_ATTEMPTS = 40; // ~20s at the default poll
+const STAGED_SETTLE_DELAY_MS = 500;
+const STAGED_READ_RETRIES = 3;
+const STAGED_READ_RETRY_DELAY_MS = 1000;
+
+const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForStagedAsar(stagedApp, io = {}) {
+  const sleep = io.sleep || defaultSleep;
+  const settle = io.stagedSettle || {};
+  const attempts = settle.attempts || STAGED_SETTLE_ATTEMPTS;
+  const delayMs = settle.delayMs !== undefined ? settle.delayMs : STAGED_SETTLE_DELAY_MS;
+  let lastSize = -1;
+  for (let i = 0; i < attempts; i++) {
+    let asarPath = null;
+    try { asarPath = findAsar(stagedApp); } catch (e) { /* not there yet */ }
+    if (asarPath) {
+      try {
+        const st = fs.statSync(asarPath);
+        const fd = fs.openSync(asarPath, "r");
+        try {
+          const probe = Buffer.alloc(16);
+          fs.readSync(fd, probe, 0, 16, 0);
+        } finally { fs.closeSync(fd); }
+        if (st.size > 0 && st.size === lastSize) return asarPath;
+        lastSize = st.size;
+      } catch (e) { lastSize = -1; }
+    }
+    if (i < attempts - 1) await sleep(delayMs);
+  }
+  // Out of patience: hand back whatever resolves now (or let findAsar throw
+  // its honest "no app.asar found" error) and let the verdict retries in
+  // decideStaged speak for the copy.
+  return findAsar(stagedApp);
+}
+
+async function decideStaged(stagedApp, io = {}) {
+  const sleep = io.sleep || defaultSleep;
+  const retries = io.stagedReadRetries !== undefined ? io.stagedReadRetries : STAGED_READ_RETRIES;
+  const retryDelayMs = io.stagedReadRetryDelayMs !== undefined
+    ? io.stagedReadRetryDelayMs : STAGED_READ_RETRY_DELAY_MS;
+  const asarPath = await waitForStagedAsar(stagedApp, io);
+  let verdict = decide(asarPath);
+  for (let attempt = 1; verdict.unreadable && attempt <= retries; attempt++) {
+    if (io.report) io.report(`repairing Xod: the staged copy is not readable yet, checking again (${attempt}/${retries})`);
+    await sleep(retryDelayMs);
+    verdict = decide(asarPath);
+  }
+  return verdict;
 }
 
 async function repair(appPath, io) {
@@ -468,7 +545,10 @@ async function repair(appPath, io) {
       // belongs to app bundles, whose package can be read directly.
       io.report(`repairing Xod: the installer matches the release checksum`);
     } else {
-      const verdict = decide(findAsar(stagedApp));
+      const verdict = await decideStaged(stagedApp, io);
+      if (verdict.unreadable) {
+        throw new Error(`the downloaded copy could not be read after waiting for it to settle: ${verdict.problems[0] || verdict.reasons[0]}`);
+      }
       if (verdict.action !== "launch") {
         throw new Error(`the downloaded copy does not pass the integrity check: ${verdict.problems[0] || verdict.reasons[0]}`);
       }
@@ -816,6 +896,8 @@ if (typeof module !== "undefined" && module.exports) {
     AsarArchive,
     checkAsar,
     decide,
+    decideStaged,
+    waitForStagedAsar,
     findAsar,
     repair,
     sha256File,
