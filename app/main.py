@@ -4757,7 +4757,7 @@ async def browser_type_direct_endpoint(req: BrowserTypeDirectRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/browser/content")
-async def browser_content_endpoint(max_length: int = 10000):
+async def browser_content_endpoint(max_length: int = 30000):
     """Extracts text, links, and structure from the currently active browser page."""
     try:
         return await browser_sandbox_service.extract_content(max_length=max_length)
@@ -4850,7 +4850,7 @@ async def browser_wait_endpoint(req: BrowserWaitRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/browser/markdown")
-async def browser_markdown_endpoint(max_length: int = 15000):
+async def browser_markdown_endpoint(max_length: int = 40000):
     """Extracts clean, structured GitHub-flavored Markdown from current page."""
     try:
         return await browser_sandbox_service.extract_clean_markdown(max_length=max_length)

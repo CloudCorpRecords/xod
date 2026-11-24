@@ -577,7 +577,7 @@ def _read_only_mission(allow_submit: bool, steps: List[Dict[str, Any]]) -> bool:
 
 
 def _looks_like_search_box(element: Optional[Dict[str, Any]]) -> bool:
-    """Search inputs are the only fields where pressing Enter is safe (it runs a search, sends nothing)."""
+    """Search inputs are fields where pressing Enter runs a search and sends nothing."""
     if not element:
         return False
     if str(element.get("role") or "").lower() == "searchbox" or str(element.get("type") or "").lower() == "search":
@@ -587,6 +587,40 @@ def _looks_like_search_box(element: Optional[Dict[str, Any]]) -> bool:
     # "site:clevelandclinic.org adult human body 206 bones", was taken for a form question).
     hint = " ".join(str(element.get(k) or "") for k in ("text", "label", "type", "name", "placeholder")).lower()
     return bool(re.search(r"\bsearch\b|keyword|job title|what\b|where\b|city, state|query|\bfind\b", hint))
+
+
+def _looks_like_list_entry_box(element: Optional[Dict[str, Any]]) -> bool:
+    """Local list-entry / todo / filter / autocomplete inputs where Enter commits an item
+    locally rather than submitting an irreversible form (E9/W19)."""
+    if not element:
+        return False
+    role = str(element.get("role") or "").lower()
+    if role in ("combobox", "searchbox"):
+        return True
+    hint = " ".join(
+        str(element.get(k) or "")
+        for k in ("text", "label", "name", "placeholder", "id", "class", "aria_label")
+    ).lower()
+    return bool(re.search(
+        r"new[-_ ]?todo|needs to be done|add (a )?(todo|task|item|tag|note)|todo|filter|autocomplete|type color|type here",
+        hint,
+    ))
+
+
+def _extract_explicit_file_path(plan: Dict[str, Any], goal: str) -> Optional[str]:
+    """Returns an existing local file path explicitly provided in plan or goal (E13/W21),
+    so generic upload forms use the handed file instead of hijacking into upload_resume."""
+    for key in ("file_path", "path", "text"):
+        raw = str(plan.get(key) or "").strip().strip("'\"")
+        if raw and ("/" in raw or "\\" in raw or raw.startswith("~")):
+            expanded = os.path.expanduser(raw)
+            if os.path.isfile(expanded):
+                return expanded
+    for m in re.finditer(r"(?:~|/[A-Za-z0-9._-]+)(?:/[A-Za-z0-9._+-]+)+", goal or ""):
+        cand = os.path.expanduser(m.group(0).rstrip(".,;:)\"'"))
+        if os.path.isfile(cand):
+            return cand
+    return None
 
 
 def load_user_profile() -> Dict[str, Any]:
@@ -1695,9 +1729,10 @@ class BrowserSandboxService:
                 };
             }
 
-            // 2. Cloudflare Turnstile Widget / Checkbox
+            // 2. Cloudflare Turnstile Widget / Checkbox (do NOT match generic [data-sitekey],
+            // which Google reCAPTCHA and hCaptcha also use — E14/W17)
             const turnstileIframe = document.querySelector('iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"], div.cf-turnstile iframe');
-            const turnstileDiv = document.querySelector('.cf-turnstile, [data-sitekey], #turnstile-wrapper, div[class*="turnstile"]');
+            const turnstileDiv = document.querySelector('.cf-turnstile, #turnstile-wrapper, div[class*="turnstile" i], [data-turnstile-callback]');
             if (turnstileIframe || turnstileDiv) {
                 const el = turnstileIframe || turnstileDiv;
                 const rect = el.getBoundingClientRect();
@@ -3870,10 +3905,11 @@ class BrowserSandboxService:
 
         return {"success": False, "target": selector_or_text, "found": False, "error": f"Timed out after {timeout_sec}s"}
 
-    async def extract_clean_markdown(self, max_length: int = 15000) -> Dict[str, Any]:
+    async def extract_clean_markdown(self, max_length: int = 40000) -> Dict[str, Any]:
         """
         Parses the active page DOM into structured, clean GitHub-flavored Markdown
         (headings, lists, tables, links, code blocks) optimized for LLM token density.
+        Prefers main/article content and strips navigation/header/footer chrome (E17/W23).
         """
         async with self._lock:
             await self.ensure_browser_running()
@@ -3881,9 +3917,16 @@ class BrowserSandboxService:
 
             script = """
             (() => {
-                const clone = document.body.cloneNode(true);
-                // Strip noise elements
-                const noise = clone.querySelectorAll('script, style, noscript, svg, canvas, iframe, link, meta');
+                const mainCand = document.querySelector('main, article, [role="main"], #mw-content-text, #content');
+                const mainTextLen = mainCand ? (mainCand.innerText || mainCand.textContent || '').trim().length : 0;
+                const rootNode = (mainCand && mainTextLen >= 200) ? mainCand : document.body;
+                const clone = (rootNode || document.body).cloneNode(true);
+                // Strip noise & navigation chrome so Markdown leads with real page content
+                const noise = clone.querySelectorAll(
+                    'script, style, noscript, svg, canvas, iframe, link, meta, ' +
+                    'nav, header, footer, aside, [role="navigation"], [role="banner"], [role="contentinfo"], ' +
+                    '.mw-jump-link, .vector-header-container, .vector-column-start, .vector-column-end'
+                );
                 noise.forEach(n => n.remove());
 
                 function nodeToMarkdown(node) {
@@ -3969,7 +4012,7 @@ class BrowserSandboxService:
                     "total_chars": data.get("length", len(md_text))
                 }
 
-    async def extract_content(self, max_length: int = 10000) -> Dict[str, Any]:
+    async def extract_content(self, max_length: int = 30000) -> Dict[str, Any]:
         """Extracts readable text, headings, meta tags, and interactive elements from current page."""
         async with self._lock:
             await self.ensure_browser_running()
@@ -4523,25 +4566,43 @@ class BrowserSandboxService:
 
     async def get_downloads(self) -> Dict[str, Any]:
         """
-        Lists files currently stored in the browser sandbox download directory.
+        Lists files downloaded by Chrome across Xod's sandbox download folders AND
+        the user's real ~/Downloads directory (E15/W18), newest first.
         """
-        download_dirs = [
+        candidates = [
             "/tmp/xod_ai_downloads",
-            os.path.join(self.active_workspace_path, "downloads") if self.active_workspace_path else ""
+            self.active_workspace_path or "",
+            os.path.join(self.active_workspace_path, "downloads") if self.active_workspace_path else "",
+            os.path.expanduser("~/Downloads"),
         ]
+        seen_paths = set()
         files = []
-        for d in download_dirs:
-            if d and os.path.exists(d):
+        for d in candidates:
+            if not d or not os.path.isdir(d):
+                continue
+            try:
                 for entry in os.scandir(d):
-                    if entry.is_file() and not entry.name.startswith("."):
-                        stat = entry.stat()
-                        files.append({
-                            "name": entry.name,
-                            "path": entry.path,
-                            "size_bytes": stat.st_size,
-                            "modified_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
-                        })
-        return {"success": True, "count": len(files), "downloads": files}
+                    if not entry.is_file() or entry.name.startswith("."):
+                        continue
+                    real_p = os.path.realpath(entry.path)
+                    if real_p in seen_paths:
+                        continue
+                    seen_paths.add(real_p)
+                    stat = entry.stat()
+                    files.append({
+                        "name": entry.name,
+                        "path": entry.path,
+                        "directory": d,
+                        "size_bytes": stat.st_size,
+                        "mtime": stat.st_mtime,
+                        "modified_time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                    })
+            except Exception:
+                continue
+        files.sort(key=lambda f: f["mtime"], reverse=True)
+        for f in files:
+            f.pop("mtime", None)
+        return {"success": True, "count": len(files), "downloads": files[:100]}
 
     async def extract_accessibility_tree(self, max_nodes: int = 60) -> Dict[str, Any]:
         """
@@ -5188,12 +5249,24 @@ class BrowserSandboxService:
             element = self._element_by_index(index)
             label = (element or {}).get("text", "") if element else ""
 
-            # Enter right after typing into a non-search field submits that form.
+            # Enter right after typing into a multi-field or submit-bearing form submits that form.
+            # Do NOT gate plain Enter inside search boxes or local list-entry inputs like TodoMVC (E9/W19).
             last_typed = next((s for s in reversed(mission_record["steps"]) if s["action"] == "type"), None)
+            last_typed_el = self._element_by_index(last_typed["target"]) if last_typed else None
+            page_has_final_submit = any(
+                _looks_like_final_submit(el.get("text", ""), el)
+                for el in (self.indexed_elements or [])
+            )
+            distinct_typed_here = len({
+                s.get("target") for s in mission_record["steps"]
+                if s.get("action") == "type" and s.get("url") == self.current_url and s.get("status") == "success"
+            })
             enter_in_form = (
                 action == "press_key" and str(plan.get("text") or "Enter").lower() in ("enter", "return")
                 and last_typed is not None and last_typed["url"] == self.current_url
-                and not _looks_like_search_box(self._element_by_index(last_typed["target"]))
+                and not _looks_like_search_box(last_typed_el)
+                and not _looks_like_list_entry_box(last_typed_el)
+                and (page_has_final_submit or distinct_typed_here >= 2)
             )
             if enter_in_form:
                 label = label or "Enter (submits the form)"
@@ -5236,10 +5309,15 @@ class BrowserSandboxService:
                     + " Reply **\"go ahead\"** to continue, or tell me what to change."
                 )
 
-            # --- A file box takes a file: "type" into the résumé upload means upload the résumé -------------
-            if action in ("type", "select", "choose") and element and (element.get("type") or "").lower() == "file" \
-                    and re.search(r"resume|résumé|\bcv\b|curriculum", _label(element) + " " + str(element.get("label") or "") + " " + str(plan.get("text", "")) + " " + goal[:300], re.I):
-                action = plan["action"] = "upload_resume"
+            # --- A file box takes a file: honor an explicit file path in the plan/goal FIRST (E13/W21),
+            # and only fall back to upload_resume when the form/goal specifically asks for a résumé ---
+            if action in ("type", "select", "choose", "upload") and element and (element.get("type") or "").lower() == "file":
+                explicit_file = _extract_explicit_file_path(plan, goal)
+                if explicit_file:
+                    action = plan["action"] = "upload"
+                    plan["file_path"] = explicit_file
+                elif re.search(r"resume|résumé|\bcv\b|curriculum", _label(element) + " " + str(element.get("label") or "") + " " + str(plan.get("text", "")) + " " + goal[:300], re.I):
+                    action = plan["action"] = "upload_resume"
 
             # --- Never act on a page's hidden orders: no address or link from them, whatever the model says ---
             if trap_targets and action not in ("done", "ask_user", "wait", "scroll", "read_more"):
@@ -5292,9 +5370,9 @@ class BrowserSandboxService:
                     step_res = await self._mission_create_password(plan, profile)
                 elif action == "type":
                     # Enter inside a filled-in form can submit it, which would skip the
-                    # confirmation pause. Only allow it for search-style boxes.
+                    # confirmation pause. Allow it for search boxes and list-entry inputs (E9/W19).
                     press_enter = bool(plan.get("press_enter", False))
-                    if press_enter and not allow_submit and not _looks_like_search_box(element):
+                    if press_enter and not allow_submit and not _looks_like_search_box(element) and not _looks_like_list_entry_box(element):
                         press_enter = False
                     step_res = await self.interact_by_index(
                         index=index, action="type", text=str(plan.get("text", "")),
@@ -5306,8 +5384,20 @@ class BrowserSandboxService:
                     step_res = await self._choose_custom_option(index, str(plan.get("text", "")))
                 elif action in ("check", "uncheck", "hover"):
                     step_res = await self.interact_by_index(index=index, action=action)
+                elif action in ("drag", "drag_and_drop"):
+                    src_sel = plan.get("source") or (f'[data-xod-idx="{index}"]' if index is not None else "")
+                    dst_idx = plan.get("target_index")
+                    dst_sel = plan.get("target") or (f'[data-xod-idx="{dst_idx}"]' if dst_idx is not None else "")
+                    step_res = await self.drag_and_drop(src_sel, dst_sel)
+                elif action == "upload":
+                    explicit_file = _extract_explicit_file_path(plan, goal)
+                    if explicit_file:
+                        step_res = await self.upload_file([explicit_file], selector_or_index=index)
+                    else:
+                        step_res = {"success": False, "error": "No existing local file path provided for upload."}
                 elif action == "upload_resume":
-                    resume = profile.get("resume_path")
+                    explicit_file = _extract_explicit_file_path(plan, goal)
+                    resume = explicit_file or profile.get("resume_path")
                     if resume and os.path.exists(os.path.expanduser(resume)):
                         step_res = await self.upload_file([os.path.expanduser(resume)], selector_or_index=index)
                     else:
@@ -5333,12 +5423,16 @@ class BrowserSandboxService:
                     step_res = await self.navigate(plan.get("url") or plan.get("target") or "")
                 elif action == "back":
                     step_res = await self.evaluate_js("history.back()")
+                elif action == "forward":
+                    step_res = await self.evaluate_js("history.forward()")
+                elif action == "open_tab":
+                    step_res = await self.manage_tabs("new", url=plan.get("url") or plan.get("target") or "about:blank")
                 elif action in ("switch_tab", "close_tab"):
                     step_res = await self._mission_tab_action(action, plan.get("tab"))
                 elif action == "wait":
                     await asyncio.sleep(3)
                     step_res = {"success": True}
-                if action in ("click", "choose", "navigate", "back", "press_key", "switch_tab", "close_tab"):
+                if action in ("click", "choose", "navigate", "back", "forward", "open_tab", "press_key", "switch_tab", "close_tab"):
                     await self._wait_for_page_ready()
             except Exception as e:
                 step_res = {"success": False, "error": str(e)}
@@ -5407,6 +5501,20 @@ class BrowserSandboxService:
                     if blocked:
                         effect = f"form NOT sent: the browser says these required fields are empty or invalid: {blocked}"
                 history.append(f"   result: {effect}")
+                # Loop guard (E16/W22): if the model repeats the exact same (action, target, url)
+                # twice in a row with no visible change, warn it loudly (also triggers thinking+vision).
+                if effect == "no visible change" and len(mission_record["steps"]) >= 2:
+                    prev_s = mission_record["steps"][-2]
+                    cur_s = mission_record["steps"][-1]
+                    if (
+                        prev_s.get("action") == cur_s.get("action")
+                        and prev_s.get("target") == cur_s.get("target")
+                        and prev_s.get("url") == cur_s.get("url")
+                    ):
+                        history.append(
+                            f"NOTE: the last two steps repeated {action} [{target}] on the same page with no visible change. "
+                            "Stop repeating this step — read the current page text, try a different action (e.g. press_key, type, drag, or switch_tab), or finish."
+                        )
                 # Training label: did this decision do something useful?
                 if not ok:
                     dataset_recorder.label(step_example, -1, "action failed")
