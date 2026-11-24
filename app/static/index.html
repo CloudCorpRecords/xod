@@ -3343,6 +3343,21 @@
               <!-- Steps List -->
               <div id="cockpitMissionStepsList" class="space-y-1.5 max-h-48 overflow-y-auto pr-1"></div>
 
+              <!-- Live Mid-Mission Steer Bar (Replit/Muse style) -->
+              <div id="cockpitMissionSteerBar" class="flex items-center gap-1.5 pt-1 border-t border-surface-800">
+                <div class="flex-1 flex items-center gap-1.5 bg-surface-900 border border-cyan-500/30 rounded-lg px-2.5 py-1.5 focus-within:border-cyan-400">
+                  <i data-lucide="navigation" class="size-3.5 text-cyan-400 shrink-0"></i>
+                  <input type="text" id="cockpitMissionSteerInput" placeholder="Steer Xod mid-task (e.g. 'click the blue Post button' or 'I logged in, continue')..."
+                    class="w-full bg-transparent text-xs text-white placeholder:text-zinc-500 focus:outline-none"
+                    onkeydown="if(event.key==='Enter') cockpitSendMissionSteer()" />
+                </div>
+                <button type="button" onclick="cockpitSendMissionSteer()" id="btnCockpitSendSteer"
+                  class="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold shrink-0 flex items-center gap-1 transition-colors">
+                  <i data-lucide="send" class="size-3"></i>
+                  <span>Steer</span>
+                </button>
+              </div>
+
               <!-- Final Answer / Synthesis Card -->
               <div id="cockpitMissionAnswerCard" class="hidden rounded-lg bg-surface-900 border border-surface-700 p-2.5 space-y-1.5">
                 <div class="flex items-center justify-between">
@@ -3378,6 +3393,14 @@
                 <i data-lucide="arrow-right" class="size-3"></i>
               </button>
             </div>
+
+            <!-- Use My Signed-In Chrome Toggle (W2/E8) -->
+            <button type="button" onclick="cockpitToggleAdoptChrome()" id="btnCockpitAdoptChrome"
+              class="px-2.5 py-1.5 rounded-xl bg-surface-900 hover:bg-surface-800 text-zinc-300 border border-white/[0.08] text-xs font-medium flex items-center gap-1.5 transition-all shrink-0"
+              title="Attach to your real signed-in Chrome (CDP 9222) so Xod can use your existing logins and tabs">
+              <i data-lucide="chrome" class="size-3.5 text-cyan-400"></i>
+              <span id="cockpitAdoptChromeLabel">Use My Chrome</span>
+            </button>
 
             <!-- Tabs Manager Dropdown -->
             <div class="relative shrink-0">

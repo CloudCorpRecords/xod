@@ -3702,6 +3702,76 @@ function initBrowserInteractiveCard(card, initialUri) {
     });
   }
 
+  // Inline "My Chrome" adoption toggle (W2/E8)
+  const adoptBtn = card.querySelector(".btn-adopt-chrome");
+  const adoptLabel = card.querySelector(".adopt-label");
+  if (adoptBtn) {
+    const syncAdoptBadge = (mode) => {
+      if (mode === "user_chrome") {
+        adoptBtn.className = "btn-adopt-chrome px-2 py-0.5 rounded-md text-[10px] font-semibold bg-cyan-500 text-black border border-cyan-400 shadow-md shadow-cyan-500/20 transition-all flex items-center gap-1";
+        if (adoptLabel) adoptLabel.textContent = "My Chrome ✓";
+      } else {
+        adoptBtn.className = "btn-adopt-chrome px-2 py-0.5 rounded-md text-[10px] font-semibold bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/20 transition-all flex items-center gap-1";
+        if (adoptLabel) adoptLabel.textContent = "My Chrome";
+      }
+    };
+    fetch("/api/browser/identity").then(r => r.json()).then(d => syncAdoptBadge(d.browser_mode)).catch(() => {});
+    adoptBtn.addEventListener("click", async () => {
+      adoptBtn.disabled = true;
+      try {
+        const cur = await fetch("/api/browser/identity").then(r => r.json());
+        if (cur.browser_mode === "user_chrome") {
+          const det = await fetch("/api/browser/detach", { method: "POST" }).then(r => r.json());
+          syncAdoptBadge(det.browser_mode || "sandbox");
+          if (typeof showToast === "function") showToast("Detached back to Xod sandbox Chrome");
+        } else {
+          const res = await fetch("/api/browser/adopt", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({})
+          }).then(r => r.json());
+          if (res.success) {
+            syncAdoptBadge("user_chrome");
+            if (typeof showToast === "function") showToast(res.message || "Connected to your signed-in Chrome");
+            await loadBrowserTabs();
+          } else {
+            if (typeof showToast === "function") showToast(res.error || "Launch Chrome with --remote-debugging-port=9222 to connect", "error");
+          }
+        }
+      } catch (err) {
+        console.error("Adopt Chrome toggle failed:", err);
+      } finally {
+        adoptBtn.disabled = false;
+      }
+    });
+  }
+
+  // Inline live mid-mission Steer bar (Replit/Muse style)
+  const steerInput = card.querySelector(".steer-input");
+  const steerBtn = card.querySelector(".btn-send-steer");
+  async function submitInlineSteer() {
+    if (!steerInput || !steerInput.value.trim()) return;
+    const instruction = steerInput.value.trim();
+    steerInput.value = "";
+    if (steerBtn) steerBtn.disabled = true;
+    try {
+      const res = await fetch("/api/browser/mission/steer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instruction, source: "user" })
+      }).then(r => r.json());
+      if (typeof showToast === "function") {
+        showToast(res.success ? `Steer sent: "${instruction.slice(0, 50)}"` : (res.error || "Steer failed"));
+      }
+    } catch (err) {
+      console.error("Inline steer failed:", err);
+    } finally {
+      if (steerBtn) steerBtn.disabled = false;
+    }
+  }
+  if (steerInput) steerInput.addEventListener("keydown", (e) => { if (e.key === "Enter") submitInlineSteer(); });
+  if (steerBtn) steerBtn.addEventListener("click", submitInlineSteer);
+
   async function loadBrowserTabs() {
     if (!tabPills) return;
     try {
@@ -4382,6 +4452,10 @@ function createAssistantMessageContainer() {
                 </div>
 
                 <div class="flex items-center gap-1.5 shrink-0">
+                  <button type="button" class="btn-adopt-chrome px-2 py-0.5 rounded-md text-[10px] font-semibold bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 hover:bg-cyan-500/20 transition-all flex items-center gap-1" title="Attach to your real signed-in Chrome (CDP 9222) or detach back to sandbox">
+                    <i data-lucide="chrome" class="size-3"></i>
+                    <span class="adopt-label">My Chrome</span>
+                  </button>
                   <button type="button" class="btn-takeover px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 transition-all flex items-center gap-1" title="Toggle interactive Click-to-Take-Over cursor">
                     <i data-lucide="crosshair" class="size-3"></i>
                     <span class="takeover-label">Take Over</span>
@@ -4441,6 +4515,18 @@ function createAssistantMessageContainer() {
               </button>
               <button type="button" class="btn-dismiss-popups px-2 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] shrink-0 font-medium transition-colors" title="Auto-dismiss cookie banners & popups">
                 <span>Clear Popups</span>
+              </button>
+            </div>
+
+            <!-- Live Mid-Mission Steer Bar -->
+            <div class="steer-bar px-2 py-1.5 bg-surface-950 border-t border-surface-800 flex items-center gap-1.5 text-xs font-sans">
+              <div class="flex-1 flex items-center gap-1.5 bg-surface-900 border border-cyan-500/25 rounded-lg px-2 py-1 focus-within:border-cyan-400">
+                <i data-lucide="navigation" class="size-3 text-cyan-400 shrink-0"></i>
+                <input type="text" placeholder="Steer Xod live if it gets stuck..." class="steer-input w-full bg-transparent text-[11px] text-white placeholder:text-zinc-500 focus:outline-none" />
+              </div>
+              <button type="button" class="btn-send-steer px-2.5 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-[11px] font-semibold shrink-0 flex items-center gap-1 transition-colors">
+                <span>Steer</span>
+                <i data-lucide="send" class="size-2.5"></i>
               </button>
             </div>
           `;
@@ -9886,7 +9972,76 @@ function openAutonomousCockpitModal() {
   modal.classList.remove("hidden");
   switchCockpitTab(cockpitActiveTab || "browser");
   refreshCockpitState();
+  cockpitRefreshChromeIdentity();
   if (window.lucide) lucide.createIcons();
+}
+
+async function cockpitRefreshChromeIdentity() {
+  const btn = document.getElementById("btnCockpitAdoptChrome");
+  const label = document.getElementById("cockpitAdoptChromeLabel");
+  if (!btn || !label) return;
+  try {
+    const data = await fetch("/api/browser/identity").then(r => r.json());
+    if (data.browser_mode === "user_chrome") {
+      btn.className = "px-2.5 py-1.5 rounded-xl bg-cyan-500 text-black border border-cyan-400 text-xs font-semibold flex items-center gap-1.5 shadow-md shadow-cyan-500/20 transition-all shrink-0";
+      label.textContent = `My Chrome (:${data.active_port || 9222})`;
+    } else {
+      btn.className = "px-2.5 py-1.5 rounded-xl bg-surface-900 hover:bg-surface-800 text-zinc-300 border border-white/[0.08] text-xs font-medium flex items-center gap-1.5 transition-all shrink-0";
+      label.textContent = "Use My Chrome";
+    }
+  } catch (e) {}
+}
+
+async function cockpitToggleAdoptChrome() {
+  const btn = document.getElementById("btnCockpitAdoptChrome");
+  if (btn) btn.disabled = true;
+  try {
+    const cur = await fetch("/api/browser/identity").then(r => r.json());
+    if (cur.browser_mode === "user_chrome") {
+      await fetch("/api/browser/detach", { method: "POST" });
+      if (typeof showToast === "function") showToast("Detached back to Xod sandbox Chrome");
+    } else {
+      const res = await fetch("/api/browser/adopt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      }).then(r => r.json());
+      if (res.success) {
+        if (typeof showToast === "function") showToast(res.message || "Connected to your signed-in Chrome");
+        if (typeof refreshCockpitState === "function") refreshCockpitState();
+      } else {
+        if (typeof showToast === "function") showToast(res.error || "Start Chrome with --remote-debugging-port=9222 to connect", "error");
+      }
+    }
+    await cockpitRefreshChromeIdentity();
+  } catch (err) {
+    console.error("cockpitToggleAdoptChrome failed:", err);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function cockpitSendMissionSteer() {
+  const input = document.getElementById("cockpitMissionSteerInput");
+  const btn = document.getElementById("btnCockpitSendSteer");
+  if (!input || !input.value.trim()) return;
+  const instruction = input.value.trim();
+  input.value = "";
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch("/api/browser/mission/steer", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction, source: "user" })
+    }).then(r => r.json());
+    if (typeof showToast === "function") {
+      showToast(res.success ? `Steer sent: "${instruction.slice(0, 60)}"` : (res.error || "Could not send steer"));
+    }
+  } catch (err) {
+    console.error("cockpitSendMissionSteer failed:", err);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function closeAutonomousCockpitModal() {
