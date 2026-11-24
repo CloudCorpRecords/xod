@@ -4560,6 +4560,14 @@ class BrowserParallelJobsRequest(BaseModel):
     jobs: List[Dict[str, Any]]
     close_after: Optional[bool] = False
 
+class BrowserSteerRequest(BaseModel):
+    instruction: str
+    source: Optional[str] = "user"
+
+class BrowserFindTabRequest(BaseModel):
+    site_or_url: str
+    adopt_first: Optional[bool] = True
+
 class BrowserObserveRequest(BaseModel):
     max_elements: Optional[int] = 60
     filter_type: Optional[str] = "all"
@@ -4689,6 +4697,22 @@ async def browser_adopt_endpoint(req: Optional[BrowserAdoptRequest] = None):
 async def browser_detach_endpoint():
     """Detaches from an adopted user Chrome back to Xod's sandbox without touching the user's Chrome."""
     return browser_sandbox_service.detach_user_chrome()
+
+@app.post("/api/browser/find-tab")
+async def browser_find_tab_endpoint(req: BrowserFindTabRequest):
+    """Auto-adopts signed-in Chrome when available and jumps straight to an already-open tab for a site (or opens it)."""
+    try:
+        return await browser_sandbox_service.find_or_open_site_tab(
+            site_or_url=req.site_or_url,
+            adopt_first=True if req.adopt_first is None else bool(req.adopt_first),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/browser/mission/steer")
+async def browser_mission_steer_endpoint(req: BrowserSteerRequest):
+    """Sends a live steering instruction into a running or paused browser mission (Replit/Muse style)."""
+    return browser_sandbox_service.steer_mission(instruction=req.instruction, source=req.source or "user")
 
 @app.get("/api/browser/sessions")
 async def browser_list_sessions_endpoint():

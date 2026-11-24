@@ -964,6 +964,9 @@ class BrowserSandboxService:
         # JS dialog handling (C15): auto-captures and resolves alert/confirm/prompt without hanging CDP
         self.last_dialog: Optional[Dict[str, Any]] = None
         self._next_dialog_policy: Optional[Dict[str, Any]] = None
+        # Live mid-mission steering inbox (Replit/Muse-style steer-while-running)
+        self._mission_steers: List[Dict[str, Any]] = []
+        self._steer_event: Optional[asyncio.Event] = None
         # Background tabs the web reader (services/web_reader.py) has open; never treated as the page being driven.
         self.reader_tabs: set = set()
         self._msg_id = 0
@@ -1145,13 +1148,102 @@ class BrowserSandboxService:
         self.release_tab_claim()
         self.active_tab_id = None
         self.browser_mode = "sandbox"
-        self.cdp_port = DEBUG_PORT
+        self.cdp_port = self.sandbox_port
         self.attached_identity = None
         return {
             "success": True,
             "detached_from": {"browser_mode": was_mode, "cdp_port": was_port},
             "browser_mode": self.browser_mode,
             "cdp_port": self.cdp_port,
+        }
+
+    def steer_mission(self, instruction: str, source: str = "user") -> Dict[str, Any]:
+        """Injects a live steering instruction into a running or paused browser mission
+        (Replit/Muse-style: if Xod gets stuck, the user steers it in-place without restarting)."""
+        text = str(instruction or "").strip()
+        if not text:
+            return {"success": False, "error": "Steering instruction cannot be empty."}
+        entry = {"text": text, "source": source, "ts": time.time()}
+        self._mission_steers.append(entry)
+        if self._steer_event is not None:
+            try:
+                self._steer_event.set()
+            except Exception:
+                pass
+        return {
+            "success": True,
+            "queued": len(self._mission_steers),
+            "mission_status": (self.latest_mission or {}).get("status"),
+            "steer": entry,
+        }
+
+    async def find_or_open_site_tab(self, site_or_url: str, adopt_first: bool = True) -> Dict[str, Any]:
+        """Jumps straight to an already-open tab for a social/web site (e.g. facebook, x, linkedin,
+        gmail, or any domain/URL) — automatically adopting the user's real signed-in Chrome first
+        when available so Xod reuses their existing logged-in session instead of logging in again."""
+        raw = str(site_or_url or "").strip()
+        if not raw:
+            return {"success": False, "error": "site_or_url is required"}
+
+        site_aliases = {
+            "facebook": ("facebook.com", "https://www.facebook.com/"),
+            "fb": ("facebook.com", "https://www.facebook.com/"),
+            "x": ("x.com", "https://x.com/home"),
+            "twitter": ("x.com", "https://x.com/home"),
+            "linkedin": ("linkedin.com", "https://www.linkedin.com/feed/"),
+            "instagram": ("instagram.com", "https://www.instagram.com/"),
+            "ig": ("instagram.com", "https://www.instagram.com/"),
+            "threads": ("threads.net", "https://www.threads.net/"),
+            "reddit": ("reddit.com", "https://www.reddit.com/"),
+            "gmail": ("mail.google.com", "https://mail.google.com/"),
+            "youtube": ("youtube.com", "https://www.youtube.com/"),
+            "github": ("github.com", "https://github.com/"),
+        }
+        low = raw.lower()
+        if low in site_aliases:
+            domain, open_url = site_aliases[low]
+        elif "://" in raw:
+            parsed = urllib.parse.urlparse(raw)
+            domain = (parsed.netloc or "").lower().removeprefix("www.")
+            open_url = raw
+        else:
+            domain = low.removeprefix("www.").split("/")[0]
+            open_url = f"https://{raw}" if "." in raw else f"https://www.{raw}.com/"
+
+        adopted_now = False
+        if adopt_first and self.browser_mode != "user_chrome":
+            try:
+                adopt_res = await self.adopt_user_chrome()
+                adopted_now = bool(adopt_res.get("success"))
+            except Exception:
+                adopted_now = False
+
+        listed = await self.manage_tabs("list")
+        tabs = listed.get("tabs") or []
+        match = next(
+            (t for t in tabs if t.get("type") == "page" and domain and domain in (t.get("url") or "").lower()),
+            None,
+        )
+        if match:
+            sw = await self.manage_tabs("switch", target_id=match["id"])
+            return {
+                "success": bool(sw.get("success")),
+                "reused_existing_tab": True,
+                "adopted_now": adopted_now,
+                "browser_mode": self.browser_mode,
+                "tab_id": match["id"],
+                "url": match.get("url"),
+                "title": match.get("title"),
+            }
+        opened = await self.manage_tabs("new", url=open_url)
+        return {
+            "success": bool(opened.get("success")),
+            "reused_existing_tab": False,
+            "adopted_now": adopted_now,
+            "browser_mode": self.browser_mode,
+            "tab_id": opened.get("active_tab_id"),
+            "url": open_url,
+            "title": (opened.get("tab") or {}).get("title", ""),
         }
 
     def set_workspace_path(self, path: Optional[str]):
@@ -4955,7 +5047,27 @@ class BrowserSandboxService:
         queued: List[Dict[str, Any]] = []      # chained actions still to do on this page
         queued_url = ""
         look_next = False
+        self._steer_event = asyncio.Event()
+        mission_record["steers"] = []
+        consecutive_stuck = 0
         while len(mission_record["steps"]) < max_steps:
+            # Live mid-mission user steering (Replit/Muse style): drain any queued steer
+            # instructions and inject them at the top of the current step immediately.
+            if self._mission_steers:
+                drained = list(self._mission_steers)
+                self._mission_steers.clear()
+                if self._steer_event is not None:
+                    self._steer_event.clear()
+                queued.clear()
+                look_next = True
+                escalate_next = True
+                escalate_next_reason = "user steer received"
+                consecutive_stuck = 0
+                mission_record["status"] = "running"
+                for st_msg in drained:
+                    mission_record["steers"].append(st_msg)
+                    history.append(f"USER STEER (follow immediately): {st_msg['text']}")
+                    mission_record["now"] = f"Following your steer: {st_msg['text'][:80]}"
             # Runaway protection (AGE-100): a configured wall-clock budget ends
             # the mission cleanly instead of letting it drive the browser forever.
             if wall_sec and time.time() - start_time > wall_sec:
@@ -5553,6 +5665,31 @@ class BrowserSandboxService:
                             f"NOTE: the last two steps repeated {action} [{target}] on the same page with no visible change. "
                             "Stop repeating this step — read the current page text, try a different action (e.g. press_key, type, drag, or switch_tab), or finish."
                         )
+                # Stuck-pause-and-steer (Replit/Muse style): after 3 consecutive stuck steps,
+                # pause in-place for live user steering instead of burning the step budget.
+                if (not ok) or (effect == "no visible change" and action not in ("scroll", "hover", "type", "select", "check", "uncheck", "extract", "read_more", "wait")):
+                    consecutive_stuck += 1
+                else:
+                    consecutive_stuck = 0
+                if consecutive_stuck >= 3:
+                    steer_wait = float(os.environ.get("XOD_MISSION_STEER_WAIT_SEC", "0") or 0)
+                    if steer_wait > 0:
+                        mission_record["status"] = "needs_steer"
+                        mission_record["stuck_reason"] = f"3 consecutive steps had no effect on {_page_name(self.current_title, self.current_url)}"
+                        mission_record["now"] = "Stuck — send a steer instruction or use Take Over to guide me..."
+                        if not self._mission_steers and self._steer_event is not None:
+                            self._steer_event.clear()
+                            try:
+                                await asyncio.wait_for(self._steer_event.wait(), timeout=steer_wait)
+                            except asyncio.TimeoutError:
+                                return await finish(
+                                    "needs_input",
+                                    f"I got stuck on **{_page_name(self.current_title, self.current_url)}** after 3 attempts with no change. "
+                                    "Tell me what to click/do next (or use **Take Over**), and I'll continue right from here.",
+                                )
+                        mission_record["status"] = "running"
+                        consecutive_stuck = 0
+                        continue
                 # Training label: did this decision do something useful?
                 if not ok:
                     dataset_recorder.label(step_example, -1, "action failed")

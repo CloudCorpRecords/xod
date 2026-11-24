@@ -1543,6 +1543,124 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "browser_find_tab",
+            "description": "Automatically adopts the user's real signed-in Chrome when available and switches straight to an already-open tab for a site (e.g. 'facebook', 'x', 'linkedin', 'instagram', 'gmail', or any domain/URL), or opens a new tab there. Use this FIRST before posting on socials or acting in an already-logged-in session.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "site_or_url": {"type": "string", "description": "Site alias (facebook, x, linkedin, instagram, gmail, reddit) or domain/URL."},
+                    "adopt_first": {"type": "boolean", "description": "Try adopting the user's real signed-in Chrome first (default true)."}
+                },
+                "required": ["site_or_url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_adopt",
+            "description": "Safely adopts the user's real signed-in Chrome over CDP after verifying Chrome identity (refuses sandbox or other agents' browsers).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "port": {"type": "integer", "description": "Optional explicit CDP port (default scans 9222/9223/9224)."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_detach",
+            "description": "Detaches from an adopted user Chrome back to Xod's sandbox without closing or disturbing any user tabs.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_tabs",
+            "description": "Controls any tab in the active browser (list, new, switch, close, claim, release) by id, index, URL substring, or title substring.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "new", "switch", "close", "claim", "release"]},
+                    "target_id": {"type": "string"},
+                    "url": {"type": "string"},
+                    "target_index": {"type": "integer"},
+                    "target_url_contains": {"type": "string"},
+                    "target_title_contains": {"type": "string"}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_select",
+            "description": "Selects an option in a <select> dropdown by value, visible label, or index (pierces Shadow DOM and iframes).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string"},
+                    "value": {"type": "string"}
+                },
+                "required": ["selector", "value"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_drag",
+            "description": "Performs HTML5 drag-and-drop (with CDP mouse fallback) from source selector to target selector.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "target": {"type": "string"}
+                },
+                "required": ["source", "target"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_run_parallel",
+            "description": "Runs 2 or more independent browser jobs simultaneously across separate Chrome instances (each with its own profile, CDP port, and long-form context store).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "jobs": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "List of job objects: [{session_id, steps: [...], longform_session}]"
+                    },
+                    "close_after": {"type": "boolean"}
+                },
+                "required": ["jobs"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_steer_mission",
+            "description": "Sends a live steering instruction into a running or stuck browser mission so it adapts in-place without restarting.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "instruction": {"type": "string"}
+                },
+                "required": ["instruction"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "browser_observe",
             "description": "Performs Set-of-Marks visual DOM indexing of all visible interactive elements (buttons, links, inputs, dropdowns) on the current webpage. Tags elements with numeric identifiers [1], [2], etc., and returns a compact, token-efficient text map with coordinates. Essential before calling browser_interact.",
             "parameters": {
@@ -4520,6 +4638,53 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                 goal=arguments["goal"],
                 start_url=arguments.get("start_url"),
                 max_steps=arguments.get("max_steps", 25)
+            )
+
+        elif name == "browser_find_tab":
+            return await browser_sandbox_service.find_or_open_site_tab(
+                site_or_url=arguments["site_or_url"],
+                adopt_first=bool(arguments.get("adopt_first", True)),
+            )
+
+        elif name == "browser_adopt":
+            return await browser_sandbox_service.adopt_user_chrome(port=arguments.get("port"))
+
+        elif name == "browser_detach":
+            return browser_sandbox_service.detach_user_chrome()
+
+        elif name == "browser_tabs":
+            return await browser_sandbox_service.manage_tabs(
+                action=arguments.get("action", "list"),
+                target_id=arguments.get("target_id"),
+                url=arguments.get("url", "about:blank"),
+                target_index=arguments.get("target_index"),
+                target_url_contains=arguments.get("target_url_contains"),
+                target_title_contains=arguments.get("target_title_contains"),
+            )
+
+        elif name == "browser_select":
+            return await browser_sandbox_service.select_option(
+                selector=arguments["selector"],
+                value=arguments["value"],
+            )
+
+        elif name == "browser_drag":
+            return await browser_sandbox_service.drag_and_drop(
+                source=arguments["source"],
+                target=arguments["target"],
+            )
+
+        elif name == "browser_run_parallel":
+            from app.services.browser_pool import browser_pool_service
+            return await browser_pool_service.run_parallel(
+                arguments.get("jobs") or [],
+                close_after=bool(arguments.get("close_after", False)),
+            )
+
+        elif name == "browser_steer_mission":
+            return browser_sandbox_service.steer_mission(
+                instruction=arguments["instruction"],
+                source="agent",
             )
 
         elif name == "browser_observe":

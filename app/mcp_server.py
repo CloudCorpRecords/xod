@@ -209,5 +209,17 @@ async def browser_sessions(
     return {"success": False, "error": f"Unsupported browser_sessions action: {action}"}
 
 
+@server.tool(annotations=ACT)
+async def browser_find_tab(site_or_url: str, adopt_first: bool = True) -> Dict[str, Any]:
+    """Auto-adopt the user's real signed-in Chrome when available and jump straight to an already-open tab for a site (e.g. facebook, x, linkedin, gmail) or open it."""
+    return await _api("POST", "/api/browser/find-tab", json={"site_or_url": site_or_url, "adopt_first": adopt_first})
+
+
+@server.tool(annotations=ACT)
+async def browser_steer(instruction: str) -> Dict[str, Any]:
+    """Send a live mid-mission steering instruction into a running or paused Xod browser mission (Replit/Muse style)."""
+    return await _api("POST", "/api/browser/mission/steer", json={"instruction": instruction, "source": "mcp-steerer"})
+
+
 if __name__ == "__main__":
     server.run("stdio")
