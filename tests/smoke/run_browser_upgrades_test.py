@@ -11,7 +11,7 @@ Comprehensive verification suite for Xod browser upgrades (2026-11-23):
 Runs completely isolated (own XOD_DATA_DIR and hashed CDP port, never touches port 9228
 or the running 1.1.21 app). Keeps real HOME so Chrome Page.navigate commits cleanly (AGE-99).
 
-Run: /Users/reneturcios/xod-light-venv/bin/python3.12 tests/smoke/run_browser_upgrades_test.py
+Run: python3 tests/smoke/run_browser_upgrades_test.py
 """
 import asyncio
 import http.server
@@ -228,7 +228,7 @@ async def part_c_chrome_adoption():
         if port == 9225:
             return {"pid": 1002, "exe": "/Applications/Chromium.app", "cmdline": ["--user-data-dir=/tmp/playwright_profile"], "user_data_dir": "/tmp/playwright_profile", "is_headless": False}
         if port == 9222:
-            return {"pid": 1003, "exe": "/Applications/Google Chrome.app", "cmdline": ["--remote-debugging-port=9222"], "user_data_dir": "/Users/reneturcios/Library/Application Support/Google/Chrome", "is_headless": False}
+            return {"pid": 1003, "exe": "/Applications/Google Chrome.app", "cmdline": ["--remote-debugging-port=9222"], "user_data_dir": "/Users/alice/Library/Application Support/Google/Chrome", "is_headless": False}
         return {"pid": None, "exe": "", "cmdline": [], "user_data_dir": "", "is_headless": False}
 
     sb._devtools = fake_devtools
@@ -413,14 +413,14 @@ async def part_d_live_gauntlet():
         check("D1 live navigate to gauntlet page", nav.get("success") is True and "Gauntlet" in (nav.get("title") or ""), str(nav.get("error")))
 
         # W10: Attribute selector skipping hidden decoy
-        r_type = await sb.type_text('input[name="email"][data-testid="contact-email"]', "rene@xod.ai")
+        r_type = await sb.type_text('input[name="email"][data-testid="contact-email"]', "alice@example.com")
         val_vis = (await sb.evaluate_js("document.getElementById('vis-email').value")).get("result")
-        check("D2 attribute selector types into visible input (skips hidden decoy)", r_type.get("success") is True and val_vis == "rene@xod.ai", f"val={val_vis!r} r={r_type.get('error')}")
+        check("D2 attribute selector types into visible input (skips hidden decoy)", r_type.get("success") is True and val_vis == "alice@example.com", f"val={val_vis!r} r={r_type.get('error')}")
 
         # clear_first=False append
         await sb.type_text('input[name="email"][data-testid="contact-email"]', ".co", clear_first=False)
         val_app = (await sb.evaluate_js("document.getElementById('vis-email').value")).get("result")
-        check("D3 type_text clear_first=False appends cleanly", val_app == "rene@xod.ai.co", f"val={val_app!r}")
+        check("D3 type_text clear_first=False appends cleanly", val_app == "alice@example.com.co", f"val={val_app!r}")
 
         # C13: Checkbox
         r_cb = await sb.set_checkbox("#cb1", True)

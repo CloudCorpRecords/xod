@@ -135,7 +135,7 @@ async def part_b_find_tab():
         return "{}"
 
     sb._devtools = fake_devtools
-    sb._inspect_port_process = lambda p: {"pid": 2001, "exe": "/Applications/Google Chrome.app", "cmdline": ["--remote-debugging-port=9222"], "user_data_dir": "/Users/reneturcios/Library/Application Support/Google/Chrome", "is_headless": False} if p == 9222 else {}
+    sb._inspect_port_process = lambda p: {"pid": 2001, "exe": "/Applications/Google Chrome.app", "cmdline": ["--remote-debugging-port=9222"], "user_data_dir": "/Users/alice/Library/Application Support/Google/Chrome", "is_headless": False} if p == 9222 else {}
     sb._probe_devtools = lambda t: "ready" if sb.active_port() == 9222 else "refused"
 
     r_fb = await sb.find_or_open_site_tab("facebook")

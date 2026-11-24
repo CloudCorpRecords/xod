@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.22
+
+Major browser intelligence, signed-in Chrome adoption, concurrent multi-browser pool, live mid-mission steering, and fixes for the 40-test browser benchmark.
+
+**Verified browser engine & 40-test benchmark fixes**
+- Ships AGE-99 / AGE-100 (tab claim, deterministic `/api/browser/run`, verified mission step execution, extract content checks) plus full destination verdict gate (`evaluate_mission_verdict()` in `browser_sandbox.py` and `task_queue.py`) so zero-effect runs can never close as completed.
+- Full CSS/attribute selector support piercing open Shadow DOM and same-origin iframes (skipping hidden decoys, computing post-scroll iframe viewport offsets), plus `clear_first` on `/api/browser/type` and single-task `GET /api/tasks/{task_id}`.
+- Native JS dialog capture (`alert`/`confirm`/`prompt`) inside `_send_cdp` + `/api/browser/dialog`; HTML5 `DataTransfer` drag-and-drop (`/api/browser/drag`); standalone `<select>` dropdown (`/api/browser/select`); printable single-key `press_key` (`A`, `B`, `7`); deterministic CDP Back/Forward (`Page.getNavigationHistory`); repeat-loop guard; handed file upload path support (`_extract_explicit_file_path`); narrowed TodoMVC/list-entry Enter submit gate; goal-grounded handed credentials with masked audit logging; fixed reCAPTCHA v2 vs Cloudflare Turnstile detection label; expanded `get_downloads()` to scan workspace and `~/Downloads`; stripped nav/header/footer chrome and raised Markdown/content ceilings to 40k/30k chars.
+
+**Signed-in Chrome adoption, live steering & concurrent scale**
+- Safe Chrome adoption (`GET /api/browser/identity`, `POST /api/browser/adopt`, `POST /api/browser/detach`, `POST /api/browser/find-tab`) with identity etiquette (refuses sandbox or other agents' browsers; never kills adopted Chrome) and `Use My Chrome` toggle + live `Steer` bar in both the Autonomous Cockpit and inline chat browser cards.
+- Live mid-mission steering (`POST /api/browser/mission/steer`) with stuck-pause-and-resume (`needs_steer`) so the user can steer Xod in-place without restarting.
+- Concurrent multi-browser pool (`app/services/browser_pool.py`, `POST /api/browser/sessions/parallel`) running 2+ independent Chrome instances simultaneously, with `AGE-96` long-form context chunking & budgeted `recall` wired into `browser_run.py`.
+- Exposed browser adoption, tab control, steering, and parallel sessions in both `app/agent/tools.py` and `app/mcp_server.py`.
+- Added open-source Bring-Your-Own Google Drive shared memory template (`app/services/memory_drive_template.py`, `docs/SHARED_MEMORY_DRIVE_TEMPLATE.md`) using conflict-free per-device JSONL shards.
+
+**Tests**
+- New `tests/smoke/run_browser_upgrades_test.py` (34/34), `tests/smoke/run_browser_scale_test.py` (13/13), `tests/smoke/run_benchmark_fixes_test.py` (15/15), `tests/smoke/run_agent_steering_test.py` (7/7); existing `run_browser_run_test.py` (19/19), `run_browser_mission_verify_test.py` (16/16), `run_browser_longform_live_test.py` (41/41 steps), and `run_browser_public_web_test.py` (9/9) all green.
+
 ## 1.1.21
 
 Screen capture moves into the app, and a blocked microphone stops failing silently (AGE-98).

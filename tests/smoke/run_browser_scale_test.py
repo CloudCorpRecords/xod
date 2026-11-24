@@ -180,11 +180,11 @@ def part_d_drive_template():
           str(init_res))
 
     exp_a = dev_a.export_items([
-        {"kind": "fact", "category": "workflow", "content": "Rene prefers branch-first PRs with destination read-back"},
+        {"kind": "fact", "category": "workflow", "content": "User prefers branch-first PRs with destination read-back"},
         {"kind": "fact", "category": "fleet", "content": "MacBook runs Xod 1.1.21 on Tailscale"},
     ])
     exp_a_dup = dev_a.export_items([
-        {"kind": "fact", "category": "workflow", "content": "Rene prefers branch-first PRs with destination read-back"},
+        {"kind": "fact", "category": "workflow", "content": "User prefers branch-first PRs with destination read-back"},
     ])
     check("D2 Device A export writes 2 facts and deduplicates repeat export (written=0)",
           exp_a.get("written") == 2 and exp_a_dup.get("written") == 0,
