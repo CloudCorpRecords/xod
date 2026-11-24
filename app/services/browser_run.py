@@ -158,6 +158,14 @@ async def _default_check(sb, step: Dict[str, Any], before: Dict[str, Any],
                 if val != f["value"]:
                     return False, f"field {f['selector']!r} holds {val!r}, want {f['value']!r}"
         return True, "all field values read back"
+    if action == "extract":
+        # An extract taken while the page is still loading captures an empty
+        # or shell-only snapshot and used to count as landed. The landing is
+        # the page text actually being there when re-read.
+        text = await page_text(sb)
+        if not text.strip():
+            return False, "page text still empty on re-read (page still loading)"
+        return True, f"page text read back ({len(text)} chars)"
     return True, "action reported success and state was re-read"
 
 
@@ -359,6 +367,14 @@ async def _run_step(sb, step: Dict[str, Any], extracts: Dict[str, Any],
         if ok:
             break
 
+    if ok and step.get("action") == "extract":
+        # The snapshot taken during the action can predate the page settling
+        # (a fresh tab, a client-rendered page). Store the text as it reads
+        # now that the step has landed, not the early capture.
+        try:
+            extracts[step.get("name", "extract")] = await page_text(sb)
+        except Exception:
+            pass
     rec["status"] = "landed" if ok and len(rec["attempts"]) == 1 else ("recovered" if ok else "failed")
     rec["detail"] = detail
     rec["url_after"] = after.get("url")

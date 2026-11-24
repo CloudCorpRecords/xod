@@ -242,6 +242,22 @@ class FlakyVerify(FakeRun):
         return await super().evaluate_js(expression)
 
 
+class SlowText(FakeRun):
+    """Page text arrives late: the first N content reads are empty shells,
+    the way an extract on a just-opened tab sees the page mid-load."""
+
+    def __init__(self, empty_reads=0):
+        super().__init__()
+        self._reads = 0
+        self._empty_reads = empty_reads
+
+    async def extract_content(self):
+        self._reads += 1
+        if self._reads <= self._empty_reads:
+            return {"success": True, "content": ""}
+        return await super().extract_content()
+
+
 async def part_b():
     sb = FakeRun()
     steps = [
@@ -301,6 +317,27 @@ async def part_b():
           rec4["status"] == "incomplete" and rec4["steps"][0]["status"] == "failed"
           and any("verification error" in str(a.get("detail", "")) for a in rec4["steps"][0]["attempts"]),
           str(rec4["steps"]))
+
+    # AGE-100, found live on the public web: an extract taken while the page
+    # is still loading captures an empty snapshot. It must not count as
+    # landed, and the stored extract must be the settled text, not the shell.
+    sb5 = SlowText(empty_reads=1)
+    rec5 = await BR.run_browser_steps(sb5, [
+        {"action": "extract", "name": "early"},
+    ], owner="unit")
+    check("B11 an extract that starts empty lands on the settled text",
+          rec5["status"] == "completed" and rec5["steps"][0]["status"] in ("landed", "recovered")
+          and "alpha body" in rec5["extracts"].get("early", ""),
+          str(rec5["steps"]) + " extracts=" + str(rec5["extracts"]))
+
+    sb6 = SlowText(empty_reads=99)
+    rec6 = await BR.run_browser_steps(sb6, [
+        {"action": "extract", "name": "never"},
+    ], owner="unit")
+    check("B12 an extract on a page that never renders text fails honestly",
+          rec6["status"] == "incomplete" and rec6["steps"][0]["status"] == "failed"
+          and any("empty" in str(a.get("detail", "")) for a in rec6["steps"][0]["attempts"]),
+          str(rec6["steps"]))
 
 
 async def main():
