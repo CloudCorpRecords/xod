@@ -15,7 +15,7 @@ Xod has to be running (the desktop app or ./run.sh).
 """
 import json
 import os
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import httpx
 from mcp.server.mcpserver import MCPServer
@@ -83,9 +83,13 @@ async def start_task(request: str) -> Dict[str, Any]:
 @server.tool(annotations=READ)
 async def get_task(task_id: str) -> Dict[str, Any]:
     """Status, latest progress and (when finished) the report of a task started with start_task."""
-    data = await _api("GET", "/api/tasks")
-    tasks = data.get("tasks", data if isinstance(data, list) else [])
-    t = next((x for x in tasks if x.get("id") == task_id), None)
+    try:
+        data = await _api("GET", f"/api/tasks/{task_id}")
+        t = data.get("task") or data
+    except Exception:
+        data = await _api("GET", "/api/tasks")
+        tasks = data.get("tasks", data if isinstance(data, list) else [])
+        t = next((x for x in tasks if x.get("id") == task_id), None)
     if not t:
         return {"error": f"No task {task_id}"}
     return {k: t.get(k) for k in ("id", "title", "status", "now", "waiting_kind", "result")}
@@ -125,6 +129,84 @@ async def recent_activity(limit: int = 20) -> List[Dict[str, Any]]:
     """What Xod has done recently on this Mac (files changed, pages opened, commands run)."""
     res = await _api("GET", f"/api/activity?limit={max(1, min(limit, 100))}")
     return [{"title": i["title"], "detail": i["detail"], "ok": i["ok"]} for i in res.get("items", [])]
+
+
+@server.tool(annotations=READ)
+async def browser_identity(port: int = 0) -> Dict[str, Any]:
+    """Identify which Chrome instance Xod currently holds (sandbox vs user_chrome vs other_agent_chrome)."""
+    q = f"?port={port}" if port > 0 else ""
+    return await _api("GET", f"/api/browser/identity{q}")
+
+
+@server.tool(annotations=ACT)
+async def browser_adopt(port: int = 0) -> Dict[str, Any]:
+    """Safely adopt the user's real signed-in Chrome over CDP (never hijacks another agent or pretends sandbox is user Chrome)."""
+    body = {"port": port} if port > 0 else {}
+    return await _api("POST", "/api/browser/adopt", json=body)
+
+
+@server.tool(annotations=ACT)
+async def browser_detach() -> Dict[str, Any]:
+    """Detach from an adopted user Chrome back to Xod's sandbox without closing or disturbing the user's tabs."""
+    return await _api("POST", "/api/browser/detach")
+
+
+@server.tool(annotations=ACT)
+async def browser_tabs(
+    action: str = "list",
+    target_id: str = "",
+    url: str = "about:blank",
+    target_index: int = -1,
+    target_url_contains: str = "",
+    target_title_contains: str = "",
+) -> Dict[str, Any]:
+    """Control any browser tab (list, new, switch, close, claim, release) by id, index, URL, or title."""
+    payload: Dict[str, Any] = {"action": action, "url": url}
+    if target_id:
+        payload["target_id"] = target_id
+    if target_index >= 0:
+        payload["target_index"] = target_index
+    if target_url_contains:
+        payload["target_url_contains"] = target_url_contains
+    if target_title_contains:
+        payload["target_title_contains"] = target_title_contains
+    return await _api("POST", "/api/browser/tabs", json=payload)
+
+
+@server.tool(annotations=ACT)
+async def browser_run(
+    steps: List[Dict[str, Any]],
+    owner: str = "mcp-steerer",
+    stop_on_failure: bool = True,
+    max_recoveries: int = 2,
+) -> Dict[str, Any]:
+    """Run a verified multi-step browser script (navigate, click, type, select, check, hover, drag_and_drop, dialog, extract, recall, assert)."""
+    return await _api(
+        "POST",
+        "/api/browser/run",
+        json={
+            "steps": steps,
+            "owner": owner,
+            "stop_on_failure": stop_on_failure,
+            "max_recoveries": max_recoveries,
+        },
+    )
+
+
+@server.tool(annotations=ACT)
+async def browser_sessions(
+    action: str = "list",
+    session_id: str = "",
+    jobs: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Manage concurrent multi-browser sessions (list, close, or run parallel jobs across 2+ independent browsers)."""
+    if action == "list":
+        return await _api("GET", "/api/browser/sessions")
+    if action == "close" and session_id:
+        return await _api("DELETE", f"/api/browser/sessions/{session_id}")
+    if action == "parallel" and jobs:
+        return await _api("POST", "/api/browser/sessions/parallel", json={"jobs": jobs})
+    return {"success": False, "error": f"Unsupported browser_sessions action: {action}"}
 
 
 if __name__ == "__main__":

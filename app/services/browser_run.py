@@ -47,7 +47,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 ACTIONS = ("navigate", "open_tab", "switch_tab", "close_tab", "click", "type",
-           "fill", "scroll", "press_key", "wait", "extract", "assert",
+           "fill", "scroll", "press_key", "wait", "extract", "recall", "assert",
            "hover", "select", "check", "uncheck", "drag_and_drop", "dialog", "upload")
 
 
@@ -256,6 +256,20 @@ async def _do_action(sb, step: Dict[str, Any], state: Dict[str, Any],
         text = await page_text(sb)
         extracts[step.get("name", "extract")] = text
         return {"success": True, "chars": len(text)}
+    if action == "recall":
+        from app.services import longform_context
+        query = str(step.get("query") or "")
+        budget = int(step.get("budget_tokens") or step.get("budget") or 1500)
+        session_id = step.get("session_id") or extracts.get("__longform_session__")
+        recalled = longform_context.recall(query, budget_tokens=budget, session_id=session_id)
+        text = recalled.get("text") or ""
+        extracts[step.get("name", "recall")] = text
+        return {
+            "success": True,
+            "chars": len(text),
+            "tokens_used": recalled.get("tokens_used", 0),
+            "chunks": recalled.get("chunks", 0),
+        }
     if action == "hover":
         return await sb.hover(step["target"])
     if action == "select":
@@ -389,7 +403,19 @@ async def _run_step(sb, step: Dict[str, Any], extracts: Dict[str, Any],
         # (a fresh tab, a client-rendered page). Store the text as it reads
         # now that the step has landed, not the early capture.
         try:
-            extracts[step.get("name", "extract")] = await page_text(sb)
+            settled_text = await page_text(sb)
+            extracts[step.get("name", "extract")] = settled_text
+            lf_sid = extracts.get("__longform_session__")
+            if lf_sid and settled_text.strip():
+                from app.services import longform_context
+                ing = longform_context.ingest_text(
+                    settled_text,
+                    kind="browser_extract",
+                    title=f"{step.get('name', 'extract')} ({after.get('url') or ''})",
+                    session_id=lf_sid,
+                )
+                rec["longform_source"] = ing.get("source_id")
+                rec["longform_chunks"] = ing.get("chunks")
         except Exception:
             pass
     rec["status"] = "landed" if ok and len(rec["attempts"]) == 1 else ("recovered" if ok else "failed")
@@ -402,17 +428,18 @@ async def _run_step(sb, step: Dict[str, Any], extracts: Dict[str, Any],
 
 async def run_browser_steps(sb, steps: List[Dict[str, Any]], owner: str = "browser-run",
                             stop_on_failure: bool = True, max_recoveries: int = 2,
-                            claim: bool = True) -> Dict[str, Any]:
+                            claim: bool = True, longform_session: Optional[str] = None) -> Dict[str, Any]:
     """Runs a scripted long-form browser run with per-step verification and recovery.
     Serializes with missions through the sandbox mission lock and holds the tab claim
-    for the whole run. Returns the full run record."""
+    for the whole run. When longform_session is provided, every landed extract is
+    automatically indexed into longform.db for budgeted recall at scale."""
     if getattr(sb, "_mission_lock", None) is None:
         sb._mission_lock = asyncio.Lock()
     async with sb._mission_lock:
-        return await _run_steps_unlocked(sb, steps, owner, stop_on_failure, max_recoveries, claim)
+        return await _run_steps_unlocked(sb, steps, owner, stop_on_failure, max_recoveries, claim, longform_session)
 
 
-async def _run_steps_unlocked(sb, steps, owner, stop_on_failure, max_recoveries, claim):
+async def _run_steps_unlocked(sb, steps, owner, stop_on_failure, max_recoveries, claim, longform_session=None):
     started = time.time()
     record: Dict[str, Any] = {
         "run_id": f"run_{int(started * 1000)}",
@@ -422,6 +449,9 @@ async def _run_steps_unlocked(sb, steps, owner, stop_on_failure, max_recoveries,
         "extracts": {},
         "started_at": time.strftime("%H:%M:%S"),
     }
+    if longform_session:
+        record["longform_session"] = longform_session
+        record["extracts"]["__longform_session__"] = longform_session
     claim_res = None
     try:
         if claim:
@@ -474,6 +504,7 @@ async def _run_steps_unlocked(sb, steps, owner, stop_on_failure, max_recoveries,
                                 for t in final_state.get("tabs", []) if t.get("type") == "page"]
         return record
     finally:
+        record["extracts"].pop("__longform_session__", None)
         if claim and claim_res is not None:
             try:
                 sb.release_tab_claim()

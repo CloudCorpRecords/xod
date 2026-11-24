@@ -4556,6 +4556,10 @@ class BrowserDialogRequest(BaseModel):
     accept: Optional[bool] = True
     prompt_text: Optional[str] = None
 
+class BrowserParallelJobsRequest(BaseModel):
+    jobs: List[Dict[str, Any]]
+    close_after: Optional[bool] = False
+
 class BrowserObserveRequest(BaseModel):
     max_elements: Optional[int] = 60
     filter_type: Optional[str] = "all"
@@ -4685,6 +4689,27 @@ async def browser_adopt_endpoint(req: Optional[BrowserAdoptRequest] = None):
 async def browser_detach_endpoint():
     """Detaches from an adopted user Chrome back to Xod's sandbox without touching the user's Chrome."""
     return browser_sandbox_service.detach_user_chrome()
+
+@app.get("/api/browser/sessions")
+async def browser_list_sessions_endpoint():
+    """Lists active concurrent browser pool sessions."""
+    from app.services.browser_pool import browser_pool_service
+    return {"success": True, "sessions": browser_pool_service.list_sessions()}
+
+@app.post("/api/browser/sessions/parallel")
+async def browser_parallel_sessions_endpoint(req: BrowserParallelJobsRequest):
+    """Runs 2+ browser jobs concurrently across separate independent Chrome instances."""
+    from app.services.browser_pool import browser_pool_service
+    try:
+        return await browser_pool_service.run_parallel(req.jobs, close_after=bool(req.close_after))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/browser/sessions/{session_id}")
+async def browser_close_session_endpoint(session_id: str):
+    """Closes a pooled browser session cleanly."""
+    from app.services.browser_pool import browser_pool_service
+    return browser_pool_service.close_session(session_id)
 
 @app.post("/api/browser/navigate")
 async def browser_navigate_endpoint(req: BrowserNavigateRequest):

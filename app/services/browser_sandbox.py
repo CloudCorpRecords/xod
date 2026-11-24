@@ -64,12 +64,13 @@ DATA_DIR = str(XOD_DATA_DIR / "xod_ai_browser_sandbox")
 LEGACY_DATA_DIR = "/tmp/xod_ai_browser_sandbox"
 
 
-def _kill_own_browser(port_too: bool = False) -> int:
+def _kill_own_browser(port_too: bool = False, data_dir: Optional[str] = None, port: Optional[int] = None) -> int:
     """Ends this Xod's own Chrome: processes started with its profile folder (and, with port_too, whatever holds its
     debug port). Works on Mac and Windows alike (pkill and lsof don't exist on Windows, and a Chrome left holding the
     profile there makes the next one hand over to it and quit). Returns how many it ended."""
     import psutil
-    mine = os.path.normcase(os.path.abspath(DATA_DIR))
+    mine = os.path.normcase(os.path.abspath(data_dir or DATA_DIR))
+    target_port = int(port or DEBUG_PORT)
     victims = {}
     for p in psutil.process_iter(["pid", "cmdline"]):
         try:
@@ -82,7 +83,7 @@ def _kill_own_browser(port_too: bool = False) -> int:
     if port_too:
         try:
             for c in psutil.net_connections(kind="tcp"):
-                if c.laddr and c.laddr.port == DEBUG_PORT and c.status == psutil.CONN_LISTEN and c.pid and c.pid != os.getpid():
+                if c.laddr and c.laddr.port == target_port and c.status == psutil.CONN_LISTEN and c.pid and c.pid != os.getpid():
                     victims.setdefault(c.pid, psutil.Process(c.pid))
         except Exception:
             pass
@@ -899,7 +900,10 @@ class BrowserSandboxService:
     background network API snooping, and multi-step autonomous missions without interrupting the user's screen.
     """
 
-    def __init__(self):
+    def __init__(self, port: Optional[int] = None, data_dir: Optional[str] = None, session_id: str = "default"):
+        self.session_id: str = session_id
+        self.sandbox_port: int = int(port or DEBUG_PORT)
+        self.sandbox_data_dir: str = str(data_dir or DATA_DIR)
         self.proc: Optional[subprocess.Popen] = None
         self.last_used: Optional[float] = None   # the last browser work (check_idle closes the browser after a quiet spell)
         self.ws_url: Optional[str] = None
@@ -917,10 +921,10 @@ class BrowserSandboxService:
         self.claimed_tab_id: Optional[str] = None
         self.claim_owner: Optional[str] = None
         self.headless: bool = True
-        # Browser attachment mode (W2 / E8): "sandbox" (default isolated Chrome on DEBUG_PORT)
+        # Browser attachment mode (W2 / E8): "sandbox" (default isolated Chrome on sandbox_port)
         # or "user_chrome" (adopted user's real signed-in Chrome on an explicit CDP port).
         self.browser_mode: str = "sandbox"
-        self.cdp_port: int = DEBUG_PORT
+        self.cdp_port: int = self.sandbox_port
         self.attached_identity: Optional[Dict[str, Any]] = None
         # JS dialog handling (C15): auto-captures and resolves alert/confirm/prompt without hanging CDP
         self.last_dialog: Optional[Dict[str, Any]] = None
@@ -1237,20 +1241,20 @@ class BrowserSandboxService:
             self.proc = None
 
         try:
-            if _kill_own_browser():     # only this Xod's browser
+            if _kill_own_browser(data_dir=self.sandbox_data_dir, port=self.sandbox_port):     # only this instance's browser
                 await asyncio.sleep(0.3)
         except Exception:
             pass
 
         # Remove stale Chrome singleton lock files
-        for lock_file in glob.glob(f"{DATA_DIR}/Singleton*"):
+        for lock_file in glob.glob(f"{self.sandbox_data_dir}/Singleton*"):
             try:
                 os.remove(lock_file)
             except Exception:
                 pass
 
         chrome_bin = self._get_chrome_path()
-        if not os.path.exists(DATA_DIR) and os.path.isdir(LEGACY_DATA_DIR):
+        if self.sandbox_data_dir == DATA_DIR and not os.path.exists(DATA_DIR) and os.path.isdir(LEGACY_DATA_DIR):
             # One-time move from the old /tmp profile so current logins carry over.
             try:
                 shutil.copytree(LEGACY_DATA_DIR, DATA_DIR, symlinks=True,
@@ -1258,15 +1262,15 @@ class BrowserSandboxService:
                 logger.info(f"Moved browser profile to {DATA_DIR}")
             except Exception as e:
                 logger.warning(f"Could not copy old browser profile: {e}")
-        os.makedirs(DATA_DIR, exist_ok=True)
+        os.makedirs(self.sandbox_data_dir, exist_ok=True)
 
         cmd = [
             chrome_bin,
             "--no-first-run",
             "--no-default-browser-check",
             "--xod-sandbox-instance=1",
-            f"--remote-debugging-port={DEBUG_PORT}",
-            f"--user-data-dir={DATA_DIR}",
+            f"--remote-debugging-port={self.sandbox_port}",
+            f"--user-data-dir={self.sandbox_data_dir}",
             "--window-size=1440,900",
             "--mute-audio",
             "--disable-blink-features=AutomationControlled",
