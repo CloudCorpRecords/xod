@@ -11,7 +11,10 @@ this module is only that.
 
 Default trust is ask because a signed-in page can contain private information.
 Explicit read_only trust permits only look through the verified built-in
-launcher; mutations and screenshots still require approval, even with always.
+launcher; mutations and screenshots still require approval at ask and at
+read_only. At always, the person's standing approval governs this server
+like any other: its calls run without a card (owner directive, 2026-11-24,
+superseding the AGE-85 rule that always could not bypass mutation approval).
 Nobody raises trust silently. Existing connection settings are preserved.
 
 The adapter choice is passed through the server env, never hidden:

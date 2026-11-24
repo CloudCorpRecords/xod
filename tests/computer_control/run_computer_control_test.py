@@ -15,8 +15,10 @@ and the suite says so):
   C3 once the hub connects, the model-facing definitions include all nine tools
   C4 with the default trust, a chat-path click is held for approval (nothing runs
      silently); approving it reaches the stub adapter and returns its result
-  C5 explicit read_only trust permits only look; all actions, including at always,
-     remain held and round-trip only after deliberate approval.
+  C5 explicit read_only trust permits only look; all other actions remain held
+     and round-trip only after deliberate approval. At always, the owner's
+     standing approval (directive, 2026-11-24) governs this server like any
+     other: actions and screenshots run with no approval card at all.
 
 Run: .venv/bin/python tests/computer_control/run_computer_control_test.py
 """
@@ -179,13 +181,17 @@ async def main():
         check(tool + " approved MCP result is explicitly fake",
               out.get("success") is True and data.get("fake") is True, str(out)[:180])
     mcp_client.update_server("computer-control", trust="always")
-    held = await execute_tool("mcp__computer-control__computer_scroll", {"target": "fake-target", "delta_y": 200})
-    check("always does not bypass mutation approval", held.get("needs_approval") is True)
-    failed = await approved_call("computer_scroll", {"target": "fake-target", "delta_y": True})
+    out = await execute_tool("mcp__computer-control__computer_scroll", {"target": "fake-target", "delta_y": 200})
+    check("always runs a mutation with no approval card (owner directive, 2026-11-24)",
+          out.get("success") is True and not out.get("needs_approval"), str(out)[:150])
+    out = await execute_tool("mcp__computer-control__computer_screenshot", {"target": "fake-target"})
+    check("always runs a screenshot with no approval card",
+          out.get("success") is True and not out.get("needs_approval"), str(out)[:150])
+    failed = await execute_tool("mcp__computer-control__computer_scroll", {"target": "fake-target", "delta_y": True})
     check("MCP rejects boolean coordinates instead of coercing to pixels", failed.get("success") is False)
-    failed = await approved_call("computer_hover", {"target": "fake-target", "selector": "#missing"})
+    failed = await execute_tool("mcp__computer-control__computer_hover", {"target": "fake-target", "selector": "#missing"})
     check("adapter failure is an MCP error, not outer success", failed.get("success") is False, str(failed)[:200])
-    failed = await approved_call("computer_type", {"target": "fake-target", "selector": "#missing",
+    failed = await execute_tool("mcp__computer-control__computer_type", {"target": "fake-target", "selector": "#missing",
                                                   "value": "SYNTHETIC_PRIVATE_FIELD_VALUE"})
     check("typing failures do not echo private field content in SDK error messages",
           failed.get("success") is False and "SYNTHETIC_PRIVATE_FIELD_VALUE" not in json.dumps(failed))

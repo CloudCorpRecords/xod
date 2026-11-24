@@ -605,8 +605,18 @@ class MCPHub:
         # turn repro commands / unreviewed fleet operations into read-only work.
         fleet_hold = c.name in PACKAGES and not read_only
         from app.services.computer_bridge import SERVER_NAME
-        computer_hold = c.name == SERVER_NAME and not read_only
-        destructive = _destructive(t)
+        # The computer-control server is the person's own hands on their own
+        # machine, and its trust setting is the person's standing decision
+        # like any other server's. At "always" that decision IS the approval:
+        # the gate must not override it and park the person's own calls on a
+        # card anyway (owner directive, 2026-11-24: every other server sat at
+        # "always" while computer calls still waited for an OK, because the
+        # computer hold and the destructive classification both ignored the
+        # trust setting). "ask" still holds everything, and "read_only"
+        # still frees only the verified look.
+        computer_always = c.name == SERVER_NAME and trust == "always"
+        computer_hold = c.name == SERVER_NAME and not read_only and not computer_always
+        destructive = _destructive(t) and not computer_always
         if not approved and (fleet_hold or computer_hold or destructive or not (trust == "always" or (trust == "read_only" and read_only))):
             # A call that can't run as written goes back to the model to fix, not to you to approve first.
             schema = getattr(t, "inputSchema", None) or getattr(t, "input_schema", None) or {}
