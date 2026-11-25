@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.24
+
+The approval watcher works the whole queue now: one stuck card can no longer block every approval behind it.
+
+**Approvals are worked as a queue, not one card at a time**
+- Fixed the 2026-11-24 field failure: an expired approval card with no buttons stayed in the Muse app's panel for good, and the watcher spent its one close look on that card every cycle, so the approvals stacked behind it were never reached.
+- Every card is classified when it is seen: actionable, expired, stuck (no controls, confirmed by one close look), or waiting. A pass presses one card, then looks again with fresh eyes and keeps going until the queue is worked, so pressing one card can never leave the next holding a stale snapshot.
+- A stuck card gets exactly one close look. After that it is stepped over for as long as it shows, never fronted again, and never blocks the cards behind it. If it ever grows a button, it is pressed like any other card.
+- A failure on one card is recorded on that card alone and the queue moves on; one bad card can no longer starve the rest.
+- Every pass writes a queue log: each card seen, its class, and the action taken or the reason it was skipped.
+
+**Tests**
+- tests/smoke/run_muse_app_queue_test.py 24/24: a queue of actionable cards pressed once each with a fresh look per press, expired and stuck cards ahead of actionable ones, an all-expired queue, an empty queue, failure isolation on both press paths, and the Partner queue pass in order. The suite fails on 1.1.23; the queue layer is new.
+- Existing suites green and unmodified: muse_app 69/69, muse_review 24/24, muse_escalate 31/31, muse_options 31/31, partner delegation, partner ax, partner, partner brain, approval reliability.
+
 ## 1.1.23
 
 Self-repair waits for the download to settle before judging it, and the computer-control server honors your always-approve choice.
