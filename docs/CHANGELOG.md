@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.28
+
+Cleaner first-time UX across model switching, local + cloud AI clarity, sidebar organization, Fleet & Updates, and the AI Cockpit.
+
+**UX/UI Overhaul**
+- **Searchable model switcher** (`app/static/js/model_switcher.js`): live search bar across all cloud and local models, clear `Local` / `Cloud` badges, automatic filtering of embedding-only models (`nomic-embed-text`, `bge-*`, `mxbai-embed`) out of the chat dropdown, and a direct `All models & Local AI →` link.
+- **Local + Cloud Hybrid clarity & searchable AI models panel** (`app/static/js/models.js`): moved `Switch or search models` to the top with an instant search box and filter pills (`All`, `Local ($0)`, `Cloud`, `Vision`, `Calls tools`), plus a `Local + Cloud Hybrid` summary card explaining how Ollama / LM Studio / built-in models work alongside cloud reasoning.
+- **De-cluttered sidebar** (`app/static/js/sidebar.js`): automated update-check and health-battery projects now route automatically into the collapsed `Playground` bucket instead of crowding real projects and chats.
+- **Fleet & Updates shortcuts + calmer AI Cockpit** (`app/static/index.html`): surfaced direct `Check for updates` and `Manage fleet & devices` actions in Settings → `Fleet & Updates`, and tucked the 7 raw CDP debug pills in AI Cockpit behind an `Inspector` toggle.
+
 ## 1.1.27
 
 First release signed with Xod's stable `Xod Release Signing` certificate (so macOS Accessibility, Screen Recording, and Keychain grants survive future updates), plus major browser, desktop, and auto-approve harness upgrades.
