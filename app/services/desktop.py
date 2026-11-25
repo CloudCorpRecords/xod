@@ -51,7 +51,7 @@ MAC = sys.platform == "darwin"
 WIN = sys.platform == "win32"
 SUPPORTED = MAC or WIN
 SHOT_WIDTH = 1280
-MAX_ELEMENTS = 120
+MAX_ELEMENTS = 250
 TAKEOVER_PT = 8                 # the mouse moved this far from where Xod left it: you're using it
 TAKEOVER_WINDOW = 20            # seconds after Xod's last move in which a move of yours counts as taking over
 
@@ -1119,9 +1119,22 @@ def elements(app: Optional[Dict[str, Any]] = None, budget: float = 2.0) -> Tuple
                                "Quit Xod and open it again, then say continue.")
         return found, texts
     deadline = time.time() + budget
-    stack = [(win, 0)]
+    # Walk the focused/main window first, then any attached sheets/popovers or
+    # secondary visible windows of the same app (e.g. floating palettes, dialogs).
+    roots = [win]
+    try:
+        for sheet in (_ax(win, "AXSheets") or []):
+            if sheet is not None:
+                roots.append(sheet)
+        for other in (_ax(root, "AXWindows") or []):
+            if other is not None and other is not win and len(roots) < 5:
+                roots.append(other)
+    except Exception:
+        pass
+    stack = [(r, 0) for r in reversed(roots)]
     seen = 0
-    while stack and len(found) < MAX_ELEMENTS and time.time() < deadline and seen < 4000:
+    seen_keys = set()
+    while stack and len(found) < MAX_ELEMENTS and time.time() < deadline and seen < 6000:
         el, depth = stack.pop()
         seen += 1
         role = _ax(el, "AXRole") or ""
@@ -1130,13 +1143,16 @@ def elements(app: Optional[Dict[str, Any]] = None, budget: float = 2.0) -> Tuple
             if fr:
                 label = _label(el)
                 if role == "AXStaticText":
-                    if label and len(texts) < 80:
+                    if label and len(texts) < 120:
                         texts.append(label)
                 else:
-                    sub = _ax(el, "AXSubrole") or ""
-                    found.append({"n": len(found) + 1, "role": role.replace("AX", ""), "label": label,
-                                  "password": sub == "AXSecureTextField", "frame": fr, "_el": el,
-                                  "enabled": _ax(el, "AXEnabled") is not False})
+                    k = (role, label, round(fr[0]), round(fr[1]), round(fr[2]), round(fr[3]))
+                    if k not in seen_keys:
+                        seen_keys.add(k)
+                        sub = _ax(el, "AXSubrole") or ""
+                        found.append({"n": len(found) + 1, "role": role.replace("AX", ""), "label": label,
+                                      "password": sub == "AXSecureTextField", "frame": fr, "_el": el,
+                                      "enabled": _ax(el, "AXEnabled") is not False})
         if depth < 30:
             kids = _ax(el, "AXChildren") or []
             for k in reversed(list(kids)):
@@ -1193,6 +1209,25 @@ async def look(marks: bool = True) -> Dict[str, Any]:
     return {"success": True, "app": app["name"], "bundle": app["bundle"], "screenshot_uri": _uri(img),
             "size": [img.width, img.height], "elements": element_lines(els, scale), "count": len(els),
             "text": " | ".join(texts)[:3000], "windows": windows(), "terminal": app["bundle"] in TERMINAL_APPS}
+
+
+async def zoom_crop(x: float, y: float, radius: int = 160) -> Dict[str, Any]:
+    """High-clarity 2x zoomed crop around (x, y) in look() screenshot pixels, for tiny Retina icons/targets."""
+    _ready(need_screen=True, need_input=False)
+    img, _scale = await asyncio.to_thread(_screenshot)
+    r = max(40, min(int(radius or 160), 400))
+    cx, cy = int(round(float(x))), int(round(float(y)))
+    left = max(0, cx - r)
+    top = max(0, cy - r)
+    right = min(img.width, cx + r)
+    bottom = min(img.height, cy + r)
+    if right <= left or bottom <= top:
+        raise DesktopError(f"Zoom crop ({x},{y}) is outside the screenshot ({img.width}x{img.height}).")
+    from PIL import Image
+    crop = img.crop((left, top, right, bottom))
+    zoomed = crop.resize((crop.width * 2, crop.height * 2), Image.LANCZOS)
+    return {"success": True, "screenshot_uri": _uri(zoomed, 80),
+            "crop_box": [left, top, right, bottom], "size": [zoomed.width, zoomed.height]}
 
 
 # ------------------------------------------------------------------ the mouse and keyboard
@@ -1336,7 +1371,22 @@ def _did(what: str, app: Dict[str, Any], extra: Optional[Dict[str, Any]] = None)
     return {"success": True, "did": what, "app": app.get("name"), **(extra or {})}
 
 
-async def click(element: Any = None, x: Any = None, y: Any = None, button: str = "left", clicks: int = 1) -> Dict[str, Any]:
+_AX_PRESSABLE_ROLES = {"Button", "MenuItem", "CheckBox", "RadioButton", "Tab", "TabButton", "DisclosureTriangle", "Link"}
+
+
+def _ax_press_el(el: Any) -> bool:
+    """Press a macOS AX element directly without moving the mouse cursor. Returns True only on AXPress == 0."""
+    if WIN or el is None:
+        return False
+    try:
+        import ApplicationServices as AS
+        return int(AS.AXUIElementPerformAction(el, "AXPress")) == 0
+    except Exception:
+        return False
+
+
+async def click(element: Any = None, x: Any = None, y: Any = None, button: str = "left", clicks: int = 1,
+                prefer_ax: bool = False) -> Dict[str, Any]:
     _ready()
     _check_takeover()
     px, py, e = _target(element, x, y)
@@ -1344,16 +1394,25 @@ async def click(element: Any = None, x: Any = None, y: Any = None, button: str =
     held = _gate(app)
     if held:
         return held
-    def go():
-        _glide((px, py))
-        for i in range(1, max(1, min(int(clicks), 3)) + 1):
-            _post_mouse("down", (px, py), button, i)
-            _post_mouse("up", (px, py), button, i)
-            time.sleep(0.04)
-        _mark_left()
-    await asyncio.to_thread(go)
+    front_before = front_app().get("name") or ""
+    used_ax = False
+    if prefer_ax and e and e.get("_el") is not None and button == "left" and int(clicks or 1) == 1 \
+            and e.get("role") in _AX_PRESSABLE_ROLES:
+        used_ax = await asyncio.to_thread(_ax_press_el, e["_el"])
+    if not used_ax:
+        def go():
+            _glide((px, py))
+            for i in range(1, max(1, min(int(clicks), 3)) + 1):
+                _post_mouse("down", (px, py), button, i)
+                _post_mouse("up", (px, py), button, i)
+                time.sleep(0.04)
+            _mark_left()
+        await asyncio.to_thread(go)
+    front_after = front_app().get("name") or ""
     what = f"{'double-' if clicks == 2 else 'right-' if button == 'right' else ''}clicked " + (f"[{e['n']}] {e['role']} \"{e['label']}\"" if e else f"at ({x},{y})")
-    return _did(what, app)
+    return _did(what, app, {"method": "ax_press" if used_ax else "mouse",
+                            "front_before": front_before, "front_after": front_after,
+                            "front_changed": front_before != front_after})
 
 
 async def drag(from_element: Any = None, to_element: Any = None, x1: Any = None, y1: Any = None, x2: Any = None, y2: Any = None) -> Dict[str, Any]:

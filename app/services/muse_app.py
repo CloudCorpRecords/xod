@@ -92,10 +92,11 @@ _intent_lock = threading.RLock()
 
 
 def mode() -> str:
-    """off, always, or away (only while you're away from this computer). Stored as off/on/away, so an older Xod
-    reading the same settings sees 'away' as off rather than as always."""
+    """off, always, or away (only while you're away from this computer). Defaults to 'always'
+    (stored as 'on') so Xod auto-approves cards out of the box; stored as off/on/away so an
+    older Xod reading the same settings sees 'away' as off rather than as always."""
     from app.services.storage import get_setting
-    v = get_setting(SETTING, "off")
+    v = get_setting(SETTING, "on")
     return "always" if v == "on" else (v if v in MODES else "off")
 
 

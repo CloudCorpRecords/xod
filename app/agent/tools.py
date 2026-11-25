@@ -2783,10 +2783,31 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "desktop_click",
-            "description": "Clicks on the real screen: an element number from the last desktop_look, or x, y on its screenshot.",
+            "description": "Clicks on the real screen: an element number from the last desktop_look, or x, y on its screenshot. Set prefer_ax=true to press an AX button silently without moving the mouse.",
             "parameters": {"type": "object", "properties": {
                 "element": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"},
-                "button": {"type": "string", "enum": ["left", "right"]}, "clicks": {"type": "integer", "description": "2 for a double-click"}}}
+                "button": {"type": "string", "enum": ["left", "right"]}, "clicks": {"type": "integer", "description": "2 for a double-click"},
+                "prefer_ax": {"type": "boolean", "description": "Try silent AXPress first when targeting an element"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_zoom_crop",
+            "description": "Returns a 2x zoomed high-clarity crop around (x, y) in desktop_look screenshot pixels for inspecting small Retina icons or buttons.",
+            "parameters": {"type": "object", "properties": {
+                "x": {"type": "number"}, "y": {"type": "number"}, "radius": {"type": "integer", "description": "Half-width in screenshot pixels (default 160)"}},
+                "required": ["x", "y"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_run",
+            "description": "Runs a verified multi-step workflow on native desktop apps (open_app, look, click by target label or element, type, key, scroll, wait, assert, terminal_send, terminal_read) with per-step landing checks (app_is, window_contains, text_contains, element_contains) and automatic retry on miss.",
+            "parameters": {"type": "object", "properties": {
+                "steps": {"type": "array", "items": {"type": "object"}, "description": "Ordered list of step dicts with action, arguments, and optional expect landing checks."}},
+                "required": ["steps"]}
         }
     },
     {
@@ -3973,7 +3994,7 @@ async def _cli_setup(ac, a: Dict[str, Any]) -> Dict[str, Any]:
     return st
 
 
-DESKTOP_TOOLS = {"desktop_task", "desktop_look", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll", "desktop_open_app",
+DESKTOP_TOOLS = {"desktop_task", "desktop_run", "desktop_look", "desktop_zoom_crop", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll", "desktop_open_app",
                  "terminal_list", "terminal_read", "terminal_send"}
 
 
@@ -3996,8 +4017,13 @@ async def _desktop(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
             res = {"success": True, "app": res["app"], "controls": res["elements"][:2600], "text": res["text"][:700],
                    "windows": [f"{w['app']}: {w['title']}" for w in res["windows"][:10]], "screen": (desc or "")[:1200],
                    "terminal": res["terminal"]}
+        elif name == "desktop_run":
+            from app.services import desktop_run
+            res = await desktop_run.run_desktop_steps(a.get("steps") or [])
+        elif name == "desktop_zoom_crop":
+            res = await desktop.zoom_crop(float(a.get("x") or 0), float(a.get("y") or 0), int(a.get("radius") or 160))
         elif name == "desktop_click":
-            res = await desktop.click(a.get("element"), a.get("x"), a.get("y"), a.get("button") or "left", int(a.get("clicks") or 1))
+            res = await desktop.click(a.get("element"), a.get("x"), a.get("y"), a.get("button") or "left", int(a.get("clicks") or 1), prefer_ax=bool(a.get("prefer_ax", False)))
         elif name == "desktop_type":
             res = await desktop.type_text(a.get("text") or "", a.get("element"), bool(a.get("enter")))
         elif name == "desktop_key":

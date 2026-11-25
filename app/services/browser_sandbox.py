@@ -2993,6 +2993,7 @@ class BrowserSandboxService:
                     return null;
                 }
 
+                const unmatched = [];
                 for (const f of fields) {
                     const el = findFieldElement(f);
                     if (el) {
@@ -3000,6 +3001,10 @@ class BrowserSandboxService:
                         el.focus();
 
                         const valStr = String(f.value !== undefined ? f.value : '');
+                        const role = (el.getAttribute && (el.getAttribute('role') || '')).toLowerCase();
+                        const isCE = Boolean(el.isContentEditable || (el.getAttribute && (el.getAttribute('contenteditable') === 'true' || el.getAttribute('contenteditable') === '')));
+                        const isCombobox = role === 'combobox' || (el.getAttribute && el.getAttribute('aria-haspopup') === 'listbox');
+                        let actual = '';
 
                         if (el.tagName === 'SELECT') {
                             const opts = Array.from(el.options || []);
@@ -3008,9 +3013,50 @@ class BrowserSandboxService:
                             else el.value = valStr;
                             el.dispatchEvent(new Event('input', { bubbles: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
+                            actual = el.value || '';
                         } else if (el.type === 'checkbox' || el.type === 'radio') {
-                            el.checked = Boolean(f.value);
+                            const want = Boolean(f.value);
+                            if (el.checked !== want) el.click();
+                            el.checked = want;
                             el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            actual = String(el.checked);
+                        } else if (isCE) {
+                            try {
+                                const r = document.createRange();
+                                r.selectNodeContents(el);
+                                const s = window.getSelection();
+                                s.removeAllRanges();
+                                s.addRange(r);
+                                document.execCommand('insertText', false, valStr);
+                            } catch (e) {}
+                            if (!(el.innerText || '').trim() && valStr) {
+                                el.innerText = valStr;
+                                el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: valStr }));
+                            }
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                            actual = (el.innerText || el.textContent || '').trim();
+                        } else if (isCombobox) {
+                            // Job-application custom dropdowns (Greenhouse, Workday, Ashby, React-Select)
+                            el.click();
+                            if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+                                const proto = el instanceof HTMLInputElement ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype;
+                                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                                if (setter) setter.call(el, valStr); else el.value = valStr;
+                                el.dispatchEvent(new Event('input', { bubbles: true }));
+                            }
+                            const opts = Array.from(document.querySelectorAll('[role="option"], [role="listbox"] li, [class*="option"]'));
+                            const q = valStr.toLowerCase();
+                            const hitOpt = opts.find(o => {
+                                const t = (o.innerText || o.textContent || '').trim().toLowerCase();
+                                return t === q || (q && t.includes(q));
+                            });
+                            if (hitOpt) {
+                                hitOpt.click();
+                                actual = (hitOpt.innerText || hitOpt.textContent || '').trim();
+                            } else {
+                                actual = (el.value || el.innerText || '').trim();
+                            }
                             el.dispatchEvent(new Event('change', { bubbles: true }));
                         } else {
                             // React & Vue controlled input value tracker reset
@@ -3031,14 +3077,22 @@ class BrowserSandboxService:
                             el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Unidentified', bubbles: true }));
                             el.dispatchEvent(new Event('change', { bubbles: true }));
                             el.dispatchEvent(new Event('blur', { bubbles: true }));
+                            actual = String(el.value || '');
                         }
 
+                        const verified = (el.type === 'checkbox' || el.type === 'radio')
+                            ? (actual === String(Boolean(f.value)))
+                            : (!valStr || actual.toLowerCase().includes(valStr.toLowerCase().slice(0, 20)));
                         filled.push({
                             target: f.index || f.label || f.name || f.selector || el.tagName,
                             tag: el.tagName,
-                            type: el.type || null,
-                            valueLength: valStr.length
+                            type: el.type || role || null,
+                            valueLength: valStr.length,
+                            verified: verified,
+                            actual: actual.slice(0, 80)
                         });
+                    } else {
+                        unmatched.push(f.index || f.label || f.name || f.selector || f.placeholder || 'unknown');
                     }
                 }
 
@@ -3083,6 +3137,7 @@ class BrowserSandboxService:
                 return {
                     filled_count: filled.length,
                     filled: filled,
+                    unmatched: unmatched,
                     submitted: submitted
                 };
             })""" + f"({json.dumps(fill_params)})"
@@ -3525,7 +3580,40 @@ class BrowserSandboxService:
 
                 const isInput = el.tagName === 'INPUT';
                 const isTextarea = el.tagName === 'TEXTAREA';
-                const nextVal = clear ? val : ((el.isContentEditable ? (el.innerText || '') : (el.value || '')) + val);
+                const isCE = Boolean(el.isContentEditable || el.getAttribute('contenteditable') === 'true' || el.getAttribute('contenteditable') === '');
+                const nextVal = clear ? val : ((isCE ? (el.innerText || '') : (el.value || '')) + val);
+                const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+                const cx = rect ? Math.round((hit.ox || 0) + rect.left + rect.width / 2) : null;
+                const cy = rect ? Math.round((hit.oy || 0) + rect.top + rect.height / 2) : null;
+
+                if (isCE) {{
+                    // Rich SPA composers (Facebook Lexical, X Draft.js, LinkedIn Quill, Threads, Notion)
+                    // ignore direct innerText assignment. Focus & select here; Python will send real
+                    // CDP Input.insertText so editor state updates natively and enables Post/Send.
+                    if (clear) {{
+                        try {{
+                            const selObj = ownerWin.getSelection && ownerWin.getSelection();
+                            if (selObj) {{
+                                const range = (ownerWin.document || document).createRange();
+                                range.selectNodeContents(el);
+                                selObj.removeAllRanges();
+                                selObj.addRange(range);
+                            }}
+                        }} catch (e) {{}}
+                    }}
+                    return {{
+                        found: true,
+                        strategy: strategy,
+                        tagName: el.tagName,
+                        isContentEditable: true,
+                        needsCdpInsert: true,
+                        clearFirst: clear,
+                        cx: cx,
+                        cy: cy,
+                        valueLength: val.length,
+                        entered: enter
+                    }};
+                }}
 
                 // React 16+ prototype setter bypass (using the element's own window so iframes work too)
                 if (isInput || isTextarea) {{
@@ -3538,9 +3626,6 @@ class BrowserSandboxService:
                         if (clear) el.value = '';
                         el.value = nextVal;
                     }}
-                }} else if (el.isContentEditable) {{
-                    if (clear) el.innerText = '';
-                    el.innerText = nextVal;
                 }} else {{
                     if (clear) el.value = '';
                     el.value = nextVal;
@@ -3556,6 +3641,8 @@ class BrowserSandboxService:
                     found: true,
                     strategy: strategy,
                     tagName: el.tagName,
+                    isContentEditable: false,
+                    needsCdpInsert: false,
                     valueLength: nextVal.length,
                     readBack: (el.isContentEditable ? el.innerText : el.value) || '',
                     entered: enter
@@ -3574,6 +3661,67 @@ class BrowserSandboxService:
                 result_val = res.get("result", {}).get("value") or {}
                 if not result_val.get("found"):
                     return {"success": False, "error": result_val.get("error", "Input not found")}
+
+                # Rich contenteditable composers (Facebook/Lexical, X/Draft.js, LinkedIn/Quill, Threads):
+                # click center to activate editor caret, clear via Backspace if requested, then send
+                # real CDP Input.insertText and read back to verify editor state accepted the text.
+                if result_val.get("needsCdpInsert"):
+                    cx, cy = result_val.get("cx"), result_val.get("cy")
+                    if cx is not None and cy is not None and cx > 0 and cy > 0:
+                        try:
+                            for mtype in ("mouseMoved", "mousePressed", "mouseReleased"):
+                                await self._send_cdp(ws, "Input.dispatchMouseEvent", {
+                                    "type": mtype, "x": float(cx), "y": float(cy),
+                                    "button": "left", "clickCount": 1
+                                })
+                            await asyncio.sleep(0.1)
+                        except Exception:
+                            pass
+                    if result_val.get("clearFirst"):
+                        try:
+                            # Select all in the focused contenteditable and delete via real Backspace
+                            await self._send_cdp(ws, "Runtime.evaluate", {
+                                "expression": """(() => {
+                                    const el = document.activeElement;
+                                    if (el && el.isContentEditable) {
+                                        const r = document.createRange();
+                                        r.selectNodeContents(el);
+                                        const s = window.getSelection();
+                                        s.removeAllRanges();
+                                        s.addRange(r);
+                                    }
+                                })()"""
+                            })
+                            for ktype in ("rawKeyDown", "keyUp"):
+                                await self._send_cdp(ws, "Input.dispatchKeyEvent", {
+                                    "type": ktype, "windowsVirtualKeyCode": 8,
+                                    "key": "Backspace", "code": "Backspace"
+                                })
+                            await asyncio.sleep(0.05)
+                        except Exception:
+                            pass
+                    if text:
+                        await self._send_cdp(ws, "Input.insertText", {"text": text})
+                        await asyncio.sleep(0.15)
+                    # Read back to verify the editor accepted the inserted text; fallback to execCommand if empty
+                    rb_res = await self._send_cdp(ws, "Runtime.evaluate", {
+                        "expression": f"""(() => {{
+                            const el = document.activeElement;
+                            const cur = (el && (el.innerText || el.textContent) || '').trim();
+                            if (!cur && {json.dumps(bool(text))} && el && el.isContentEditable) {{
+                                try {{ document.execCommand('insertText', false, {json.dumps(text)}); }} catch (e) {{}}
+                                const after = (el.innerText || el.textContent || '').trim();
+                                if (!after) {{
+                                    el.innerText = {json.dumps(text)};
+                                    el.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: {json.dumps(text)} }}));
+                                }}
+                            }}
+                            return ((el && (el.innerText || el.textContent)) || '').trim();
+                        }})()""",
+                        "returnByValue": True
+                    })
+                    result_val["readBack"] = (rb_res.get("result", {}).get("value") or "")
+                    result_val["verified"] = (not text) or (text[:20].strip() in result_val["readBack"])
 
                 # If enter was requested, also dispatch CDP key events for maximum compatibility
                 if press_enter:
