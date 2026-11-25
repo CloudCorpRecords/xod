@@ -39,6 +39,15 @@ second-guessing, no model in the press path. The stamp and every acted outcome l
 audit (DATA_DIR/muse_approver/audit.jsonl) and in the card's approvals-history row. Mode "decide"
 is the approver's pause (stamps logged, nothing pressed); mode "off" restores the pre-approver
 behavior exactly.
+
+The panel is a queue (owner directive, 2026-11-24): cards stack, and an expired card stays
+visible with no controls at all — no Allow, no Deny, no dismiss (a Muse app bug, reported to
+the Muse team). So a watcher pass classifies every card it can see (actionable, expired,
+stuck, waiting), presses actionable cards one at a time with a fresh enumeration after each
+press, and steps over expired and stuck cards: they are logged with their class and the skip
+reason, they never earn a second fronted look once one fronted look has confirmed they have
+no controls, and one card's failure is recorded on that card alone — it never aborts the pass
+or blocks the cards queued behind it.
 """
 import asyncio
 import hashlib
@@ -77,7 +86,8 @@ DRY_RUN = bool(os.environ.get("XOD_MUSE_APP_DRY_RUN"))
 _state: Dict[str, Any] = {"task": None, "warned": False, "last": None, "count": 0, "error": None,
                           "present": set(), "pressed_ids": set(), "press_marks": {}, "fail_logged": set(), "scan_lock": None,
                           "observer": None, "observer_pid": None, "debouncer": None,
-                          "loop": None, "backstop_at": 0.0, "reviews": {}}
+                          "loop": None, "backstop_at": 0.0, "reviews": {},
+                          "press_one": False, "stuck_fronted": set()}
 _intent_lock = threading.RLock()
 
 
@@ -614,7 +624,10 @@ def _review_outcome(entry: Dict[str, Any], cid: str, action: str,
 
 def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
     """Find each approval card (a group named "Approval request for …"), read what it asks, choose its
-    approving button, and press it when press=True (and this isn't a dry run). press=False only reads."""
+    approving button, and press it when press=True (and this isn't a dry run). press=False only reads.
+    During a watcher queue pass (_press_one()) the walk stops after the first press attempt, so the
+    caller re-enumerates the panel before pressing another card; a direct scan presses every
+    actionable card it finds, as it always has."""
     ax = _ax_api()
     if not ax.trusted():
         raise PermissionError("Xod needs Accessibility access to press Allow in the Muse app "
@@ -624,6 +637,7 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
         return {"running": False, "approved": []}
     deadline = time.time() + SCAN_TIMEOUT
     found: List[Dict[str, Any]] = []
+    walk_state = {"stop": False}
 
     def children(el):
         return ax.attr(el, "AXChildren") or []
@@ -701,24 +715,35 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
             elif press:
                 cid = _card_id(entry)
                 entry["buttons"] = list(buttons)
-                pending = _pending_presses()
-                if not _review_allows(entry, cid):
-                    pass  # the approver's review refused, or decide-only: the reason says which
-                elif cid in pending:
-                    entry["reason"] = "approval already attempted: waiting for card to disappear"
-                elif not active():
-                    entry["reason"] = "approval paused or user presence changed"
-                elif not _claim_press(cid):
-                    entry["reason"] = "approval already attempted or paused"
-                else:
-                    err = ax.perform(buttons[chosen], "AXPress")
-                    entry["pressed"] = err == 0
-                    if err != 0:
-                        entry["uncertain"] = True
-                        entry["reason"] = f"approval outcome unknown: AXPress returned {err}"
+                try:
+                    pending = _pending_presses()
+                    if not _review_allows(entry, cid):
+                        pass  # the approver's review refused, or decide-only: the reason says which
+                    elif cid in pending:
+                        entry["reason"] = "approval already attempted: waiting for card to disappear"
+                    elif not active():
+                        entry["reason"] = "approval paused or user presence changed"
+                    elif not _claim_press(cid):
+                        entry["reason"] = "approval already attempted or paused"
+                    else:
+                        err = ax.perform(buttons[chosen], "AXPress")
+                        entry["pressed"] = err == 0
+                        if err != 0:
+                            entry["uncertain"] = True
+                            entry["reason"] = f"approval outcome unknown: AXPress returned {err}"
+                except Exception as e:
+                    # One card's failure is that card's alone: it is recorded
+                    # on the card and the walk moves on to the rest of the queue.
+                    entry["reason"] = f"press failed for this card: {str(e)[:120]}"
+                    entry["press_error"] = True
+                    logger.warning(f"muse queue: card {cid} failed in isolation: {e}")
             found.append(entry)
+            if press and _press_one() and (entry.get("pressed") or entry.get("uncertain")):
+                walk_state["stop"] = True   # queue pass: re-enumerate before the next press
             return
         for child in children(el):
+            if walk_state["stop"]:
+                return
             walk(child, depth + 1)
 
     walk(ax.create_app(pid), 0)
@@ -751,6 +776,138 @@ def _no_button_reason(labels: List[str]) -> str:
     return "no button Xod may press"
 
 
+# ------------------------------------------------------------------ the queue
+# The approvals panel is a queue of cards, not a single card (owner
+# directive, 2026-11-24). Every card in it is classified on sight:
+#   actionable — a primary button was picked from the card's own labels
+#                (the press matches the card: Send, Reply, Create, Allow…);
+#   expired    — the card's own text says the approval has expired;
+#   stuck      — no controls at all, confirmed by a fronted look: the shape
+#                the Muse app gives an expired card in its panel, which
+#                the expired-text check cannot see. Terminal for the
+#                showing: skipped, never re-fronted, never blocking;
+#   waiting    — no button yet, but no fronted look has confirmed it; the
+#                card may still be rendering its controls.
+QUEUE_MAX_PRESSES = 25   # per watcher pass; a pathological panel cannot loop a pass forever
+
+
+def _press_one() -> bool:
+    """True while scan_once is working a queue pass: press one card per
+    enumeration, then re-enumerate. A direct scan (a test, a diagnostic)
+    presses every actionable card it finds, as it always has."""
+    return bool(_state.get("press_one"))
+
+
+def _classify(entry: Dict[str, Any], front_confirmed: bool = False) -> str:
+    """One card's queue class, from its own entry alone. Expired and stuck
+    are both unpressable, but they are not the same thing: an expired card
+    says so, while a stuck card just has no controls — and only a fronted
+    look separates stuck from waiting, because a live card's buttons can
+    arrive a beat after the card itself."""
+    if entry.get("expired") or "expired" in str(entry.get("reason") or ""):
+        return "expired"
+    if entry.get("button"):
+        return "actionable"
+    return "stuck" if front_confirmed else "waiting"
+
+
+def _queue_log(entries: List[Dict[str, Any]], stuck_ids: set) -> None:
+    """The queue record for one watcher pass: every card seen, its class,
+    and the action taken or the skip reason. The per-card approvals-history
+    rows are written by _log as before; this is the pass-level view that
+    shows the whole queue was worked, not just its head."""
+    for e in entries:
+        cid = _card_id(e)
+        cls = e.get("queue_class") or _classify(e, cid in stuck_ids)
+        act = f"pressed {e.get('button')}" if e.get("pressed") else (e.get("reason") or "no action")
+        logger.info(f"muse queue: {cls} card {cid} ({e.get('type') or 'Muse'}): {act}")
+
+
+def _partner_press_card(raw: Dict[str, Any], skip_ids: Optional[set], want_front: bool,
+                        away: bool) -> Dict[str, Any]:
+    """One card of a Partner scan, decided and (when Xod approves) pressed:
+    the decision ladder for a single card, isolated so one card's failure
+    can never reach the rest of the queue. The Partner only reads and
+    presses; every decision is made here. The card's queue class is
+    recorded on the entry."""
+    from app.services import partner_client
+    entry = {"title": raw.get("title") or "", "what": raw.get("what") or "",
+             "pressed": False, "button": raw.get("button"), "reason": "",
+             "type": raw.get("type") or _card_type(raw.get("title") or ""),
+             "from": raw.get("from") or "", "to": raw.get("to") or "",
+             "subject": raw.get("subject") or "", "attachments": raw.get("attachments") or []}
+    try:
+        # Validate the advertised policy against the full choice, not just
+        # whether an isolated button happens to be recognizable.
+        labels = raw.get("buttons") or []
+        if entry["button"] and (_pick_button(labels) != entry["button"]):
+            entry["button"] = None
+            entry["reason"] = "Partner button does not match its approval policy; update Partner or approve manually"
+        cid = raw.get("card_id") or _card_id(entry)
+        # Preserve the helper's identity across the skip and history paths.
+        entry["_id"] = cid
+        if raw.get("expired"):
+            entry["button"], entry["reason"] = None, "expired before Xod got to it"
+            entry["queue_class"] = "expired"
+        elif entry["button"] is not None and cid in (skip_ids or set()):
+            entry["reason"] = "already pressed: not pressing again"
+            entry["queue_class"] = "actionable"
+        elif entry["button"] is None:
+            entry["reason"] = entry["reason"] or _no_button_reason(raw.get("buttons") or [])
+            entry["queue_class"] = "waiting"
+        elif DRY_RUN:
+            entry["reason"] = "dry run: not pressed (test mode)"
+            entry["queue_class"] = "actionable"
+        elif cid in _pending_presses():
+            entry["reason"] = "approval already attempted: waiting for card to disappear"
+            entry["queue_class"] = "actionable"
+        elif not active():
+            entry["reason"] = "approval paused or user presence changed"
+            entry["queue_class"] = "actionable"
+        elif not _review_allows(entry, cid):
+            entry["queue_class"] = "actionable"  # the approver's review refused, or decide-only: the reason says which
+        elif not _claim_press(cid):
+            entry["reason"] = "approval already attempted or paused"
+            entry["queue_class"] = "actionable"
+        else:
+            entry["queue_class"] = "actionable"
+            r = partner_client.press(cid, front=want_front, away=away, button=entry["button"])
+            if r is None:
+                entry["reason"] = "approval outcome unknown: check Muse before retrying"
+                entry["uncertain"] = True
+            elif r.get("trusted") is False or r.get("_status"):
+                entry["reason"] = "partner press refused: the Partner is not trusted"
+                if r.get("_status") in (401, 403):
+                    # An explicit authorization refusal proves no action ran.
+                    _release_press(cid)
+                else:
+                    entry["uncertain"] = True
+                    entry["reason"] = "approval outcome unknown: Partner returned an error"
+            else:
+                entry["pressed"] = bool(r.get("pressed")) and r.get("button") == entry["button"]
+                if r.get("pressed") and not entry["pressed"]:
+                    entry["uncertain"] = True
+                    entry["reason"] = "Partner press does not match its approval policy; inspect Muse"
+                    return entry
+                if r.get("button"):
+                    entry["button"] = r["button"]
+                if not entry["pressed"]:
+                    entry["reason"] = r.get("reason") or "press failed"
+                    entry["uncertain"] = True
+                    if entry["reason"] in ("card not showing", "Muse app not running", "expired before Xod got to it"):
+                        entry["uncertain"] = False
+                        _release_press(cid)
+        if entry.get("pressed") and entry.get("review") is not None:
+            _review_outcome(entry, cid, f"pressed {entry.get('button')}", True, want_front)
+    except Exception as e:
+        # One card's failure is that card's alone: it is recorded on the
+        # card and the queue moves on to the next one.
+        entry["reason"] = f"press failed for this card: {str(e)[:120]}"
+        entry["press_error"] = True
+        logger.warning(f"muse queue: card {entry.get('_id') or '?'} failed in isolation: {e}")
+    return entry
+
+
 def _partner_scan_press(skip_ids: Optional[set] = None, want_front: bool = False) -> Optional[Dict[str, Any]]:
     """One scan through the Partner, in _scan(press=True)'s exact shape, with the
     decision ladder applied here (the Partner only reads and presses): expiry,
@@ -769,77 +926,24 @@ def _partner_scan_press(skip_ids: Optional[set] = None, want_front: bool = False
     if not first or first.get("trusted") is False or first.get("_status"):
         return None
     raws = first.get("cards") or []
+    stuck = _state.get("stuck_fronted") or set()
     if not want_front and not DRY_RUN and any(c.get("button") is None and not c.get("expired")
+                                              and c.get("card_id") not in stuck
                                               for c in raws):
         # Cards whose buttons may only render with Muse in front get one
         # fronted look before anyone logs them as unanswerable (as in _scan's flow).
+        # A card already confirmed stuck (a fronted look found no controls)
+        # never earns this look again on its own account.
         second = partner_client.scan(front=True)
         if second and second.get("trusted") is not False and not second.get("_status"):
             raws, want_front = second.get("cards") or [], True
     away = bool((_state.get("away_now") or {}).get("away")) if mode() == "away" else False
     entries: List[Dict[str, Any]] = []
     for raw in raws:
-        entry = {"title": raw.get("title") or "", "what": raw.get("what") or "",
-                 "pressed": False, "button": raw.get("button"), "reason": "",
-                 "type": raw.get("type") or _card_type(raw.get("title") or ""),
-                 "from": raw.get("from") or "", "to": raw.get("to") or "",
-                 "subject": raw.get("subject") or "", "attachments": raw.get("attachments") or []}
-        # Validate the advertised policy against the full choice, not just
-        # whether an isolated button happens to be recognizable.
-        labels = raw.get("buttons") or []
-        if entry["button"] and (_pick_button(labels) != entry["button"]):
-            entry["button"] = None
-            entry["reason"] = "Partner button does not match its approval policy; update Partner or approve manually"
-        cid = raw.get("card_id") or _card_id(entry)
-        # Preserve the helper's identity across the skip and history paths.
-        entry["_id"] = cid
-        if raw.get("expired"):
-            entry["button"], entry["reason"] = None, "expired before Xod got to it"
-        elif entry["button"] is not None and cid in (skip_ids or set()):
-            entry["reason"] = "already pressed: not pressing again"
-        elif entry["button"] is None:
-            entry["reason"] = entry["reason"] or _no_button_reason(raw.get("buttons") or [])
-        elif DRY_RUN:
-            entry["reason"] = "dry run: not pressed (test mode)"
-        elif cid in _pending_presses():
-            entry["reason"] = "approval already attempted: waiting for card to disappear"
-        elif not active():
-            entry["reason"] = "approval paused or user presence changed"
-        elif not _review_allows(entry, cid):
-            pass  # the approver's review refused, or decide-only: the reason says which
-        elif not _claim_press(cid):
-            entry["reason"] = "approval already attempted or paused"
-        else:
-            r = partner_client.press(cid, front=want_front, away=away, button=entry["button"])
-            if r is None:
-                entry["reason"] = "approval outcome unknown: check Muse before retrying"
-                entry["uncertain"] = True
-            elif r.get("trusted") is False or r.get("_status"):
-                entry["reason"] = "partner press refused: the Partner is not trusted"
-                if r.get("_status") in (401, 403):
-                    # An explicit authorization refusal proves no action ran.
-                    _release_press(cid)
-                else:
-                    entry["uncertain"] = True
-                    entry["reason"] = "approval outcome unknown: Partner returned an error"
-            else:
-                entry["pressed"] = bool(r.get("pressed")) and r.get("button") == entry["button"]
-                if r.get("pressed") and not entry["pressed"]:
-                    entry["uncertain"] = True
-                    entry["reason"] = "Partner press does not match its approval policy; inspect Muse"
-                    entries.append(entry)
-                    continue
-                if r.get("button"):
-                    entry["button"] = r["button"]
-                if not entry["pressed"]:
-                    entry["reason"] = r.get("reason") or "press failed"
-                    entry["uncertain"] = True
-                    if entry["reason"] in ("card not showing", "Muse app not running", "expired before Xod got to it"):
-                        entry["uncertain"] = False
-                        _release_press(cid)
-        if entry.get("pressed") and entry.get("review") is not None:
-            _review_outcome(entry, cid, f"pressed {entry.get('button')}", True, want_front)
+        entry = _partner_press_card(raw, skip_ids, want_front, away)
         entries.append(entry)
+        if _press_one() and (entry.get("pressed") or entry.get("uncertain")):
+            break   # queue pass: the caller re-enumerates before the next press
     return {"running": bool(first.get("running", True)), "approved": entries}
 
 
@@ -1066,23 +1170,52 @@ async def scan_once() -> List[Dict[str, Any]]:
                 moved = prev is not None
                 if moved:
                     await asyncio.sleep(FRONT_SETTLE)
+            _state["press_one"] = True
             try:
-                if use_partner:
-                    _state["last_path"] = "partner"
-                    res = await asyncio.to_thread(_partner_scan_press, skip, want_front)
-                    if res is None:  # the Partner vanished between the check and the scan: Xod's own hands
+                # THE QUEUE PASS: the panel is a queue of cards, worked one
+                # press at a time with a fresh enumeration after each press
+                # (press_one), so a panel that re-renders under a press never
+                # leaves the pass acting on a stale snapshot, and an expired
+                # or stuck card at the head of the queue is stepped over,
+                # never blocking the cards behind it. Entries from every
+                # enumeration merge by card id, latest read wins; a pressed
+                # card is never downgraded by a later read.
+                by_id: Dict[str, Dict[str, Any]] = {}
+                order: List[str] = []
+                acted: set = set()
+                while True:
+                    if use_partner:
+                        _state["last_path"] = "partner"
+                        res = await asyncio.to_thread(_partner_scan_press, skip | acted, want_front)
+                        if res is None:  # the Partner vanished between the check and the scan: Xod's own hands
+                            _state["last_path"] = "own"
+                            res = await asyncio.to_thread(_scan, True, skip | acted)
+                        elif want_front:
+                            fronted |= {_card_id(c) for c in (res.get("approved") or [])}
+                    else:
                         _state["last_path"] = "own"
-                        res = await asyncio.to_thread(_scan, True, skip)
-                    elif want_front:
-                        fronted |= {_card_id(c) for c in (res.get("approved") or [])}
-                else:
-                    _state["last_path"] = "own"
-                    res = await asyncio.to_thread(_scan, True, skip)
+                        res = await asyncio.to_thread(_scan, True, skip | acted)
+                    new_action = False
+                    for c in res.get("approved") or []:
+                        cid = _card_id(c)
+                        if cid not in by_id:
+                            order.append(cid)
+                        old = by_id.get(cid)
+                        if old is not None and old.get("pressed") and not c.get("pressed"):
+                            c = {**c, "pressed": True, "button": old.get("button"),
+                                 "review": old.get("review"), "_audited": old.get("_audited", False)}
+                        by_id[cid] = c
+                        if cid not in acted and (c.get("pressed") or c.get("uncertain")):
+                            acted.add(cid)
+                            new_action = True
+                    if not new_action or len(acted) >= QUEUE_MAX_PRESSES:
+                        break
+                cards = [by_id[cid] for cid in order]
             finally:
+                _state["press_one"] = False
                 if moved:
                     await asyncio.sleep(FRONT_SETTLE)
                     await asyncio.to_thread(_put_back, prev)
-            cards = res.get("approved") or []
             for c in cards:
                 if c.get("pressed") and c.get("review") is not None and not c.get("_audited"):
                     _review_outcome(c, _card_id(c), f"pressed {c.get('button')}",
@@ -1092,8 +1225,20 @@ async def scan_once() -> List[Dict[str, Any]]:
                 # fallback could not reveal a button.
                 fronted |= {_card_id(c) for c in cards}
             no_button = {_card_id(c) for c in cards if c.get("button") is None and str(c.get("reason", "")).startswith("no button")}
-            if no_button - fronted and not moved and not DRY_RUN and not any(c.get("pressed") for c in cards):
-                _state["no_button_ids"] = no_button       # look again at once with Muse in front, before logging it
+            if moved or want_front:
+                # This pass WAS the fronted look: a card still showing no
+                # controls after it is stuck for this showing (the shape of
+                # an expired card in the current Muse app: visible, with
+                # no Allow, no Deny, no dismiss). It is classified and
+                # stepped over from here on: it never earns another fronted
+                # look on its own account and never holds up the queue.
+                _state["stuck_fronted"] = (_state.get("stuck_fronted") or set()) | no_button
+            stuck = _state.get("stuck_fronted") or set()
+            for c in cards:
+                c["queue_class"] = _classify(c, _card_id(c) in stuck)
+            _queue_log(cards, stuck)
+            if no_button - fronted - stuck and not moved and not DRY_RUN and not any(c.get("pressed") for c in cards):
+                _state["no_button_ids"] = no_button - stuck       # look again at once with Muse in front, before logging it
                 continue
             keys = {(c.get("title") or "", c.get("what") or "") for c in cards}
             for c in cards:
@@ -1168,6 +1313,7 @@ async def scan_once() -> List[Dict[str, Any]]:
                 _state["reviews"].pop(pid, None)   # the showing ended; its review is spent
                 muse_escalate.expire(pid)
             fronted &= _state["present_ids"]
+            _state["stuck_fronted"] = (_state.get("stuck_fronted") or set()) & _state["present_ids"]
             _state["primed"] = True
             _state["error"] = None
             loop = _state.get("loop")
