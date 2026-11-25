@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.29
+
+Fixes social-media routing so Facebook, Instagram, TikTok, WhatsApp, Telegram, and Messenger requests run directly on your computer without requiring a paired phone, plus tighter sidebar spam filtering.
+
+- **No phone required for social posts** (`app/agent/worker.py`): `wants_phone()` now only routes to a paired Android phone when you explicitly ask for your phone (e.g., *"open Facebook on my phone"*). Requests like *"post on Facebook"* run directly via your Mac's browser and computer tools.
+- **Cleaner sidebar** (`app/static/js/sidebar.js`): filters additional automated `Update Proof` / `Update Check Demo` / refusal scratch projects into the collapsed `Playground` bucket.
+
 ## 1.1.28
 
 Cleaner first-time UX across model switching, local + cloud AI clarity, sidebar organization, Fleet & Updates, and the AI Cockpit.
