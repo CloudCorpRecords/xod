@@ -83,10 +83,10 @@ ANSWER = ("The file seed-input.txt now exists in the job folder "
           "with the input content. Please continue.")
 ASK_REPORT = ("**Two close matches, too close to call:**\n"
               "1. **Content** - folder, modified 2026-07-19\n"
-              "   Path: /Users/reneturcios/Downloads/Unpacked-Folders/uploads_files_7306575_Handyman_UE_5-1/Content\n"
+              "   Path: /Users/example/Downloads/Unpacked-Folders/uploads_files_7306575_Handyman_UE_5-1/Content\n"
               "   Why: name matches 'content'; the name is exactly the thing described; it is a folder\n"
               "2. **Content** - folder, modified 2026-10-18\n"
-              "   Path: /Users/reneturcios/StrikeMobile/Binaries/Mac/StrikeMobile-Mac-Shipping.app/Contents/UE/Engine/Content\n"
+              "   Path: /Users/example/StrikeMobile/Binaries/Mac/StrikeMobile-Mac-Shipping.app/Contents/UE/Engine/Content\n"
               "   Why: name matches 'content'; the name is exactly the thing described; it is a folder\n"
               "Question: Two close matches: Content and Content. Which one did you mean?")
 BLOCKED_REPORT = ("I couldn't create `copy.txt`: `seed-input.txt` is missing from `jobC`. "

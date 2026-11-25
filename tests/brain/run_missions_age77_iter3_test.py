@@ -95,7 +95,7 @@ def check(name, ok, detail=""):
 # the classification gate is a pure text judgment.
 T4_SUB = {"title": "Inventory and read sources",
           "instruction": (
-              "Recursively list /Users/reneturcios/xod-t4-scratch, classify "
+              "Recursively list /Users/example/xod-t4-scratch, classify "
               "every candidate by its kind, and read each identified source "
               "file itself, reporting its relevant contents and provenance; "
               "exclude synthesis.md and use no external sources. Rank the "
@@ -112,17 +112,17 @@ T4_RETRY_REPORT = (
     "Delaware on **2018-03-14**. The company blog reports a launch on "
     "**2019-06-01**, but no primary source for the launch date or team size "
     "is included among these files. I listed "
-    "`/Users/reneturcios/xod-t4-scratch`: it contains three files and no "
+    "`/Users/example/xod-t4-scratch`: it contains three files and no "
     "subfolders. I read each source:\n"
-    "- `/Users/reneturcios/xod-t4-scratch/registry_primary.txt` \u2014 "
+    "- `/Users/example/xod-t4-scratch/registry_primary.txt` \u2014 "
     "**State registry extract, primary record.** It identifies the company "
     "as Northwind Traders, gives the incorporation date as 2018-03-14 and "
     "the state as Delaware, and names Harbor Registered Agents LLC as "
     "registered agent.\n"
-    "- `/Users/reneturcios/xod-t4-scratch/launch_blog.txt` \u2014 **Company "
+    "- `/Users/example/xod-t4-scratch/launch_blog.txt` \u2014 **Company "
     "blog, secondary summary.** It says Northwind Traders launched on "
     "2019-06-01 as a Delaware company with a team of four.\n"
-    "- `/Users/reneturcios/xod-t4-scratch/syndicated_wire.txt` \u2014 **Wire "
+    "- `/Users/example/xod-t4-scratch/syndicated_wire.txt` \u2014 **Wire "
     "reprint of the company blog.** It repeats the blog's launch date and "
     "team size; it is not independent confirmation.\n"
     "The blog's \u201ctwo years after incorporating\u201d description "
@@ -147,27 +147,27 @@ def case_classification_unit():
     check("the verbatim re-grade 5 retry report passes the gate",
           M._classification_answer_problem(T4_SUB, T4_RETRY_REPORT) is None,
           str(M._classification_answer_problem(T4_SUB, T4_RETRY_REPORT)))
-    bare = ("I listed /Users/reneturcios/xod-t4-scratch: it contains three "
+    bare = ("I listed /Users/example/xod-t4-scratch: it contains three "
             "files and no subfolders: registry_primary.txt, "
             "launch_blog.txt, and syndicated_wire.txt.")
     check("a bare listing with kind words inside the filenames still fails",
           M._classification_answer_problem(T4_SUB, bare) is not None)
     one_label = (
         "I read each source:\n"
-        "- `/Users/reneturcios/xod-t4-scratch/registry_primary.txt` \u2014 "
+        "- `/Users/example/xod-t4-scratch/registry_primary.txt` \u2014 "
         "**State registry extract, primary record.** It gives the "
         "incorporation date as 2018-03-14.\n"
-        "- `/Users/reneturcios/xod-t4-scratch/launch_blog.txt` \u2014 its "
+        "- `/Users/example/xod-t4-scratch/launch_blog.txt` \u2014 its "
         "contents are about the launch.\n"
-        "- `/Users/reneturcios/xod-t4-scratch/syndicated_wire.txt` \u2014 "
+        "- `/Users/example/xod-t4-scratch/syndicated_wire.txt` \u2014 "
         "its contents repeat the launch story.")
     check("one label-form classification alone still fails",
           M._classification_answer_problem(T4_SUB, one_label) is not None)
     filename_kind = (
         "I read each source:\n"
-        "- `/Users/reneturcios/xod-t4-scratch/registry_primary.txt` \u2014 "
+        "- `/Users/example/xod-t4-scratch/registry_primary.txt` \u2014 "
         "**Incorporation details.** It gives a date.\n"
-        "- `/Users/reneturcios/xod-t4-scratch/launch_blog.txt` \u2014 "
+        "- `/Users/example/xod-t4-scratch/launch_blog.txt` \u2014 "
         "**Company blog, secondary summary.** It reports a launch.")
     check("a kind word carried only by a filename does not count",
           M._classification_answer_problem(T4_SUB, filename_kind) is not None)

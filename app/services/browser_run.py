@@ -3,7 +3,7 @@ browser_run: deterministic long-form browser runs for Xod (AGE-99).
 
 The mission engine (browser_sandbox.run_browser_mission) is an LLM loop capped at
 MISSION_MAX_STEPS and aimed at one goal on one surface. This module is the other
-shape Rene asked for: a scripted run that chains many browser tasks in one go,
+shape the owner asked for: a scripted run that chains many browser tasks in one go,
 across several tabs, where every step is verified against the live page before
 the run moves on, and a missed step is recovered by re-reading state and changing
 strategy, never by blindly repeating the call that just failed.
