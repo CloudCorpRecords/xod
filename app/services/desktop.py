@@ -1230,6 +1230,85 @@ async def zoom_crop(x: float, y: float, radius: int = 160) -> Dict[str, Any]:
             "crop_box": [left, top, right, bottom], "size": [zoomed.width, zoomed.height]}
 
 
+def chrome_tabs() -> Dict[str, Any]:
+    """List every open tab across all real Google Chrome windows on macOS via AppleScript —
+    works on the user's normal signed-in Chrome with ZERO --remote-debugging-port required."""
+    if not MAC:
+        return {"success": False, "tabs": [], "error": "Native Chrome tab listing is currently macOS-only."}
+    script = '''
+    tell application "Google Chrome"
+      if not running then return ""
+      set out to ""
+      set wIdx to 1
+      repeat with w in windows
+        set tIdx to 1
+        repeat with t in tabs of w
+          set out to out & wIdx & tab & tIdx & tab & (title of t) & tab & (URL of t) & linefeed
+          set tIdx to tIdx + 1
+        end repeat
+        set wIdx to wIdx + 1
+      end repeat
+      return out
+    end tell
+    '''
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=6)
+        if r.returncode != 0:
+            return {"success": False, "tabs": [], "error": (r.stderr or "osascript failed").strip()[:200]}
+        tabs = []
+        for line in (r.stdout or "").splitlines():
+            parts = line.split("\t")
+            if len(parts) >= 4:
+                tabs.append({"window": int(parts[0]), "tab": int(parts[1]), "title": parts[2], "url": parts[3]})
+        return {"success": True, "count": len(tabs), "tabs": tabs}
+    except Exception as e:
+        return {"success": False, "tabs": [], "error": str(e)[:200]}
+
+
+def chrome_focus_tab(query: str = "", window: Optional[int] = None, tab: Optional[int] = None,
+                     open_url: str = "") -> Dict[str, Any]:
+    """Bring real signed-in Google Chrome to the front and activate the tab matching query
+    (URL or title substring) or explicit (window, tab) index. Optionally opens open_url if no tab matches."""
+    if not MAC:
+        return {"success": False, "error": "Native Chrome tab switching is currently macOS-only."}
+    target_w, target_t, matched = window, tab, None
+    if target_w is None or target_t is None:
+        listed = chrome_tabs()
+        if not listed.get("success"):
+            return listed
+        q = str(query or "").strip().lower()
+        for t in listed.get("tabs") or []:
+            if q and (q in t["url"].lower() or q in t["title"].lower()):
+                target_w, target_t, matched = t["window"], t["tab"], t
+                break
+    if target_w is not None and target_t is not None:
+        script = f'''
+        tell application "Google Chrome"
+          activate
+          set index of window {int(target_w)} to 1
+          set active tab index of window 1 to {int(target_t)}
+        end tell
+        '''
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=6)
+        if r.returncode != 0:
+            return {"success": False, "error": (r.stderr or "failed to focus tab").strip()[:200]}
+        return {"success": True, "focused": matched or {"window": target_w, "tab": target_t}}
+    if open_url:
+        safe_url = str(open_url).replace('"', '\\"')
+        script = f'''
+        tell application "Google Chrome"
+          activate
+          if (count of windows) = 0 then make new window
+          tell window 1 to make new tab with properties {{URL:"{safe_url}"}}
+        end tell
+        '''
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=6)
+        if r.returncode != 0:
+            return {"success": False, "error": (r.stderr or "failed to open tab").strip()[:200]}
+        return {"success": True, "opened": open_url}
+    return {"success": False, "error": f"No open Chrome tab matched '{query}'."}
+
+
 # ------------------------------------------------------------------ the mouse and keyboard
 def _cursor() -> Tuple[float, float]:
     if WIN:

@@ -2813,6 +2813,23 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "desktop_chrome_tabs",
+            "description": "Lists every open tab (window, tab index, title, URL) across the user's real signed-in Google Chrome without needing a CDP debug port.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_chrome_focus_tab",
+            "description": "Brings the user's real signed-in Google Chrome to the front and activates a tab matching query (URL/title substring) or window/tab index, optionally opening open_url if no tab matches.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string"}, "window": {"type": "integer"}, "tab": {"type": "integer"}, "open_url": {"type": "string"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "desktop_type",
             "description": "Types text with the real keyboard, into an element number from the last desktop_look (clicked first) or wherever the cursor is. Never passwords.",
             "parameters": {"type": "object", "properties": {
@@ -3994,7 +4011,8 @@ async def _cli_setup(ac, a: Dict[str, Any]) -> Dict[str, Any]:
     return st
 
 
-DESKTOP_TOOLS = {"desktop_task", "desktop_run", "desktop_look", "desktop_zoom_crop", "desktop_click", "desktop_type", "desktop_key", "desktop_scroll", "desktop_open_app",
+DESKTOP_TOOLS = {"desktop_task", "desktop_run", "desktop_look", "desktop_zoom_crop", "desktop_chrome_tabs", "desktop_chrome_focus_tab",
+                 "desktop_click", "desktop_type", "desktop_key", "desktop_scroll", "desktop_open_app",
                  "terminal_list", "terminal_read", "terminal_send"}
 
 
@@ -4022,6 +4040,10 @@ async def _desktop(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
             res = await desktop_run.run_desktop_steps(a.get("steps") or [])
         elif name == "desktop_zoom_crop":
             res = await desktop.zoom_crop(float(a.get("x") or 0), float(a.get("y") or 0), int(a.get("radius") or 160))
+        elif name == "desktop_chrome_tabs":
+            res = await asyncio.to_thread(desktop.chrome_tabs)
+        elif name == "desktop_chrome_focus_tab":
+            res = await asyncio.to_thread(desktop.chrome_focus_tab, a.get("query") or "", a.get("window"), a.get("tab"), a.get("open_url") or "")
         elif name == "desktop_click":
             res = await desktop.click(a.get("element"), a.get("x"), a.get("y"), a.get("button") or "left", int(a.get("clicks") or 1), prefer_ax=bool(a.get("prefer_ax", False)))
         elif name == "desktop_type":
