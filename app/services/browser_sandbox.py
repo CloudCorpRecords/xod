@@ -625,16 +625,24 @@ def _extract_explicit_file_path(plan: Dict[str, Any], goal: str) -> Optional[str
 
 
 def load_user_profile() -> Dict[str, Any]:
-    """Reads data/profile.json (the user's own details for filling forms). Missing file -> {}."""
+    """Reads data/profile.json merged with structured data/job_profile.json (job application
+    fields + learned screening Q&A). Missing files -> {}."""
+    merged: Dict[str, Any] = {}
+    try:
+        from app.services import job_profile
+        jp = job_profile.load_job_profile()
+        merged.update({k: v for k, v in jp.items() if v not in (None, "", [], {})})
+    except Exception:
+        pass
     try:
         with open(PROFILE_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return {k: v for k, v in data.items() if v not in (None, "", [], {}) and not str(k).startswith("_")}
+        merged.update({k: v for k, v in data.items() if v not in (None, "", [], {}) and not str(k).startswith("_")})
     except FileNotFoundError:
-        return {}
+        pass
     except Exception as e:
         logger.warning(f"Could not read {PROFILE_PATH}: {e}")
-        return {}
+    return merged
 
 
 def _format_profile(profile: Dict[str, Any]) -> str:
@@ -2815,6 +2823,7 @@ class BrowserSandboxService:
             async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 await self._send_cdp(ws, "Page.enable")
+                snap_before = await self._snapshot_page(ws)
 
                 res = await self._send_cdp(ws, "Runtime.evaluate", {
                     "expression": script,
@@ -3145,6 +3154,7 @@ class BrowserSandboxService:
             async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 await self._send_cdp(ws, "Page.enable")
+                snap_before = await self._snapshot_page(ws)
 
                 res = await self._send_cdp(ws, "Runtime.evaluate", {
                     "expression": fill_script,
@@ -3153,6 +3163,9 @@ class BrowserSandboxService:
                 val = res.get("result", {}).get("value") or {}
 
                 await asyncio.sleep(1.5)
+                snap_after = await self._snapshot_page(ws)
+                from app.services.browser_state import diff_page_snapshots
+                delta = diff_page_snapshots(snap_before, snap_after)
 
                 title_res = await self._send_cdp(ws, "Runtime.evaluate", {"expression": "document.title"})
                 url_res = await self._send_cdp(ws, "Runtime.evaluate", {"expression": "window.location.href"})
@@ -3167,10 +3180,58 @@ class BrowserSandboxService:
                 return {
                     "success": True,
                     "filled_summary": val,
+                    "delta": delta,
                     "url": self.current_url,
                     "title": self.current_title,
                     "screenshot_uri": self.latest_screenshot_uri
                 }
+
+    async def _snapshot_page(self, ws) -> Dict[str, Any]:
+        """Best-effort compact DOM snapshot (buttons, modals, validation errors, fields)."""
+        try:
+            from app.services.browser_state import JS_PAGE_SNAPSHOT
+            r = await self._send_cdp(ws, "Runtime.evaluate", {"expression": JS_PAGE_SNAPSHOT, "returnByValue": True})
+            v = r.get("result", {}).get("value")
+            return v if isinstance(v, dict) else {}
+        except Exception:
+            return {}
+
+    async def find_element_box(self, selector_or_text: str) -> Optional[Dict[str, Any]]:
+        """Locate an element's viewport center (cx, cy) across document, Shadow DOM, and iframes
+        for Tier-2 coordinate escalation in action_ladder."""
+        async with self._lock:
+            await self.ensure_browser_running()
+            ws_url = await self._get_active_tab_ws_url()
+            script = f"""
+            (() => {{
+                {_JS_DEEP_QUERY_HELPERS}
+                const q = {json.dumps(str(selector_or_text or '').strip())};
+                let hit = __xodQuerySelector(q);
+                if (!hit) {{
+                    const ql = q.toLowerCase();
+                    hit = __xodWalkRoots((root, win, ox, oy) => {{
+                        for (const el of root.querySelectorAll('button, a, [role="button"], input, [tabindex], [aria-label]')) {{
+                            if (!__xodIsVisible(el, win)) continue;
+                            const txt = ((el.innerText || el.value || el.getAttribute('aria-label') || '') + '').trim().toLowerCase();
+                            if (txt && (txt === ql || txt.includes(ql))) return {{ el, win, ox, oy, root }};
+                        }}
+                        return null;
+                    }});
+                }}
+                if (!hit || !hit.el) return null;
+                hit.el.scrollIntoView({{ behavior: 'instant', block: 'center' }});
+                const r = hit.el.getBoundingClientRect();
+                if (!r || r.width < 1 || r.height < 1) return null;
+                return {{ cx: Math.round((hit.ox || 0) + r.left + r.width / 2),
+                          cy: Math.round((hit.oy || 0) + r.top + r.height / 2),
+                          width: Math.round(r.width), height: Math.round(r.height) }};
+            }})()
+            """
+            async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
+                await self._send_cdp(ws, "Runtime.enable")
+                r = await self._send_cdp(ws, "Runtime.evaluate", {"expression": script, "returnByValue": True})
+                v = r.get("result", {}).get("value")
+                return v if isinstance(v, dict) else None
 
     async def smart_inspect(self) -> Dict[str, Any]:
         """
@@ -3425,6 +3486,7 @@ class BrowserSandboxService:
             async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 await self._send_cdp(ws, "Page.enable")
+                snap_before = await self._snapshot_page(ws)
 
                 res = await self._send_cdp(ws, "Runtime.evaluate", {
                     "expression": find_script,
@@ -3510,9 +3572,14 @@ class BrowserSandboxService:
                 }
                 self.action_history.append(action_record)
 
+                snap_after = await self._snapshot_page(ws)
+                from app.services.browser_state import diff_page_snapshots
+                delta = diff_page_snapshots(snap_before, snap_after)
+
                 return {
                     "success": True,
                     "clicked_element": val,
+                    "delta": delta,
                     "url": self.current_url,
                     "title": self.current_title,
                     "screenshot_uri": self.latest_screenshot_uri
@@ -3653,6 +3720,7 @@ class BrowserSandboxService:
             async with websockets.connect(ws_url, max_size=50*1024*1024, ping_interval=None) as ws:
                 await self._send_cdp(ws, "Runtime.enable")
                 await self._send_cdp(ws, "Page.enable")
+                snap_before = await self._snapshot_page(ws)
 
                 res = await self._send_cdp(ws, "Runtime.evaluate", {
                     "expression": script,
@@ -3767,9 +3835,14 @@ class BrowserSandboxService:
                 }
                 self.action_history.append(action_record)
 
+                snap_after = await self._snapshot_page(ws)
+                from app.services.browser_state import diff_page_snapshots
+                delta = diff_page_snapshots(snap_before, snap_after)
+
                 return {
                     "success": True,
                     "typed": result_val,
+                    "delta": delta,
                     "url": self.current_url,
                     "title": self.current_title,
                     "screenshot_uri": self.latest_screenshot_uri
