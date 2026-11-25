@@ -270,7 +270,7 @@ class CtypesAx:
 # button holding the whole request text. Neither that body-text button, nor
 # the details toggles, nor the Don't/Deny twins are ever the pick. What is
 # left, in muse_app's preference order, is what gets pressed.
-_TOGGLE_LABELS = {"hide details", "show details", "details", "learn more"}
+_TOGGLE_LABELS = {"hide details", "show details", "see details", "details", "learn more"}
 _NEGATIVE_LABELS = {"deny", "deny all", "cancel", "block", "dismiss", "no", "not now"}
 _ACTION_VERBS = ("reply", "create", "post", "share", "continue", "approve", "confirm",
                  "upload", "submit", "accept", "proceed", "pay", "sign", "verify",
@@ -289,7 +289,7 @@ def _candidate_buttons(labels):
         low = s.lower()
         if len(s) > 80:  # the request text itself, rendered as one big button
             continue
-        if low in _TOGGLE_LABELS or low.endswith(" hide details") or low.endswith(" show details"):
+        if low in _TOGGLE_LABELS or low.endswith(" hide details") or low.endswith(" show details") or low.endswith(" see details"):
             continue
         if low in _NEGATIVE_LABELS or low.startswith("don't ") or low.startswith("deny"):
             continue

@@ -299,6 +299,103 @@ def main():
     check("the merged pass result reports all three as pressed",
           len(out) == 3 and all(c.get("pressed") for c in out), str(out)[:200])
 
+    print("Q9 scheduled-task Gmail card in Needs review side panel (Reply split-button + chevron + Don't reply)")
+    reset_state(muse_app)
+    body_btn = El("AXButton",
+                  "Tree wants to reply to Eric with thanks for his response and feedback on the concept, "
+                  "acknowledge the in-house setup, and wish him luck with the next TAMUhack. "
+                  "This is for the scheduled task \u201cCatchup Sweep Twice Daily\u201d. See details")
+    reply_btn = El("AXButton", "Reply")
+    chevron_btn = El("AXPopUpButton", "More allow options")
+    dont_reply_btn = El("AXButton", "Don't reply")
+    needs_review_card = El("AXGroup", "Approval request for Gmail", [
+        El("AXStaticText", "Allow Tree to send this email in Gmail for Catchup Sweep Twice Daily?"),
+        body_btn,
+        El("AXGroup", "", [
+            El("AXGroup", "", [reply_btn]),
+            chevron_btn,
+            El("AXGroup", "", [dont_reply_btn]),
+        ]),
+    ])
+    needs_review_panel = El("AXApplication", "Muse", [
+        El("AXWindow", "Muse", [
+            El("AXGroup", "Needs review", [
+                El("AXHeading", "Needs review", [El("AXStaticText", "Needs review")]),
+                needs_review_card,
+            ]),
+        ]),
+    ])
+    muse_app._ax_api = lambda: FakeAX(needs_review_panel, vanish=True)
+    out_q9 = asyncio.run(muse_app.scan_once())
+    check("Needs review scheduled-task Gmail card is found and classified actionable",
+          len(out_q9) == 1 and out_q9[0].get("queue_class") == "actionable"
+          and out_q9[0].get("type") == "Gmail", str(out_q9)[:300])
+    check("Reply split-button is pressed (not body See details, not chevron, not Don't reply)",
+          out_q9[0].get("pressed") is True and out_q9[0].get("button") == "Reply"
+          and reply_btn.presses == 1 and dont_reply_btn.presses == 0
+          and body_btn.presses == 0 and chevron_btn.presses == 0, str(out_q9)[:300])
+    check("short See details body-text button is filtered out and never competes with Reply",
+          muse_app._pick_button(["Short summary. See details", "Reply", "Don't reply"]) == "Reply"
+          and muse_app._pick_button(["See details", "Don't reply"]) is None)
+
+    print("Q10 regression: untrusted scans write scan_error to audit.jsonl (never silent) and dead observer recovers")
+    import json
+    from app.services import muse_review
+    reset_state(muse_app)
+    muse_app._state["warned"] = False
+    muse_app._state["last_error_audited"] = None
+    muse_app._state["observer_retry_at"] = 0.0
+    ap = muse_review.audit_path()
+    before_lines = len(ap.read_text().splitlines()) if ap.exists() else 0
+    muse_app._ax_api = lambda: FakeAX(panel(), trusted=False)
+    saved_partner_status = partner_client.status
+    partner_client.status = lambda force=False: {"partner_trusted": False, "version": "1.2",
+                                                  "bundle_id": "dev.xod.partner",
+                                                  "approval_policy": "always-allow-v1"}
+    try:
+        asyncio.run(muse_app._run_scan())
+        asyncio.run(muse_app._run_scan())  # second identical failure must dedupe
+    finally:
+        partner_client.status = saved_partner_status
+    after_rows = [json.loads(line) for line in ap.read_text().splitlines()[before_lines:]] if ap.exists() else []
+    scan_errs = [r for r in after_rows if r.get("phase") == "scan_error"]
+    check("untrusted scan writes one deduped scan_error row to audit.jsonl",
+          len(scan_errs) == 1 and scan_errs[0].get("kind") == "accessibility_untrusted"
+          and scan_errs[0].get("partner_trusted") is False, str(scan_errs))
+    # Once Accessibility recovers, a successful scan clears last_error_audited and resets observer retry
+    muse_app._ax_api = lambda: FakeAX(panel(), trusted=True)
+    muse_app._state["observer_retry_at"] = time.time() + 100.0
+    asyncio.run(muse_app._run_scan())
+    check("recovery clears error audit state and arms immediate observer re-attach",
+          muse_app._state.get("last_error_audited") is None
+          and muse_app._state.get("observer_retry_at") == 0.0, str({k: muse_app._state.get(k) for k in ("last_error_audited", "observer_retry_at")}))
+    # Dead observer (alive() -> False) is replaced by _sync_observer
+    created = []
+    class FakeObs:
+        def __init__(self, pid, is_alive):
+            self.pid, self._alive, self.stopped = pid, is_alive, False
+        def alive(self):
+            return self._alive
+        def stop(self):
+            self.stopped = True
+    saved_obs_factory = muse_app._observer_factory
+    def fake_factory(pid, on_event):
+        o = FakeObs(pid, is_alive=len(created) > 0)
+        created.append(o)
+        return o
+    muse_app._observer_factory = fake_factory
+    muse_app._stop_observer()
+    muse_app._state["observer_retry_at"] = 0.0
+    try:
+        muse_app._sync_observer(4242)   # attaches dead observer #0
+        muse_app._sync_observer(4242)   # dead -> immediately retries (retry_at was 0) -> attaches live #1
+        muse_app._sync_observer(4242)   # live -> stays attached
+    finally:
+        muse_app._stop_observer()
+        muse_app._observer_factory = saved_obs_factory
+    check("dead AXObserver is detected and re-attached instead of staying wedged",
+          len(created) == 2 and created[0].stopped and created[1].alive(), f"created={len(created)}")
+
     failed = [n for n, ok in results if not ok]
     print(f"\n{len(results) - len(failed)} passed, {len(failed)} failed")
     return 1 if failed else 0

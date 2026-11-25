@@ -85,8 +85,8 @@ DRY_RUN = bool(os.environ.get("XOD_MUSE_APP_DRY_RUN"))
 
 _state: Dict[str, Any] = {"task": None, "warned": False, "last": None, "count": 0, "error": None,
                           "present": set(), "pressed_ids": set(), "press_marks": {}, "fail_logged": set(), "scan_lock": None,
-                          "observer": None, "observer_pid": None, "debouncer": None,
-                          "loop": None, "backstop_at": 0.0, "reviews": {},
+                          "observer": None, "observer_pid": None, "observer_retry_at": 0.0, "debouncer": None,
+                          "loop": None, "backstop_at": 0.0, "reviews": {}, "last_error_audited": None,
                           "press_one": False, "stuck_fronted": set()}
 _intent_lock = threading.RLock()
 
@@ -229,6 +229,8 @@ def _apply() -> Dict[str, Any]:
         _stop_observer()
         _state["error"] = None  # a warning from when it was on must not linger
         _state["warned"] = False
+        _state["last_error_audited"] = None
+        _state["observer_retry_at"] = 0.0
     return status()
 
 
@@ -356,7 +358,7 @@ def _describe_error(e: Exception) -> str:
 # the negative side. What is left is what Xod presses (owner, 2026-11-22: Xod clicks every
 # approval card; a card is held only when two real actions compete and no preference
 # order separates them, and the hold is logged with the reason).
-_TOGGLE_LABELS = {"hide details", "show details", "details", "learn more"}
+_TOGGLE_LABELS = {"hide details", "show details", "see details", "details", "learn more"}
 _NEGATIVE_LABELS = {"deny", "deny all", "cancel", "block", "dismiss", "no", "not now"}
 _ACTION_VERBS = ("reply", "create", "post", "share", "continue", "approve", "confirm",
                  "upload", "submit", "accept", "proceed", "pay", "sign", "verify",
@@ -375,7 +377,7 @@ def _candidate_buttons(labels: List[str]) -> List[str]:
         low = s.lower()
         if len(s) > 80:  # the request text itself, rendered as one big button
             continue
-        if low in _TOGGLE_LABELS or low.endswith(" hide details") or low.endswith(" show details"):
+        if low in _TOGGLE_LABELS or low.endswith(" hide details") or low.endswith(" show details") or low.endswith(" see details"):
             continue
         if low in _NEGATIVE_LABELS or low.startswith("don't ") or low.startswith("deny"):
             continue
@@ -1114,14 +1116,30 @@ def _stop_observer() -> None:
         _state["debouncer"].cancel()
 
 
+OBSERVER_RETRY_SEC = 10.0
+
+
 def _sync_observer(pid: Optional[int]) -> None:
-    """Observer attached to exactly this pid (or none): re-attaches when Muse restarts, stops when off/gone."""
+    """Observer attached to exactly this pid (or none): re-attaches when Muse restarts,
+    recovers if the observer thread died (e.g. Accessibility was untrusted at boot and
+    later repaired), and stops when off/gone."""
     if pid is None or not enabled():
         if _state.get("observer") is not None:
             _stop_observer()
         return
-    if _state.get("observer") is not None and _state.get("observer_pid") == pid:
+    obs = _state.get("observer")
+    obs_alive = True
+    if obs is not None:
+        alive_fn = getattr(obs, "alive", None)
+        if callable(alive_fn):
+            obs_alive = bool(alive_fn())
+    if obs is not None and _state.get("observer_pid") == pid and obs_alive:
         return
+    if obs is not None and not obs_alive:
+        now = time.time()
+        if now - float(_state.get("observer_retry_at") or 0.0) < OBSERVER_RETRY_SEC:
+            return
+        _state["observer_retry_at"] = now
     _stop_observer()
 
     def on_event():
@@ -1324,17 +1342,63 @@ async def scan_once() -> List[Dict[str, Any]]:
                 return cards
 
 
+def _audit_scan_error(err: Exception, err_msg: str) -> None:
+    """Record a scan failure in the approver audit once per failure episode so a
+    blind watcher (e.g. stale Accessibility grant after an app update) never
+    produces a silent audit.jsonl."""
+    if err_msg == _state.get("last_error_audited"):
+        return
+    try:
+        from app.services import muse_review
+        if not muse_review.enabled():
+            return
+        partner_trusted = None
+        own_trusted = None
+        try:
+            from app.services import partner_client
+            pst = partner_client.status()
+            if isinstance(pst, dict) and not pst.get("_status"):
+                partner_trusted = pst.get("partner_trusted")
+        except Exception:
+            pass
+        try:
+            from app.services import permissions
+            own_trusted = permissions.trusted()
+        except Exception:
+            pass
+        kind = ("accessibility_untrusted"
+                if isinstance(err, PermissionError) or "accessibility" in str(err).lower()
+                else "scan_error")
+        muse_review.audit({
+            "phase": "scan_error",
+            "kind": kind,
+            "error": str(err)[:300],
+            "notice": err_msg[:300],
+            "partner_trusted": partner_trusted,
+            "own_trusted": own_trusted,
+            "mode": muse_review.mode(),
+        })
+        _state["last_error_audited"] = err_msg
+    except Exception:
+        pass
+
+
 async def _run_scan() -> None:
     if not active():
         return  # paused, off, or away mode while you're at the computer
     try:
         await scan_once()
+        if _state.get("warned"):
+            _state["observer_retry_at"] = 0.0  # re-attach dead AXObserver on next tick
         _state["warned"] = False
+        _state["last_error_audited"] = None
     except Exception as e:
-        _state["error"] = _describe_error(e)
+        err_msg = _describe_error(e)
+        _state["error"] = err_msg
         if not _state["warned"]:
             logger.warning(f"Can't reach the Muse app's approvals: {e}")
             _state["warned"] = True
+        _audit_scan_error(e, err_msg)
 
 
 def _fire_scan() -> None:

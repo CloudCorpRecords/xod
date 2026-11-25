@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.26
+
+The Muse approval watcher never goes silent on Accessibility or scan failures, recovers a dead AXObserver automatically once Accessibility is restored, and hardens scheduled-task Gmail cards in the Needs review panel.
+
+**Approval watcher visibility, observer recovery, and Needs review cards**
+- Diagnosed the 2026-11-25 field failure: on 1.1.25 both `Xod.app` (ad-hoc build whose CDHash changed on update) and `Xod Partner.app` had stale macOS Accessibility grants (`trusted=false`), causing every `_scan()` to raise `PermissionError` before any review row could be written, leaving `audit.jsonl` completely silent since Nov 23.
+- `app/services/muse_app.py`: `_run_scan()` now records a deduped `phase: "scan_error"` row (with `kind`, `error`, `notice`, `partner_trusted`, and `own_trusted`) in `muse_approver/audit.jsonl` whenever scans fail, clearing on recovery so a blind watcher is always visible in the audit log.
+- `app/services/muse_backends.py` & `app/services/muse_app.py`: `MacObserver` now reports `alive()` (tracking failed `AXObserverCreate` and thread exit), and `_sync_observer()` detects dead observers and re-attaches them (rate-limited while untrusted, immediate on recovery) instead of holding a dead observer forever.
+- `app/services/muse_app.py` & `partner/partner_ax.py`: added `"see details"` / `" see details"` toggle filtering in `_candidate_buttons()` to match the live scheduled-task Gmail card in Muse's `Needs review` side panel (`Reply` split-button + `More allow options` `AXPopUpButton` chevron + `Don't reply`).
+
+**Tests**
+- `tests/smoke/run_muse_app_queue_test.py` 30/30: added Q9 (live scheduled-task Gmail card fixture inside `Needs review` with `Reply` split-button, `More allow options` chevron, `Don't reply`, and `See details` body button) and Q10 (untrusted scan `scan_error` audit regression + dead `AXObserver` recovery).
+- Full gate green: `run_muse_app_test.py` 69/69, `run_muse_review_test.py` 24/24, `run_muse_escalate_test.py` 31/31, `run_muse_options_test.py` 31/31, `scripts/check_versions.py` 1.1.26.
+
 ## 1.1.25
 
 Social and Chrome tasks now route to your signed-in Chrome (`browser_find_tab` / `browser_adopt`) instead of mistakenly opening the phone tool.

@@ -82,8 +82,12 @@ class MacObserver:
 
     def __init__(self, pid: int, on_event: Callable[[], None]):
         self.pid, self._stop = pid, threading.Event()
+        self._failed = False
         self._thread = threading.Thread(target=self._run, args=(on_event,), daemon=True, name="xod-muse-observer")
         self._thread.start()
+
+    def alive(self) -> bool:
+        return (not self._failed) and (not self._stop.is_set()) and self._thread.is_alive()
 
     def _run(self, on_event) -> None:
         try:
@@ -113,6 +117,7 @@ class MacObserver:
 
             err, obs = AXObserverCreate(self.pid, cb, None)
             if err != 0:
+                self._failed = True
                 logger.warning(f"couldn't watch the Muse app (AXObserver {err}); the backstop scan still runs")
                 return
             app = AXUIElementCreateApplication(self.pid)
@@ -128,6 +133,7 @@ class MacObserver:
             while not self._stop.is_set():
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.25, False)
         except Exception as e:
+            self._failed = True
             logger.warning(f"Muse app observer stopped ({e}); the backstop scan still runs")
 
     def stop(self) -> None:
