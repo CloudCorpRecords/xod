@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.27
+
+First release signed with Xod's stable `Xod Release Signing` certificate (so macOS Accessibility, Screen Recording, and Keychain grants survive future updates), plus major browser, desktop, and auto-approve harness upgrades.
+
+**Stable Signing & Auto-Approve Default**
+- Signed with the `Xod Release Signing` identity (AGE-57) with `CSC_LINK` / `CSC_KEY_PASSWORD` configured for CI; after one final grant flip on 1.1.27, future updates keep your macOS permissions intact.
+- `app/services/muse_app.py`: `muse_auto_approve` now defaults to `"always"` out of the box (`away`, `pause`, and `off` remain one click away).
+- Added `tests/smoke/run_muse_picker_parity_test.py` (28/28) ensuring Xod and Xod Partner card pickers never drift, and cleaned up `scripts/check_release.py` false positives.
+
+**Browser & Computer-Use Harness Upgrades**
+- **Logged-in social composers & job applications** (`app/services/browser_sandbox.py`): `type_text()` now uses real CDP `Input.insertText` + readback verification for `contenteditable` composers (Facebook/Lexical, X/Draft.js, LinkedIn/Quill, Threads, Notion); `fill_form()` adds ARIA `combobox` dropdowns, `contenteditable` fields, per-field `verified` readback, and explicit `unmatched` reporting.
+- **6 new harness modules:** DOM state diffs & inline validation error scraping (`app/services/browser_state.py`), persisted mid-flight mission checklists (`app/services/mission_checkpoint.py`), 3-tier click escalation ladder (`app/services/action_ladder.py`), parameterized workflow recipe compiler & replay (`app/services/recipe_store.py`), structured job-application profile + learned screening Q&A memory (`app/services/job_profile.py`), and tool-history context hygiene (`app/agent/context_hygiene.py`).
+- **Deeper native desktop & real Chrome control** (`app/services/desktop.py`, `app/services/desktop_run.py`, `app/agent/tools.py`): raised `MAX_ELEMENTS` to 250 + multi-window/sheet enumeration, added `desktop_zoom_crop`, silent `AXPress`-first `desktop_click(prefer_ax=True)` with focus deltas, verified multi-step `desktop_run`, and native macOS Chrome tab listing/focusing (`desktop_chrome_tabs` / `desktop_chrome_focus_tab`) with zero CDP port required.
+
+**Tests**
+- New `tests/smoke/run_tiered_browser_live_test.py` 14/14 (4-tier live Chrome gauntlet), `tests/smoke/run_harness_upgrades_test.py` 10/10, `tests/smoke/run_muse_picker_parity_test.py` 28/28; existing suites green (`run_browser_upgrades_test.py` 34/34, `run_benchmark_fixes_test.py` 15/15, `run_desktop_test.py` 74/74, `run_muse_app_test.py` 69/69, `run_muse_app_queue_test.py` 30/30, `run_agent_steering_test.py` 10/10, `scripts/check_release.py` clean).
+
 ## 1.1.26
 
 The Muse approval watcher never goes silent on Accessibility or scan failures, recovers a dead AXObserver automatically once Accessibility is restored, and hardens scheduled-task Gmail cards in the Needs review panel.
