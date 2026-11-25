@@ -368,12 +368,15 @@
         </button>
         </section>
         <section id="updatesSection">
-          <p class="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold">Updates</p>
-          <!-- Phase 5: one plain line, no action needed. The policy switch and
-               Check now live one layer down, in the details below. -->
+          <p class="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold">Fleet &amp; Updates</p>
+          <!-- Phase 5: one plain line, plus direct Fleet & Update controls -->
           <p id="updatesPolicyLine" class="text-[13px] text-zinc-200 mt-1">Automatic</p>
           <!-- Xod's version and updates (js/updates.js); moved here from the sidebar footer in Phase 2 -->
           <div id="xodVersion" class="xv mt-2"></div>
+          <div class="mt-2 flex flex-wrap gap-2">
+            <button class="task-btn" onclick="if(window.XodUpdates) XodUpdates.check()">Check for updates</button>
+            <button class="task-btn" onclick="closeSettingsPanel();if(window.openFamilyPanel) openFamilyPanel()">Manage fleet &amp; devices</button>
+          </div>
           <details class="mt-2">
             <summary class="text-[12px] text-zinc-400 cursor-pointer">Update settings</summary>
             <div class="mt-2 space-y-2">
@@ -381,7 +384,6 @@
                 <input type="checkbox" id="autoUpdateToggle" checked onchange="setUpdatePolicy(this.checked)">
                 Automatic updates <span class="text-zinc-500">Xod checks and installs on its own.</span>
               </label>
-              <button class="task-btn" onclick="if(window.XodUpdates) XodUpdates.check()">Check now</button>
             </div>
           </details>
         </section>
@@ -3445,6 +3447,12 @@
               <span>Snapshot</span>
             </button>
 
+            <button onclick="document.getElementById('cockpitAdvancedTools')?.classList.toggle('hidden')" class="px-2.5 py-1.5 rounded-xl bg-surface-800 hover:bg-surface-700 text-zinc-300 border border-white/[0.08] text-xs font-medium flex items-center gap-1.5 transition-colors shrink-0" title="Show/hide advanced browser inspector & recovery tools">
+              <i data-lucide="sliders-horizontal" class="size-3.5 text-zinc-400"></i>
+              <span>Inspector</span>
+            </button>
+
+            <div id="cockpitAdvancedTools" class="hidden flex flex-wrap items-center gap-1.5">
             <!-- Set-of-Marks Badged Screenshot -->
             <button onclick="cockpitCaptureSomSnapshot()" id="btnCockpitSomSnapshot" class="px-2.5 py-1.5 rounded-xl bg-indigo-950/60 hover:bg-indigo-900/80 text-indigo-300 border border-indigo-500/30 text-xs font-medium flex items-center gap-1.5 transition-colors shrink-0" title="Overlay Set-of-Marks numeric badges on interactive DOM elements">
               <i data-lucide="tag" class="size-3.5 text-indigo-400"></i>
@@ -3486,6 +3494,7 @@
               <i data-lucide="rotate-ccw" class="size-3.5 text-blue-400"></i>
               <span>Restart</span>
             </button>
+            </div>
 
             <!-- Desktop Window Mode Toggle -->
             <button onclick="cockpitToggleBrowserVisibility()" id="btnCockpitToggleVisibility" class="px-2.5 py-1.5 rounded-xl bg-surface-750 hover:bg-surface-700 text-zinc-200 border border-white/[0.08] text-xs font-medium flex items-center gap-1.5 transition-colors shrink-0" title="Toggle between headless background mode and visible macOS desktop window">

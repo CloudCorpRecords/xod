@@ -11,6 +11,7 @@
   const field = "w-full bg-surface-900 border border-surface-700 rounded-lg px-2.5 py-1.5 text-[13px] text-white focus:outline-none focus:border-brand-500";
   const DOT = { ok: "bg-emerald-400", limited: "bg-amber-400", off: "bg-zinc-500" };
   let data = null, caps = null, cat = null, found = null, tests = {}, pulls = {}, timer = null;
+  let filterQuery = "", filterMode = "all";
 
   const badge = (on, yes, no, unknown) =>
     on === true ? `<span class="xm-badge xm-yes">${yes}</span>` : on === false ? (no ? `<span class="xm-badge xm-no">${no}</span>` : "")
@@ -130,13 +131,62 @@
       </section>`;
   }
 
+  function hybridSummary() {
+    const localCount = (data.models || []).filter((m) => m.where !== "online").length;
+    const cloudCount = (data.models || []).filter((m) => m.where === "online").length;
+    return `
+      <section class="p-3 rounded-xl bg-surface-900/70 border border-white/[0.06] space-y-1.5">
+        <div class="flex items-center justify-between gap-2">
+          <h4 class="text-[12px] font-semibold text-white">Local + Cloud Hybrid</h4>
+          <span class="text-[11px] text-zinc-400">${localCount} local ($0) · ${cloudCount} cloud</span>
+        </div>
+        <p class="text-[12px] text-zinc-400">Use any local model (Ollama, LM Studio, or built-in) for private $0 chat, vision, or memory search, and switch to a cloud model whenever you want maximum reasoning. Click any model below to switch immediately.</p>
+      </section>`;
+  }
+
+  function filteredModels() {
+    const q = filterQuery.trim().toLowerCase();
+    return (data.models || []).filter((m) => {
+      if (filterMode === "local" && m.where === "online") return false;
+      if (filterMode === "cloud" && m.where !== "online") return false;
+      if (filterMode === "vision" && !m.vision) return false;
+      if (filterMode === "tools" && !m.tools) return false;
+      if (q) {
+        const hay = `${m.model || ""} ${m.server || ""} ${m.provider || ""} ${m.where || ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
   function render() {
     const body = document.getElementById("modelsBody");
     if (!body) return;
     if (!data) { body.innerHTML = `<p class="text-[12px] text-zinc-500">Looking for models…</p>`; return; }
-    body.innerHTML = inUse() + works() +
-      `<section class="space-y-2" id="xmList"><h4 class="xm-h">Your models <span class="text-zinc-500 font-normal">${((n, s) => `${n} on ${s} server${s === 1 ? "" : "s"}`)(data.models.length, new Set(data.models.map((m) => m.server)).size)}</span></h4>
-        ${data.models.map(modelCard).join("") || `<p class="text-[12px] text-zinc-500">No models found yet.</p>`}</section>` + getMore() + servers();
+    const shown = filteredModels();
+    const pill = (id, label) => `<button class="${filterMode === id ? primary : quiet}" data-xm="filter" data-mode="${id}">${label}</button>`;
+    const listSection = `
+      <section class="space-y-2" id="xmList">
+        <h4 class="xm-h">Switch or search models <span class="text-zinc-500 font-normal">${shown.length} of ${data.models.length}</span></h4>
+        <div class="flex flex-wrap gap-1.5">
+          <input id="xmFilter" class="${field}" style="flex:1;min-width:180px" placeholder="Search by model or provider (e.g. glm, gpt, qwen, ollama)…" value="${esc(filterQuery)}">
+        </div>
+        <div class="flex flex-wrap gap-1.5">
+          ${pill("all", "All")}${pill("local", "Local ($0)")}${pill("cloud", "Cloud")}${pill("vision", "Vision")}${pill("tools", "Calls tools")}
+        </div>
+        ${shown.map(modelCard).join("") || `<p class="text-[12px] text-zinc-500">No models match your filter.</p>`}
+      </section>`;
+    body.innerHTML = inUse() + hybridSummary() + listSection + getMore() + servers() + works();
+    const inp = document.getElementById("xmFilter");
+    if (inp) {
+      inp.oninput = (e) => {
+        filterQuery = e.target.value;
+        const pos = e.target.selectionStart;
+        render();
+        const next = document.getElementById("xmFilter");
+        if (next) { next.focus(); next.setSelectionRange(pos, pos); }
+      };
+    }
   }
 
   async function load() {
@@ -179,6 +229,10 @@
     if (!el) return;
     if (el.hasAttribute("data-close-models")) return window.closeModelsPanel();
     const a = el.dataset.xm, m = data && data.models[Number(el.dataset.i)];
+    if (a === "filter") {
+      filterMode = el.dataset.mode || "all";
+      return render();
+    }
     if (a === "use") {
       el.disabled = true;
       const r = await api("/api/models/use", "POST", { job: el.dataset.job, provider: m.provider, model: m.model, base_url: m.base_url });

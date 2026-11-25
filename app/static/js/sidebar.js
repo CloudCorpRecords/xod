@@ -81,7 +81,17 @@ function chatRowHtml(s, fromSlug) {
 // (project.scratch, from the origin marker/tags stored in project.json); the name
 // check here only catches older projects that predate that marker. Nothing is
 // deleted or moved: the bucket renders the same rows, just apart and collapsed.
-const SCRATCH_NAME_RES = [/^proof([\s_-]|$)/, /([\s_-]proof)$/, /file creation unavailable/, /word frequency tests?\b/, /^(scratch|proving|smoke)([\s_-]|$)/, /([\s_-](test|tests|scratch))$/];
+const SCRATCH_NAME_RES = [
+  /^proof([\s_-]|$)/,
+  /([\s_-]proof)$/,
+  /file creation unavailable/,
+  /word frequency tests?\b/,
+  /^(scratch|proving|smoke)([\s_-]|$)/,
+  /([\s_-](test|tests|scratch))$/,
+  /^automated update check/i,
+  /update check task/i,
+  /health battery/i,
+];
 function isScratchProject(p) {
   if (!p) return false;
   if (p.scratch) return true;
