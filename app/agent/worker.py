@@ -46,22 +46,18 @@ TOOLS = ("computer_run_command", "computer_start_job", "computer_wait_for", "com
 WEB_TOOLS = ("web_search", "web_scrape", "computer_write_file", "computer_read_file")
 PHONE_TOOLS = ("phone",)
 
-# Jobs that belong on the person's own phone, not on this computer or the web: doing something in an app
-# that lives on the phone (Facebook, TikTok, ...), or on the phone itself when it's named with something
-# to do on it. Research ABOUT phones is not a phone job ("compare phones", "the best Android phone to
-# buy"): those never name the person's own phone with an action, and route() asks this only after its
-# question gate, so a question about a phone still goes to the chat.
-_PHONE_SOCIAL_RE = re.compile(r"\b(?:facebook|tiktok|instagram|whatsapp|telegram|messenger)\b(?!\.com)", re.I)
+# Jobs that belong on the person's own phone, not on this computer or the web: only when they explicitly
+# name their phone with an action to do on it ("open Facebook on my phone", "text Mom from my phone").
+# Social sites like Facebook/Instagram/TikTok/WhatsApp/Telegram run on the desktop browser / computer tools
+# by default and must NEVER require a paired phone connection unless the user asks for their phone.
 _PHONE_DEVICE_RE = re.compile(r"\b(?:my|the) phone\b|\bcell ?phone\b|\bmobile phone\b|\bandroid phone\b|\bs25\b|\bmy galaxy\b", re.I)
 _PHONE_ACTION_RE = re.compile(r"\b(?:open|launch|post|publish|share|comment|reply|send|text|message|dm|tap|type|swipe|scroll|check|read|upload|call)\b", re.I)
 
 
 def wants_phone(query: str) -> bool:
-    """This job is to be done on the person's paired phone, in its apps."""
+    """This job is to be done on the person's paired phone, only when the user explicitly asks for their phone."""
     q = query or ""
-    if _PHONE_DEVICE_RE.search(q):
-        return bool(_PHONE_ACTION_RE.search(q))
-    return bool(_PHONE_SOCIAL_RE.search(q) and _PHONE_ACTION_RE.search(q))
+    return bool(_PHONE_DEVICE_RE.search(q) and _PHONE_ACTION_RE.search(q))
 
 # ------------------------------------------------------------------ which requests are work on the computer
 _INSTALL_RE = re.compile(r"\b(?:install|uninstall|reinstall)(?:ed|ing|s)?\b", re.I)

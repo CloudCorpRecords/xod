@@ -90,6 +90,9 @@ const SCRATCH_NAME_RES = [
   /([\s_-](test|tests|scratch))$/,
   /^automated update check/i,
   /update check task/i,
+  /^update proof\b/i,
+  /^update check demo\b/i,
+  /^(not applicable|not an app plan|unable to comply|unable to complete|cannot perform file writes|cannot write files)$/i,
   /health battery/i,
 ];
 function isScratchProject(p) {
