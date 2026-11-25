@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.25
+
+Social and Chrome tasks now route to your signed-in Chrome (`browser_find_tab` / `browser_adopt`) instead of mistakenly opening the phone tool.
+
+**Chrome-first social routing**
+- Fixed the 2026-11-24 field failure: asking Xod to post on Facebook in Chrome (or via a Google account) routed to the `phone` tool and looped on an unpaired-phone error because the planner prompt and tool affinity rules defaulted social sites to `phone` and omitted `browser_find_tab` / `browser_adopt`.
+- Updated `app/agent/researcher.py` so `browser_find_tab`, `browser_adopt`, `browser_tabs`, `browser_run_parallel`, and `browser_steer_mission` are first-class in the planner prompt and `phone` is reserved for explicit phone requests.
+- Updated `select_tools_for_query` in `app/agent/tools.py` so Facebook/X/LinkedIn/Instagram/Chrome/Google-account queries select the signed-in Chrome browser tools and never select `phone` unless the user asks for their phone.
+
+**Tests**
+- `tests/smoke/run_agent_steering_test.py` 10/10: live mid-mission steering (stuck-pause + resume), `find_or_open_site_tab` auto-adopt & tab reuse, tool registration, and routing regression checks (`"go to fb on my chrome"`, `"post on Facebook ... my Google account"`, and explicit `"open Facebook on my phone"`).
+
 ## 1.1.24
 
 The approval watcher works the whole queue now: one stuck card can no longer block every approval behind it.
