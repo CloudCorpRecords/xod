@@ -988,6 +988,23 @@ async def control_center_settings_endpoint(req: ControlCenterSettingsRequest):
     return await asyncio.to_thread(control_center.snapshot)
 
 
+class TrainingVaultExportRequest(BaseModel):
+    dest_dir: Optional[str] = ""
+    scrub_pii: bool = True
+
+
+@app.get("/api/training-vault/status")
+async def training_vault_status_endpoint():
+    from app.services import training_vault
+    return await asyncio.to_thread(training_vault.status)
+
+
+@app.post("/api/training-vault/export")
+async def training_vault_export_endpoint(req: TrainingVaultExportRequest):
+    from app.services import training_vault
+    return await asyncio.to_thread(training_vault.export_vault, req.dest_dir or "", bool(req.scrub_pii))
+
+
 @app.get("/api/browser/proof-thumb")
 async def browser_proof_thumb_endpoint():
     from app.services import browser_remote

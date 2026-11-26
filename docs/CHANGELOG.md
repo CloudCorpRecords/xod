@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.40
+
+Adds the **Personal Training Data Vault**, **Local Model Harness Turbo** profile for on-device Apple Silicon MLX / LM Studio / Ollama models, and a one-click green **Call** button in the Desktop top bar.
+
+- **Personal Training Data Vault** (`app/services/training_vault.py`, `app/main.py`, `app/static/js/control_center.js`): collects verified SFT chat examples, DPO preference pairs, and multi-step agent/tool trajectories from `xod.db` and exports them as ML-ready JSONL (`sft_chat.jsonl`, `dpo_preferences.jsonl`, `agent_trajectories.jsonl`), `dataset_card.json`, and `SHA256SUMS.txt`. Includes an automatic PII & secret scrubber (on by default, stripping API keys, JWTs, private keys, emails, phones, and home paths) plus auto-detection of connected external drives under `/Volumes/*` and custom vault folders.
+- **Local Model Harness Turbo** (`app/services/harness_turbo.py`, `app/services/mcp_client.py`, `app/services/control_center.py`): automatically activates when a local provider (`xod`, `lm_studio`, `ollama`, `local`, or `127.0.0.1`) is running — clamping Smart MCP Tool Routing to a 6-tool schema diet (`LOCAL_MCP_TOOL_CAP = 6`) and tightening rolling tool-output compaction (newest 2 tool results full, stale threshold 500 chars, compacted to 240 chars) so 4B–12B models stay fast inside their local KV-cache window. Surfaced via a live `Local Turbo` badge in Control Center.
+- **Desktop Top-Bar Call Button** (`app/static/index.html`): adds a one-click green **Call** button in the top bar matching Xod Android to launch a live voice conversation immediately.
+
 ## 1.1.39
 
 Fixes Xod's Muse approval watcher from ever clicking `+` or chat-composer attachment/upload buttons, and adds the matching phone API ops for Xod Android `v0.10.1`.

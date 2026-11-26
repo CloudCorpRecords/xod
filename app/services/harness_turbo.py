@@ -25,6 +25,22 @@ _PARALLEL_SAFE_EXACT = {
     "fs_read_workspace_file", "fs_list_workspace",
 }
 
+LOCAL_PROVIDERS = {"xod", "lm_studio", "ollama", "local"}
+LOCAL_MCP_TOOL_CAP = 6
+
+
+def is_local_provider(info_or_name: Any) -> bool:
+    """True when the active LLM provider is an on-device local runtime (MLX/LM Studio/Ollama)."""
+    if isinstance(info_or_name, dict):
+        provider = str(info_or_name.get("provider") or "").strip().lower()
+        base_url = str(info_or_name.get("base_url") or "").strip().lower()
+        if provider in LOCAL_PROVIDERS:
+            return True
+        if any(h in base_url for h in ("127.0.0.1", "localhost", "0.0.0.0")):
+            return True
+        return False
+    return str(info_or_name or "").strip().lower() in LOCAL_PROVIDERS
+
 _SAFE_READONLY_CMD_RE = re.compile(
     r"^\s*(?:git\s+(?:status|diff|log|branch|show|rev-parse)\b|"
     r"ls\b|pwd\b|whoami\b|uname\b|which\b|wc\b|head\b|tail\b|"
@@ -128,14 +144,29 @@ def sort_tools_deterministically(tools: Optional[List[Dict[str, Any]]]) -> Optio
 
 
 def optimize_payload(payload: Dict[str, Any], info: Dict[str, Any]) -> Dict[str, Any]:
-    """Apply prompt-cache and context optimizations in-place on an LLM request payload."""
+    """Apply prompt-cache and context optimizations in-place on an LLM request payload.
+
+    When running a local model (Apple Silicon MLX, LM Studio, Ollama), automatically
+    engages the tighter Local Model Harness Turbo compaction profile so 4B–12B models
+    stay inside their fast 4K–8K KV-cache sweet spot.
+    """
     if not isinstance(payload, dict):
         return payload
 
-    # 1. Compact stale historical tool outputs (keeps newest 3 tool outputs intact)
+    local_mode = is_local_provider(info)
+
+    # 1. Compact stale historical tool outputs (tighter profile for local models)
     msgs = payload.get("messages")
     if isinstance(msgs, list) and msgs:
-        compacted, _ = compact_stale_tool_messages(msgs)
+        if local_mode:
+            compacted, _ = compact_stale_tool_messages(
+                msgs,
+                keep_recent_tools=2,
+                stale_threshold=500,
+                max_stale_chars=240,
+            )
+        else:
+            compacted, _ = compact_stale_tool_messages(msgs)
         payload["messages"] = compacted
 
     # 2. Deterministic tool ordering for stable prefix caching

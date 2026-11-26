@@ -105,6 +105,10 @@
     const br = data.browser_sessions || {};
     const fleet = data.fleet || {};
     const autonomy = data.autonomy || { mode: "standard", locked: false, lock_reasons: [], disclaimer: "" };
+    const vault = data.training_vault || { counts: {}, destinations: [], default_dir: "", last_export: {} };
+    const vCounts = vault.counts || {};
+    const vDests = vault.destinations || [];
+    const vLast = vault.last_export || {};
     const route = mcp.last_route || {};
 
     const issuesHtml = issues.length
@@ -138,9 +142,12 @@
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
         <!-- 1. AI Brain & Voice -->
         <section class="rounded-xl bg-surface-850 border border-white/[0.07] p-4 space-y-2.5">
-          <div class="flex items-center justify-between">
+          <div class="flex items-center justify-between gap-2">
             <h4 class="text-[13px] font-semibold text-white">AI Brain &amp; Voice</h4>
-            ${pill(!!brain.model, brain.provider || "Active")}
+            <div class="flex items-center gap-1.5">
+              ${brain.local_turbo_active ? `<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-cyan-500/15 text-cyan-200 border border-cyan-500/35" title="Local Model Harness Turbo: 6-tool MCP cap + tight 2-step rolling compaction">Local Turbo</span>` : ""}
+              ${pill(!!brain.model, brain.provider || "Active")}
+            </div>
           </div>
           <div class="text-[12px] text-zinc-300 font-mono truncate" title="${esc(brain.model)}">${esc(brain.model || "Not configured")}</div>
           <div class="text-[11px] text-zinc-400">
@@ -308,6 +315,54 @@
           </div>
         ` : ""}
       </section>
+
+      <!-- 7. Personal Training Data Vault -->
+      <section class="rounded-xl bg-surface-850 border border-white/[0.07] p-4 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h4 class="text-[13px] font-semibold text-white">Personal Training Data Vault</h4>
+            <p class="text-[11px] text-zinc-400">Package your SFT chats, DPO preference pairs, and agent trajectories into clean ML-ready JSONL + SHA-256 checksums for fine-tuning or backup.</p>
+          </div>
+          ${pill((vCounts.total_records || 0) > 0, `${Number(vCounts.total_records || 0).toLocaleString()} records`)}
+        </div>
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div class="rounded-lg bg-surface-900/70 border border-white/[0.05] py-2 px-2">
+            <div class="text-[15px] font-semibold text-white">${Number(vCounts.sft_chat || 0).toLocaleString()}</div>
+            <div class="text-[10px] uppercase tracking-wider text-zinc-400">SFT Chats</div>
+          </div>
+          <div class="rounded-lg bg-surface-900/70 border border-white/[0.05] py-2 px-2">
+            <div class="text-[15px] font-semibold text-white">${Number(vCounts.dpo_preferences || 0).toLocaleString()}</div>
+            <div class="text-[10px] uppercase tracking-wider text-zinc-400">DPO Pairs</div>
+          </div>
+          <div class="rounded-lg bg-surface-900/70 border border-white/[0.05] py-2 px-2">
+            <div class="text-[15px] font-semibold text-white">${Number(vCounts.agent_trajectories || 0).toLocaleString()}</div>
+            <div class="text-[10px] uppercase tracking-wider text-zinc-400">Trajectories</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <select id="ccVaultDestSelect" class="rounded-lg bg-surface-900 border border-white/[0.08] px-2.5 py-1.5 text-[12px] text-zinc-200 focus:outline-none">
+            ${vDests.map((d) => `<option value="${esc(d.path)}" ${d.path === vault.default_dir ? "selected" : ""}>${esc(d.label)}${d.free_gb != null ? ` (${d.free_gb} GB free)` : ""}</option>`).join("")}
+            <option value="__custom__">Custom folder path…</option>
+          </select>
+          <input id="ccVaultCustomDir" type="text" value="${esc(vault.default_dir || "")}" placeholder="/Volumes/MyDrive/Xod-Training-Vault"
+            class="rounded-lg bg-surface-900 border border-white/[0.08] px-2.5 py-1.5 text-[12px] text-zinc-200 font-mono focus:outline-none">
+        </div>
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <label class="flex items-center gap-2 text-[12px] text-zinc-200 cursor-pointer">
+            <input type="checkbox" id="ccVaultScrubChk" class="accent-brand-500" checked>
+            <span>Scrub API keys, emails, phones &amp; home paths <span class="text-zinc-500">(recommended)</span></span>
+          </label>
+          <button type="button" id="ccVaultExportBtn"
+            class="px-3 py-1.5 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[12px] font-semibold shrink-0">
+            Package &amp; Export Dataset
+          </button>
+        </div>
+        <div id="ccVaultStatus" class="text-[11px] text-zinc-400">
+          ${vLast.exported_at
+            ? `Last export: <span class="text-zinc-200 font-mono">${esc(vLast.dest_dir || "")}</span> (${Number((vLast.counts || {}).total_records || 0).toLocaleString()} records, ~${Number(vLast.estimated_tokens || 0).toLocaleString()} tokens, ${vLast.redactions_count || 0} redactions).`
+            : "Exports sft_chat.jsonl, dpo_preferences.jsonl, agent_trajectories.jsonl, dataset_card.json, and SHA256SUMS.txt."}
+        </div>
+      </section>
     `;
 
     body.querySelectorAll("[data-cc-action]").forEach((btn) => {
@@ -351,6 +406,46 @@
     if (cBtn) cBtn.addEventListener("click", () => { if (pendingAutonomyTarget) setAutonomyMode(pendingAutonomyTarget, true); });
     const xBtn = document.getElementById("ccCancelAutonomyBtn");
     if (xBtn) xBtn.addEventListener("click", () => { pendingAutonomyTarget = null; renderSnapshot(data); });
+
+    const vSel = document.getElementById("ccVaultDestSelect");
+    const vCustom = document.getElementById("ccVaultCustomDir");
+    if (vSel && vCustom) {
+      vSel.addEventListener("change", () => {
+        if (vSel.value && vSel.value !== "__custom__") vCustom.value = vSel.value;
+        else vCustom.focus();
+      });
+    }
+    const vBtn = document.getElementById("ccVaultExportBtn");
+    if (vBtn) {
+      vBtn.addEventListener("click", async () => {
+        const statusEl = document.getElementById("ccVaultStatus");
+        const scrub = !!(document.getElementById("ccVaultScrubChk") && document.getElementById("ccVaultScrubChk").checked);
+        const dest = (vCustom && vCustom.value.trim()) || (vSel && vSel.value !== "__custom__" ? vSel.value : "");
+        vBtn.disabled = true;
+        vBtn.textContent = "Packaging…";
+        if (statusEl) statusEl.textContent = "Scrubbing and writing JSONL dataset bundle…";
+        try {
+          const res = await fetch("/api/training-vault/export", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dest_dir: dest, scrub_pii: scrub }),
+          });
+          const out = await res.json().catch(() => ({}));
+          if (out.ok) {
+            if (statusEl) {
+              statusEl.innerHTML = `<span class="text-emerald-300">Exported ${Number((out.counts || {}).total_records || 0).toLocaleString()} records (~${Number(out.estimated_tokens || 0).toLocaleString()} tokens, ${out.redactions_count || 0} redactions) to <span class="font-mono">${esc(out.dest_dir)}</span>.</span>`;
+            }
+          } else if (statusEl) {
+            statusEl.innerHTML = `<span class="text-red-300">${esc(out.error || "Export failed.")}</span>`;
+          }
+        } catch (e) {
+          if (statusEl) statusEl.innerHTML = `<span class="text-red-300">${esc(String(e.message || e))}</span>`;
+        } finally {
+          vBtn.disabled = false;
+          vBtn.textContent = "Package & Export Dataset";
+        }
+      });
+    }
   }
 
   async function refreshControlCenter() {

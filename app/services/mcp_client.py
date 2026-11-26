@@ -561,14 +561,21 @@ class MCPHub:
         defs = self.tool_definitions()
         total = len(defs)
         smart_enabled = True
+        local_turbo = False
         try:
             from app.services.storage import get_setting
+            from app.services import harness_turbo
+            from app import config as cfg
             smart_enabled = get_setting("smart_mcp_routing", "1") != "0"
+            active_provider = getattr(cfg, "LLM_PROVIDER", "") or get_setting("llm_provider", "")
+            if harness_turbo.is_local_provider(active_provider):
+                local_turbo = True
+                limit = min(limit, harness_turbo.LOCAL_MCP_TOOL_CAP)
         except Exception:
             smart_enabled = True
 
         if not smart_enabled:
-            chosen = defs[:64]
+            chosen = defs[: (limit if local_turbo else 64)]
             self.last_route = {
                 "query": (query or "")[:100],
                 "total_tools": total,
@@ -576,6 +583,7 @@ class MCPHub:
                 "saved_tools": max(0, total - len(chosen)),
                 "servers": sorted({d["function"]["name"].split("__", 2)[1] for d in chosen if "__" in d["function"]["name"]}),
                 "smart_enabled": False,
+                "local_turbo": local_turbo,
                 "at": time.time(),
             }
             return chosen
@@ -588,6 +596,7 @@ class MCPHub:
                 "saved_tools": 0,
                 "servers": sorted({d["function"]["name"].split("__", 2)[1] for d in defs if "__" in d["function"]["name"]}),
                 "smart_enabled": True,
+                "local_turbo": local_turbo,
                 "at": time.time(),
             }
             return defs
@@ -644,6 +653,7 @@ class MCPHub:
             "saved_tools": max(0, total - len(chosen)),
             "servers": sorted(counts.keys()),
             "smart_enabled": True,
+            "local_turbo": local_turbo,
             "at": time.time(),
         }
         return chosen

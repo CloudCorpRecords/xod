@@ -50,10 +50,11 @@ def snapshot() -> Dict[str, Any]:
     agora_configured = _safe(agora_voice.is_configured, False)
     agora_convoai = bool(_safe(lambda: secret_store.get_secret("agora_customer_id"), "") and
                          _safe(lambda: secret_store.get_secret("agora_customer_secret"), ""))
-    from app.services import usage_ledger, sentinel
+    from app.services import usage_ledger, sentinel, harness_turbo
     usage_today = _safe(lambda: usage_ledger.summary("today").get("totals") or {}, {}) or {}
+    active_provider = getattr(cfg, "LLM_PROVIDER", "") or get_setting("llm_provider", "")
     brain = {
-        "provider": getattr(cfg, "LLM_PROVIDER", "") or get_setting("llm_provider", ""),
+        "provider": active_provider,
         "model": getattr(cfg, "LLM_MODEL", "") or get_setting("llm_model", ""),
         "keychain_keys": key_names,
         "agora_configured": agora_configured,
@@ -62,6 +63,8 @@ def snapshot() -> Dict[str, Any]:
         "cached_tokens": usage_today.get("cached_tokens", 0),
         "prompt_tokens": usage_today.get("prompt_tokens", 0),
         "permissionless_mode": _safe(sentinel.permissionless_mode, False),
+        "local_turbo_active": harness_turbo.is_local_provider(active_provider),
+        "local_mcp_tool_cap": harness_turbo.LOCAL_MCP_TOOL_CAP,
     }
 
     # 2. MCP servers + Smart Tool Routing
@@ -173,9 +176,10 @@ def snapshot() -> Dict[str, Any]:
             "action_label": "Reconnect",
         })
 
-    from app.services import fleet_control, autonomy_modes
+    from app.services import fleet_control, autonomy_modes, training_vault
     fleet_block = _safe(fleet_control.status_snapshot, {}) or {}
     autonomy_block = _safe(autonomy_modes.status, {}) or {}
+    vault_block = _safe(training_vault.status, {}) or {}
 
     return {
         "ok": len(issues) == 0,
@@ -187,4 +191,5 @@ def snapshot() -> Dict[str, Any]:
         "browser_sessions": browser_sessions,
         "fleet": fleet_block,
         "autonomy": autonomy_block,
+        "training_vault": vault_block,
     }
