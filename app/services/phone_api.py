@@ -429,10 +429,33 @@ def _family_approve(args: Dict[str, Any]) -> Dict[str, Any]:
     return r
 
 
+def _voice_briefs_list(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import agora_voice
+    return {"configured": agora_voice.is_configured(), "briefs": agora_voice.list_briefs(limit=15)}
+
+
+def _voice_brief_launch(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import agora_voice
+    bid = str(args.get("id") or "").strip()
+    if not bid:
+        raise ApiError("Missing brief id.")
+    try:
+        return agora_voice.launch_brief_as_mission(bid)
+    except ValueError as e:
+        raise ApiError(str(e))
+
+
+def _voice_brief_dismiss(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import agora_voice
+    bid = str(args.get("id") or "").strip()
+    return {"dismissed": agora_voice.dismiss_brief(bid)}
+
+
 OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "summary": _summary, "link.routes": _routes,
     "chat.sessions": _sessions, "chat.history": _history, "chat.send": _chat,
     "tasks.list": _tasks, "tasks.get": _task_get, "tasks.create": _task_create, "tasks.act": _task_act,
+    "voice_brief.list": _voice_briefs_list, "voice_brief.launch": _voice_brief_launch, "voice_brief.dismiss": _voice_brief_dismiss,
     "routines.list": _routines, "routines.act": _routine_act, "goals.act": _goal_act,
     "memory.search": _memory, "reports.list": _reports, "reports.read": _report_read,
     "files.projects": _projects, "files.read": _file_read,

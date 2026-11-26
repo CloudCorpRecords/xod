@@ -98,7 +98,7 @@ _SECURITY_HEADERS = {
         "img-src 'self' data: blob: https: http:",
         "media-src 'self' data: blob: https:",
         "font-src 'self' data:",
-        "connect-src 'self' https://*.agora.io wss://*.agora.io https://*.sd-rtn.com wss://*.sd-rtn.com https://*.edge.agora.io wss://*.edge.agora.io https://*.edge.sd-rtn.com wss://*.edge.sd-rtn.com",
+        "connect-src 'self' https://*.agora.io wss://*.agora.io wss://*.agora.io:* https://*.sd-rtn.com wss://*.sd-rtn.com wss://*.sd-rtn.com:* https://*.edge.agora.io wss://*.edge.agora.io wss://*.edge.agora.io:* https://*.edge.sd-rtn.com wss://*.edge.sd-rtn.com wss://*.edge.sd-rtn.com:*",
         "object-src 'none'",
         "frame-src 'self'",                          # the preview pane (sandboxed, see services/previews.py)
         "base-uri 'self'",
