@@ -998,6 +998,86 @@ async def browser_proof_thumb_endpoint():
         return {"ok": False, "image_b64": ""}
 
 
+# ------------------------------------------------------------------ Fleet Control & Cross-Chat API
+
+class FleetPolicyRequest(BaseModel):
+    auto_approve_mode: Optional[str] = None
+    sync_chat_summaries: Optional[bool] = None
+
+
+class FleetHandoffRequest(BaseModel):
+    summary: str
+    target_session_id: Optional[str] = ""
+    from_session_id: Optional[str] = ""
+    next_step: Optional[str] = ""
+    create_title: Optional[str] = ""
+
+
+class FleetBlackboardPostRequest(BaseModel):
+    topic: str = "general"
+    summary: str
+    session_id: Optional[str] = ""
+    branch: Optional[str] = ""
+    status: str = "active"
+
+
+@app.get("/api/fleet/status")
+async def fleet_status_endpoint():
+    from app.services import fleet_control
+    return await asyncio.to_thread(fleet_control.status_snapshot)
+
+
+@app.post("/api/fleet/policy")
+async def fleet_policy_endpoint(req: FleetPolicyRequest):
+    from app.services import fleet_control
+    try:
+        if req.auto_approve_mode is not None:
+            fleet_control.set_mode(req.auto_approve_mode)
+        if req.sync_chat_summaries is not None:
+            fleet_control.set_sync_chat_summaries(req.sync_chat_summaries)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return await asyncio.to_thread(fleet_control.status_snapshot)
+
+
+@app.get("/api/fleet/chats")
+async def fleet_chats_endpoint(limit: int = 25, source: str = ""):
+    from app.services import fleet_control
+    return await asyncio.to_thread(fleet_control.chat_list, limit, source)
+
+
+@app.post("/api/fleet/handoff")
+async def fleet_handoff_endpoint(req: FleetHandoffRequest):
+    from app.services import fleet_control
+    try:
+        return await asyncio.to_thread(
+            fleet_control.chat_handoff, req.summary, req.target_session_id or "",
+            req.from_session_id or "", req.next_step or "", None, req.create_title or "", "desktop"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/fleet/blackboard")
+async def fleet_blackboard_get_endpoint(topic: str = "", limit: int = 25):
+    from app.services import fleet_control
+    entries = await asyncio.to_thread(fleet_control.blackboard_read, topic, limit)
+    return {"count": len(entries), "entries": entries}
+
+
+@app.post("/api/fleet/blackboard")
+async def fleet_blackboard_post_endpoint(req: FleetBlackboardPostRequest):
+    from app.services import fleet_control
+    try:
+        entry = await asyncio.to_thread(
+            fleet_control.blackboard_post, req.topic, req.summary, "desktop",
+            req.session_id or "", req.branch or "", None, req.status
+        )
+        return {"success": True, "entry": entry}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.on_event("shutdown")
 async def _stop_crew_host():
     try:

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.36
+
+Brings full agent-managed **Fleet Control** to parity with Muse, adds a **Cross-Chat Agent Bus** so agents can coordinate and hand off between chats, and introduces a **Shared Fleet Blackboard** + **Chat-Summary Sync**.
+
+- **Fleet Rubber-Stamp Auto-Approver** (`app/services/fleet_control.py`, `app/services/xod_network.py`): applies the exact same `act` / `decide` / `off` rubber-stamp policy (and immutable `DATA_DIR/fleet_control/audit.jsonl` log) to verified same-account Fleet & Harness tasks/missions — zero human-tap bottleneck while preserving strict Tailscale `whois` + `X-Harness-Token` locks and `claimed_result` vs. `verified_status` honesty.
+- **Cross-Chat Agent Bus** (`app/services/fleet_control.py`, `app/services/harness.py`, `app/agent/tools.py`, `app/main.py`): adds `chat_list`, `chat_read`, `chat_handoff`, and `chat_steer` on both the Harness tool surface (`/v1/harness/invoke`) and Xod's built-in agent tools (`fleet_chat_*`), plus `/api/fleet/*` endpoints so agents can jump between chats, spawn linked handoff chats, and steer work autonomously.
+- **Shared Fleet Blackboard & Chat-Summary Sync** (`app/services/fleet_control.py`, `app/services/memory_layers.py`, `app/services/xod_network.py`): adds CRDT-merged working memory (`blackboard.json`, synced over `/v1/memory/blackboard`) and opt-in recent chat summaries injected automatically via `memory_layers.search_before_work()` and `render()`.
+- **Unified Fleet Policy Card in Control Center** (`app/services/control_center.py`, `app/static/js/control_center.js`): live 3-way **Rubber-Stamp (Auto) / Audit Only / Ask** switch, **Share chat summaries & Fleet Blackboard** toggle, audited stamp count, and active blackboard feed.
+
 ## 1.1.35
 
 Major Computer & Browser Control upgrade across four pillars: Unified Control Center, Smart MCP Tool Routing, Live Signed-in Chrome Bridge, and Inline Live Action Strip in chat.

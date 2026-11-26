@@ -313,10 +313,24 @@ def receive_task(caller_ip: str, body: Dict[str, Any]) -> Dict[str, Any]:
                          {"rule": "xod_network_task", "why": f"Your Xod on {sender} wants this computer to {what}: {request[:300]}"})
     _incoming[ref] = {"request": request, "sender": sender, "caller": who["host"] or caller_ip, "grant": grant,
                       "approval_id": held.get("approval_id"), "task_id": None, "kind": kind, "mission_id": None}
-    logger.info(f"Xod network: task from {sender} is waiting for approval ({ref})")
-    from app.services import event_log
+    from app.services import event_log, fleet_control
     event_log.emit("network.task_received", actor=sender, ids={"ref": ref},
                    payload={"kind": kind, "request": request[:300], "from": sender})
+    verdict = fleet_control.evaluate_fleet_card(kind=kind, ref=ref, sender=sender, request_preview=request)
+    if verdict.get("auto_approve"):
+        accepted = accept(ref, grant)
+        if accepted.get("success"):
+            try:
+                from app.services.mcp_client import mcp_hub
+                if held.get("approval_id"):
+                    mcp_hub.pending.pop(held["approval_id"], None)
+            except Exception:
+                pass
+            logger.info(f"Xod network: rubber-stamp auto-approved {kind} from {sender} ({ref})")
+            return {"ref": ref, "status": "auto_approved", "policy": verdict["policy"],
+                    "task_id": accepted.get("task_id"), "mission_id": accepted.get("mission_id"),
+                    "title": accepted.get("title")}
+    logger.info(f"Xod network: task from {sender} is waiting for approval ({ref})")
     return {"ref": ref, "status": "waiting_for_ok"}
 
 
@@ -444,6 +458,29 @@ async def _start_beacon(ip: str) -> None:
             return await asyncio.to_thread(memory_sync.poked, request.client.host, dict(request.headers))
         except PermissionError as e:
             raise HTTPException(403, str(e))
+
+    @app.get("/v1/memory/blackboard")
+    async def memory_blackboard_get(request: Request) -> Dict[str, Any]:
+        who = await asyncio.to_thread(_caller, request.client.host)
+        if not who["same_account"]:
+            raise HTTPException(403, "Only your own devices can read this Xod's fleet blackboard.")
+        from app.services import fleet_control
+        return {
+            "entries": fleet_control.blackboard_read(limit=40),
+            "chat_summaries": fleet_control.recent_chat_summaries(limit=10),
+        }
+
+    @app.post("/v1/memory/blackboard")
+    async def memory_blackboard_merge(request: Request) -> Dict[str, Any]:
+        who = await asyncio.to_thread(_caller, request.client.host)
+        if not who["same_account"]:
+            raise HTTPException(403, "Only your own devices can sync this Xod's fleet blackboard.")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(400, "Send JSON.")
+        from app.services import fleet_control
+        return fleet_control.blackboard_merge((body or {}).get("entries") or [])
 
     # Family inference borrowing (services/family_inference.py): two locks, like the
     # harness port \u2014 Tailscale vouches the caller is this account's device, and the

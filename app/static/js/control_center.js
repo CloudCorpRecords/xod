@@ -53,6 +53,17 @@
     } catch (_) {}
   }
 
+  async function updateFleetPolicy(patch) {
+    try {
+      const res = await fetch("/api/fleet/policy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      if (res.ok) refreshControlCenter();
+    } catch (_) {}
+  }
+
   function renderSnapshot(data) {
     updateTopBadge(data.issue_count || 0);
     const body = document.getElementById("ccModalBody");
@@ -63,6 +74,7 @@
     const mcp = data.mcp || {};
     const mac = data.mac_control || {};
     const br = data.browser_sessions || {};
+    const fleet = data.fleet || {};
     const route = mcp.last_route || {};
 
     const issuesHtml = issues.length
@@ -175,6 +187,47 @@
           </div>
         </section>
       </div>
+
+      <!-- 5. Fleet Control, Rubber-Stamp Auto-Approve & Cross-Chat Blackboard -->
+      <section class="rounded-xl bg-surface-850 border border-white/[0.07] p-4 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h4 class="text-[13px] font-semibold text-white">Fleet Control &amp; Cross-Chat Memory</h4>
+            <p class="text-[11px] text-zinc-400">Agent-managed fleet approvals (same rubber-stamp policy as Muse) + shared working blackboard across chats and Xods.</p>
+          </div>
+          ${pill(fleet.auto_approve_mode === "act", fleet.auto_approve_mode === "act" ? "Rubber-Stamp Active" : fleet.auto_approve_mode === "decide" ? "Audit Only" : "Manual Ask")}
+        </div>
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="inline-flex rounded-lg bg-surface-900 p-1 border border-white/[0.06] gap-1">
+            ${[["act", "Rubber-Stamp (Auto)"], ["decide", "Audit Only"], ["off", "Ask"]].map(([m, lbl]) => `
+              <button type="button" data-cc-fleet-mode="${m}" class="px-2.5 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                (fleet.auto_approve_mode || "act") === m
+                  ? "bg-brand-500 text-surface-900"
+                  : "text-zinc-300 hover:bg-surface-700"
+              }">${lbl}</button>
+            `).join("")}
+          </div>
+          <label class="flex items-center gap-2 text-[12px] text-zinc-200 cursor-pointer">
+            <input type="checkbox" id="ccFleetSummariesChk" class="accent-brand-500" ${fleet.sync_chat_summaries !== false ? "checked" : ""}>
+            <span>Share chat summaries &amp; Fleet Blackboard</span>
+          </label>
+        </div>
+        <div class="flex flex-wrap gap-3 text-[11px] text-zinc-400">
+          <span>Audited fleet stamps: <b class="text-zinc-200">${fleet.audit_count || 0}</b></span>
+          <span>Muse approver: <b class="text-zinc-200">${esc(fleet.muse_mode || "always")}</b></span>
+          <span>Active blackboard items: <b class="text-zinc-200">${fleet.blackboard_count || 0}</b></span>
+        </div>
+        ${(fleet.blackboard || []).length ? `
+          <div class="space-y-1.5 max-h-28 overflow-y-auto pt-1 border-t border-white/[0.05]">
+            ${(fleet.blackboard || []).slice(0, 5).map((b) => `
+              <div class="text-[11px] text-zinc-300 flex items-center justify-between gap-2">
+                <span class="truncate"><span class="text-cyan-300 font-medium">[${esc(b.topic)}]</span> ${esc(b.summary)}</span>
+                <span class="text-zinc-500 shrink-0">${esc(b.actor)}</span>
+              </div>
+            `).join("")}
+          </div>
+        ` : ""}
+      </section>
     `;
 
     body.querySelectorAll("[data-cc-action]").forEach((btn) => {
@@ -195,6 +248,11 @@
     if (sr) sr.addEventListener("change", () => updateControlSetting({ smart_mcp_routing: sr.checked }));
     const pc = document.getElementById("ccPreferChromeChk");
     if (pc) pc.addEventListener("change", () => updateControlSetting({ prefer_live_chrome: pc.checked }));
+    body.querySelectorAll("[data-cc-fleet-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => updateFleetPolicy({ auto_approve_mode: btn.getAttribute("data-cc-fleet-mode") }));
+    });
+    const fs = document.getElementById("ccFleetSummariesChk");
+    if (fs) fs.addEventListener("change", () => updateFleetPolicy({ sync_chat_summaries: fs.checked }));
   }
 
   async function refreshControlCenter() {

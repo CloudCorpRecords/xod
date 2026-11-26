@@ -2869,6 +2869,60 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "fleet_chat_list",
+            "description": "Lists active and recent Xod chats (desktop, phone, fleet) with previews so you can coordinate across chats.",
+            "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "source": {"type": "string"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fleet_chat_read",
+            "description": "Reads another Xod chat session's recent messages so you can pull in context from another chat.",
+            "parameters": {"type": "object", "properties": {"session_id": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["session_id"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fleet_chat_handoff",
+            "description": "Hands off work and context into another Xod chat (or spawns a new linked fleet chat) and records it on the Shared Fleet Blackboard.",
+            "parameters": {"type": "object", "properties": {
+                "summary": {"type": "string"}, "target_session_id": {"type": "string"}, "from_session_id": {"type": "string"},
+                "next_step": {"type": "string"}, "create_title": {"type": "string"}}, "required": ["summary"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fleet_chat_steer",
+            "description": "Steers another Xod chat with a follow-up instruction and optionally queues an autonomous task for it.",
+            "parameters": {"type": "object", "properties": {
+                "session_id": {"type": "string"}, "instruction": {"type": "string"}, "queue_task": {"type": "boolean"}},
+                "required": ["session_id", "instruction"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fleet_blackboard_read",
+            "description": "Reads active shared working memory from the Fleet Blackboard across all chats and your other Xods.",
+            "parameters": {"type": "object", "properties": {"topic": {"type": "string"}, "limit": {"type": "integer"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fleet_blackboard_post",
+            "description": "Posts an active goal, touched branch/files, or decision to the Shared Fleet Blackboard so other chats and Xods stay in sync.",
+            "parameters": {"type": "object", "properties": {
+                "topic": {"type": "string"}, "summary": {"type": "string"}, "branch": {"type": "string"}, "status": {"type": "string"}},
+                "required": ["topic", "summary"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "desktop_type",
             "description": "Types text with the real keyboard, into an element number from the last desktop_look (clicked first) or wherever the cursor is. Never passwords.",
             "parameters": {"type": "object", "properties": {
@@ -4187,6 +4241,30 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         from app.services.mcp_client import mcp_hub
         hits = mcp_hub.discover_tools(str((arguments or {}).get("query") or ""), limit=12)
         return {"success": True, "count": len(hits), "tools": hits}
+    if name.startswith("fleet_chat_") or name.startswith("fleet_blackboard_"):
+        from app.services import fleet_control
+        a = arguments or {}
+        try:
+            if name == "fleet_chat_list":
+                return {"success": True, **fleet_control.chat_list(int(a.get("limit") or 20), str(a.get("source") or ""))}
+            if name == "fleet_chat_read":
+                return {"success": True, **fleet_control.chat_read(str(a.get("session_id") or ""), int(a.get("limit") or 20))}
+            if name == "fleet_chat_handoff":
+                return fleet_control.chat_handoff(
+                    str(a.get("summary") or ""), str(a.get("target_session_id") or ""), str(a.get("from_session_id") or ""),
+                    str(a.get("next_step") or ""), a.get("artifacts") if isinstance(a.get("artifacts"), list) else None,
+                    str(a.get("create_title") or ""), actor="xod")
+            if name == "fleet_chat_steer":
+                return fleet_control.chat_steer(str(a.get("session_id") or ""), str(a.get("instruction") or ""), actor="xod", queue_task=bool(a.get("queue_task", True)))
+            if name == "fleet_blackboard_read":
+                entries = fleet_control.blackboard_read(str(a.get("topic") or ""), int(a.get("limit") or 20))
+                return {"success": True, "count": len(entries), "entries": entries}
+            if name == "fleet_blackboard_post":
+                entry = fleet_control.blackboard_post(str(a.get("topic") or "general"), str(a.get("summary") or ""), actor="xod",
+                                                      branch=str(a.get("branch") or ""), status=str(a.get("status") or "active"))
+                return {"success": True, "entry": entry}
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
     if name.startswith("mcp__"):
         from app.services.mcp_client import mcp_hub
         return await mcp_hub.call(name, arguments or {})

@@ -572,6 +572,28 @@ TOOL_SURFACE = [
     {"name": "repo_watch", "version": 1, "kind": "read",
      "description": "Repo Worker stage 6, the read side: the signed-in account's open PRs with their attention state (changes requested, failing checks, conflicts, stale marks), split into needs attention, waiting on maintainer, and quiet.",
      "args": {"limit": "open PRs to read (default 25, max 50)"}},
+    {"name": "chat_list", "version": 1, "kind": "read",
+     "description": "List active and recent Xod chats (desktop, phone, voice, fleet) with 1-line previews so an operator agent can coordinate across chats.",
+     "args": {"limit": "max chats (default 25)", "source": "optional filter: desktop | phone | fleet"}},
+    {"name": "chat_read", "version": 1, "kind": "read",
+     "description": "Read a specific Xod chat session's recent turns and metadata.",
+     "args": {"session_id": "the chat session id", "limit": "max messages (default 20)"}},
+    {"name": "chat_handoff", "version": 1, "kind": "write",
+     "description": "Hand off work and structured context into an existing Xod chat or spawn a new linked fleet chat, also recording it on the Shared Fleet Blackboard.",
+     "args": {"summary": "handoff summary", "target_session_id": "target chat id or 'new'", "from_session_id": "source chat id (optional)",
+              "next_step": "recommended next step (optional)", "artifacts": "list of files/links (optional)", "create_title": "title if creating a new chat"}},
+    {"name": "chat_steer", "version": 1, "kind": "write",
+     "description": "Steer an existing Xod chat by posting a fleet instruction and optionally queueing an autonomous follow-up task.",
+     "args": {"session_id": "target chat id", "instruction": "what the chat/agent should do next", "queue_task": "bool (default true)"}},
+    {"name": "blackboard_read", "version": 1, "kind": "read",
+     "description": "Read active entries from the Shared Fleet Blackboard (working memory shared across chats and machines).",
+     "args": {"topic": "optional topic filter", "limit": "max entries (default 20)"}},
+    {"name": "blackboard_post", "version": 1, "kind": "write",
+     "description": "Post or update an entry on the Shared Fleet Blackboard (active goals, touched branches/files, decisions).",
+     "args": {"topic": "short topic", "summary": "concise status/decision", "session_id": "optional chat id", "branch": "optional git branch", "files": "optional list of file paths", "status": "active | blocked | done"}},
+    {"name": "fleet_policy_read", "version": 1, "kind": "read",
+     "description": "Read this Xod's Fleet Control policy (rubber-stamp auto-approve mode, audit count, Muse mode, and blackboard summary).",
+     "args": {}},
 ]
 
 _TOOL_NAMES = {t["name"] for t in TOOL_SURFACE}
@@ -930,6 +952,70 @@ async def invoke(caller_ip: str, headers: Optional[Dict[str, Any]],
             return 200, _envelope(tool, "ok", result=out, verified=out)
         if tool == "social_read":
             out = await asyncio.to_thread(_tool_social)
+            return 200, _envelope(tool, "ok", result=out, verified=out)
+        if tool == "chat_list":
+            from app.services import fleet_control
+            out = await asyncio.to_thread(fleet_control.chat_list, _inum(args.get("limit"), 25) or 25, str(args.get("source") or ""))
+            return 200, _envelope(tool, "ok", result=out, verified={"count": out.get("count")})
+        if tool == "chat_read":
+            from app.services import fleet_control
+            try:
+                out = await asyncio.to_thread(fleet_control.chat_read, str(args.get("session_id") or ""), _inum(args.get("limit"), 20) or 20)
+            except ValueError as e:
+                raise HarnessError(404, str(e))
+            return 200, _envelope(tool, "ok", result=out, verified={"message_count": out.get("message_count")})
+        if tool == "chat_handoff":
+            from app.services import fleet_control
+            try:
+                out = await asyncio.to_thread(
+                    fleet_control.chat_handoff,
+                    str(args.get("summary") or ""),
+                    str(args.get("target_session_id") or ""),
+                    str(args.get("from_session_id") or ""),
+                    str(args.get("next_step") or ""),
+                    args.get("artifacts") if isinstance(args.get("artifacts"), list) else None,
+                    str(args.get("create_title") or ""),
+                    str(args.get("actor") or "harness"),
+                )
+            except ValueError as e:
+                raise HarnessError(400, str(e))
+            return 200, _envelope(tool, "ok", result=out, verified=out)
+        if tool == "chat_steer":
+            from app.services import fleet_control
+            try:
+                out = await asyncio.to_thread(
+                    fleet_control.chat_steer,
+                    str(args.get("session_id") or ""),
+                    str(args.get("instruction") or ""),
+                    str(args.get("actor") or "harness"),
+                    bool(args.get("queue_task", True)),
+                )
+            except ValueError as e:
+                raise HarnessError(400, str(e))
+            return 200, _envelope(tool, "ok", result=out, verified=out)
+        if tool == "blackboard_read":
+            from app.services import fleet_control
+            entries = await asyncio.to_thread(fleet_control.blackboard_read, str(args.get("topic") or ""), _inum(args.get("limit"), 20) or 20)
+            return 200, _envelope(tool, "ok", result={"entries": entries, "count": len(entries)}, verified={"count": len(entries)})
+        if tool == "blackboard_post":
+            from app.services import fleet_control
+            try:
+                entry = await asyncio.to_thread(
+                    fleet_control.blackboard_post,
+                    str(args.get("topic") or "general"),
+                    str(args.get("summary") or ""),
+                    str(args.get("actor") or "harness"),
+                    str(args.get("session_id") or ""),
+                    str(args.get("branch") or ""),
+                    args.get("files") if isinstance(args.get("files"), list) else None,
+                    str(args.get("status") or "active"),
+                )
+            except ValueError as e:
+                raise HarnessError(400, str(e))
+            return 200, _envelope(tool, "ok", result=entry, verified=entry)
+        if tool == "fleet_policy_read":
+            from app.services import fleet_control
+            out = await asyncio.to_thread(fleet_control.status_snapshot)
             return 200, _envelope(tool, "ok", result=out, verified=out)
         if tool.startswith("repo_"):
             try:

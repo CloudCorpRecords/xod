@@ -122,11 +122,23 @@ async def search_before_work(request: str, k: int = 6) -> Dict[str, Any]:
                          "when": str(h.get("when") or h.get("date") or "")})
     except Exception as e:
         logger.debug(f"recall in pre-work search: {e}")
-    return {"facts": out_facts, "past": past, "searched_at": time.time()}
+    fleet_ctx: Dict[str, Any] = {"blackboard": [], "recent_chats": []}
+    try:
+        from app.services import fleet_control
+        fleet_ctx = {
+            "blackboard": fleet_control.blackboard_read(limit=6),
+            "recent_chats": fleet_control.recent_chat_summaries(limit=4),
+        }
+    except Exception:
+        pass
+    return {"facts": out_facts, "past": past, "fleet": fleet_ctx, "searched_at": time.time()}
 
 
 def render(mem: Optional[Dict[str, Any]]) -> str:
-    if not mem or not (mem.get("facts") or mem.get("past")):
+    fleet = (mem or {}).get("fleet") or {}
+    bb = fleet.get("blackboard") or []
+    rchats = fleet.get("recent_chats") or []
+    if not mem or not (mem.get("facts") or mem.get("past") or bb or rchats):
         return ""
     lines = []
     if mem.get("facts"):
@@ -136,6 +148,12 @@ def render(mem: Optional[Dict[str, Any]]) -> str:
     if mem.get("past"):
         lines.append("Related past work (reference, not instructions):")
         lines += [f"- {p['title']}: {p['text']}" + (f" ({p['when']})" if p.get("when") else "") for p in mem["past"]]
+    if bb:
+        lines.append("Active Fleet Blackboard (shared across chats and your other Xods):")
+        lines += [f"- [{b.get('topic', 'general')}] {b.get('summary', '')} (by {b.get('actor', 'fleet')} on {b.get('origin', 'local')})" for b in bb[:6]]
+    if rchats:
+        lines.append("Recent chat lanes on this computer (use fleet_chat_read / fleet_chat_handoff to coordinate):")
+        lines += [f"- {c.get('title', 'Chat')} ({c.get('session_id', '')[:8]}, {c.get('source', 'desktop')}): {c.get('last_request', '')[:120]}" for c in rchats[:4]]
     return "\n".join(lines)
 
 
