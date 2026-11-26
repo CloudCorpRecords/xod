@@ -59,6 +59,12 @@ def append_record(provider: str, model: str, key_profile: Optional[str] = None,
     call passes through. Never raises."""
     try:
         pt, ct, source = _counts(usage, prompt_chars, completion_chars)
+        cached = 0
+        try:
+            from app.services import harness_turbo
+            cached = harness_turbo.extract_cached_tokens(usage)
+        except Exception:
+            cached = 0
         rec = {
             "ts": time.time(),
             "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
@@ -66,6 +72,7 @@ def append_record(provider: str, model: str, key_profile: Optional[str] = None,
             "model": model,
             "key_profile": key_profile or "",
             "prompt_tokens": pt,
+            "cached_tokens": cached,
             "completion_tokens": ct,
             "total_tokens": pt + ct,
             "tokens_source": source,
@@ -106,13 +113,17 @@ def _since(rng: str) -> float:
 
 
 def _blank() -> Dict[str, Any]:
-    return {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0,
+    return {"calls": 0, "prompt_tokens": 0, "cached_tokens": 0, "cache_hit_rate": 0.0,
+            "completion_tokens": 0, "total_tokens": 0,
             "cost_usd": 0.0, "unpriced_calls": 0, "records_api": 0, "records_estimated": 0}
 
 
 def _add(bucket: Dict[str, Any], rec: Dict[str, Any]) -> None:
     bucket["calls"] += 1
     bucket["prompt_tokens"] += int(rec.get("prompt_tokens") or 0)
+    bucket["cached_tokens"] += int(rec.get("cached_tokens") or 0)
+    if bucket["prompt_tokens"] > 0:
+        bucket["cache_hit_rate"] = round(min(100.0, (bucket["cached_tokens"] / bucket["prompt_tokens"]) * 100.0), 1)
     bucket["completion_tokens"] += int(rec.get("completion_tokens") or 0)
     bucket["total_tokens"] += int(rec.get("total_tokens") or 0)
     if rec.get("cost_usd") is None:

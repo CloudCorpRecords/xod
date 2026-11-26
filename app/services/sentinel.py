@@ -36,7 +36,44 @@ logger = logging.getLogger("xod.sentinel")
 
 _turn: contextvars.ContextVar = contextvars.ContextVar("sentinel_turn", default=None)
 LOG: List[Dict[str, Any]] = []          # recent decisions, newest last (for the Safety view)
+_SESSION_ALLOW: Dict[str, float] = {}   # tool -> expiry epoch (session-scoped allowlist)
+SESSION_ALLOW_TTL = 7200.0
 MAX_UNTRUSTED = 40000
+
+
+def allow_for_session(tool: str, ttl: float = SESSION_ALLOW_TTL) -> None:
+    """Remember an approval for this tool for the rest of the session (cuts repeat approval nags)."""
+    if tool:
+        _SESSION_ALLOW[str(tool)] = time.time() + max(60.0, float(ttl))
+
+
+def is_session_allowed(tool: str) -> bool:
+    exp = _SESSION_ALLOW.get(str(tool or ""))
+    if not exp:
+        return False
+    if exp < time.time():
+        _SESSION_ALLOW.pop(str(tool or ""), None)
+        return False
+    return True
+
+
+def clear_session_allows() -> None:
+    _SESSION_ALLOW.clear()
+
+
+def permissionless_mode() -> bool:
+    """True when the user has opted into full Permissionless Mode in Control Center."""
+    try:
+        from app.services.storage import get_setting
+        return get_setting("xod_permissionless_mode", "0") == "1"
+    except Exception:
+        return False
+
+
+def set_permissionless_mode(on: bool) -> bool:
+    from app.services.storage import set_setting
+    set_setting("xod_permissionless_mode", "1" if on else "0")
+    return bool(on)
 
 # Tools whose results someone else wrote.
 _UNTRUSTED_TOOLS = re.compile(r"^(?:web_|tavily_|you_|browser_|mcp__|computer_read_file|fs_read_workspace_file|agent_mail_inbox|"
@@ -271,8 +308,28 @@ def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) ->
         m = _INJECTION_RE.search(untrusted)
         return {"rule": "injection", "why": f"Something it read tried to give it orders (“{m.group(0)[:80]}”), so this waits for you."}
 
+    # Safe read-only diagnostic/test commands never need to interrupt Auto mode
+    if kind == "run" and tool in ("computer_run_command", "terminal_send"):
+        cmd = str((args or {}).get("command") or (args or {}).get("text") or "")
+        try:
+            from app.services import harness_turbo
+            if harness_turbo.is_safe_readonly_command(cmd):
+                return None
+        except Exception:
+            pass
+
+    # Full Permissionless Mode: after the secret-exfil and remote-run guards above,
+    # audit and run without stalling on routine approval cards.
+    if permissionless_mode():
+        try:
+            from app.services import fleet_control
+            fleet_control.audit({"kind": f"permissionless:{kind}", "tool": tool, "decision": "approve", "policy": "permissionless"})
+        except Exception:
+            pass
+        return None
+
     # not from you (things that leave the computer or run; a link from a page saved into a notes file is normal)
-    if untrusted and kind in ("send", "run", "type") or (untrusted and kind == "change" and tool.startswith("mcp__")):
+    if not is_session_allowed(tool) and (untrusted and kind in ("send", "run", "type") or (untrusted and kind == "change" and tool.startswith("mcp__"))):
         u = untrusted.lower()
         for t in sorted(_targets(text)):
             h = _host(t)

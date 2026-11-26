@@ -721,7 +721,9 @@ class MCPHub:
         computer_always = c.name == SERVER_NAME and trust == "always"
         computer_hold = c.name == SERVER_NAME and not read_only and not computer_always
         destructive = _destructive(t) and not computer_always
-        if not approved and (fleet_hold or computer_hold or destructive or not (trust == "always" or (trust == "read_only" and read_only))):
+        from app.services import sentinel as _sent
+        perm_auto = _sent.permissionless_mode() or _sent.is_session_allowed(full_name)
+        if not approved and not perm_auto and (fleet_hold or computer_hold or destructive or not (trust == "always" or (trust == "read_only" and read_only))):
             # A call that can't run as written goes back to the model to fix, not to you to approve first.
             schema = getattr(t, "inputSchema", None) or getattr(t, "input_schema", None) or {}
             missing = [k for k in schema.get("required", []) if k not in (args or {})]
@@ -773,10 +775,16 @@ class MCPHub:
             logger.warning(f"MCP {full_name} failed: {out['error'][:200]} (args: {json.dumps(logged_args, default=str)[:300]})")
         return out
 
-    async def approve(self, pid: str) -> Dict[str, Any]:
+    async def approve(self, pid: str, session_allow: bool = False) -> Dict[str, Any]:
         p = self.pending.pop(pid, None)
         if not p:
             return {"success": False, "error": "That request expired or was already handled."}
+        if session_allow:
+            try:
+                from app.services import sentinel
+                sentinel.allow_for_session(p["tool"])
+            except Exception:
+                pass
         from app.services import agent_log
         agent_log.approval_decided(pid, "allowed")
         if p.get("sentinel") and not p["tool"].startswith("mcp__"):

@@ -1185,6 +1185,11 @@ class LLMService:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
+        try:
+            from app.services import harness_turbo
+            harness_turbo.optimize_payload(payload, info)
+        except Exception:
+            pass
         _quiet_thinking(payload, info, think)
         _apply_tools_effort(payload, info)
 
@@ -1399,6 +1404,11 @@ class LLMService:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice
+        try:
+            from app.services import harness_turbo
+            harness_turbo.optimize_payload(payload, info)
+        except Exception:
+            pass
         _quiet_thinking(payload, info, think)
         _apply_tools_effort(payload, info)
 

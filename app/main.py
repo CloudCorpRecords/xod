@@ -1003,6 +1003,7 @@ async def browser_proof_thumb_endpoint():
 class FleetPolicyRequest(BaseModel):
     auto_approve_mode: Optional[str] = None
     sync_chat_summaries: Optional[bool] = None
+    permissionless_mode: Optional[bool] = None
 
 
 class FleetHandoffRequest(BaseModel):
@@ -1035,6 +1036,9 @@ async def fleet_policy_endpoint(req: FleetPolicyRequest):
             fleet_control.set_mode(req.auto_approve_mode)
         if req.sync_chat_summaries is not None:
             fleet_control.set_sync_chat_summaries(req.sync_chat_summaries)
+        if req.permissionless_mode is not None:
+            from app.services import sentinel
+            sentinel.set_permissionless_mode(req.permissionless_mode)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return await asyncio.to_thread(fleet_control.status_snapshot)
@@ -2130,9 +2134,9 @@ div{{text-align:center;max-width:420px}}h1{{font:600 40px Georgia,serif;margin:.
 
 
 @app.post("/api/mcp/approve/{pid}")
-async def mcp_approve_endpoint(pid: str):
+async def mcp_approve_endpoint(pid: str, session_allow: bool = False):
     from app.services.mcp_client import mcp_hub
-    return await mcp_hub.approve(pid)
+    return await mcp_hub.approve(pid, session_allow=session_allow)
 
 
 @app.post("/api/mcp/decline/{pid}")

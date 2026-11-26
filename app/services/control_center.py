@@ -50,12 +50,18 @@ def snapshot() -> Dict[str, Any]:
     agora_configured = _safe(agora_voice.is_configured, False)
     agora_convoai = bool(_safe(lambda: secret_store.get_secret("agora_customer_id"), "") and
                          _safe(lambda: secret_store.get_secret("agora_customer_secret"), ""))
+    from app.services import usage_ledger, sentinel
+    usage_today = _safe(lambda: usage_ledger.summary("today").get("totals") or {}, {}) or {}
     brain = {
         "provider": getattr(cfg, "LLM_PROVIDER", "") or get_setting("llm_provider", ""),
         "model": getattr(cfg, "LLM_MODEL", "") or get_setting("llm_model", ""),
         "keychain_keys": key_names,
         "agora_configured": agora_configured,
         "agora_convoai_ready": agora_convoai,
+        "cache_hit_rate": usage_today.get("cache_hit_rate", 0.0),
+        "cached_tokens": usage_today.get("cached_tokens", 0),
+        "prompt_tokens": usage_today.get("prompt_tokens", 0),
+        "permissionless_mode": _safe(sentinel.permissionless_mode, False),
     }
 
     # 2. MCP servers + Smart Tool Routing

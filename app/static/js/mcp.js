@@ -20,6 +20,7 @@
         <pre class="text-[11px] text-zinc-300 bg-surface-900/70 rounded-lg p-2.5 overflow-x-auto max-h-48">${esc(JSON.stringify(data.args || {}, null, 2))}</pre>
         <div class="flex gap-2">
           <button data-mcp="approve" class="px-3 py-1.5 rounded-lg bg-brand-500 text-surface-900 text-[12px] font-semibold hover:bg-brand-400">Approve and run</button>
+          <button data-mcp="session" class="px-3 py-1.5 rounded-lg bg-emerald-500/20 border border-emerald-500/35 text-emerald-200 text-[12px] font-medium hover:bg-emerald-500/30">Allow for session</button>
           <button data-mcp="decline" class="px-3 py-1.5 rounded-lg text-[12px] text-zinc-300 hover:text-white hover:bg-surface-700">Decline</button>
         </div>
         <div data-mcp-result class="text-[12px] text-zinc-300"></div>
@@ -37,7 +38,8 @@
         return;
       }
       out.textContent = "Running…";
-      const r = await api(`/api/mcp/approve/${data.approval_id}`, "POST");
+      const qs = b.dataset.mcp === "session" ? "?session_allow=1" : "";
+      const r = await api(`/api/mcp/approve/${data.approval_id}${qs}`, "POST");
       out.innerHTML = r.success
         ? `<span class="text-emerald-300">Done.</span><pre class="mt-1 text-[11px] whitespace-pre-wrap max-h-60 overflow-y-auto">${esc((r.content || "").slice(0, 4000))}</pre>`
         : `<span class="text-red-300">${esc(r.error || "It didn't work.")}</span>`;

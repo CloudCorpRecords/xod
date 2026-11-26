@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.37
+
+**Harness Turbo + Moonlit Study Polish**: dramatic prompt-caching, context-compaction, and approval-reduction upgrades paired with a refined Moonlit Study UI pass and refreshed README.
+
+- **Prompt Cache Optimizer & Live Cache Telemetry** (`app/services/harness_turbo.py`, `app/services/llm.py`, `app/services/usage_ledger.py`): deterministic alphabetical tool sorting across turns, Anthropic ephemeral `cache_control` breakpoints on static system prompts + tool schemas, provider-wide `cached_tokens` tracking (OpenAI, Fireworks, Gemini, Anthropic), and live **Prompt cache hit rate** in Control Center.
+- **Rolling Tool-Output Compaction & Parallel Read-Only Batches** (`app/services/harness_turbo.py`): automatically compacts oversized tool results older than the newest 3 steps (preserving key JSON metadata) to cut multi-step token bloat by 25–50%, plus concurrent `asyncio.gather` batch execution for read-only tools.
+- **Permissionless Mode & Session-Scoped Approvals** (`app/services/sentinel.py`, `app/services/mcp_client.py`, `app/static/js/mcp.js`, `app/static/js/control_center.js`): adds a 1-click **Permissionless Mode** toggle in Control Center (audited to `audit.jsonl` while preserving secret-leak and remote-run guards), a safe read-only command auto-classifier (`git status/diff`, `pytest`, etc.), and an **Allow for session** button on chat approval cards.
+- **Moonlit Study Aesthetic Polish & Calm Sidebar** (`app/static/css/whimsy.css`, `app/static/js/sidebar.js`, `README.md`): frosted-glass specular highlights on top-bar pills, starter cards, composer, and modals; calmer translucent badges; automatic folding of refusal/sandbox scratch folders into Playground; and a crisp, up-to-date README.
+
 ## 1.1.36
 
 Brings full agent-managed **Fleet Control** to parity with Muse, adds a **Cross-Chat Agent Bus** so agents can coordinate and hand off between chats, and introduces a **Shared Fleet Blackboard** + **Chat-Summary Sync**.

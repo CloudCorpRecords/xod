@@ -113,6 +113,10 @@
             ${pill(!!brain.model, brain.provider || "Active")}
           </div>
           <div class="text-[12px] text-zinc-300 font-mono truncate" title="${esc(brain.model)}">${esc(brain.model || "Not configured")}</div>
+          <div class="text-[11px] text-zinc-400">
+            Prompt cache hit rate today: <b class="text-emerald-300">${brain.cache_hit_rate || 0}%</b>
+            ${brain.cached_tokens ? `<span class="text-zinc-500">(${Number(brain.cached_tokens).toLocaleString()} cached tokens)</span>` : ""}
+          </div>
           <div class="flex flex-wrap gap-1.5 pt-0.5">
             ${(brain.keychain_keys || []).map((k) => `<span class="px-2 py-0.5 rounded-md bg-surface-800 border border-white/[0.06] text-[11px] text-zinc-300">${esc(k)}</span>`).join("")}
             ${brain.agora_configured ? `<span class="px-2 py-0.5 rounded-md bg-brand-500/15 border border-brand-500/30 text-[11px] text-brand-200">Agora${brain.agora_convoai_ready ? " ConvoAI" : " RTC"}</span>` : ""}
@@ -208,6 +212,10 @@
             `).join("")}
           </div>
           <label class="flex items-center gap-2 text-[12px] text-zinc-200 cursor-pointer">
+            <input type="checkbox" id="ccPermissionlessChk" class="accent-brand-500" ${brain.permissionless_mode ? "checked" : ""}>
+            <span>Permissionless Mode <span class="text-zinc-500">(zero routine approval cards, audited)</span></span>
+          </label>
+          <label class="flex items-center gap-2 text-[12px] text-zinc-200 cursor-pointer">
             <input type="checkbox" id="ccFleetSummariesChk" class="accent-brand-500" ${fleet.sync_chat_summaries !== false ? "checked" : ""}>
             <span>Share chat summaries &amp; Fleet Blackboard</span>
           </label>
@@ -253,6 +261,8 @@
     });
     const fs = document.getElementById("ccFleetSummariesChk");
     if (fs) fs.addEventListener("change", () => updateFleetPolicy({ sync_chat_summaries: fs.checked }));
+    const pm = document.getElementById("ccPermissionlessChk");
+    if (pm) pm.addEventListener("change", () => updateFleetPolicy({ permissionless_mode: pm.checked }));
   }
 
   async function refreshControlCenter() {
