@@ -1082,6 +1082,28 @@ async def fleet_blackboard_post_endpoint(req: FleetBlackboardPostRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class AutonomyModeRequest(BaseModel):
+    mode: str
+    confirmed_disclaimer: bool = False
+
+
+@app.get("/api/autonomy/mode")
+async def autonomy_mode_get_endpoint():
+    from app.services import autonomy_modes
+    return await asyncio.to_thread(autonomy_modes.status)
+
+
+@app.post("/api/autonomy/mode")
+async def autonomy_mode_set_endpoint(req: AutonomyModeRequest):
+    from app.services import autonomy_modes
+    try:
+        return await asyncio.to_thread(autonomy_modes.set_mode, req.mode, req.confirmed_disclaimer)
+    except autonomy_modes.HarnessLockedError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except (autonomy_modes.DisclaimerRequiredError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.on_event("shutdown")
 async def _stop_crew_host():
     try:

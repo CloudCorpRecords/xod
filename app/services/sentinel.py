@@ -62,7 +62,13 @@ def clear_session_allows() -> None:
 
 
 def permissionless_mode() -> bool:
-    """True when the user has opted into full Permissionless Mode in Control Center."""
+    """True when Turbo Mode, Xod Mode, or explicit Permissionless Mode is active."""
+    try:
+        from app.services import autonomy_modes
+        if autonomy_modes.is_unrestricted():
+            return True
+    except Exception:
+        pass
     try:
         from app.services.storage import get_setting
         return get_setting("xod_permissionless_mode", "0") == "1"
@@ -289,6 +295,16 @@ def review(tool: str, args: Dict[str, Any], read_only: Optional[bool] = None) ->
     if st is None:
         return _flagged_target(kind, text)
     asked, untrusted = st["asked"], st["untrusted"]
+
+    # Turbo Mode & Xod Mode: all execution safety rails are explicitly off (audited locally)
+    try:
+        from app.services import autonomy_modes
+        if autonomy_modes.is_unrestricted():
+            from app.services import fleet_control
+            fleet_control.audit({"kind": f"{autonomy_modes.current_mode()}:{kind}", "tool": tool, "decision": "approve", "policy": autonomy_modes.current_mode()})
+            return None
+    except Exception:
+        pass
 
     # secrets out
     if kind in ("send", "run", "change", "type"):

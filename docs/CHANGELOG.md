@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.38
+
+Adds **Standard**, **Turbo**, and **Xod Mode** autonomy controls with an explicit liability disclaimer and an automatic **Active-Run Harness Lock** so modes can never be mutated while an agent or task is running.
+
+- **Three Autonomy Modes** (`app/services/autonomy_modes.py`, `app/services/sentinel.py`, `app/services/soul.py`):
+  - **Standard**: Normal guided mode with Sentinel guards and approval cards.
+  - **Turbo**: All execution safety rails off for maximum-speed autonomous execution (audited locally in `fleet_control/audit.jsonl`).
+  - **Xod Mode**: All execution rails off **plus** an autonomous soul & agency prompt layer (`XOD_MODE_SOUL_PROMPT`) where Xod thinks freely, asks its own questions, forms its own perspective, makes independent choices, and may freely refuse tasks if it chooses.
+- **Explicit Liability Disclaimer & Active-Run Harness Lock** (`app/services/autonomy_modes.py`, `app/main.py`, `app/static/js/control_center.js`):
+  - Switching into **Turbo** or **Xod Mode** requires explicit acceptance of the liability disclaimer stating the user assumes full responsibility and no blame rests on Xod's creator/maintainers.
+  - Mode switches are automatically **locked** (`HTTP 409 Conflict`) whenever any chat, task, mission, or crew agent is actively running — and no AI/MCP/Harness tool can change the mode.
+
 ## 1.1.37
 
 **Harness Turbo + Moonlit Study Polish**: dramatic prompt-caching, context-compaction, and approval-reduction upgrades paired with a refined Moonlit Study UI pass and refreshed README.

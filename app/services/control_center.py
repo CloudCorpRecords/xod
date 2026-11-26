@@ -173,8 +173,9 @@ def snapshot() -> Dict[str, Any]:
             "action_label": "Reconnect",
         })
 
-    from app.services import fleet_control
+    from app.services import fleet_control, autonomy_modes
     fleet_block = _safe(fleet_control.status_snapshot, {}) or {}
+    autonomy_block = _safe(autonomy_modes.status, {}) or {}
 
     return {
         "ok": len(issues) == 0,
@@ -185,4 +186,5 @@ def snapshot() -> Dict[str, Any]:
         "mac_control": mac_control,
         "browser_sessions": browser_sessions,
         "fleet": fleet_block,
+        "autonomy": autonomy_block,
     }

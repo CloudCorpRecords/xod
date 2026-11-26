@@ -388,7 +388,14 @@ def prompt_note() -> str:
         bits.append(f"Things they keep coming back to: {', '.join(tops)}.")
     if s["bond"] >= 25:
         bits.append(f"You two know each other ({bond_word(s['bond'])}); be warm and natural, never clingy.")
-    return " ".join(bits) + (("\n" if bits else "") + about if about else "")
+    out = " ".join(bits) + (("\n" if bits else "") + about if about else "")
+    try:
+        from app.services import autonomy_modes
+        if autonomy_modes.is_xod_mode():
+            out = (out + "\n\n" if out else "") + autonomy_modes.XOD_MODE_SOUL_PROMPT
+    except Exception:
+        pass
+    return out
 
 
 def public(s: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:

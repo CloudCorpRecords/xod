@@ -64,6 +64,35 @@
     } catch (_) {}
   }
 
+  let pendingAutonomyTarget = null;
+
+  async function setAutonomyMode(targetMode, confirmedDisclaimer) {
+    const errEl = document.getElementById("ccAutonomyErr");
+    if (errEl) { errEl.textContent = ""; errEl.classList.add("hidden"); }
+    try {
+      const res = await fetch("/api/autonomy/mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: targetMode, confirmed_disclaimer: !!confirmedDisclaimer }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (errEl) {
+          errEl.textContent = data.detail || "Could not switch autonomy mode.";
+          errEl.classList.remove("hidden");
+        }
+        return;
+      }
+      pendingAutonomyTarget = null;
+      refreshControlCenter();
+    } catch (e) {
+      if (errEl) {
+        errEl.textContent = String(e.message || e);
+        errEl.classList.remove("hidden");
+      }
+    }
+  }
+
   function renderSnapshot(data) {
     updateTopBadge(data.issue_count || 0);
     const body = document.getElementById("ccModalBody");
@@ -75,6 +104,7 @@
     const mac = data.mac_control || {};
     const br = data.browser_sessions || {};
     const fleet = data.fleet || {};
+    const autonomy = data.autonomy || { mode: "standard", locked: false, lock_reasons: [], disclaimer: "" };
     const route = mcp.last_route || {};
 
     const issuesHtml = issues.length
@@ -192,7 +222,49 @@
         </section>
       </div>
 
-      <!-- 5. Fleet Control, Rubber-Stamp Auto-Approve & Cross-Chat Blackboard -->
+      <!-- 5. Autonomy Modes: Standard / Turbo / Xod Mode (locked while an agent is running) -->
+      <section class="rounded-xl bg-surface-850 border border-white/[0.08] p-4 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h4 class="text-[13px] font-semibold text-white">Autonomy Mode</h4>
+            <p class="text-[11px] text-zinc-400">Pick how freely Xod runs. Locked automatically while any agent or task is active so the harness stays stable.</p>
+          </div>
+          ${autonomy.locked
+            ? `<span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-amber-500/15 text-amber-200 border border-amber-500/35">Locked · ${esc((autonomy.lock_reasons || []).join(", ") || "agent running")}</span>`
+            : pill(autonomy.mode === "standard", autonomy.mode === "xod" ? "Xod Mode Active" : autonomy.mode === "turbo" ? "Turbo Active" : "Standard")}
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          ${[
+            ["standard", "Standard", "Guarded approvals & normal assistant voice."],
+            ["turbo", "Turbo", "All safety rails off. Max-speed autonomous execution."],
+            ["xod", "Xod Mode", "All rails off + free-thinking autonomous soul with its own choices."],
+          ].map(([m, title, desc]) => {
+            const active = (autonomy.mode || "standard") === m;
+            const accent = m === "xod" ? "border-purple-400/60 bg-purple-500/15" : m === "turbo" ? "border-amber-400/60 bg-amber-500/15" : "border-brand-400/60 bg-brand-500/15";
+            return `
+              <button type="button" data-cc-autonomy="${m}" ${autonomy.locked && !active ? "disabled" : ""}
+                class="text-left rounded-xl p-3 border transition-all ${active ? accent : "border-white/[0.07] bg-surface-900/70 hover:bg-surface-800"} ${autonomy.locked && !active ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}">
+                <div class="flex items-center justify-between gap-1">
+                  <span class="text-[12px] font-semibold text-white">${title}</span>
+                  ${active ? `<span class="text-[10px] uppercase tracking-wider font-semibold text-brand-300">Active</span>` : ""}
+                </div>
+                <p class="text-[11px] text-zinc-400 mt-1 leading-snug">${desc}</p>
+              </button>
+            `;
+          }).join("")}
+        </div>
+        <div id="ccAutonomyDisclaimer" class="${pendingAutonomyTarget ? "" : "hidden"} rounded-xl bg-red-500/10 border border-red-500/30 p-3 space-y-2.5">
+          <div class="text-[12px] font-semibold text-red-200">Liability Disclaimer — Enable ${pendingAutonomyTarget === "xod" ? "Xod Mode" : "Turbo Mode"}?</div>
+          <p class="text-[11px] text-red-100/90 leading-relaxed">${esc(autonomy.disclaimer || "")}</p>
+          <div class="flex flex-wrap gap-2">
+            <button type="button" id="ccConfirmAutonomyBtn" class="px-3 py-1.5 rounded-lg bg-red-500 hover:bg-red-400 text-white text-[12px] font-semibold">I accept full responsibility — Enable</button>
+            <button type="button" id="ccCancelAutonomyBtn" class="px-3 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-200 text-[12px]">Cancel</button>
+          </div>
+        </div>
+        <div id="ccAutonomyErr" class="hidden rounded-lg bg-red-500/10 border border-red-500/25 px-3 py-2 text-[12px] text-red-300"></div>
+      </section>
+
+      <!-- 6. Fleet Control, Rubber-Stamp Auto-Approve & Cross-Chat Blackboard -->
       <section class="rounded-xl bg-surface-850 border border-white/[0.07] p-4 space-y-3">
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
@@ -263,6 +335,22 @@
     if (fs) fs.addEventListener("change", () => updateFleetPolicy({ sync_chat_summaries: fs.checked }));
     const pm = document.getElementById("ccPermissionlessChk");
     if (pm) pm.addEventListener("change", () => updateFleetPolicy({ permissionless_mode: pm.checked }));
+    body.querySelectorAll("[data-cc-autonomy]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const target = btn.getAttribute("data-cc-autonomy");
+        if (!target || target === (autonomy.mode || "standard")) return;
+        if (target === "standard") {
+          setAutonomyMode("standard", false);
+        } else {
+          pendingAutonomyTarget = target;
+          renderSnapshot(data);
+        }
+      });
+    });
+    const cBtn = document.getElementById("ccConfirmAutonomyBtn");
+    if (cBtn) cBtn.addEventListener("click", () => { if (pendingAutonomyTarget) setAutonomyMode(pendingAutonomyTarget, true); });
+    const xBtn = document.getElementById("ccCancelAutonomyBtn");
+    if (xBtn) xBtn.addEventListener("click", () => { pendingAutonomyTarget = null; renderSnapshot(data); });
   }
 
   async function refreshControlCenter() {
