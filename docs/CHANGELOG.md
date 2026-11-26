@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.32
+
+Makes Family phone pairing effortless right from the top of the Family drawer, connects Android to Voice Briefs and desktop avatars, and completes Agora WebRTC edge WebSocket port support.
+
+- **Redesigned Family drawer pairing** (`app/static/js/family.js`): prominent **Pair & sync your phone** card right at the top of Family with inline **Show QR code** (plus copyable code), **Pair over Bluetooth** nearby scan, and one-click **Copy address** for same-Wi-Fi/Tailscale pairing.
+- **Phone API bridge upgrades** (`app/services/phone_api.py`): added `voice_brief.list`, `voice_brief.launch`, `voice_brief.dismiss`, and `looks.get` so the paired Android app can see/launch captured Agora Voice Briefs and sync your desktop companion look.
+- **Agora edge WebSocket CSP ports** (`app/main.py`): added `:*` port wildcards (`wss://*.agora.io:*`, `wss://*.sd-rtn.com:*`, `wss://*.edge.agora.io:*`, `wss://*.edge.sd-rtn.com:*`) to `connect-src` so Agora's non-443 edge signaling sockets (e.g. `:4710`) connect with zero CSP warnings.
+
 ## 1.1.31
 
 Fixes two UI-pass bugs found during live Agora Voice Brief verification in 1.1.30:
