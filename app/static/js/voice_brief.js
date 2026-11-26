@@ -233,7 +233,10 @@
         }
       });
 
-      await rtcClient.join(cfg.app_id, cfg.channel_name, cfg.token, Number(cfg.uid));
+      await Promise.race([
+        rtcClient.join(cfg.app_id, cfg.channel_name, cfg.token, Number(cfg.uid)),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timed out connecting to Agora RTC (20s). Check network/firewall.")), 20000)),
+      ]);
       localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
       await rtcClient.publish([localAudioTrack]);
 

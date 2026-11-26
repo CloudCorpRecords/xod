@@ -98,7 +98,7 @@ _SECURITY_HEADERS = {
         "img-src 'self' data: blob: https: http:",
         "media-src 'self' data: blob: https:",
         "font-src 'self' data:",
-        "connect-src 'self'",
+        "connect-src 'self' https://*.agora.io wss://*.agora.io https://*.sd-rtn.com wss://*.sd-rtn.com https://*.edge.agora.io wss://*.edge.agora.io https://*.edge.sd-rtn.com wss://*.edge.sd-rtn.com",
         "object-src 'none'",
         "frame-src 'self'",                          # the preview pane (sandboxed, see services/previews.py)
         "base-uri 'self'",
@@ -2404,6 +2404,8 @@ async def get_config():
     masked_tav_key = ""
     if tav_key:
         masked_tav_key = tav_key[:7] + "..." + tav_key[-4:] if len(tav_key) > 11 else "******"
+
+    from app.services.storage import get_setting
 
     return {
         "trustmrr_configured": bool(key),

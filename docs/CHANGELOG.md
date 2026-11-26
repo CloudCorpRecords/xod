@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.31
+
+Fixes two UI-pass bugs found during live Agora Voice Brief verification in 1.1.30:
+
+- **`GET /api/config` 500 fix** (`app/main.py`): imported `get_setting` inside `get_config()` so `/api/config` returns HTTP 200 cleanly and **Settings → Connections → Agora Voice Brief (BYOK)** shows `Configured (Keychain)` with masked placeholders.
+- **Agora WebRTC CSP allowlist** (`app/main.py`, `app/static/js/voice_brief.js`): added Agora's signaling/RTC domains (`*.agora.io`, `*.sd-rtn.com`, `*.edge.agora.io`, `*.edge.sd-rtn.com`) to `connect-src` in `_SECURITY_HEADERS`, plus a 20-second join timeout so the modal never hangs on `"Connecting to Agora…"`.
+
 ## 1.1.30
 
 Adds the local-first, bring-your-own-key **Agora Voice Brief** integration directly into Xod so you can speak a mission brief out loud and hand the captured five-section brief straight to Xod's mission harness.
