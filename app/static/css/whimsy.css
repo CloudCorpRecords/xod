@@ -1252,3 +1252,78 @@ html.xod-calm .xm-dream i,
 html.xod-calm .xm-dream span {
   animation-play-state: paused !important;
 }
+
+/* ==============================================================
+   MOONLIT STUDY POLISH PASS — Glass depth, specular hairlines,
+   calmer badges, tactile composer & modal cohesion
+   ============================================================== */
+
+/* Frosted glass top bar pills + calmer translucent badges */
+#surfaceNav {
+  backdrop-filter: blur(16px);
+  box-shadow: inset 0 1px 0 rgba(255, 250, 240, 0.06), 0 4px 16px rgba(5, 7, 16, 0.35);
+}
+header button[id^="btn"] {
+  backdrop-filter: blur(12px);
+  box-shadow: inset 0 1px 0 rgba(255, 250, 240, 0.06);
+}
+.tasks-badge {
+  background: rgba(242, 178, 74, 0.2) !important;
+  color: #ffd06b !important;
+  border: 1px solid rgba(242, 178, 74, 0.42) !important;
+  font-weight: 600;
+}
+
+/* Center canvas: warm lamplight halo behind hero mascot + elevated starter cards */
+.xod-mascot--hero {
+  filter: drop-shadow(0 0 28px rgba(242, 178, 74, 0.22));
+}
+#welcomeScreen button,
+.starter-prompt-card {
+  backdrop-filter: blur(14px);
+  box-shadow: inset 0 1px 0 rgba(255, 250, 240, 0.07), 0 6px 20px rgba(6, 8, 18, 0.28);
+  transition: transform 0.22s var(--ease-out), border-color 0.22s ease, background-color 0.22s ease, box-shadow 0.22s ease;
+}
+#welcomeScreen button:hover,
+.starter-prompt-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(242, 178, 74, 0.34) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 250, 240, 0.11), 0 10px 28px rgba(6, 8, 18, 0.42), 0 0 0 1px rgba(242, 178, 74, 0.12);
+}
+
+/* Chat composer: tactile glass capsule with soft marigold focus aura */
+#chatForm {
+  backdrop-filter: blur(18px);
+  box-shadow: inset 0 1px 0 rgba(255, 250, 240, 0.08), 0 12px 34px rgba(5, 7, 16, 0.45);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+#chatForm:focus-within {
+  border-color: rgba(242, 178, 74, 0.42) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 250, 240, 0.12), 0 14px 38px rgba(5, 7, 16, 0.55), 0 0 0 3px rgba(242, 178, 74, 0.12);
+}
+
+/* Unified Moonlit glass elevation across modals, drawers, and popovers */
+#controlCenterModal > div,
+#quickActionsModal > div,
+#voiceBriefModal > div,
+.tasks-drawer,
+#speechMenu {
+  backdrop-filter: blur(22px);
+  box-shadow: inset 0 1px 0 rgba(255, 250, 240, 0.08), 0 24px 64px rgba(4, 6, 14, 0.72);
+}
+#controlCenterModal:not(.hidden) > div,
+#quickActionsModal:not(.hidden) > div,
+#voiceBriefModal:not(.hidden) > div {
+  animation: moonlitModalIn 0.22s var(--ease-out);
+}
+@keyframes moonlitModalIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Calmer sidebar spacing */
+.sb-project-row {
+  padding-top: 5px;
+  padding-bottom: 5px;
+  border-radius: 8px;
+}

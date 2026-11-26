@@ -93,6 +93,9 @@ const SCRATCH_NAME_RES = [
   /^update proof\b/i,
   /^update check demo\b/i,
   /^(not applicable|not an app plan|unable to comply|unable to complete|cannot perform file writes|cannot write files)$/i,
+  /^(request declined|declined|refusal|cannot do that|out of scope)$/i,
+  /^(cannot create (local )?files?|unable to create files?|file (write|creation) not possible)$/i,
+  /update battery sandbox/i,
   /health battery/i,
 ];
 function isScratchProject(p) {
@@ -117,7 +120,7 @@ function projectRowHtml(p, filtering) {
     <div class="sb-project" data-drop="project" data-slug="${escapeHtml(p.slug)}">
       <div class="sb-row sb-project-row ${isScoped ? "is-scoped" : ""}" data-action="toggle-project" data-slug="${escapeHtml(p.slug)}" title="${escapeHtml(p.description || "")}">
         <i data-lucide="${open ? "chevron-down" : "chevron-right"}" class="size-3 text-zinc-500 shrink-0"></i>
-        <i data-lucide="${icon}" class="size-3.5 shrink-0" style="color:${isScoped ? "#10b981" : (p.color || "#a1a1aa")}"></i>
+        <i data-lucide="${icon}" class="size-3.5 shrink-0" style="color:${isScoped ? "#10b981" : (p.color && p.color !== "#f59e0b" && p.color !== "#f2b24a" ? p.color : "#8f96b8")}"></i>
         <span class="sb-title">${escapeHtml(p.name || p.slug)}</span>
         ${isScoped ? `<span class="sb-pill">In focus</span>` : ""}
         <button class="sb-more" data-action="scope-project" title="${isScoped ? "Stop focusing on this project" : "Focus Xod on this project (new chats go here)"}"><i data-lucide="crosshair" class="size-3"></i></button>
