@@ -331,33 +331,113 @@
               <p class="text-[12px] text-zinc-400 mt-0.5">Your machines and what each one offers.</p></div>
             <button data-close-family class="p-1 -mr-1 rounded-lg text-zinc-500 hover:text-white hover:bg-surface-700" title="Close"><i data-lucide="x" class="size-4"></i></button>
           </header>
-          <div class="px-5 py-4 border-b border-white/[0.06] space-y-2">
+          <div class="px-5 py-4 border-b border-white/[0.06] space-y-3">
+            <!-- Prominent Phone Sync & Pairing card (QR + Bluetooth + Same Wi-Fi / Tailscale) -->
+            <div class="rounded-xl bg-surface-900/90 border border-brand-500/25 p-3.5 space-y-2.5">
+              <div class="flex items-center justify-between gap-2">
+                <div>
+                  <p class="text-[13px] font-semibold text-white">Pair &amp; sync your phone</p>
+                  <p class="text-[11px] text-zinc-400">Scan QR, pair over Bluetooth nearby, or copy this computer's address.</p>
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-2">
+                <button data-family-pair="qr" class="px-3 py-1.5 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[12px] font-semibold">Show QR code</button>
+                <button data-family-pair="ble" class="px-3 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px] font-medium">Pair over Bluetooth</button>
+                <button data-family-pair="addr" class="px-3 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-200 text-[12px]">Copy address</button>
+              </div>
+              <div id="familyPairBox" class="hidden pt-1 space-y-2"></div>
+            </div>
             <button data-family-action="messages" class="surface-row" style="background:rgba(255,255,255,0.03)">
               <span class="flex-1 min-w-0"><span class="block text-zinc-100 text-[13px] font-semibold">Messages</span><span class="block text-[12px] text-zinc-500">Messages between your machines and agents (Agent Mail), real messages only.</span></span>
               <span class="text-zinc-500 text-[12px]">Open</span>
             </button>
             <div class="flex gap-2">
               <button data-family-action="xods" class="flex-1 px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px]">Your Xods</button>
-              <button data-family-action="phone" class="flex-1 px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px]">Your phone</button>
+              <button data-family-action="phone" class="flex-1 px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px]">Phone &amp; Telegram</button>
             </div>
-            <p class="text-[12px] font-semibold text-zinc-300 pt-1">Message Tree</p>
-            <p class="text-[12px] text-zinc-500">Send a note straight to Tree, your Muse agent — it lands in the family inbox and Tree picks it up from there. No relaying it yourself.</p>
-            <textarea id="treeText" rows="3" class="task-answer w-full" placeholder="What should Tree know?"></textarea>
-            <div class="flex items-center gap-2">
-              <select id="treeKind" class="rounded-lg bg-surface-700 text-zinc-200 text-[12px] px-2 py-1.5">
-                <option value="note">Note</option>
-                <option value="task">Task</option>
-                <option value="result">Result</option>
-              </select>
-              <button id="treeSend" class="px-3 py-1.5 rounded-lg bg-emerald-900 text-emerald-200 text-[12px] font-semibold hover:bg-emerald-800">Send to Tree</button>
-              <span id="treeState" class="text-[12px] text-zinc-500"></span>
-            </div>
+            <details class="pt-1">
+              <summary class="text-[12px] font-semibold text-zinc-300 cursor-pointer">Message Tree</summary>
+              <div class="space-y-2 pt-2">
+                <p class="text-[12px] text-zinc-500">Send a note straight to Tree, your Muse agent — it lands in the family inbox and Tree picks it up from there.</p>
+                <textarea id="treeText" rows="2" class="task-answer w-full" placeholder="What should Tree know?"></textarea>
+                <div class="flex items-center gap-2">
+                  <select id="treeKind" class="rounded-lg bg-surface-700 text-zinc-200 text-[12px] px-2 py-1.5">
+                    <option value="note">Note</option>
+                    <option value="task">Task</option>
+                    <option value="result">Result</option>
+                  </select>
+                  <button id="treeSend" class="px-3 py-1.5 rounded-lg bg-emerald-900 text-emerald-200 text-[12px] font-semibold hover:bg-emerald-800">Send to Tree</button>
+                  <span id="treeState" class="text-[12px] text-zinc-500"></span>
+                </div>
+              </div>
+            </details>
           </div>
           <div id="familyBody" class="flex-1 overflow-y-auto px-5 py-4 space-y-4"></div>
         </aside>`;
       document.body.appendChild(root);
       root.addEventListener("click", (e) => { if (e.target.closest("[data-close-family]")) window.closeFamilyPanel(); });
-      root.addEventListener("click", (e) => {
+      root.addEventListener("click", async (e) => {
+        const pairBtn = e.target.closest("[data-family-pair]");
+        if (pairBtn) {
+          const mode = pairBtn.getAttribute("data-family-pair");
+          const box = root.querySelector("#familyPairBox");
+          if (!box) return;
+          box.classList.remove("hidden");
+          if (mode === "qr") {
+            box.innerHTML = `<p class="text-[12px] text-zinc-400">Generating QR code…</p>`;
+            try {
+              const r = await api("/api/phone/pair-offer");
+              if (!r.success) { box.innerHTML = `<p class="text-[12px] text-red-300">${esc(r.error || "Could not create QR.")}</p>`; return; }
+              const rawCode = r.qr_text || r.offer || r.text || "";
+              box.innerHTML = `
+                <div class="bg-white p-2.5 rounded-xl w-fit">${r.qr_svg || ""}</div>
+                <p class="text-[12px] text-zinc-300">Scan in the Xod phone app (<b>Family → Scan QR code</b>). Safety: <span class="font-mono text-white">${esc(r.safety || "")}</span></p>
+                ${rawCode ? `<div class="flex gap-2"><input readonly value="${esc(rawCode)}" class="flex-1 bg-surface-950 border border-surface-700 rounded-lg px-2 py-1 text-[11px] font-mono text-zinc-300" onclick="this.select()"><button data-family-copy-code class="px-2.5 py-1 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[11px]">Copy code</button></div>` : ""}
+                <p class="text-[11px] text-zinc-500">${r.away ? "Works on same Wi-Fi and anywhere over Tailscale." : "Same Wi-Fi pairing ready. Turn on Tailscale on both devices for away-from-home access."}</p>`;
+              const cbtn = box.querySelector("[data-family-copy-code]");
+              if (cbtn) cbtn.addEventListener("click", async () => { try { await navigator.clipboard.writeText(rawCode); cbtn.textContent = "Copied"; } catch (_) {} });
+            } catch (err) { box.innerHTML = `<p class="text-[12px] text-red-300">Could not reach Xod backend.</p>`; }
+            return;
+          }
+          if (mode === "ble") {
+            box.innerHTML = `<p class="text-[12px] text-zinc-400">Scanning nearby Bluetooth… (On your phone, open <b>Family → Pair nearby (Bluetooth)</b>)</p>`;
+            try {
+              const r = await api("/api/phone/ble/scan");
+              if (!r.success) { box.innerHTML = `<p class="text-[12px] text-red-300">${esc(r.error || "Bluetooth scan unavailable.")}</p>`; return; }
+              box.innerHTML = (r.phones && r.phones.length)
+                ? `<p class="text-[12px] text-zinc-300">Tap your phone to send a pairing offer:</p>` + r.phones.map((p) =>
+                    `<button data-family-ble-pair="${esc(p.id)}" class="w-full text-left px-3 py-2 rounded-lg bg-surface-800 hover:bg-surface-700 text-[12px] text-white">${esc(p.name)} <span class="text-zinc-500 font-mono">${esc(p.id)}</span></button>`).join("")
+                : `<p class="text-[12px] text-zinc-400">No phone advertising nearby yet. Tap <b>Pair nearby (Bluetooth)</b> in the phone app, then click <b>Pair over Bluetooth</b> again.</p>`;
+            } catch (err) { box.innerHTML = `<p class="text-[12px] text-red-300">Bluetooth scan failed.</p>`; }
+            return;
+          }
+          if (mode === "addr") {
+            try {
+              const ms = await api("/api/mail/status");
+              const addr = ms.address || "";
+              if (addr) {
+                try { await navigator.clipboard.writeText(addr); } catch (_) {}
+                box.innerHTML = `<p class="text-[12px] text-emerald-300">Copied this computer's address — paste it into <b>Family → Same Wi-Fi / Code</b> on your phone:</p><p class="font-mono text-[12px] text-white break-all bg-surface-950 rounded-lg px-2.5 py-1.5">${esc(addr)}</p>`;
+              } else {
+                box.innerHTML = `<p class="text-[12px] text-zinc-400">Post office address isn't set up yet.</p>`;
+              }
+            } catch (err) { box.innerHTML = `<p class="text-[12px] text-red-300">Could not read computer address.</p>`; }
+            return;
+          }
+        }
+        const bleTarget = e.target.closest("[data-family-ble-pair]");
+        if (bleTarget) {
+          const box = root.querySelector("#familyPairBox");
+          const id = bleTarget.getAttribute("data-family-ble-pair");
+          bleTarget.disabled = true; bleTarget.textContent = "Sending offer…";
+          try {
+            const r = await post("/api/phone/ble/pair", { id });
+            if (box) box.innerHTML = r.success
+              ? `<p class="text-[12px] text-emerald-300">Offer sent! Tap <b>Pair</b> on your phone (safety: <span class="font-mono text-white">${esc(r.safety || "")}</span>).</p>`
+              : `<p class="text-[12px] text-red-300">${esc(r.error || "Bluetooth pairing failed.")}</p>`;
+          } catch (err) { if (box) box.innerHTML = `<p class="text-[12px] text-red-300">Bluetooth pairing failed.</p>`; }
+          return;
+        }
         const b = e.target.closest("[data-family-action]");
         if (!b) return;
         const a = b.getAttribute("data-family-action");
