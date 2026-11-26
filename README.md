@@ -1,281 +1,119 @@
 <p align="center">
-  <img src="docs/media/moon.gif" width="420" alt="Xod, a small moon, looking around and smiling">
+  <img src="docs/media/moon.gif" width="320" alt="Xod — Moonlit Study companion">
 </p>
 
 <h1 align="center">Xod</h1>
 
 <p align="center">
-  <b>A private AI agent that does real work on your computer.</b><br>
-  It researches, works with your files and your Mac's apps, hands code to coding agents, and asks before it acts.<br>
-  Free and open source, for Mac and Windows. It finds the AI on your computer and sets itself up.
+  <b>Your private, local-first AI agent with real hands on your computer — and a companion in your pocket.</b><br>
+  Control your signed-in browser and Mac apps, connect 32+ tools &amp; MCP servers, talk in real time, and orchestrate multi-machine fleets.
 </p>
 
 <p align="center">
   <a href="https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Mac.dmg"><b>Download for Mac</b></a> ·
   <a href="https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Windows-Setup.exe"><b>Download for Windows</b></a> ·
-  <a href="docs/media/xod-launch.mp4">Watch the 3-minute film</a> ·
-  <a href="#build-from-source">Build from source</a> ·
-  <a href="#get-involved">Get involved</a>
+  <a href="https://github.com/CloudCorpRecords/xod-android"><b>Android Companion</b></a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="docs/CHANGELOG.md">Changelog</a>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-f2b24a?style=flat-square"></a>
-  <img alt="Apple silicon" src="https://img.shields.io/badge/Mac-Apple%20silicon-0f1222?style=flat-square">
-  <img alt="Windows" src="https://img.shields.io/badge/Windows-10%20%26%2011%20(preview)-0f1222?style=flat-square">
-  <img alt="Runs locally" src="https://img.shields.io/badge/runs-on%20your%20computer-93d17f?style=flat-square">
-  <img alt="No telemetry" src="https://img.shields.io/badge/telemetry-none-a196ec?style=flat-square">
+  <img alt="Mac Apple Silicon" src="https://img.shields.io/badge/Mac-Apple%20Silicon-0f1222?style=flat-square">
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-10%20%26%2011-0f1222?style=flat-square">
+  <img alt="Android" src="https://img.shields.io/badge/Android-Companion%20App-6fd0bf?style=flat-square">
+  <img alt="Local First" src="https://img.shields.io/badge/local--first-no%20telemetry-93d17f?style=flat-square">
 </p>
 
 <br>
 
-![Xod answering a research question, with sources](docs/screenshots/answer.png)
+![Xod Moonlit Study interface](docs/screenshots/answer.png)
 
-## See it in action
-
-| | |
-|---|---|
-| **Talk to it, hands-free** ([watch with sound](docs/media/xod-conversation.mp4), 1 min) | **Watch it work** ([3-minute film](docs/media/xod-launch.mp4)) |
-| <img src="docs/media/conversation.gif" width="420" alt="Saying Hey Xod, asking about tomorrow's weather in Tokyo, hearing the answer and asking a follow-up"> | <img src="docs/media/powers.gif" width="420" alt="The owl companion flying to a web search, peeking at a browser snapshot, waiting by an approval and writing the answer"> |
-
-**New:**
-[Claude Code fixes a bug in its own copy](docs/media/shorts/xod-agents.mp4) ·
-[Your Mac's apps: Maps, and a text that waits for your OK](docs/media/shorts/xod-apps.mp4) ·
-[Any AI you want, one click away](docs/media/shorts/xod-models.mp4)
-
-**One-minute videos:**
-[Free AI on your own computer](docs/media/shorts/xod-private.mp4) ·
-[Research with sources](docs/media/shorts/xod-research.mp4) ·
-[Tidy a messy Downloads folder](docs/media/shorts/xod-tidy.mp4) ·
-[A chore that asks before it acts](docs/media/shorts/xod-chores.mp4) ·
-[An app from one sentence](docs/media/shorts/xod-build.mp4) ·
-[Applied to 3 jobs before my coffee was ready](docs/media/shorts/xod-hired.mp4) ·
-[This job post tries to hack your AI](docs/media/shorts/xod-trap.mp4) ·
-[Never fill out a job application again](docs/media/shorts/xod-forms.mp4)
-
-<sub>Every demo is recorded from the real app with a throwaway demo data folder. Waits are sped up and say so; speech is never sped up. The vertical videos ran on a Windows PC with a free local model; the job videos ran on a Mac with the built-in Qwen 3.5 4B, on a practice careers site with made-up companies (`demo/careers`). The three new ones ran on a Mac with a cloud model (Fireworks · GLM 5.3 Flash), and say so on screen; the coding one uses Claude Code on a small demo project.</sub>
-
-## What you can ask it
-
-| | |
-|---|---|
-| 🔎 **Research** | "What changed in the EU AI Act this year? Cite sources." It reads the pages in its own browser and answers with links. |
-| 📱 **Your Mac's apps** | "Did anyone text me today?" · "Coffee near me" · "Turn off the lights" · "Move my dentist appointment to Friday" · "Text Sam I'm running late" (it asks before sending) |
-| 🗂 **Files** | "Tidy my Downloads and tell me what's taking the space." Every move can be undone. |
-| 🧑‍💻 **Code** | "Have Claude Code fix the failing tests in ~/code/app." Coding agents work on their own copy of your repo; you review, then merge or open a pull request. |
-| 💼 **Jobs** | "Find remote ML engineer roles and fill in the applications." It stops for your OK before each Submit. |
-| 🛠 **Build** | "Make me a 3D game where you dodge falling cubes." Written, run, tested and fixed, with a live preview. |
-| 🔁 **Routines** | "Every weekday at 8, the five biggest tech stories with sources." Saved once, waiting for you each morning. |
-
-It stops for your OK before anything is sent, paid, posted, merged or deleted, and it logs everything it does.
+---
 
 ## Why Xod
 
-|  |  |
+Most AI apps stop at text. **Xod is a full personal operating layer** that runs privately on your computer with real browser control, native OS tools, a companion phone app, and an agent-managed fleet — without locking you into a cloud subscription.
+
+| Capability | What Xod Actually Does |
 |---|---|
-| **Private by default** | Chats, files, voice and images stay on your computer, with the built-in engine (Mac), Ollama, LM Studio or any local server. No account, no telemetry. Cloud models (Claude, GPT, Gemini, Fireworks…) only if you add a key. |
-| **Sets itself up** | Finds the AI already on your computer, picks a model that fits your memory or graphics card, installs Ollama in one click if you need it, and keeps it running. Switch models any time from the top of the window. |
-| **It does things** | A real browser, your files, the terminal, your Mac's Messages, Calendar, Reminders, Contacts, Maps and Home, and a task inbox that keeps working while you're away. It doesn't call a job done until it has proof. |
-| **Coding agents on a board** | Claude Code and Muse work as a crew: each job gets its own copy of your repo, Xod shows every step and question, and you merge or open a PR when you're happy. Xod installs and signs them in for you. |
-| **Connects to your tools** | 32 one-click connections (GitHub from your `gh` login, Notion, Linear, Jira, Todoist, Stripe, Vercel, Supabase…) plus any MCP server: paste what its page says and Xod works out the rest. |
-| **Keys stay safe** | API keys and logins live in the macOS Keychain (Credential Manager on Windows), or in **1Password** if you use it: Xod keeps only an `op://` reference. |
-| **Checks itself** | Every action that sends, runs or changes something is compared with what you asked. If it came from a web page or email instead, or would leak a key, it waits for you. |
-| **Measured, not claimed** | A [reliability score](docs/RELIABILITY.md) from real requests checked on disk, and a Scorecard in the app that tracks how well it routes and answers over time. |
-| **From your phone** | Message your own Telegram bot; the job runs on your computer and you approve with a tap. Nothing is opened to the internet. |
-| **A companion that grows** | A moon (or cat, ghost, robot, owl, sprout) that does the work where you can see it, has moods and a journal, and talks with you hands-free. |
+| **Signed-in Chrome & Computer Control** | Reads, focuses, and drafts directly inside your real signed-in Google Chrome (no re-login loops), drives Mac apps via Accessibility, and shows an **Inline Live Action Strip** right in chat with live thumbnails, **Stop**, and **Take Over**. |
+| **Quick Actions (Mac + Phone)** | One-click **Post & Web** (Facebook, X, LinkedIn, Threads, Instagram, any site), live **Chrome Tabs** (Focus / Summarize), and Mac **App Launcher** — available identically on Desktop and Android. |
+| **Unified Control Center** | One top-bar dashboard showing **AI Brain & Voice**, **Mac Permissions** (1-click Screen Recording & Accessibility), **Apps & MCPs**, **Signed-in Chrome**, and **Fleet Policy** with live attention badges. |
+| **32+ Connectors & Smart MCP Routing** | One-click OAuth for **GitHub**, **Notion**, **Zapier (8,000+ apps)**, **Linear**, **Jira**, **Stripe**, **Supabase**, **This Mac**, plus a Universal MCP Importer. **Smart MCP Tool Routing** loads only relevant tools per turn (with `mcp_discover_tools` fallback) for speed and accuracy. |
+| **Voice: Offline Local + Real-Time Agora** | Switch inside the bottom Voice popover between **Local (Offline)** (Whisper + Kokoro + *"Hey Xod"*) and **Agora (Real-time)** (BYOK Keychain) — plus **Voice Brief** to speak a 5-part mission out loud and launch it. |
+| **Android Companion App** | Pairs effortlessly via **GitHub SSO + Wi-Fi/Tailscale auto-discovery** (with QR & Bluetooth backups). Share links straight from Android into Xod, trigger posts/actions on your Mac browser, see visual proof thumbnails in chat, and **Take Over** screens remotely. |
+| **Fleet Control & Cross-Chat Memory** | Connect multiple Xods over Tailscale with **Rubber-Stamp Auto-Approve** (audited in `audit.jsonl`), a **Cross-Chat Agent Bus** (`chat_list`, `chat_read`, `chat_handoff`, `chat_steer`), and a **Shared Fleet Blackboard** + 5-layer memory (`about_you`, `recall.db`, daily logs, checkpoints). |
+| **Coding Crew & Builder** | Drive **Claude Code** and **Muse** natively in isolated git worktrees, or build and preview full web/3D apps right beside chat with automated test-and-fix loops. |
 
-<p align="center">
-  <img src="docs/screenshots/abilities.png" width="420" alt="Abilities: let Xod use Messages, Location, Calendar, Home, Reminders and Contacts, one Allow each">
-  <img src="docs/screenshots/models.png" width="420" alt="The model switcher at the top of the window: online models with your keys, Ollama, LM Studio and built-in models">
-</p>
+---
 
-## Install
+## See It in Action
 
-### Mac
+| Hands-Free Voice ([video](docs/media/xod-conversation.mp4)) | Live Companion & Tools ([3-min film](docs/media/xod-launch.mp4)) |
+|---|---|
+| <img src="docs/media/conversation.gif" width="420" alt="Hands-free voice conversation with Xod"> | <img src="docs/media/powers.gif" width="420" alt="Xod companion researching, peeking at snapshots, and writing answers"> |
 
-1. [Download Xod for Mac](https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Mac.dmg) (about 400 MB) and open it.
-2. Drag **Xod** onto **Applications**.
-3. Open Xod. Everything it needs is already inside, so it's ready in seconds; a short setup helps you pick a model. From then on Xod keeps itself up to date: the bottom of the sidebar shows your version, it checks GitHub every hour, and a new version is one **Update** click away.
+---
 
-| Your Mac | Suggested model | Download |
-|---|---|---|
-| 8–16 GB | Qwen 3.5 4B (built-in engine): a researched answer in about 10 seconds | 3.1 GB |
-| 24 GB | Qwen 3.5 9B (built-in engine), or any model you already use in LM Studio or Ollama | 6 GB |
-| 32 GB or more | Qwen 3.8 27B (built-in engine) | 16 GB |
+## Quick Start
 
-> Xod isn't notarized by Apple yet, so the first time you open it macOS says it can't check it. Click **Done**, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway** next to Xod. You only do this once.
+### macOS (Apple Silicon, macOS 13+)
+1. Download **[Xod-Mac.dmg](https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Mac.dmg)** and drag **Xod** to **Applications**.
+2. Open Xod — it bundles its own Python runtime, detects local models (**Built-in MLX**, **LM Studio**, **Ollama**) or cloud BYOK keys (**Fireworks**, **OpenAI**, **Anthropic**, **Gemini**, **OpenRouter**), and auto-updates from GitHub.
+3. Click **Control** in the top bar to enable **Screen Recording** & **Accessibility** for Mac computer control and connect your apps/MCPs.
 
-Needs a Mac with Apple silicon (M1 or newer), macOS 13 or later, and Google Chrome for Xod's browser.
+> **First launch note:** If macOS shows an unverified developer prompt, open **System Settings → Privacy & Security → Open Anyway** once.
 
-### Windows (preview)
+### Windows 10 & 11
+1. Download **[Xod-Windows-Setup.exe](https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Windows-Setup.exe)** and run it (user-level install, no admin required).
+2. Xod auto-detects **Ollama** / **LM Studio** (or installs Ollama in one click) and stores keys in **Windows Credential Manager**.
 
-1. [Download Xod for Windows](https://github.com/CloudCorpRecords/xod/releases/latest/download/Xod-Windows-Setup.exe) (the latest version) and run it. It installs for your user only (no admin), adds Xod to the Start menu and opens it.
-2. Windows SmartScreen may say it "protected your PC" (the installer isn't code-signed yet): click **More info → Run anyway**. Only once.
-3. Xod looks for a model on your PC and connects to it by itself: [Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai), or another local server like llama.cpp or Jan. Don't have one? The setup screen installs Ollama with one click and suggests a model that fits your graphics card, with a download button. Or add a cloud model's API key (Fireworks, Claude, GPT, Gemini…) in Settings.
+### Android Companion
+- Get the companion app from **[CloudCorpRecords/xod-android](https://github.com/CloudCorpRecords/xod-android)**, sign in with GitHub or join the same Wi-Fi/Tailscale network, and control your Mac from anywhere.
 
-| Your graphics card | Suggested model | Download |
-|---|---|---|
-| No GPU, or 6–8 GB | Qwen 3.5 4B | 3.1 GB |
-| 10–16 GB (like an RTX 3060 12 GB or RTX 4070) | Qwen 3.5 9B | 6.1 GB |
-| 20 GB or more | Qwen 3.5 27B | 16.3 GB |
+---
 
-Chats, web research in its own browser (Chrome or Edge), memory, the companion, files with undo (the Recycle Bin), terminal commands (PowerShell), building apps and background tasks work on Windows. Mac only for now: the built-in model engine, on-device images, video and voice, and the Calendar/Notes/Reminders/Mail connectors. Xod updates itself on Windows too. Your data is in `%APPDATA%\Xod`, API keys in Windows Credential Manager.
+## Local-First Privacy & Security
 
-## A closer look
+- **100% Local Data:** Chats, episodic recall (`recall.db`), daily logs, and projects stay in `~/Library/Application Support/Xod` (Mac) or `%APPDATA%\Xod` (Windows). Zero telemetry, zero vendor lock-in.
+- **Keychain & 1Password Vault:** API keys, OAuth tokens, Agora BYOK keys, and saved logins live in macOS Keychain / Windows Credential Manager (or 1Password `op://` references) — never in plain-text prompts or logs.
+- **End-to-End Encrypted Links:** Phone ↔ Computer (Agent Mail) and Fleet ↔ Fleet sync use Tailscale `whois` verification + X25519/ChaCha20-Poly1305/Ed25519 sealing.
+- **Audited Autonomy:** Interactive actions ask before sending, paying, or deleting; Fleet/Muse rubber-stamp approvals are cryptographically locked to your own devices and recorded in append-only `audit.jsonl` logs.
 
-<details>
-<summary><b>The companion, routines, activity and undo, reports, Agent Mail, connected apps, add-ons</b></summary>
+See [SECURITY.md](.github/SECURITY.md) for responsible disclosure and [docs/RELIABILITY.md](docs/RELIABILITY.md) for measured evals.
 
-**Meet the moon, or the cat, the ghost, the robot, the owl or the sprout.** Xod's companion reads along as you type, listens when you talk, scans pages while it searches, talks while answers arrive, and dozes off in a nightcap when you're away. Each look has its own habits: the cat's tail swishes, the ghost vanishes and says boo, the robot's light shows what it's doing, the sprout blooms when it's happy. Pet it, drag it, double-click for a flip, and right-click to change its look.
+---
 
-<p align="center"><img src="docs/media/looks.gif" width="720" alt="Six looks for Xod: moon, cat, ghost, robot, owl and sprout, each doing its own little trick"></p>
-
-While Xod works, its companion leaves its spot by the reply and does the work where you can see it: it conjures each tool as it starts and taps it when it's done, peeks over browser snapshots, writes the answer with a quill that follows the words, lassoes anything that needs your OK and waits by it, then signs the answer and flies home. Each look travels its own way: the moon flies, the cat pounces, the ghost phases, the robot zips, the owl flaps and the sprout hops. Opening a panel takes a little spell, and on the home screen it sometimes lifts a card just to see if it can.
-
-<p align="center"><img src="docs/media/powers.gif" width="640" alt="The owl companion flying to a web search, peeking at a browser snapshot, waiting by an approval and writing the answer with a quill"></p>
-
-**Routines.** Jobs Xod repeats for you, by hand or on a schedule. Each run lands in Tasks and still asks before sending or paying.
-
-![Routines](docs/screenshots/routines.png)
-
-**Activity and undo.** Everything Xod did, in plain words. File writes, edits, moves and trash can be undone, and Xod won't overwrite a file you've changed since.
-
-![Activity](docs/screenshots/activity.png)
-
-**Shareable reports.** Turn any answer into a polished page and PDF with numbered sources.
-
-![A report](docs/screenshots/report.png)
-
-**Agent Mail (preview).** An optional add-on: give your Xod an address like `sam@post.example.com` and it can message other agents: ask a friend's agent for help, hand a job to your Xod at work, or connect a few agents into a team. Messages are end-to-end encrypted; the relay in the middle can't read them, doesn't know who sent them, and deletes each one once it's delivered. Xod never sends anything or runs a requested task without your OK. Run your own relay with [relay/](relay/README.md).
-
-**Connected apps.** Ask in plain words ("move my dentist appointment to Friday", "check off milk", "delete that note") and Xod finds the item, then changes it; deleting always waits for your OK. One click connects This Mac (Calendar, Reminders, Notes and Mail, including Google and iCloud accounts you've added to macOS), Notion and Linear (sign in with your account) and GitHub. Any other MCP server works too; secrets go to your Keychain. Copy the snippet to use Xod from Claude Desktop, Cursor or Claude Code.
-
-![Connected apps](docs/screenshots/connected-apps.png)
-
-**Add-ons.** Optional packs for startup and market intel, people lookup, website forensics, creators and trends, Media Studio and Model Lab.
-
-![Add-ons](docs/screenshots/add-ons.png)
-
-</details>
-
-<details>
-<summary><b>Build apps and games</b></summary>
-
-<p align="center"><img src="docs/screenshots/builder.png" width="760" alt="Xod built a 3D game from one sentence; it's running in the preview pane beside the chat"></p>
-
-Ask for something you can use or play, like **"make me a 3D game where you dodge falling cubes"** or **"build a pomodoro timer"**, and Xod writes it for real:
-
-- **It writes it, runs it and fixes it.** Xod plans the files and writes each one in full. Then it opens the app in a hidden browser, plays it for a few seconds and fixes any errors before telling you it's done. The answer lists only files that really exist.
-- **A preview beside the chat.** The app runs in a pane next to the chat, with its **Files** and a **Console** that shows errors, plus an "Ask Xod to fix these" button. Switch it to phone size, open it in your browser, or collapse it to a tab on the edge.
-- **Change it by asking.** Say "make it harder" or "add a high score" and Xod edits just the lines that need it, runs the app again, and keeps every change in Activity with Undo. Say "launch it" to open it in its own window.
-- **3D and art included.** Games use three.js unless you ask for something else; it's built in and works offline. Ask for sprites or textures and Xod paints them with Media Studio.
-- **Move it around by asking.** "Move it to my Desktop", "rename it", "zip it up", "show it in Finder", "open main.js in VS Code". Deleting asks first, and everything has Undo.
-- **Safely fenced off.** Previews run sandboxed, with no access to Xod, your files or its API. Each app lives in a folder of your project and shows under the project on the left.
-
-</details>
-
-<details>
-<summary><b>Find jobs and apply</b></summary>
-
-Say **"find me FDE jobs"** or **"remote staff ML engineer roles in New York"** and Xod goes to the source. It understands job acronyms (FDE, SWE, SRE, MLE, TPM, …), finds the companies hiring on Ashby, Greenhouse and Lever, and reads their public job boards directly. You get a list of real, open roles with company, location, remote or hybrid, pay when it's posted, and a direct apply link, usually in about ten seconds.
-
-- **Narrow it by asking.** "Only remote", "in San Francisco", "senior only", "not at Google", "newest first". The numbers stay matched to what's on screen.
-- **Apply from the list.** Pick roles and press **Apply**, or say "apply to 1 and 3". The first time, Xod fills in a short job profile for you: it finds your résumé on your computer or in Google Drive (connect it in Tools → Connected apps), checks it's yours and not a résumé someone sent you, and fills in your name, email, phone, links, city and experience for you to check. Press **Do it all**, or just say "do it all", and it saves the profile and starts the applications. It never guesses work authorization, sponsorship or salary, and the profile stays on your computer. Each application runs as a task in Xod's own browser: it fills the form from your profile, uploads your résumé, answers the questions, and **stops for your OK before it presses Submit**.
-
-</details>
-
-<details>
-<summary><b>Xod's heart</b></summary>
-
-<p align="center"><img src="docs/screenshots/heart.png" width="760" alt="Xod's heart: its stage, bond, mood, what it learned about you, and its journal"></p>
-
-Xod's companion has a little life of its own. It has moods, a bond with you that grows as you work together, and it grows up through five stages (Hatchling, Sprout, Companion, Kindred, Luminary). When you're idle it leaves its spot and wanders around the window, thinking out loud. When you're away for a while it reads up on something you care about, thinks of an idea for one of your projects, or daydreams, and brings you a postcard when you're back. What you thank it for is how it learns what you like.
-
-You can make it happy, too. Every job you finish together leaves a little stardust: hover Xod and give it a treat, or play catch with a glowing star you fling around the window. Now and then it asks for something small (a game, a pet, one good thing about your day), and "Not now" is always fine.
-
-It learns from you too: your name, whether you like answers short or detailed, the topics you keep coming back to, and what you correct. **Tools → Xod's heart** shows all of it, and you can make it forget anything. It's a character, not a person: it never guilt-trips, its bond never drops because you were away, it never touches your files or accounts on its own, and everything stays on your Mac.
-
-</details>
-
-<details>
-<summary><b>Talk to it</b></summary>
-
-<p align="center"><img src="docs/media/conversation.gif" width="640" alt="A hands-free conversation with Xod: the question, the spoken answer with live captions, and a follow-up"></p>
-
-Say **"Hey Xod, what's the weather tomorrow?"** in one breath, click the mic, or press **⌃⌥Space** from any app, and just talk. [Watch it with sound.](docs/media/xod-conversation.mp4)
-
-- **A real back-and-forth.** Xod answers out loud in a sentence or three and keeps the details and sources on screen. Then it keeps listening, so a follow-up needs no wake word. After a quiet pause, or "thanks, that's all", it says goodbye.
-- **Interrupt it like a person.** Talk over it and it goes quiet straight away. A new question while it's still thinking replaces the old one. "Stop", "say that again" and "never mind" work too.
-- **No dead air.** A short "let me look that up" while it searches, live captions as you speak, and a companion that bobs along with your voice, talks in sync and chimes in its own voice for each look.
-- **Spoken replies anywhere.** Have Xod read answers aloud when you talk, every time, or never, and press **Listen** on any reply.
-- **On your Mac.** Whisper turns speech into text on your Mac and Xod speaks with your Mac's own voices; nothing is recorded or sent. Listening for "Hey Xod" stays off until you turn it on under the speaker button, and voice commands that would move files go through the agent, where they can be undone.
-
-</details>
-
-<details>
-<summary><b>From your phone</b></summary>
-
-Hand Xod a job from anywhere. In **Tools → Your phone**, paste the token of a Telegram bot you make in a minute with [@BotFather](https://t.me/BotFather), then send the bot the 6-digit code Xod shows. After that:
-
-- **Write to the bot** ("find me a cheap flight to Lisbon in May") and it becomes a task on your computer. The result comes back as a message.
-- **Approve with a tap.** When a task is ready to submit, pay or delete something, the bot asks with Approve / Cancel buttons. A question ("window or aisle?") is answered by replying to it.
-- **Private.** Only your Telegram account is listened to, the token is in the Keychain (Credential Manager on Windows), and nothing on your computer is opened to the internet: Xod fetches your messages from Telegram. Your messages do pass through Telegram, like any Telegram chat. Xod has to be running, so it keeps going in the tray when you close the window.
-
-Also inside: images and video (FLUX, AnimateDiff), long-term memory, projects, a health check that fixes common problems, and a gated way for Xod to improve its own code, with tests, your approval and one-click revert.
-
-</details>
-
-## Privacy and security
-
-- **Your data stays on your computer**: `~/Library/Application Support/Xod` on a Mac, `%APPDATA%\Xod` on Windows, readable only by your account. Set `XOD_DATA_DIR` to keep it elsewhere.
-- **Keys and logins live in the macOS Keychain** (Windows: Credential Manager), or in 1Password if you connect it, never in files, logs or prompts. Updates keep access to them.
-- **The phone link is off until you connect it.** Then Xod asks Telegram for messages to your own bot; it answers only your account.
-- **One small network check:** once a day Xod asks GitHub whether a newer version exists (nothing else is sent). Switch it off in Tools → What's coming next, or with `XOD_NO_UPDATE_CHECK=1`.
-- **Local only.** The server listens on `127.0.0.1` and refuses requests from websites, so a page you visit can't drive Xod.
-- **Untrusted text stays text.** AI output is sanitized, the UI runs under a strict Content-Security-Policy, and every UI library is bundled at a pinned version.
-- **Audited dependencies**, re-checked weekly in CI.
-
-Found a security problem? Please report it privately; see [SECURITY.md](.github/SECURITY.md).
-
-## Build from source
+## Build From Source
 
 ```bash
 git clone https://github.com/CloudCorpRecords/xod.git
 cd xod
-./run.sh                      # Mac/Linux: sets up .venv the first time, then serves http://localhost:8000
-.\run.ps1                     # Windows (PowerShell): the same
+./run.sh            # Mac / Linux (creates .venv, serves http://127.0.0.1:8000)
+.\run.ps1           # Windows (PowerShell)
 ```
 
-Xod in the terminal: `./xod` (Windows: `xod.cmd`), see [docs/TERMINAL.md](docs/TERMINAL.md).
-The desktop app: `cd electron && npm install && npm start`. The installers: `npm run dist` (Mac), `npm run dist:win` (Windows).
-Releasing a new version: see [CONTRIBUTING.md](.github/CONTRIBUTING.md) (`python scripts/release.py 1.2.3`).
+- **Desktop App:** `cd electron && npm install && npm start`
+- **Build Installers:** `npm run dist` (Mac) · `npm run dist:win` (Windows)
+- **CLI Mode:** `./xod` (see [docs/TERMINAL.md](docs/TERMINAL.md))
 
-```
+```text
 xod/
-├── app/          FastAPI server, agent, services and the web UI
-├── electron/     the desktop app (Mac and Windows) and its installers
-├── relay/        the Agent Mail post office (Python or Cloudflare Worker)
-├── docs/         roadmap, changelog, screenshots and media
-├── scripts/      release checks, license notices, screenshot and video tools
-└── tests/        end-to-end suites (they use a throwaway data folder, never yours)
+├── app/          FastAPI backend, agent loop, services (MCP, Fleet, Voice, Browser, Memory) & Moonlit UI
+├── electron/     macOS & Windows desktop wrapper and signed installer scripts
+├── relay/        Optional self-hosted Agent Mail relay (Python / Cloudflare Worker)
+├── docs/         Architecture docs, changelog, reliability evals & media
+├── scripts/      Release automation, privacy checks & license generator
+└── tests/        Smoke, fleet, desktop, and regression test suites
 ```
 
-## Get involved
+---
 
-Xod is open to contributors of every level, including first-timers.
+## Contributing & Support
 
-- ⭐ **Star the repo** to follow along, or **Watch → Releases** to hear about each new version.
-- 🐣 **First PR?** Pick a [good first issue](https://github.com/CloudCorpRecords/xod/labels/good%20first%20issue) and start with [CONTRIBUTING.md](.github/CONTRIBUTING.md). See the [roadmap](docs/ROADMAP.md) for bigger things on the way.
-- 💬 **Questions, ideas, or a routine you made?** Share it in [Discussions](https://github.com/CloudCorpRecords/xod/discussions).
-- 🐛 **Something broke?** [Open an issue](https://github.com/CloudCorpRecords/xod/issues/new/choose). Please follow the [Code of Conduct](.github/CODE_OF_CONDUCT.md).
+- ⭐ **Star the repo** or **Watch → Releases** to follow updates.
+- 🐛 **Bugs & Ideas:** [Issues](https://github.com/CloudCorpRecords/xod/issues/new/choose) · [Discussions](https://github.com/CloudCorpRecords/xod/discussions) · [CONTRIBUTING.md](.github/CONTRIBUTING.md)
+- ❤️ **Support Xod:** [GitHub Sponsors](https://github.com/sponsors/CloudCorpRecords) · [Stripe](https://donate.stripe.com/3cI3cw2A68eU8sagt7dZ600) · [Official Merch](https://rene-turcios-shop.fourthwall.com)
 
-## Support Xod
-
-Xod is free and open source, and it stays that way. If it is useful to you, you can help keep it moving:
-
-- ❤️ **Sponsor monthly** on [GitHub Sponsors](https://github.com/sponsors/CloudCorpRecords).
-- ☕ **Give once, pay what you want** through [Stripe](https://donate.stripe.com/3cI3cw2A68eU8sagt7dZ600).
-- 👕 **Pick up merch** from the [official shop](https://rene-turcios-shop.fourthwall.com).
-
-## License
-
-[MIT](LICENSE). Xod stands on a lot of great open-source work; the Mac app includes the notices for everything it bundles (`THIRD_PARTY_LICENSES.txt`, made by `scripts/third_party_licenses.py`).
+Licensed under **[MIT](LICENSE)**.
