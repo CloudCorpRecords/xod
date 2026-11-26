@@ -193,6 +193,13 @@
 
     <div class="flex items-center gap-2">
 
+      <!-- Control Center: AI Brain, Mac Permissions, MCPs & Smart Routing, Signed-in Chrome -->
+      <button id="btnControlCenter" onclick="openControlCenter()" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Control Center: check Mac permissions, MCP connections, Smart Tool Routing, and signed-in Chrome">
+        <i data-lucide="sliders-horizontal" class="size-3.5 text-cyan-400"></i>
+        <span class="hidden sm:inline">Control</span>
+        <span id="ccNavBadge" class="hidden px-1.5 py-0.2 rounded-full bg-amber-500 text-surface-950 text-[10px] font-bold"></span>
+      </button>
+
       <!-- Quick Actions: Post & Web, Live Chrome Tabs, Launch Apps -->
       <button id="btnQuickActions" onclick="openQuickActionsModal()" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Quick Actions: post to social sites, focus Chrome tabs, or launch apps">
         <i data-lucide="zap" class="size-3.5 text-brand-400"></i>
@@ -4721,8 +4728,12 @@
               class="flex-1 min-w-0 rounded-lg bg-surface-850 border border-white/[0.08] px-3 py-2 text-[12px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
             <button type="button" onclick="openQuickUrlAction()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-[12px] text-zinc-200 shrink-0">Open in Chrome</button>
           </div>
-          <div class="flex justify-end pt-1">
-            <button type="button" onclick="submitQuickPostAction()" class="px-4 py-2 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[13px] font-semibold">Draft &amp; Post with Xod</button>
+          <div class="flex items-center justify-between pt-1 gap-3">
+            <label class="flex items-center gap-2 text-[12px] text-zinc-300 cursor-pointer">
+              <input id="qaUseSignedInChrome" type="checkbox" checked class="accent-brand-500">
+              <span>Use my signed-in Chrome (no re-login)</span>
+            </label>
+            <button type="button" onclick="submitQuickPostAction()" class="px-4 py-2 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[13px] font-semibold shrink-0">Draft &amp; Post with Xod</button>
           </div>
         </div>
 
@@ -4750,7 +4761,37 @@
     </div>
   </div>
 
-  <script src="/static/js/app.js?v=moonlit75"></script>
+  <!-- ============================================================== -->
+  <!-- UNIFIED CONTROL CENTER MODAL                                   -->
+  <!-- ============================================================== -->
+  <div id="controlCenterModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" aria-hidden="true" onclick="if(event.target===this) closeControlCenter()">
+    <div class="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-2xl bg-surface-900 border border-white/[0.08] shadow-2xl overflow-hidden">
+      <header class="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2.5">
+          <div class="size-8 rounded-xl bg-cyan-500/15 border border-cyan-500/30 flex items-center justify-center">
+            <i data-lucide="sliders-horizontal" class="size-4 text-cyan-400"></i>
+          </div>
+          <div>
+            <h3 class="text-[15px] font-semibold text-white">Control Center</h3>
+            <p class="text-[12px] text-zinc-400">One view for AI Brain, Mac Permissions, MCP Tool Routing, and Signed-in Chrome.</p>
+          </div>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <button type="button" onclick="refreshControlCenter()" class="px-2.5 py-1.5 rounded-lg text-[12px] text-zinc-300 hover:text-white hover:bg-surface-700 flex items-center gap-1">
+            <i data-lucide="refresh-cw" class="size-3.5"></i> Refresh
+          </button>
+          <button type="button" onclick="closeControlCenter()" class="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-surface-700">
+            <i data-lucide="x" class="size-4"></i>
+          </button>
+        </div>
+      </header>
+      <div id="ccModalBody" class="p-5 overflow-y-auto space-y-4">
+        <p class="text-[12px] text-zinc-500">Loading Control Center…</p>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/app.js?v=moonlit85"></script>
   <script src="/static/js/sidebar.js?v=moonlit75"></script>
   <script src="/static/js/run_mode.js"></script>
   <script src="/static/js/work_router.js?v=moonlit77"></script>
@@ -4797,7 +4838,9 @@
   <script src="/static/js/surfaces.js?v=moonlit78"></script>
   <script src="/static/js/settings.js?v=moonlit81"></script>
   <script src="/static/js/voice_brief.js?v=moonlit82"></script>
-  <script src="/static/js/quick_actions.js?v=moonlit83"></script>
+  <script src="/static/js/quick_actions.js?v=moonlit85"></script>
+  <script src="/static/js/control_center.js?v=moonlit85"></script>
+  <script src="/static/js/action_strip.js?v=moonlit85"></script>
 </body>
 </html>
 

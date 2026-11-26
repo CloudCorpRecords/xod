@@ -2830,6 +2830,45 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "desktop_chrome_read_tab",
+            "description": "Reads the title, URL, and visible page text from a tab in the user's real signed-in Google Chrome (no re-login needed).",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string"}, "window": {"type": "integer"}, "tab": {"type": "integer"}, "max_chars": {"type": "integer"}}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_chrome_open_and_read",
+            "description": "Opens or focuses a URL in the user's real signed-in Google Chrome, waits briefly for load, and returns its visible page text.",
+            "parameters": {"type": "object", "properties": {
+                "url": {"type": "string"}, "wait_sec": {"type": "number"}, "max_chars": {"type": "integer"}},
+                "required": ["url"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "desktop_chrome_draft_text",
+            "description": "Focuses a real signed-in Google Chrome tab and drafts text into its visible post/message composer WITHOUT clicking publish or send.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string"}, "text": {"type": "string"}, "window": {"type": "integer"}, "tab": {"type": "integer"}},
+                "required": ["text"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mcp_discover_tools",
+            "description": "Searches all connected MCP servers (GitHub, Notion, Mac, Computer Control, etc.) for tools matching a keyword when a needed tool is not already loaded.",
+            "parameters": {"type": "object", "properties": {
+                "query": {"type": "string", "description": "Keyword or app name, e.g. 'github pull request' or 'notion page'"}},
+                "required": ["query"]}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "desktop_type",
             "description": "Types text with the real keyboard, into an element number from the last desktop_look (clicked first) or wherever the cursor is. Never passwords.",
             "parameters": {"type": "object", "properties": {
@@ -4012,6 +4051,7 @@ async def _cli_setup(ac, a: Dict[str, Any]) -> Dict[str, Any]:
 
 
 DESKTOP_TOOLS = {"desktop_task", "desktop_run", "desktop_look", "desktop_zoom_crop", "desktop_chrome_tabs", "desktop_chrome_focus_tab",
+                 "desktop_chrome_read_tab", "desktop_chrome_open_and_read", "desktop_chrome_draft_text",
                  "desktop_click", "desktop_type", "desktop_key", "desktop_scroll", "desktop_open_app",
                  "terminal_list", "terminal_read", "terminal_send"}
 
@@ -4044,6 +4084,12 @@ async def _desktop(name: str, a: Dict[str, Any]) -> Dict[str, Any]:
             res = await asyncio.to_thread(desktop.chrome_tabs)
         elif name == "desktop_chrome_focus_tab":
             res = await asyncio.to_thread(desktop.chrome_focus_tab, a.get("query") or "", a.get("window"), a.get("tab"), a.get("open_url") or "")
+        elif name == "desktop_chrome_read_tab":
+            res = await asyncio.to_thread(desktop.chrome_read_tab, a.get("query") or "", a.get("window"), a.get("tab"), int(a.get("max_chars") or 8000))
+        elif name == "desktop_chrome_open_and_read":
+            res = await asyncio.to_thread(desktop.chrome_open_and_read, a.get("url") or "", float(a.get("wait_sec") or 2.5), int(a.get("max_chars") or 8000))
+        elif name == "desktop_chrome_draft_text":
+            res = await asyncio.to_thread(desktop.chrome_draft_text, a.get("query") or "", a.get("text") or "", a.get("window"), a.get("tab"))
         elif name == "desktop_click":
             res = await desktop.click(a.get("element"), a.get("x"), a.get("y"), a.get("button") or "left", int(a.get("clicks") or 1), prefer_ax=bool(a.get("prefer_ax", False)))
         elif name == "desktop_type":
@@ -4137,6 +4183,10 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
     """Dispatches tool execution to the appropriate service."""
     if name == "test_send" and TEST_HOOKS:
         return await _test_send(arguments or {})
+    if name == "mcp_discover_tools":
+        from app.services.mcp_client import mcp_hub
+        hits = mcp_hub.discover_tools(str((arguments or {}).get("query") or ""), limit=12)
+        return {"success": True, "count": len(hits), "tools": hits}
     if name.startswith("mcp__"):
         from app.services.mcp_client import mcp_hub
         return await mcp_hub.call(name, arguments or {})

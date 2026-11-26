@@ -4921,6 +4921,7 @@ function handleResearchEvent(event, assistantBubble) {
   } else if (event.type === "tool_call") {
     assistantBubble.finishReasoning();
     assistantBubble.addToolCall(event.name, event.args, event.id);
+    if (window.XodActionStrip) XodActionStrip.onToolCall(assistantBubble, event.name, event.args);
   } else if (event.type === "tool_stream") {
     if (assistantBubble && assistantBubble.appendToolStream) {
       assistantBubble.appendToolStream(event.name, event.stream_type, event.text, event.id);
@@ -4941,6 +4942,7 @@ function handleResearchEvent(event, assistantBubble) {
     if (window.XodPreview) XodPreview.onBuildDone(event, assistantBubble);
   } else if (event.type === "tool_result") {
     assistantBubble.updateToolResult(event.name, event.summary, event.data, event.id);
+    if (window.XodActionStrip) XodActionStrip.onToolResult(assistantBubble, event.name, event.summary, event.data);
     if (window.XodPreview) XodPreview.onToolResult(event);
     if (event.data && event.data.needs_approval && window.renderMcpApproval) window.renderMcpApproval(event.data);
   } else if (event.type === "understood") {
@@ -4967,6 +4969,7 @@ function handleResearchEvent(event, assistantBubble) {
     assistantBubble.setContent(`**Error:** ${event.content}`);
   } else if (event.type === "done") {
     assistantBubble.finishReasoning();
+    if (window.XodActionStrip) XodActionStrip.onDone(assistantBubble);
     updateLiveStatusBar(false);
     loadSessions();
     scrollChatToBottom(true);

@@ -67,7 +67,15 @@ _SAME = {"text": {"message", "messages"}, "texts": {"message", "messages"}, "ime
          "garage": {"security", "shortcut"}, "near": {"places", "nearby"}, "nearby": {"places"}, "closest": {"places", "nearby"},
          "remind": {"reminders"}, "reminder": {"reminders"}, "schedule": {"calendar", "events"}, "meeting": {"calendar", "event"},
          "appointment": {"calendar", "event"}, "number": {"contacts", "phone"}, "phone": {"contacts"}, "contact": {"contacts"},
-         "email": {"mail"}, "inbox": {"mail"}, "where": {"location"}}
+         "email": {"mail", "gmail"}, "inbox": {"mail", "gmail"}, "where": {"location"},
+         "repo": {"github", "repository"}, "repos": {"github", "repository"}, "commit": {"github", "commits"},
+         "commits": {"github", "commit"}, "branch": {"github", "branches"}, "issue": {"github", "issues"},
+         "issues": {"github", "issue"}, "pull": {"github", "pull_request"}, "prs": {"github", "pull_request"},
+         "release": {"github", "releases"}, "workflow": {"github", "actions"}, "code": {"github", "search"},
+         "notion": {"notion", "page", "database"}, "wiki": {"notion", "page"}, "doc": {"notion", "page", "drive"},
+         "docs": {"notion", "page", "drive"}, "note": {"notes", "notion"}, "notes": {"notes", "notion"},
+         "screen": {"computer", "screenshot", "look"}, "screenshot": {"computer", "screen", "look"},
+         "click": {"computer", "mouse"}, "window": {"computer", "app", "mac"}, "clipboard": {"mac", "clipboard"}}
 
 
 def _read_only(tool: Any) -> bool:
@@ -549,19 +557,115 @@ class MCPHub:
                     "parameters": schema}})
         return defs
 
-    def tools_for_query(self, query: str, limit: int = 8) -> List[Dict[str, Any]]:
+    def tools_for_query(self, query: str, limit: int = 16) -> List[Dict[str, Any]]:
         defs = self.tool_definitions()
-        if len(defs) <= limit:
+        total = len(defs)
+        smart_enabled = True
+        try:
+            from app.services.storage import get_setting
+            smart_enabled = get_setting("smart_mcp_routing", "1") != "0"
+        except Exception:
+            smart_enabled = True
+
+        if not smart_enabled:
+            chosen = defs[:64]
+            self.last_route = {
+                "query": (query or "")[:100],
+                "total_tools": total,
+                "selected_tools": len(chosen),
+                "saved_tools": max(0, total - len(chosen)),
+                "servers": sorted({d["function"]["name"].split("__", 2)[1] for d in chosen if "__" in d["function"]["name"]}),
+                "smart_enabled": False,
+                "at": time.time(),
+            }
+            return chosen
+
+        if total <= limit:
+            self.last_route = {
+                "query": (query or "")[:100],
+                "total_tools": total,
+                "selected_tools": total,
+                "saved_tools": 0,
+                "servers": sorted({d["function"]["name"].split("__", 2)[1] for d in defs if "__" in d["function"]["name"]}),
+                "smart_enabled": True,
+                "at": time.time(),
+            }
             return defs
-        words = {w for w in re.findall(r"[a-z0-9]{3,}", (query or "").lower()) if w not in _STOP}
+
+        q_lower = (query or "").lower()
+        raw_tokens = re.findall(r"[a-z0-9]+", q_lower)
+        words = {w for w in raw_tokens if (len(w) >= 3 or w in ("pr", "gh", "os", "ui")) and w not in _STOP}
+        if "pr" in words:
+            words |= {"github", "pull", "pull_request"}
         for w in list(words):
             words |= _SAME.get(w, set())
 
         def score(d):
-            name, text = d["function"]["name"].lower(), d["function"]["description"].lower()
-            return sum(2 if w in name else 1 for w in words if w in name or w in text)
-        ranked = sorted(defs, key=score, reverse=True)
-        return [d for d in ranked[:limit] if score(d) > 0]
+            fname = d["function"]["name"].lower()
+            parts = fname.split("__", 2)
+            srv = parts[1] if len(parts) > 1 else ""
+            tname = parts[2] if len(parts) > 2 else fname
+            tname_tokens = set(re.findall(r"[a-z0-9]+", tname))
+            desc_tokens = set(re.findall(r"[a-z0-9]+", d["function"]["description"].lower()))
+            pts = 0
+            # Explicit server name mention gets strong priority
+            if srv and re.search(rf"\b{re.escape(srv)}\b", q_lower):
+                pts += 8
+            for w in words:
+                if w == srv:
+                    pts += 6
+                elif w in tname_tokens or (len(w) >= 4 and w in tname):
+                    pts += 3
+                elif w in desc_tokens:
+                    pts += 1
+            return pts
+
+        scored = [(score(d), d) for d in defs]
+        scored = [(sc, d) for sc, d in scored if sc > 0]
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Balance across matched servers so one large server (e.g. 46 GitHub tools) doesn't crowd out another
+        per_server_cap = max(6, limit // 2)
+        counts: Dict[str, int] = {}
+        chosen: List[Dict[str, Any]] = []
+        for sc, d in scored:
+            if len(chosen) >= limit:
+                break
+            srv = d["function"]["name"].split("__", 2)[1] if "__" in d["function"]["name"] else ""
+            if counts.get(srv, 0) >= per_server_cap:
+                continue
+            counts[srv] = counts.get(srv, 0) + 1
+            chosen.append(d)
+
+        self.last_route = {
+            "query": (query or "")[:100],
+            "total_tools": total,
+            "selected_tools": len(chosen),
+            "saved_tools": max(0, total - len(chosen)),
+            "servers": sorted(counts.keys()),
+            "smart_enabled": True,
+            "at": time.time(),
+        }
+        return chosen
+
+    def discover_tools(self, query: str, limit: int = 12) -> List[Dict[str, Any]]:
+        """Search all connected MCP tools by keyword so the model can discover tools outside the initial route."""
+        defs = self.tool_definitions()
+        q = (query or "").strip().lower()
+        words = {w for w in re.findall(r"[a-z0-9]{2,}", q) if w not in _STOP}
+        for w in list(words):
+            words |= _SAME.get(w, set())
+        hits = []
+        for d in defs:
+            fn = d["function"]
+            blob = f"{fn['name']} {fn['description']}".lower()
+            sc = sum(3 if w in fn["name"].lower() else 1 for w in words if w in blob) if words else 1
+            if sc > 0:
+                req = (fn.get("parameters") or {}).get("required") or []
+                props = list(((fn.get("parameters") or {}).get("properties") or {}).keys())[:10]
+                hits.append((sc, {"name": fn["name"], "description": fn["description"][:200], "required": req, "args": props}))
+        hits.sort(key=lambda x: x[0], reverse=True)
+        return [h[1] for h in hits[:limit]]
 
     def _find(self, full_name: str):
         _, server, tool = full_name.split("__", 2)

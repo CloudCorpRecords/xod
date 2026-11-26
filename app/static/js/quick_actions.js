@@ -182,9 +182,13 @@
       setStatus("Write what you want Xod to post or do on the site first.", true);
       return;
     }
+    const useChrome = !!document.getElementById("qaUseSignedInChrome")?.checked;
     const target = selectedPlatform === "Website" && customUrl ? customUrl : selectedPlatform;
     const urlHint = customUrl && selectedPlatform !== "Website" ? ` Include this link: ${customUrl}.` : "";
-    const prompt = `Use my browser on this computer to open ${target} (using my logged-in session), draft and prepare this post, and ask me before clicking publish:${urlHint}\n\n${msg}`;
+    const browserHint = useChrome
+      ? "Use my real signed-in Google Chrome (desktop_chrome_tabs / desktop_chrome_focus_tab / desktop_chrome_draft_text) so I don't need to log in again"
+      : "Use Xod's browser on this computer";
+    const prompt = `${browserHint} to open ${target}, draft and prepare this post, and ask me before clicking publish:${urlHint}\n\n${msg}`;
     if (msgEl) msgEl.value = "";
     sendToChat(prompt);
   }

@@ -943,6 +943,61 @@ async def desktop_launch_app_endpoint(req: DesktopLaunchAppRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class DesktopChromeReadRequest(BaseModel):
+    query: Optional[str] = None
+    window: Optional[int] = None
+    tab: Optional[int] = None
+    max_chars: int = 8000
+
+
+class DesktopPermissionPaneRequest(BaseModel):
+    pane: str
+
+
+class ControlCenterSettingsRequest(BaseModel):
+    smart_mcp_routing: Optional[bool] = None
+    prefer_live_chrome: Optional[bool] = None
+
+
+@app.post("/api/desktop/chrome-read")
+async def desktop_chrome_read_endpoint(req: DesktopChromeReadRequest):
+    from app.services import desktop
+    return await asyncio.to_thread(desktop.chrome_read_tab, req.query or "", req.window, req.tab, req.max_chars)
+
+
+@app.post("/api/desktop/open-permissions")
+async def desktop_open_permissions_endpoint(req: DesktopPermissionPaneRequest):
+    from app.services import control_center
+    return await asyncio.to_thread(control_center.open_mac_permission_pane, req.pane)
+
+
+@app.get("/api/control-center")
+async def control_center_endpoint():
+    from app.services import control_center
+    return await asyncio.to_thread(control_center.snapshot)
+
+
+@app.post("/api/control-center/settings")
+async def control_center_settings_endpoint(req: ControlCenterSettingsRequest):
+    from app.services.storage import set_setting
+    if req.smart_mcp_routing is not None:
+        set_setting("smart_mcp_routing", "1" if req.smart_mcp_routing else "0")
+    if req.prefer_live_chrome is not None:
+        set_setting("prefer_live_chrome", "1" if req.prefer_live_chrome else "0")
+    from app.services import control_center
+    return await asyncio.to_thread(control_center.snapshot)
+
+
+@app.get("/api/browser/proof-thumb")
+async def browser_proof_thumb_endpoint():
+    from app.services import browser_remote
+    try:
+        img = await asyncio.wait_for(browser_remote.proof_thumbnail(max_b64=28000), timeout=3.5)
+        return {"ok": bool(img), "image_b64": img}
+    except Exception:
+        return {"ok": False, "image_b64": ""}
+
+
 @app.on_event("shutdown")
 async def _stop_crew_host():
     try:

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.35
+
+Major Computer & Browser Control upgrade across four pillars: Unified Control Center, Smart MCP Tool Routing, Live Signed-in Chrome Bridge, and Inline Live Action Strip in chat.
+
+- **Unified Control Center** (`app/services/control_center.py`, `app/static/js/control_center.js`, `app/main.py`): new top-bar **Control** button (with live amber attention count badge) opening a single dashboard for **AI Brain & Voice**, **Mac Computer Control Permissions** (1-click jumps to macOS Screen Recording & Accessibility), **Apps & MCP Tools** (1-click reconnect for expired OAuth like Notion), and **Signed-in Chrome & Saved Browser Sessions**.
+- **Smart MCP Tool Routing + on-demand discovery** (`app/services/mcp_client.py`, `app/agent/tools.py`): upgrades `tools_for_query` with expanded domain synonyms, explicit server boosting, multi-server balancing, live routing telemetry in Control Center, a toggleable `smart_mcp_routing` setting, and a new `mcp_discover_tools` fallback tool so the AI never misses a tool even with 80+ MCP tools connected.
+- **Live Signed-in Chrome Bridge** (`app/services/desktop.py`, `app/agent/tools.py`, `app/static/js/quick_actions.js`): adds `desktop_chrome_read_tab`, `desktop_chrome_open_and_read`, and `desktop_chrome_draft_text` (drafts into your real signed-in Chrome without clicking publish/send, with clear guidance if Chrome's Apple Events JS setting is off), plus a **"Use my signed-in Chrome (no re-login)"** toggle in **Quick Actions → Post & Web**.
+- **Inline Live Action Strip in Chat** (`app/static/js/action_strip.js`, `app/static/js/app.js`, `/api/browser/proof-thumb`): renders a live pulsing status strip right inside the active chat bubble during browser/Mac/Chrome actions, complete with step trail pills, clickable mini proof thumbnail, and inline **Stop** and **Take Over** buttons.
+
 ## 1.1.34
 
 Unifies **Local (Offline)** and **Agora (Real-time)** voice right inside the bottom **Voice / Conversation** popover so switching between offline Mac voice and live Agora ConvoAI takes one click.

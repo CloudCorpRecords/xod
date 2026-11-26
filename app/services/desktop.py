@@ -1309,6 +1309,139 @@ def chrome_focus_tab(query: str = "", window: Optional[int] = None, tab: Optiona
     return {"success": False, "error": f"No open Chrome tab matched '{query}'."}
 
 
+def _chrome_exec_js(window: int, tab: int, js_code: str, timeout: int = 8) -> Dict[str, Any]:
+    """Run JavaScript inside a real signed-in Google Chrome tab via AppleScript."""
+    if not MAC:
+        return {"success": False, "error": "Signed-in Chrome bridge is currently macOS-only."}
+    escaped = js_code.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+    script = f'''
+    tell application "Google Chrome"
+      if not running then return "__XOD_NOT_RUNNING__"
+      set t to tab {int(tab)} of window {int(window)}
+      return execute t javascript "{escaped}"
+    end tell
+    '''
+    try:
+        r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True, timeout=timeout)
+        if r.returncode != 0:
+            err = (r.stderr or "AppleScript failed").strip()
+            if "JavaScript through AppleScript is turned off" in err or "Allow JavaScript from Apple Events" in err:
+                return {
+                    "success": False,
+                    "js_apple_events_blocked": True,
+                    "error": "Chrome blocked AppleScript JavaScript. In Google Chrome menu bar click: View → Developer → Allow JavaScript from Apple Events.",
+                }
+            return {"success": False, "error": err[:240]}
+        out = (r.stdout or "").strip()
+        if out == "__XOD_NOT_RUNNING__":
+            return {"success": False, "error": "Google Chrome is not running."}
+        return {"success": True, "output": out}
+    except Exception as e:
+        return {"success": False, "error": str(e)[:240]}
+
+
+def chrome_read_tab(query: str = "", window: Optional[int] = None, tab: Optional[int] = None,
+                    max_chars: int = 8000) -> Dict[str, Any]:
+    """Read title, URL, and visible page text from a real signed-in Google Chrome tab."""
+    if not MAC:
+        return {"success": False, "error": "Signed-in Chrome bridge is currently macOS-only."}
+    target_w, target_t, matched = window, tab, None
+    if target_w is None or target_t is None:
+        listed = chrome_tabs()
+        if not listed.get("success"):
+            return listed
+        tabs = listed.get("tabs") or []
+        q = str(query or "").strip().lower()
+        if q:
+            matched = next((t for t in tabs if q in t["url"].lower() or q in t["title"].lower()), None)
+        elif tabs:
+            matched = tabs[0]
+        if not matched:
+            return {"success": False, "error": f"No open Chrome tab matched '{query}'."}
+        target_w, target_t = matched["window"], matched["tab"]
+
+    js = (
+        f"JSON.stringify({{title: document.title || '', url: location.href || '', "
+        f"text: ((document.body && document.body.innerText) || '').slice(0, {int(max_chars)})}})"
+    )
+    res = _chrome_exec_js(int(target_w), int(target_t), js)
+    if not res.get("success"):
+        return res
+    try:
+        parsed = json.loads(res.get("output") or "{}")
+    except Exception:
+        parsed = {"title": matched["title"] if matched else "", "url": matched["url"] if matched else "", "text": res.get("output") or ""}
+    return {
+        "success": True,
+        "window": int(target_w),
+        "tab": int(target_t),
+        "title": parsed.get("title") or "",
+        "url": parsed.get("url") or "",
+        "text": (parsed.get("text") or "")[:max_chars],
+    }
+
+
+def chrome_open_and_read(url: str, wait_sec: float = 2.5, max_chars: int = 8000) -> Dict[str, Any]:
+    """Open or focus a URL in the user's real signed-in Google Chrome, wait briefly, and read visible text."""
+    if not MAC:
+        return {"success": False, "error": "Signed-in Chrome bridge is currently macOS-only."}
+    u = str(url or "").strip()
+    if not u:
+        return {"success": False, "error": "Provide a URL to open."}
+    if not re.match(r"^https?://", u, re.I):
+        u = "https://" + u
+    foc = chrome_focus_tab(query=u.split("://", 1)[-1].split("/", 1)[0], open_url=u)
+    if not foc.get("success"):
+        return foc
+    time.sleep(max(0.5, min(float(wait_sec), 6.0)))
+    listed = chrome_tabs()
+    host = u.split("://", 1)[-1].split("/", 1)[0].lower()
+    tabs = listed.get("tabs") or []
+    hit = next((t for t in tabs if host in (t.get("url") or "").lower()), tabs[0] if tabs else None)
+    if not hit:
+        return {"success": True, "opened": u, "text": ""}
+    return chrome_read_tab(window=hit["window"], tab=hit["tab"], max_chars=max_chars)
+
+
+def chrome_draft_text(query: str = "", text: str = "", window: Optional[int] = None,
+                      tab: Optional[int] = None) -> Dict[str, Any]:
+    """Focus a real signed-in Chrome tab and draft text into its visible composer WITHOUT submitting or publishing."""
+    if not MAC:
+        return {"success": False, "error": "Signed-in Chrome bridge is currently macOS-only."}
+    msg = str(text or "")
+    if not msg.strip():
+        return {"success": False, "error": "Provide text to draft."}
+    foc = chrome_focus_tab(query=query, window=window, tab=tab)
+    if not foc.get("success"):
+        return foc
+    info = foc.get("focused") or {}
+    tw, tt = int(info.get("window", window or 1)), int(info.get("tab", tab or 1))
+    payload = json.dumps(msg)
+    js = (
+        "(() => {"
+        f"const val = {payload};"
+        "const el = document.activeElement && (document.activeElement.isContentEditable || document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') "
+        "? document.activeElement : (document.querySelector('[contenteditable=\"true\"][role=\"textbox\"], textarea, [contenteditable=\"true\"]'));"
+        "if (!el) return JSON.stringify({ok:false, reason:'No visible text composer found on this tab. Click the post box first.'});"
+        "el.focus();"
+        "if (el.isContentEditable) { document.execCommand('insertText', false, val); } "
+        "else { el.value = val; el.dispatchEvent(new Event('input', {bubbles:true})); }"
+        "return JSON.stringify({ok:true, tag: el.tagName, preview: val.slice(0, 120)});"
+        "})()"
+    )
+    res = _chrome_exec_js(tw, tt, js)
+    if not res.get("success"):
+        return res
+    try:
+        parsed = json.loads(res.get("output") or "{}")
+    except Exception:
+        parsed = {"ok": False, "reason": "Could not parse draft response."}
+    if not parsed.get("ok"):
+        return {"success": False, "error": parsed.get("reason") or "Could not draft text."}
+    return {"success": True, "window": tw, "tab": tt, "drafted": parsed.get("preview") or msg[:120],
+            "note": "Drafted into your signed-in Chrome tab. Review and publish when ready."}
+
+
 # ------------------------------------------------------------------ the mouse and keyboard
 def _cursor() -> Tuple[float, float]:
     if WIN:
