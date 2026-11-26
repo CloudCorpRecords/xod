@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.39
+
+Fixes Xod's Muse approval watcher from ever clicking `+` or chat-composer attachment/upload buttons, and adds the matching phone API ops for Xod Android `v0.10.1`.
+
+- **Muse watcher `+` / composer button fix** (`app/services/muse_app.py`): `_candidate_buttons()` now rejects symbol-only/1-char buttons (`+`, `×`, `...`) and chat-composer chrome (`Add attachment`, `Attach file`, `Upload file`, `Add file`, `New chat`, etc.), and `nearby_button()` enforces `strict_nearby=True` so scanning outside an expired card can only ever match explicit approval verbs (`Allow`, `Send`, `Approve`, `Confirm`). Works cleanly across Standard, Turbo, and Xod Mode.
+- **Phone API bridge parity for Android `v0.10.1`** (`app/services/phone_api.py`): adds `control_center.status`, `autonomy.get`, `autonomy.set`, and `fleet.blackboard` ops.
+
 ## 1.1.38
 
 Adds **Standard**, **Turbo**, and **Xod Mode** autonomy controls with an explicit liability disclaimer and an automatic **Active-Run Harness Lock** so modes can never be mutated while an agent or task is running.
