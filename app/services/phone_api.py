@@ -472,9 +472,72 @@ def _looks_get(args: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def _desktop_chrome_tabs(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import desktop
+    res = desktop.chrome_tabs()
+    tabs = res.get("tabs") or []
+    return {
+        "success": bool(res.get("success", True)),
+        "tabs": [
+            {
+                "window": t.get("window_index", 1),
+                "tab": t.get("tab_index", 1),
+                "title": _clip(t.get("title") or "", 140),
+                "url": _clip(t.get("url") or "", 300),
+            }
+            for t in tabs[:40]
+        ],
+        "error": res.get("error") or "",
+    }
+
+
+def _desktop_chrome_focus(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import desktop
+    query = str(args.get("query") or "").strip()
+    win = args.get("window")
+    tab = args.get("tab")
+    if query:
+        return desktop.chrome_focus_tab(query)
+    if win is not None and tab is not None:
+        return desktop.chrome_focus_tab(f"{win}:{tab}")
+    raise ApiError("Specify a tab to focus.")
+
+
+def _desktop_open_url(args: Dict[str, Any]) -> Dict[str, Any]:
+    import subprocess, sys
+    url = str(args.get("url") or "").strip()
+    if not url:
+        raise ApiError("Provide a URL to open.")
+    if not re.match(r"^https?://", url, re.I):
+        url = "https://" + url
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", "-a", "Google Chrome", url])
+    else:
+        import webbrowser
+        webbrowser.open(url)
+    return {"opened": url}
+
+
+def _desktop_launch_app(args: Dict[str, Any]) -> Dict[str, Any]:
+    import subprocess, sys
+    app_name = str(args.get("app") or "").strip()
+    if not app_name or len(app_name) > 80 or any(c in app_name for c in ";&|`$\n\r"):
+        raise ApiError("Invalid app name.")
+    if sys.platform == "darwin":
+        r = subprocess.run(["open", "-a", app_name], capture_output=True, text=True, timeout=8)
+        if r.returncode != 0:
+            raise ApiError((r.stderr or f"Could not open {app_name}").strip()[:200])
+        return {"launched": app_name}
+    raise ApiError("App launch from phone is currently supported on macOS.")
+
+
 OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "summary": _summary, "link.routes": _routes,
     "looks.get": _looks_get,
+    "desktop.chrome_tabs": _desktop_chrome_tabs,
+    "desktop.chrome_focus": _desktop_chrome_focus,
+    "desktop.open_url": _desktop_open_url,
+    "desktop.launch_app": _desktop_launch_app,
     "chat.sessions": _sessions, "chat.history": _history, "chat.send": _chat,
     "tasks.list": _tasks, "tasks.get": _task_get, "tasks.create": _task_create, "tasks.act": _task_act,
     "voice_brief.list": _voice_briefs_list, "voice_brief.launch": _voice_brief_launch, "voice_brief.dismiss": _voice_brief_dismiss,
