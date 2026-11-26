@@ -451,8 +451,30 @@ def _voice_brief_dismiss(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"dismissed": agora_voice.dismiss_brief(bid)}
 
 
+def _looks_get(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the computer's active companion look (built-in id or Living Look pack + idle keyframe)."""
+    import base64
+    from app.services.storage import get_setting
+    from app.services import looks
+    look_id = (get_setting("xod_look", "") or get_setting("mascot_look", "") or "moon").strip()
+    out: Dict[str, Any] = {"look": look_id, "name": look_id.title(), "image_b64": ""}
+    if looks.is_pack(look_id):
+        rep = looks.verify_pack(look_id)
+        if rep.get("ok"):
+            out["name"] = (rep.get("manifest") or {}).get("name") or look_id
+            idle = (rep.get("states") or {}).get("idle") or {}
+            fname = idle.get("file") or ""
+            d = looks.pack_dir(look_id)
+            if d and fname and (d / fname).is_file():
+                raw = (d / fname).read_bytes()
+                if len(raw) <= 12000:
+                    out["image_b64"] = base64.b64encode(raw).decode("ascii")
+    return out
+
+
 OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "summary": _summary, "link.routes": _routes,
+    "looks.get": _looks_get,
     "chat.sessions": _sessions, "chat.history": _history, "chat.send": _chat,
     "tasks.list": _tasks, "tasks.get": _task_get, "tasks.create": _task_create, "tasks.act": _task_act,
     "voice_brief.list": _voice_briefs_list, "voice_brief.launch": _voice_brief_launch, "voice_brief.dismiss": _voice_brief_dismiss,
