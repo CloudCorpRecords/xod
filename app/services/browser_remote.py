@@ -153,6 +153,30 @@ async def screen() -> Dict[str, Any]:
     return await _session(grab)
 
 
+async def proof_thumbnail(max_b64: int = 8500) -> str:
+    """Compact JPEG base64 thumbnail of Xod's active browser tab for visual proof in chat."""
+    async def grab(ws, send):
+        await send("Page.enable")
+        m = await send("Page.getLayoutMetrics")
+        vp = m.get("cssVisualViewport") or m.get("cssLayoutViewport") or {}
+        w, h = float(vp.get("clientWidth") or 1440), float(vp.get("clientHeight") or 900)
+        scale = min(1.0, 360.0 / max(w, 1.0))
+        for quality in (42, 28, 18):
+            shot = await send("Page.captureScreenshot", {
+                "format": "jpeg",
+                "quality": quality,
+                "clip": {"x": 0, "y": 0, "width": w, "height": h, "scale": scale},
+            })
+            data = shot.get("data") or ""
+            if data and len(data) <= max_b64:
+                return data
+        return ""
+    try:
+        return await _session(grab)
+    except Exception:
+        return ""
+
+
 async def tap(x: float, y: float) -> Dict[str, Any]:
     """A tap at (x, y) as fractions of the picture (0..1 across, 0..1 down), then the new screen."""
     x, y = min(max(float(x), 0.0), 1.0), min(max(float(y), 0.0), 1.0)

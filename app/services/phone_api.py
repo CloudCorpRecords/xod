@@ -127,6 +127,13 @@ async def _chat(args: Dict[str, Any]) -> Dict[str, Any]:
     signin = browser_remote.signin_since(started)
     if signin:
         out["browser_signin"] = signin       # the phone shows "Sign in to <site>", which opens Take Over
+    if any("browser" in t.lower() for t in tools):
+        try:
+            proof = await asyncio.wait_for(browser_remote.proof_thumbnail(max_b64=8500), timeout=4.0)
+            if proof:
+                out["proof_b64"] = proof
+        except Exception:
+            pass
     return out
 
 
@@ -575,6 +582,10 @@ def encode(request_id: str, out: Dict[str, Any], limit: int = MAX_REPLY) -> str:
     body = {"request_id": request_id, **out}
     text = json.dumps(body, default=str, separators=(",", ":"))
     data = out.get("data")
+    if len(text) > limit and isinstance(data, dict) and data.get("proof_b64"):
+        data = {k: v for k, v in data.items() if k != "proof_b64"}
+        body = {"request_id": request_id, **{**out, "data": data}}
+        text = json.dumps(body, default=str, separators=(",", ":"))
     while len(text) > limit and isinstance(data, dict):
         lists = [k for k, v in data.items() if isinstance(v, list) and len(v) > 1]
         if not lists:

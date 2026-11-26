@@ -894,6 +894,55 @@ async def voice_brief_dismiss(brief_id: str):
     return {"success": ok}
 
 
+# ------------------------------------------------------------------ Desktop Quick Actions (shared with phone_api)
+
+class DesktopChromeFocusRequest(BaseModel):
+    query: Optional[str] = None
+    window: Optional[int] = None
+    tab: Optional[int] = None
+
+
+class DesktopOpenUrlRequest(BaseModel):
+    url: str
+
+
+class DesktopLaunchAppRequest(BaseModel):
+    app: str
+
+
+@app.get("/api/desktop/chrome-tabs")
+async def desktop_chrome_tabs_endpoint():
+    from app.services import phone_api
+    return await asyncio.to_thread(phone_api._desktop_chrome_tabs, {})
+
+
+@app.post("/api/desktop/chrome-focus")
+async def desktop_chrome_focus_endpoint(req: DesktopChromeFocusRequest):
+    from app.services import phone_api
+    try:
+        return await asyncio.to_thread(phone_api._desktop_chrome_focus, req.model_dump(exclude_none=True))
+    except phone_api.ApiError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/desktop/open-url")
+async def desktop_open_url_endpoint(req: DesktopOpenUrlRequest):
+    from app.services import phone_api
+    try:
+        return await asyncio.to_thread(phone_api._desktop_open_url, {"url": req.url})
+    except phone_api.ApiError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/desktop/launch-app")
+async def desktop_launch_app_endpoint(req: DesktopLaunchAppRequest):
+    from app.services import phone_api
+    try:
+        return await asyncio.to_thread(phone_api._desktop_launch_app, {"app": req.app})
+    except phone_api.ApiError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @app.on_event("shutdown")
 async def _stop_crew_host():
     try:

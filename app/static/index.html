@@ -193,6 +193,12 @@
 
     <div class="flex items-center gap-2">
 
+      <!-- Quick Actions: Post & Web, Live Chrome Tabs, Launch Apps -->
+      <button id="btnQuickActions" onclick="openQuickActionsModal()" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Quick Actions: post to social sites, focus Chrome tabs, or launch apps">
+        <i data-lucide="zap" class="size-3.5 text-brand-400"></i>
+        <span class="hidden sm:inline">Quick Actions</span>
+      </button>
+
       <!-- Voice Brief: speak a mission brief out loud via Agora ConvoAI (BYOK) -->
       <button id="btnVoiceBrief" onclick="openVoiceBriefModal()" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Voice Brief: brief Xod out loud and capture a 5-section mission">
         <span id="voiceBriefNavDot" class="hidden size-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -4676,6 +4682,74 @@
     </div>
   </div>
 
+  <!-- ============================================================== -->
+  <!-- QUICK ACTIONS MODAL (Post & Web, Chrome Tabs, Launch Apps)     -->
+  <!-- ============================================================== -->
+  <div id="quickActionsModal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm" aria-hidden="true" onclick="if(event.target===this) closeQuickActionsModal()">
+    <div class="w-full max-w-xl max-h-[88vh] flex flex-col rounded-2xl bg-surface-900 border border-white/[0.08] shadow-2xl overflow-hidden">
+      <header class="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2.5">
+          <div class="size-8 rounded-xl bg-brand-500/15 border border-brand-500/30 flex items-center justify-center">
+            <i data-lucide="zap" class="size-4 text-brand-400"></i>
+          </div>
+          <div>
+            <h3 class="text-[15px] font-semibold text-white">Quick Actions</h3>
+            <p class="text-[12px] text-zinc-400">Post using your logged-in browser, jump to Chrome tabs, or launch apps.</p>
+          </div>
+        </div>
+        <button type="button" onclick="closeQuickActionsModal()" class="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-surface-700">
+          <i data-lucide="x" class="size-4"></i>
+        </button>
+      </header>
+      <div class="px-5 pt-3 flex items-center gap-2 border-b border-white/[0.06] pb-3">
+        <button id="qaTab_post" type="button" onclick="showQuickActionsTab('post')" class="px-3 py-1.5 rounded-lg text-[12px] font-medium bg-brand-500 text-surface-900">Post &amp; Web</button>
+        <button id="qaTab_tabs" type="button" onclick="showQuickActionsTab('tabs')" class="px-3 py-1.5 rounded-lg text-[12px] font-medium bg-surface-800 text-zinc-300 hover:bg-surface-700">Chrome Tabs</button>
+        <button id="qaTab_launch" type="button" onclick="showQuickActionsTab('launch')" class="px-3 py-1.5 rounded-lg text-[12px] font-medium bg-surface-800 text-zinc-300 hover:bg-surface-700">Launch</button>
+        <div class="flex-1"></div>
+        <button type="button" onclick="closeQuickActionsModal(); openAutonomousCockpitModal();" class="px-2.5 py-1.5 rounded-lg text-[12px] text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/25">Take Over Browser</button>
+      </div>
+      <div class="p-5 overflow-y-auto space-y-4">
+        <div id="qaStatus" class="hidden"></div>
+
+        <!-- Post & Web -->
+        <div id="qaPane_post" class="space-y-3">
+          <div id="qaPlatforms" class="flex flex-wrap gap-1.5"></div>
+          <textarea id="qaPostText" rows="4" placeholder="What do you want Xod to post or do? (Xod uses your logged-in browser and asks before publishing.)"
+            class="w-full rounded-xl bg-surface-850 border border-white/[0.08] px-3 py-2.5 text-[13px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-brand-500"></textarea>
+          <div class="flex gap-2">
+            <input id="qaPostUrl" type="text" placeholder="Optional link or website URL (e.g. https://...)"
+              class="flex-1 min-w-0 rounded-lg bg-surface-850 border border-white/[0.08] px-3 py-2 text-[12px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
+            <button type="button" onclick="openQuickUrlAction()" class="px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-[12px] text-zinc-200 shrink-0">Open in Chrome</button>
+          </div>
+          <div class="flex justify-end pt-1">
+            <button type="button" onclick="submitQuickPostAction()" class="px-4 py-2 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[13px] font-semibold">Draft &amp; Post with Xod</button>
+          </div>
+        </div>
+
+        <!-- Chrome Tabs -->
+        <div id="qaPane_tabs" class="hidden space-y-3">
+          <div class="flex items-center justify-between">
+            <span class="text-[12px] text-zinc-400">Open tabs in Google Chrome on this computer</span>
+            <button type="button" onclick="refreshQuickChromeTabs()" class="text-[12px] text-zinc-300 hover:text-white flex items-center gap-1">
+              <i data-lucide="refresh-cw" class="size-3"></i> Refresh
+            </button>
+          </div>
+          <div id="qaTabsList" class="space-y-2 max-h-72 overflow-y-auto"></div>
+        </div>
+
+        <!-- Launch Apps -->
+        <div id="qaPane_launch" class="hidden space-y-3">
+          <div id="qaAppsGrid" class="grid grid-cols-3 gap-2"></div>
+          <div class="flex gap-2 pt-1">
+            <input id="qaCustomAppInput" type="text" placeholder="Any other Mac app name…"
+              class="flex-1 min-w-0 rounded-lg bg-surface-850 border border-white/[0.08] px-3 py-2 text-[12px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
+            <button type="button" onclick="launchCustomQuickApp()" class="px-3 py-2 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[12px] font-semibold shrink-0">Launch</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/js/app.js?v=moonlit75"></script>
   <script src="/static/js/sidebar.js?v=moonlit75"></script>
   <script src="/static/js/run_mode.js"></script>
@@ -4723,6 +4797,7 @@
   <script src="/static/js/surfaces.js?v=moonlit78"></script>
   <script src="/static/js/settings.js?v=moonlit81"></script>
   <script src="/static/js/voice_brief.js?v=moonlit82"></script>
+  <script src="/static/js/quick_actions.js?v=moonlit83"></script>
 </body>
 </html>
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.33
+
+Brings one-click **Quick Actions** to the Desktop top bar and pairs it with **visual proof thumbnails** for phone-driven browser actions so both your computer and your phone share the exact same effortless controls.
+
+- **Desktop Quick Actions modal** (`app/static/js/quick_actions.js`, `app/static/index.html`): new **Quick Actions** button right beside **Voice Brief** in the top bar with three tabs — **Post & Web** (Facebook, X, LinkedIn, Threads, Instagram, Website + open URL in Chrome), **Chrome Tabs** (live open tabs with one-click Focus and Summarize), and **Launch** (one-click Mac app launcher + custom app input + Take Over Browser).
+- **Shared desktop control endpoints** (`app/main.py`, `app/services/phone_api.py`): added `GET /api/desktop/chrome-tabs`, `POST /api/desktop/chrome-focus`, `POST /api/desktop/open-url`, and `POST /api/desktop/launch-app` alongside the matching `desktop.*` phone API ops.
+- **Visual proof thumbnails for phone chat** (`app/services/browser_remote.py`, `app/services/phone_api.py`): when Xod runs browser tools for a phone request, it attaches a compact JPEG `proof_b64` thumbnail of the active page (automatically dropped if a reply nears Agent Mail's size limit).
+
 ## 1.1.32
 
 Makes Family phone pairing effortless right from the top of the Family drawer, connects Android to Voice Briefs and desktop avatars, and completes Agora WebRTC edge WebSocket port support.
