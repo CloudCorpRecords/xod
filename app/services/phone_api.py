@@ -538,9 +538,66 @@ def _desktop_launch_app(args: Dict[str, Any]) -> Dict[str, Any]:
     raise ApiError("App launch from phone is currently supported on macOS.")
 
 
+def _control_center_status(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import control_center
+    snap = control_center.snapshot()
+    brain = snap.get("brain") or {}
+    mcp = snap.get("mcp") or {}
+    mac = snap.get("mac_control") or {}
+    fleet = snap.get("fleet") or {}
+    autonomy = snap.get("autonomy") or {}
+    return {
+        "ok": bool(snap.get("ok")),
+        "issue_count": int(snap.get("issue_count") or 0),
+        "brain": {
+            "provider": brain.get("provider") or "",
+            "model": _clip(brain.get("model") or "", 80),
+            "cache_hit_rate": brain.get("cache_hit_rate") or 0.0,
+        },
+        "mac_ready": bool(mac.get("ready")),
+        "mac_missing": mac.get("missing") or [],
+        "mcp_connected": int(mcp.get("connected_count") or 0),
+        "mcp_total": int(mcp.get("total_servers") or 0),
+        "fleet_mode": fleet.get("auto_approve_mode") or "act",
+        "blackboard": [
+            {"topic": _clip(b.get("topic") or "", 40), "summary": _clip(b.get("summary") or "", 140), "actor": b.get("actor") or ""}
+            for b in (fleet.get("blackboard") or [])[:6]
+        ],
+        "autonomy": {
+            "mode": autonomy.get("mode") or "standard",
+            "locked": bool(autonomy.get("locked")),
+            "lock_reasons": autonomy.get("lock_reasons") or [],
+            "disclaimer": autonomy.get("disclaimer") or "",
+        },
+    }
+
+
+def _autonomy_get(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import autonomy_modes
+    return autonomy_modes.status()
+
+
+def _autonomy_set(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import autonomy_modes
+    try:
+        return autonomy_modes.set_mode(str(args.get("mode") or ""), bool(args.get("confirmed_disclaimer")))
+    except (autonomy_modes.HarnessLockedError, autonomy_modes.DisclaimerRequiredError, ValueError) as e:
+        raise ApiError(str(e))
+
+
+def _fleet_blackboard(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import fleet_control
+    entries = fleet_control.blackboard_read(str(args.get("topic") or ""), int(args.get("limit") or 12))
+    return {"entries": entries}
+
+
 OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "summary": _summary, "link.routes": _routes,
     "looks.get": _looks_get,
+    "control_center.status": _control_center_status,
+    "autonomy.get": _autonomy_get,
+    "autonomy.set": _autonomy_set,
+    "fleet.blackboard": _fleet_blackboard,
     "desktop.chrome_tabs": _desktop_chrome_tabs,
     "desktop.chrome_focus": _desktop_chrome_focus,
     "desktop.open_url": _desktop_open_url,
