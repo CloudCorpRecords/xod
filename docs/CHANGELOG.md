@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.30
+
+Adds the local-first, bring-your-own-key **Agora Voice Brief** integration directly into Xod so you can speak a mission brief out loud and hand the captured five-section brief straight to Xod's mission harness.
+
+**Agora Voice Brief (Local-First BYOK)**
+- **Settings → Connections** (`app/services/secret_store.py`, `app/config.py`, `app/main.py`): store your own Agora App ID, App Certificate, and optional ConvoAI Customer ID & Customer Secret in your OS Keychain (never written to disk in plain text, never logged), plus optional tree-inbox dual-delivery mirror settings.
+- **Local Agora backend service** (`app/services/agora_voice.py`): pure-stdlib AccessToken2 (`Token007`) minting, ConvoAI REST agent start/stop for the `xodbrief` preset, and exact brief capture ported from the verified bridge (history fetched BEFORE stop, last assistant read-back with 3+ section labels merged with single-section spoken corrections, `"Ready to run it?"` stripped, unspecified sections marked `"not specified"`, never invented).
+- **Mission intake & dual delivery** (`app/services/agora_voice.py`, `app/main.py`): captured briefs persist in Xod's `voice_briefs` table so you can review the five sections, confirm, and launch straight into Xod's mission harness (`/api/voice-brief/briefs/{id}/launch`), while also writing atomically (`.tmp` → rename) to `~/agora-brief-inbox/` and (when configured) the family tree-inbox in the established `xod_voice_brief` envelope.
+- **Voice Brief UI** (`app/static/js/voice_brief.js`, `app/static/index.html`, vendored `agora-rtc-sdk-ng.min.js`): top-bar **Voice Brief** entry point with live session status, mute toggle, finish-and-capture flow, structured five-section brief cards, and one-click **Confirm & Run Mission**.
+- **Tests**: added `tests/smoke/run_agora_voice_brief_test.py` (17/17); regression gauntlet green (`run_muse_picker_parity_test.py` 28/28, `run_harness_upgrades_test.py` 10/10, `run_desktop_test.py` 74/74, `run_muse_app_test.py` 69/69, `scripts/check_release.py` clean).
+
 ## 1.1.29
 
 Fixes social-media routing so Facebook, Instagram, TikTok, WhatsApp, Telegram, and Messenger requests run directly on your computer without requiring a paired phone, plus tighter sidebar spam filtering.

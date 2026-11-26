@@ -4,6 +4,8 @@ const OP_KEY_NAMES = {
   fireworks_api_key: "Fireworks", anthropic_api_key: "Anthropic (Claude)", openai_api_key: "OpenAI", gemini_api_key: "Google Gemini",
   groq_api_key: "Groq", openrouter_api_key: "OpenRouter", tavily_api_key: "Tavily", you_api_key: "You.com",
   youtube_api_key: "YouTube", trustmrr_api_key: "TrustMRR", huggingface_token: "Hugging Face",
+  agora_app_id: "Agora App ID", agora_app_certificate: "Agora App Certificate",
+  agora_customer_id: "Agora Customer ID", agora_customer_secret: "Agora Customer Secret",
 };
 
 async function loadOnePassword() {

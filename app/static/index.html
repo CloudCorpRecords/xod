@@ -193,6 +193,13 @@
 
     <div class="flex items-center gap-2">
 
+      <!-- Voice Brief: speak a mission brief out loud via Agora ConvoAI (BYOK) -->
+      <button id="btnVoiceBrief" onclick="openVoiceBriefModal()" class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-zinc-200 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Voice Brief: brief Xod out loud and capture a 5-section mission">
+        <span id="voiceBriefNavDot" class="hidden size-2 rounded-full bg-emerald-400 animate-pulse"></span>
+        <i data-lucide="mic" class="size-3.5 text-brand-400"></i>
+        <span class="hidden sm:inline">Voice Brief</span>
+      </button>
+
       <!-- AI Cockpit: a live view of Xod at work, not a menu destination -->
       <button onclick="openAutonomousCockpitModal()" class="p-2 rounded-lg text-zinc-300 bg-surface-700/70 hover:bg-surface-600 border border-white/[0.06] transition-colors" title="Cockpit: watch Xod browse and use your computer, or take over">
         <i data-lucide="compass" class="size-3.5 text-emerald-400"></i>
@@ -1235,6 +1242,48 @@
         <section class="settings-page" data-settings-page="connections">
           <h4 class="settings-page-title">Connections</h4>
           <div class="space-y-5">
+        <!-- Agora Voice Brief (local-first BYOK credentials in Keychain) -->
+        <div id="agoraSettingsSection" class="space-y-3 rounded-xl bg-surface-750 p-4 border border-surface-700">
+          <div class="flex items-center justify-between gap-2">
+            <label class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
+              <i data-lucide="mic" class="size-4 text-brand-400"></i>
+              Agora Voice Brief (BYOK)
+            </label>
+            <span id="agoraCredStatus" class="text-[11px] text-zinc-400">Not configured</span>
+          </div>
+          <p class="text-[12px] text-zinc-400">Bring your own Agora App ID and App Certificate to speak mission briefs out loud. Credentials stay in your OS Keychain and are never logged.</p>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div class="space-y-1">
+              <label class="text-[11px] text-zinc-400">App ID (32-char hex)</label>
+              <input id="inputAgoraAppId" type="password" autocomplete="off" placeholder="Agora App ID" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[12px] text-white font-mono placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
+            </div>
+            <div class="space-y-1">
+              <label class="text-[11px] text-zinc-400">App Certificate (32-char hex)</label>
+              <input id="inputAgoraAppCert" type="password" autocomplete="off" placeholder="Agora App Certificate" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[12px] text-white font-mono placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
+            </div>
+            <div class="space-y-1">
+              <label class="text-[11px] text-zinc-400">Customer ID <span class="text-zinc-500">(optional, ConvoAI REST)</span></label>
+              <input id="inputAgoraCustomerId" type="password" autocomplete="off" placeholder="Optional Customer ID" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[12px] text-white font-mono placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
+            </div>
+            <div class="space-y-1">
+              <label class="text-[11px] text-zinc-400">Customer Secret <span class="text-zinc-500">(optional, ConvoAI REST)</span></label>
+              <input id="inputAgoraCustomerSecret" type="password" autocomplete="off" placeholder="Optional Customer Secret" class="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-[12px] text-white font-mono placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
+            </div>
+          </div>
+          <details class="pt-1">
+            <summary class="text-[11px] text-zinc-400 cursor-pointer hover:text-zinc-200">Optional: Tree-inbox dual delivery (SSH/scp mirror)</summary>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 mt-2">
+              <input id="inputAgoraTreeSsh" type="text" autocomplete="off" placeholder="user@host (optional)" class="bg-surface-900 border border-surface-700 rounded-lg px-3 py-1.5 text-[12px] text-white font-mono placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
+              <input id="inputAgoraTreeDir" type="text" autocomplete="off" placeholder="Remote inbox folder (optional)" class="bg-surface-900 border border-surface-700 rounded-lg px-3 py-1.5 text-[12px] text-white font-mono placeholder:text-zinc-500 focus:outline-none focus:border-brand-500">
+            </div>
+          </details>
+          <div class="flex items-center gap-2 pt-1">
+            <button type="button" onclick="saveAgoraSettings()" class="px-3 py-1.5 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[12px] font-semibold">Save Agora keys</button>
+            <button type="button" onclick="clearAgoraSettings()" class="px-3 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-300 text-[12px]">Clear</button>
+            <span id="agoraSaveFeedback" class="text-[12px] text-zinc-400"></span>
+          </div>
+        </div>
+
         <!-- 1Password: API keys as op:// references, website logins (onepassword.js) -->
         <div id="onePasswordSection" class="space-y-3 rounded-xl bg-surface-750 p-4 border border-surface-700">
           <label class="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
@@ -4565,6 +4614,68 @@
     </div>
   </div>
 
+  <!-- ============================================================== -->
+  <!-- VOICE BRIEF MODAL (Agora ConvoAI local-first BYOK)             -->
+  <!-- ============================================================== -->
+  <div id="voiceBriefModal" class="hidden fixed inset-0 z-[75] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4" onclick="if(event.target===this) closeVoiceBriefModal()">
+    <div class="w-full max-w-2xl max-h-[88vh] flex flex-col rounded-2xl bg-surface-850 border border-white/[0.08] shadow-2xl overflow-hidden">
+      <header class="px-5 py-4 border-b border-white/[0.06] flex items-center justify-between gap-3">
+        <div class="flex items-center gap-2.5">
+          <div class="size-9 rounded-xl bg-brand-500/15 border border-brand-500/30 flex items-center justify-center">
+            <i data-lucide="mic" class="size-4 text-brand-400"></i>
+          </div>
+          <div>
+            <h3 class="text-[15px] font-semibold text-white">Voice Brief</h3>
+            <p class="text-[12px] text-zinc-400">Brief Xod out loud. When you finish, the 5-section brief lands here ready to run.</p>
+          </div>
+        </div>
+        <button onclick="closeVoiceBriefModal()" class="p-1.5 rounded-lg text-zinc-400 hover:text-white hover:bg-surface-700" title="Close">
+          <i data-lucide="x" class="size-4"></i>
+        </button>
+      </header>
+      <div class="p-5 overflow-y-auto space-y-5 flex-1">
+        <!-- Live session card -->
+        <div id="voiceBriefSessionCard" class="rounded-xl bg-surface-900/90 border border-white/[0.07] p-4 space-y-3">
+          <div class="flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2.5">
+              <span id="vbStatusDot" class="size-2.5 rounded-full bg-zinc-500"></span>
+              <span id="vbStatusText" class="text-[13px] font-medium text-zinc-200">Ready</span>
+            </div>
+            <span id="vbTimer" class="text-[12px] font-mono text-zinc-500 hidden">00:00</span>
+          </div>
+          <p id="vbHint" class="text-[12px] text-zinc-400">Xod will ask for your mission, verifiable done-state, guardrails, decision rights, and window, then read the brief back.</p>
+          <div id="vbNotConfigured" class="hidden rounded-lg bg-brand-500/10 border border-brand-500/25 p-3 flex items-center justify-between gap-3">
+            <span class="text-[12px] text-brand-200">Add your Agora App ID and App Certificate in Settings → Connections to start.</span>
+            <button type="button" onclick="openAgoraSettingsFromBrief()" class="px-3 py-1.5 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[12px] font-semibold shrink-0">Set up Agora</button>
+          </div>
+          <div id="vbError" class="hidden rounded-lg bg-red-500/10 border border-red-500/25 px-3 py-2 text-[12px] text-red-300"></div>
+          <div class="flex flex-wrap items-center gap-2 pt-1">
+            <button id="vbStartBtn" type="button" onclick="startVoiceBrief()" class="px-4 py-2 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[13px] font-semibold flex items-center gap-2">
+              <i data-lucide="mic" class="size-4"></i><span>Start Voice Brief</span>
+            </button>
+            <button id="vbMuteBtn" type="button" onclick="toggleVoiceBriefMute()" class="hidden px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-200 text-[13px] flex items-center gap-1.5">
+              <i data-lucide="mic-off" class="size-3.5"></i><span id="vbMuteLabel">Mute</span>
+            </button>
+            <button id="vbStopBtn" type="button" onclick="stopVoiceBrief()" class="hidden px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-surface-950 text-[13px] font-semibold flex items-center gap-2">
+              <i data-lucide="square" class="size-3.5"></i><span>Finish &amp; Capture Brief</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Captured briefs list -->
+        <div class="space-y-2.5">
+          <div class="flex items-center justify-between">
+            <h4 class="text-[12px] uppercase tracking-wider text-zinc-400 font-semibold">Captured Briefs</h4>
+            <button type="button" onclick="refreshVoiceBriefs()" class="text-[12px] text-zinc-400 hover:text-white flex items-center gap-1">
+              <i data-lucide="refresh-cw" class="size-3"></i> Refresh
+            </button>
+          </div>
+          <div id="vbBriefsList" class="space-y-3"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="/static/js/app.js?v=moonlit75"></script>
   <script src="/static/js/sidebar.js?v=moonlit75"></script>
   <script src="/static/js/run_mode.js"></script>
@@ -4611,6 +4722,7 @@
   <script src="/static/js/onepassword.js?v=moonlit76"></script>
   <script src="/static/js/surfaces.js?v=moonlit78"></script>
   <script src="/static/js/settings.js?v=moonlit81"></script>
+  <script src="/static/js/voice_brief.js?v=moonlit82"></script>
 </body>
 </html>
 

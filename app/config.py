@@ -28,6 +28,10 @@ class Settings(BaseModel):
     youtube_api_key: str = ""
     tavily_api_key: str = ""
     huggingface_token: str = ""
+    agora_app_id: str = ""
+    agora_app_certificate: str = ""
+    agora_customer_id: str = ""
+    agora_customer_secret: str = ""
     host: str = "127.0.0.1"
     port: int = 8000
     cache_ttl_seconds: int = 300

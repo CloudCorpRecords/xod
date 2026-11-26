@@ -30,6 +30,7 @@ SECRET_FIELDS: List[str] = [
     "trustmrr_api_key", "you_api_key", "tavily_api_key", "youtube_api_key",
     "openai_api_key", "anthropic_api_key", "gemini_api_key", "groq_api_key",
     "openrouter_api_key", "fireworks_api_key", "huggingface_token",
+    "agora_app_id", "agora_app_certificate", "agora_customer_id", "agora_customer_secret",
 ]
 # Other names the same secret has been stored under.
 ALIASES: Dict[str, List[str]] = {

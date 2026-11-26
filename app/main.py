@@ -209,6 +209,12 @@ class ConfigUpdateRequest(BaseModel):
     fireworks_api_key: Optional[str] = None
     tavily_api_key: Optional[str] = None
     huggingface_token: Optional[str] = None
+    agora_app_id: Optional[str] = None
+    agora_app_certificate: Optional[str] = None
+    agora_customer_id: Optional[str] = None
+    agora_customer_secret: Optional[str] = None
+    agora_tree_inbox_ssh: Optional[str] = None
+    agora_tree_inbox_dir: Optional[str] = None
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
@@ -791,6 +797,101 @@ async def get_mission_report(mission_id: str):
     if report is None:
         raise HTTPException(status_code=409, detail="This mission has not finished yet")
     return {"report": report}
+
+
+# ------------------------------------------------------------------ Agora Voice Brief (local-first BYOK)
+class VoiceBriefStartRequest(BaseModel):
+    channel_name: str
+    agent_uid: int
+    user_uid: int
+    preset: str = "xodbrief"
+    instructions: Optional[str] = None
+    greeting: Optional[str] = None
+    output_audio_codec: Optional[str] = None
+
+
+class VoiceBriefStopRequest(BaseModel):
+    agent_id: str
+
+
+class VoiceBriefLaunchRequest(BaseModel):
+    continue_on_failure: bool = True
+
+
+@app.get("/api/voice-brief/status")
+async def voice_brief_status():
+    from app.services import agora_voice
+    return {
+        "configured": agora_voice.is_configured(),
+        "active": agora_voice.agora_voice_service.active_sessions(),
+        "briefs": agora_voice.list_briefs(limit=20),
+    }
+
+
+@app.get("/api/voice-brief/config")
+async def voice_brief_config(channel: Optional[str] = None, uid: Optional[int] = None):
+    from app.services import agora_voice
+    try:
+        data = agora_voice.agora_voice_service.generate_client_config(channel=channel, uid=uid)
+        return {"success": True, "data": data}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/voice-brief/start")
+async def voice_brief_start(req: VoiceBriefStartRequest):
+    from app.services import agora_voice
+    try:
+        result = await agora_voice.agora_voice_service.start_session(
+            channel_name=req.channel_name,
+            agent_uid=req.agent_uid,
+            user_uid=req.user_uid,
+            preset=req.preset,
+            instructions=req.instructions,
+            greeting=req.greeting,
+            output_audio_codec=req.output_audio_codec,
+        )
+        return {"success": True, "data": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/voice-brief/stop")
+async def voice_brief_stop(req: VoiceBriefStopRequest):
+    from app.services import agora_voice
+    try:
+        result = await agora_voice.agora_voice_service.stop_session(req.agent_id)
+        return {"success": True, "data": result}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/voice-brief/briefs")
+async def voice_brief_list(limit: int = 20):
+    from app.services import agora_voice
+    return {"briefs": agora_voice.list_briefs(limit=limit)}
+
+
+@app.post("/api/voice-brief/briefs/{brief_id}/launch")
+async def voice_brief_launch(brief_id: str, req: Optional[VoiceBriefLaunchRequest] = None):
+    from app.services import agora_voice
+    try:
+        out = agora_voice.launch_brief_as_mission(
+            brief_id,
+            continue_on_failure=req.continue_on_failure if req else True,
+        )
+        return {"success": True, **out}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/api/voice-brief/briefs/{brief_id}/dismiss")
+async def voice_brief_dismiss(brief_id: str):
+    from app.services import agora_voice
+    ok = agora_voice.dismiss_brief(brief_id)
+    return {"success": ok}
 
 
 @app.on_event("shutdown")
@@ -2328,7 +2429,16 @@ async def get_config():
         "has_fireworks_key": llm_service._tier_key_ready("fireworks"),
         "has_tavily_key": bool(tav_key),
         "has_huggingface_token": bool(settings.huggingface_token),
-        "huggingface_masked_token": (settings.huggingface_token[:4] + "..." + settings.huggingface_token[-4:]) if len(settings.huggingface_token) > 8 else ("Configured" if settings.huggingface_token else "")
+        "huggingface_masked_token": (settings.huggingface_token[:4] + "..." + settings.huggingface_token[-4:]) if len(settings.huggingface_token) > 8 else ("Configured" if settings.huggingface_token else ""),
+        "agora_configured": bool(settings.agora_app_id and settings.agora_app_certificate),
+        "agora_app_id_configured": bool(settings.agora_app_id),
+        "agora_app_id_masked": (settings.agora_app_id[:4] + "..." + settings.agora_app_id[-4:]) if len(settings.agora_app_id) > 8 else ("Configured" if settings.agora_app_id else ""),
+        "agora_app_certificate_configured": bool(settings.agora_app_certificate),
+        "agora_customer_id_configured": bool(settings.agora_customer_id),
+        "agora_customer_id_masked": (settings.agora_customer_id[:4] + "..." + settings.agora_customer_id[-4:]) if len(settings.agora_customer_id) > 8 else ("Configured" if settings.agora_customer_id else ""),
+        "agora_customer_secret_configured": bool(settings.agora_customer_secret),
+        "agora_tree_inbox_ssh": get_setting("agora_tree_inbox_ssh", ""),
+        "agora_tree_inbox_dir": get_setting("agora_tree_inbox_dir", ""),
     }
 
 def _vault_refusal() -> HTTPException:
@@ -2417,6 +2527,26 @@ async def _update_config_apply(req: ConfigUpdateRequest):
 
     if req.anthropic_api_key is not None:
         update_env_variable("ANTHROPIC_API_KEY", req.anthropic_api_key.strip())
+
+    if req.agora_app_id is not None:
+        update_env_variable("AGORA_APP_ID", req.agora_app_id.strip())
+
+    if req.agora_app_certificate is not None:
+        update_env_variable("AGORA_APP_CERTIFICATE", req.agora_app_certificate.strip())
+
+    if req.agora_customer_id is not None:
+        update_env_variable("AGORA_CUSTOMER_ID", req.agora_customer_id.strip())
+
+    if req.agora_customer_secret is not None:
+        update_env_variable("AGORA_CUSTOMER_SECRET", req.agora_customer_secret.strip())
+
+    if req.agora_tree_inbox_ssh is not None:
+        from app.services.storage import set_setting
+        set_setting("agora_tree_inbox_ssh", req.agora_tree_inbox_ssh.strip())
+
+    if req.agora_tree_inbox_dir is not None:
+        from app.services.storage import set_setting
+        set_setting("agora_tree_inbox_dir", req.agora_tree_inbox_dir.strip())
 
     if req.openrouter_api_key is not None:
         update_env_variable("OPENROUTER_API_KEY", req.openrouter_api_key.strip())
