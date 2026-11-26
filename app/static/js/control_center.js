@@ -109,6 +109,7 @@
     const vCounts = vault.counts || {};
     const vDests = vault.destinations || [];
     const vLast = vault.last_export || {};
+    const checkpoints = data.checkpoints || [];
     const route = mcp.last_route || {};
 
     const issuesHtml = issues.length
@@ -363,6 +364,36 @@
             : "Exports sft_chat.jsonl, dpo_preferences.jsonl, agent_trajectories.jsonl, dataset_card.json, and SHA256SUMS.txt."}
         </div>
       </section>
+
+      <!-- 8. Activity Replay & Instant Checkpoints (1-Click Undo) -->
+      <section class="rounded-xl bg-surface-850 border border-white/[0.07] p-4 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h4 class="text-[13px] font-semibold text-white">Activity Replay &amp; Instant Undo</h4>
+            <p class="text-[11px] text-zinc-400">Automatic pre-edit file snapshots for Turbo &amp; Xod Mode. Inspect diffs and roll back any file edit in one click.</p>
+          </div>
+          ${pill(checkpoints.length > 0, `${checkpoints.length} snapshots`)}
+        </div>
+        ${checkpoints.length ? `
+          <div class="space-y-2 max-h-56 overflow-y-auto pr-1">
+            ${checkpoints.map((cp) => `
+              <div class="rounded-lg bg-surface-900/75 border border-white/[0.06] p-2.5 space-y-1.5">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="min-w-0">
+                    <div class="text-[12px] font-medium text-zinc-100 truncate" title="${esc(cp.path)}">${esc(cp.name || cp.path)} <span class="text-[10px] text-zinc-500">(${esc(cp.tool || "edit")}${cp.existed ? "" : " · new file"})</span></div>
+                    <div class="text-[10px] text-zinc-500 font-mono truncate">${esc(cp.path)}</div>
+                  </div>
+                  ${cp.undone
+                    ? `<span class="px-2 py-0.5 rounded-md bg-zinc-700/60 text-zinc-400 text-[11px] shrink-0">Undone</span>`
+                    : `<button type="button" data-cc-undo="${esc(cp.id)}" class="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/35 text-amber-200 text-[11px] font-semibold shrink-0">Undo</button>`}
+                </div>
+                ${cp.diff_preview ? `<details class="text-[10px] text-zinc-400"><summary class="cursor-pointer hover:text-zinc-200">View diff</summary><pre class="mt-1 p-2 rounded bg-black/40 overflow-x-auto text-[10px] leading-snug text-zinc-300 font-mono">${esc(cp.diff_preview)}</pre></details>` : ""}
+              </div>
+            `).join("")}
+          </div>
+        ` : `<div class="text-[11px] text-zinc-500">No file checkpoints recorded yet. Next time Xod writes or edits a file, a snapshot appears here automatically.</div>`}
+        <div id="ccUndoStatus" class="hidden text-[11px] text-emerald-300"></div>
+      </section>
     `;
 
     body.querySelectorAll("[data-cc-action]").forEach((btn) => {
@@ -446,6 +477,31 @@
         }
       });
     }
+
+    body.querySelectorAll("[data-cc-undo]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const cid = btn.getAttribute("data-cc-undo");
+        const st = document.getElementById("ccUndoStatus");
+        btn.disabled = true;
+        btn.textContent = "Undoing…";
+        try {
+          const res = await fetch(`/api/checkpoints/${encodeURIComponent(cid)}/undo`, { method: "POST" });
+          const out = await res.json().catch(() => ({}));
+          if (st) {
+            st.textContent = out.ok ? (out.message || "Undone.") : (out.error || "Undo failed.");
+            st.className = `text-[11px] ${out.ok ? "text-emerald-300" : "text-red-300"}`;
+            st.classList.remove("hidden");
+          }
+          if (out.ok) refreshControlCenter();
+        } catch (e) {
+          if (st) {
+            st.textContent = String(e.message || e);
+            st.className = "text-[11px] text-red-300";
+            st.classList.remove("hidden");
+          }
+        }
+      });
+    });
   }
 
   async function refreshControlCenter() {

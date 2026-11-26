@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.41
+
+Adds **Screen-Aware Desktop Voice Calls with Instant Barge-In**, **Instant Checkpoints & 1-Click Undo** for Turbo / Xod Mode, and fixes repeated macOS **Screen & System Audio Recording** permission prompts.
+
+- **Screen-Aware Desktop Voice Calls + Instant Barge-In** (`app/static/js/conversation.js`, `app/main.py`):
+  - **Instant Barge-In**: talking over Xod immediately cuts off TTS mid-sentence and switches into listening mode.
+  - **Look at My Screen toggle**: new monitor toggle right in the voice call dock injects a fast, popup-free snapshot of your active Mac window and signed-in Chrome tab (`/api/voice-call/screen-context`) into each spoken turn.
+  - **Auto-Save Call Summary & Action Items**: ending a multi-turn call automatically summarizes the call and saves extracted action items to your chat and Fleet Blackboard (`/api/voice-call/summarize`).
+- **Instant Checkpoints & 1-Click Undo** (`app/services/checkpoints.py`, `app/services/system_control.py`, `app/services/control_center.py`, `app/static/js/control_center.js`, `app/main.py`):
+  - Every autonomous `write_file` and `edit_file` call automatically snapshots pre-edit bytes (SHA-256 deduplicated) and records a compact unified diff.
+  - New **Activity Replay & Instant Undo** card in Control Center (`GET /api/checkpoints`, `POST /api/checkpoints/{id}/undo`) lets you inspect diffs and roll back any edit or newly created file in one click.
+- **macOS Screen & System Audio Recording Prompt Fix** (`electron/capture_bridge.js`, `app/services/desktop.py`):
+  - `capture_bridge.js` now verifies `systemPreferences.getMediaAccessStatus("screen") === "granted"` before invoking `desktopCapturer.getSources()`, preventing macOS from repeatedly popping up the Screen & System Audio Recording dialog in the background.
+  - `desktop.py` reads fresh GUI verdicts first and limits background `request_permissions(force=False)` to at most once per session without repeatedly calling `CGRequestScreenCaptureAccess()`.
+
 ## 1.1.40
 
 Adds the **Personal Training Data Vault**, **Local Model Harness Turbo** profile for on-device Apple Silicon MLX / LM Studio / Ollama models, and a one-click green **Call** button in the Desktop top bar.

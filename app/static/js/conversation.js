@@ -74,6 +74,9 @@
     wakeBlocked: false,    // wake is wanted but the microphone would not open (AGE-98)
     micError: null,        // the last microphone open failure, in words
     muted: false,
+    screenAware: false,    // "Look at my screen" toggle during voice calls
+    instantBargeIn: true,  // stop Xod immediately mid-sentence when you talk over it
+    callTurns: [],         // [{ role: "user"|"assistant", text }] for auto-summary on hangup
     followUntil: 0,        // the follow-up window: talk before this, or it ends
     followUpActive: false, // inside the post-answer follow-up window (one background segment ends it)
     turn: null,            // { text, filler, content, startedAt }
@@ -267,7 +270,18 @@
       caption("you", C.pendingText ? C.pendingText + "…" : "…", true);
       setState("listening", "Listening…");
     } else if (window.XodSpeech && XodSpeech.audioPlaying()) {
-      XodSpeech.duck(true);                                  // you might be talking over it: get out of the way
+      if (C.instantBargeIn) {
+        // Instant Barge-In: cut Xod off mid-sentence immediately and switch to listening
+        try { XodSpeech.stop(); } catch (_) {}
+        try { if (typeof isStreaming !== "undefined" && isStreaming) stopResearch(); } catch (_) {}
+        clearTimeout(C.slowTimer);
+        C.followUntil = 0;
+        caption("you", "…", true);
+        setState("listening", "Interrupted · Listening…");
+        vlog("barge_in_instant", {});
+      } else {
+        XodSpeech.duck(true);                                // you might be talking over it: get out of the way
+      }
     }
   }
 
@@ -454,12 +468,24 @@
     ask(text);
   }
 
-  function ask(text) {
+  async function ask(text) {
     if (!C.active) return;
+    C.callTurns.push({ role: "user", text });
     C.turn = { text, filler: false, content: false, startedAt: now() };
+    setState("thinking", C.screenAware ? "Reading your screen…" : "Thinking…");
+    let outbound = text;
+    if (C.screenAware) {
+      try {
+        const sc = await (await fetch("/api/voice-call/screen-context")).json();
+        if (sc && sc.ok && sc.summary) {
+          outbound = `[Live Screen Context]\n${sc.summary}\n[/Live Screen Context]\n\n${text}`;
+        }
+      } catch (_) {}
+    }
+    if (!C.active) return;
     setState("thinking", "Thinking…");
     window.__xodVoiceTurn = true;
-    try { quickSendPrompt(text); } finally { setTimeout(() => { window.__xodVoiceTurn = false; }, 400); }
+    try { quickSendPrompt(outbound); } finally { setTimeout(() => { window.__xodVoiceTurn = false; }, 400); }
     clearTimeout(C.slowTimer);
     C.slowTimer = setTimeout(() => {           // nothing yet after a while: say so, once
       if (C.turn && !C.turn.filler && !C.turn.content && C.state === "thinking") { C.turn.filler = true; say(pick(FILLERS.other)); }
@@ -490,7 +516,12 @@
     if (ev.type === "done" || ev.type === "error") {
       clearTimeout(C.slowTimer);
       const bubble = [...document.querySelectorAll("#chatMessages .prose-custom")].pop();
-      if (bubble) C.lastAnswer = bubble.innerText.split(/\n\s*(Sources|Source links)\b/)[0];
+      if (bubble) {
+        C.lastAnswer = bubble.innerText.split(/\n\s*(Sources|Source links)\b/)[0];
+        if (C.lastAnswer && C.lastAnswer.trim()) {
+          C.callTurns.push({ role: "assistant", text: C.lastAnswer.trim().slice(0, 1200) });
+        }
+      }
       if (ev.type === "error") { chime("error"); }
     }
   });
@@ -553,6 +584,7 @@
     if (C.wakeBlocked) { C.wakeBlocked = false; hideWakeBanner(); }
     C.active = true;
     C.endAfterSpeech = false;
+    C.callTurns = [];
     stopEverything();
     showDock(source);
     fetch("/api/llm/warm?voice=1", { method: "POST" }).catch(() => {});
@@ -566,6 +598,8 @@
 
   function end(reason = "user") {
     if (!C.active) return;
+    const savedTurns = C.callTurns.slice();
+    C.callTurns = [];
     C.active = false;
     C.followUpActive = false;
     C.turn = null;
@@ -578,6 +612,24 @@
     if (C.wakeOn && !C.wakeBlocked) setState("wake");
     else { setState("off"); closeMic(); if (C.wakeBlocked) showWakeBanner(); }
     if (desktop) try { desktop.setListening(C.wakeOn && !C.wakeBlocked); } catch (_) {}
+
+    // Auto-save call summary & extracted action items when call had >= 2 turns
+    if (savedTurns.length >= 2) {
+      const sid = (typeof currentSessionId !== "undefined" && currentSessionId) ? String(currentSessionId) : "";
+      fetch("/api/voice-call/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ turns: savedTurns, session_id: sid }),
+      })
+        .then((r) => r.json())
+        .then((out) => {
+          if (out && out.ok) {
+            const n = (out.action_items || []).length;
+            toast(n > 0 ? `Voice call summary & ${n} action item(s) saved.` : "Voice call summary saved.");
+          }
+        })
+        .catch(() => {});
+    }
   }
 
   function toggle(source = "button") { if (C.active) end("user"); else start({ source }); }
@@ -637,6 +689,7 @@
           <div class="talk-follow"><span></span></div>
         </div>
         <div class="talk-actions">
+          <button type="button" data-talk="screen" title="Look at my screen: share active window &amp; Chrome tab during this call"><i data-lucide="monitor" class="size-4"></i></button>
           <button type="button" data-talk="mute" title="Pause listening"><i data-lucide="mic" class="size-4"></i></button>
           <button type="button" data-talk="end" title="End the conversation (Esc)"><i data-lucide="x" class="size-4"></i></button>
         </div>`;
@@ -646,6 +699,13 @@
         const b = e.target.closest("[data-talk]");
         if (!b) return;
         if (b.dataset.talk === "end") end("user");
+        if (b.dataset.talk === "screen") {
+          C.screenAware = !C.screenAware;
+          b.style.background = C.screenAware ? "rgba(34,211,238,0.22)" : "";
+          b.style.color = C.screenAware ? "#67e8f9" : "";
+          b.title = C.screenAware ? "Screen-aware ON (click to turn off)" : "Look at my screen: share active window & Chrome tab during this call";
+          toast(C.screenAware ? "Screen-aware call ON — Xod can see your active window & Chrome tab." : "Screen-aware call OFF.");
+        }
         if (b.dataset.talk === "mute") {
           C.muted = !C.muted;
           dock.classList.toggle("is-muted", C.muted);

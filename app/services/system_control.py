@@ -1472,6 +1472,13 @@ class SystemControlService:
             if create_dirs:
                 p.parent.mkdir(parents=True, exist_ok=True)
 
+            cp_id = ""
+            try:
+                from app.services import checkpoints
+                cp_id = checkpoints.capture_before(str(p), tool="write_file")
+            except Exception:
+                cp_id = ""
+
             expected_bytes = content.encode("utf-8")
             expected_sha = hashlib.sha256(expected_bytes).hexdigest()
             with open(p, "wb") as f:
@@ -1492,10 +1499,17 @@ class SystemControlService:
                         f"(sha256 {expected_sha[:12]}), found {st.st_size} bytes (sha256 {actual_sha[:12]})."
                     ),
                 }
+            if cp_id:
+                try:
+                    from app.services import checkpoints
+                    checkpoints.finalize_after(cp_id, str(p))
+                except Exception:
+                    pass
             return {
                 "success": True,
                 "verified_on_disk": True,
                 "sha256": actual_sha,
+                "checkpoint_id": cp_id,
                 "filepath": str(p),
                 "name": p.name,
                 "size_bytes": st.st_size,
@@ -1559,6 +1573,13 @@ class SystemControlService:
                 new_text = original_text.replace(target_content, replacement_content, 1)
                 replaced_count = 1
 
+            cp_id = ""
+            try:
+                from app.services import checkpoints
+                cp_id = checkpoints.capture_before(str(p), tool="edit_file")
+            except Exception:
+                cp_id = ""
+
             expected_bytes = new_text.encode("utf-8")
             expected_sha = hashlib.sha256(expected_bytes).hexdigest()
             with open(p, "wb") as f:
@@ -1576,6 +1597,13 @@ class SystemControlService:
                     "filepath": str(p),
                 }
 
+            if cp_id:
+                try:
+                    from app.services import checkpoints
+                    checkpoints.finalize_after(cp_id, str(p))
+                except Exception:
+                    pass
+
             old_lines_count = len(original_text.splitlines())
             new_lines_count = len(new_text.splitlines())
             delta = new_lines_count - old_lines_count
@@ -1584,6 +1612,7 @@ class SystemControlService:
                 "success": True,
                 "verified_on_disk": True,
                 "sha256": actual_sha,
+                "checkpoint_id": cp_id,
                 "filepath": str(p),
                 "name": p.name,
                 "size_bytes": st.st_size,

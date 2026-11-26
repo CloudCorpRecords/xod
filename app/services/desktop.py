@@ -728,25 +728,9 @@ def permissions() -> Dict[str, Any]:
     if not MAC:
         return {"supported": False, "screen": False, "accessibility": False,
                 "message": "Using the screen, mouse and keyboard works on a Mac or Windows for now."}
-    import Quartz
-    import ApplicationServices as AS
-    screen = bool(Quartz.CGPreflightScreenCaptureAccess())
-    access = bool(AS.AXIsProcessTrusted())
-    if not (screen and access):
-        # macOS answers a running program from what it knew when it started: a switch you've just turned on only shows
-        # to a new process. Ask a fresh one (macOS counts it as the same app).
-        fs, fa = _fresh_check()
-        screen, access = screen or fs, access or fa
-    # Both readings above answer for this backend process and its fresh
-    # child, and macOS does not attribute the app's grants to either: the
-    # identity it holds responsible is the Electron GUI main process. The
-    # GUI evaluates its own Screen Recording and Accessibility there and
-    # leaves current verdicts in the data dir (electron/main.js, surfaced
-    # by services/permissions.py, the 2026-11-02 pattern). A current GUI
-    # verdict is the truth for its permission and overrides the child
-    # readings in either direction; a child reading never overrides it.
-    # With no current GUI verdict (a backend running outside the app), the
-    # child readings above stand, as before (AGE-71).
+    # Check current GUI verdicts FIRST (electron/main.js -> screen_trust.json / ax_trust.json).
+    # When the Electron GUI has already left fresh verdicts, use them directly without spawning
+    # a child python process calling CGPreflightScreenCaptureAccess() on every poll.
     try:
         from app.services import permissions as _perms
         _gui_access = _perms.gui_trusted()
@@ -754,10 +738,21 @@ def permissions() -> Dict[str, Any]:
         _gui_mic = _perms.gui_mic()
     except Exception:
         _gui_access = _gui_screen = _gui_mic = None
-    if _gui_access is not None:
-        access = _gui_access
-    if _gui_screen is not None:
+
+    if _gui_screen is not None and _gui_access is not None:
         screen = _gui_screen
+        access = _gui_access
+    else:
+        import Quartz
+        import ApplicationServices as AS
+        screen = bool(Quartz.CGPreflightScreenCaptureAccess()) if _gui_screen is None else _gui_screen
+        access = bool(AS.AXIsProcessTrusted()) if _gui_access is None else _gui_access
+        if not (screen and access):
+            fs, fa = _fresh_check()
+            if _gui_screen is None:
+                screen = screen or fs
+            if _gui_access is None:
+                access = access or fa
     # Whether capture can actually run right now: the GUI capture bridge is
     # up (AGE-98). Capture moved into the GUI process, so this, not the child
     # readings, is the operational answer for screenshots.
@@ -853,12 +848,16 @@ def request_permissions(force: bool = True) -> Dict[str, Any]:
     for which, ok in (("screen", p["screen"]), ("accessibility", p["accessibility"])):
         if ok:
             continue
-        if not force and time.time() - _asked.get(which, 0) < 120:
+        # Background / automatic callers (force=False) may prompt at most once per app session
+        # and never call CGRequestScreenCaptureAccess() repeatedly (which trips macOS's
+        # "Screen & System Audio Recording" dialog over and over).
+        if not force and _asked.get(which, 0) > 0:
             break
-        if which == "screen":
-            Quartz.CGRequestScreenCaptureAccess()
-        else:
-            AS.AXIsProcessTrustedWithOptions({AS.kAXTrustedCheckOptionPrompt: True})
+        if force:
+            if which == "screen":
+                Quartz.CGRequestScreenCaptureAccess()
+            else:
+                AS.AXIsProcessTrustedWithOptions({AS.kAXTrustedCheckOptionPrompt: True})
         _open_pane(which)
         opened.append(which)
         break                                 # one page at a time; the next opens once this one is on

@@ -38,12 +38,22 @@ function removeBridgeFile(dataDir, token) {
   } catch (e) { /* already gone or someone else's: leave it */ }
 }
 
-// deps is injectable for tests: { desktopCapturer, screen } default to Electron's.
+// deps is injectable for tests: { desktopCapturer, screen, systemPreferences } default to Electron's.
 function createCaptureBridge({ dataDir, appVersion = "", token = null, deps = null } = {}) {
   const dc = (deps && deps.desktopCapturer) || require("electron").desktopCapturer;
   const scr = (deps && deps.screen) || require("electron").screen;
+  const sysPrefs = (deps && deps.systemPreferences) || (deps ? null : require("electron").systemPreferences);
   const bridgeToken = token || crypto.randomBytes(24).toString("hex");
   let server = null;
+
+  function ensureScreenGranted() {
+    if (process.platform === "darwin" && sysPrefs && typeof sysPrefs.getMediaAccessStatus === "function") {
+      const st = sysPrefs.getMediaAccessStatus("screen");
+      if (st !== "granted") {
+        throw new Error("screen recording permission not granted (" + st + ")");
+      }
+    }
+  }
 
   function sendJson(res, status, obj) {
     const body = JSON.stringify(obj);
@@ -60,6 +70,7 @@ function createCaptureBridge({ dataDir, appVersion = "", token = null, deps = nu
   }
 
   async function captureScreen() {
+    ensureScreenGranted();
     const primary = scr.getPrimaryDisplay();
     const scale = primary.scaleFactor || 1;
     const sources = await dc.getSources({ types: ["screen"], thumbnailSize: {
@@ -69,6 +80,7 @@ function createCaptureBridge({ dataDir, appVersion = "", token = null, deps = nu
   }
 
   async function captureWindow(name) {
+    ensureScreenGranted();
     const want = String(name || "").trim().toLowerCase();
     if (!want) throw new Error("no window name given");
     const sources = await dc.getSources({ types: ["window"], thumbnailSize: { width: 3840, height: 2400 } });

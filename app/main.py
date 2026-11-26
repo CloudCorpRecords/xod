@@ -1005,6 +1005,144 @@ async def training_vault_export_endpoint(req: TrainingVaultExportRequest):
     return await asyncio.to_thread(training_vault.export_vault, req.dest_dir or "", bool(req.scrub_pii))
 
 
+@app.get("/api/checkpoints")
+async def checkpoints_list_endpoint(limit: int = 25):
+    from app.services import checkpoints
+    return {"checkpoints": await asyncio.to_thread(checkpoints.list_checkpoints, limit)}
+
+
+@app.post("/api/checkpoints/{checkpoint_id}/undo")
+async def checkpoints_undo_endpoint(checkpoint_id: str):
+    from app.services import checkpoints
+    return await asyncio.to_thread(checkpoints.undo_checkpoint, checkpoint_id)
+
+
+@app.get("/api/voice-call/screen-context")
+async def voice_call_screen_context_endpoint():
+    """Fast, popup-free active window + signed-in Chrome tab summary for Screen-Aware Voice Calls."""
+    def _gather() -> Dict[str, Any]:
+        from app.services import desktop
+        parts: List[str] = []
+        active_app = ""
+        active_title = ""
+        if sys.platform == "darwin":
+            try:
+                import subprocess as _sp
+                out = _sp.run(
+                    [
+                        "osascript",
+                        "-e",
+                        'tell application "System Events" to set p to first application process whose frontmost is true\n'
+                        'set appName to name of p\n'
+                        'set winTitle to ""\n'
+                        'try\nset winTitle to name of front window of p\nend try\n'
+                        'return appName & "|||" & winTitle',
+                    ],
+                    capture_output=True, text=True, timeout=2.5,
+                )
+                if out.returncode == 0 and "|||" in out.stdout:
+                    active_app, active_title = [x.strip() for x in out.stdout.strip().split("|||", 1)]
+                    if active_app:
+                        parts.append(f"Active Mac App: {active_app}" + (f" — {active_title}" if active_title else ""))
+            except Exception:
+                pass
+        chrome_title = ""
+        chrome_url = ""
+        try:
+            cr = desktop.chrome_read_tab(max_chars=1800) or {}
+            if cr.get("success"):
+                chrome_title = str(cr.get("title") or "")
+                chrome_url = str(cr.get("url") or "")
+                snippet = str(cr.get("text") or "").strip()[:1200]
+                parts.append(f"Signed-in Chrome Tab: {chrome_title} ({chrome_url})")
+                if snippet:
+                    parts.append(f"Visible Page Text:\n{snippet}")
+        except Exception:
+            pass
+        return {
+            "ok": bool(parts),
+            "active_app": active_app,
+            "active_title": active_title,
+            "chrome_title": chrome_title,
+            "chrome_url": chrome_url,
+            "summary": "\n".join(parts)[:2200],
+        }
+    return await asyncio.to_thread(_gather)
+
+
+class VoiceCallSummarizeRequest(BaseModel):
+    turns: List[Dict[str, str]]
+    session_id: Optional[str] = ""
+
+
+@app.post("/api/voice-call/summarize")
+async def voice_call_summarize_endpoint(req: VoiceCallSummarizeRequest):
+    """Auto-summarize a finished desktop voice call and persist action items into chat & Fleet Blackboard."""
+    turns = [t for t in (req.turns or []) if isinstance(t, dict) and str(t.get("text") or "").strip()]
+    if len(turns) < 2:
+        return {"ok": False, "skipped": True, "reason": "fewer than 2 turns"}
+    transcript = "\n".join(f"{'User' if t.get('role') == 'user' else 'Xod'}: {str(t.get('text') or '').strip()}" for t in turns[-30:])
+
+    summary_text = ""
+    action_items: List[str] = []
+    try:
+        from app.services.llm import llm_service
+        prompt = (
+            "Summarize this voice call in 2-3 concise bullet points and extract any concrete action items or follow-ups. "
+            "Reply with strict JSON: {\"summary\": \"...\", \"action_items\": [\"...\"]}.\n\n"
+            f"Transcript:\n{transcript[:6000]}"
+        )
+        resp = await llm_service.chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2,
+            max_tokens=500,
+        )
+        raw = str((resp or {}).get("content") or "").strip()
+        m = re.search(r"\{[\s\S]*\}", raw)
+        if m:
+            parsed = json.loads(m.group(0))
+            summary_text = str(parsed.get("summary") or "").strip()
+            action_items = [str(x).strip() for x in (parsed.get("action_items") or []) if str(x).strip()][:8]
+    except Exception:
+        pass
+
+    if not summary_text:
+        user_lines = [str(t.get("text") or "").strip() for t in turns if t.get("role") == "user"]
+        summary_text = f"Voice call ({len(turns)} turns): " + "; ".join(user_lines[:3])[:260]
+
+    # Persist into chat session (if provided) and Fleet Blackboard
+    saved_session = False
+    try:
+        from app.services import storage
+        sid = (req.session_id or "").strip()
+        if sid:
+            md = f"**Voice Call Summary**\n{summary_text}"
+            if action_items:
+                md += "\n\n**Action Items**\n" + "\n".join(f"- {a}" for a in action_items)
+            storage.save_message(sid, "assistant", md)
+            saved_session = True
+    except Exception:
+        pass
+
+    try:
+        from app.services import fleet_control
+        fleet_control.blackboard_upsert(
+            topic="voice_call_summary",
+            summary=summary_text[:300],
+            actor="voice_call",
+            details="; ".join(action_items)[:500],
+        )
+    except Exception:
+        pass
+
+    return {
+        "ok": True,
+        "summary": summary_text,
+        "action_items": action_items,
+        "saved_to_chat": saved_session,
+    }
+
+
 @app.get("/api/browser/proof-thumb")
 async def browser_proof_thumb_endpoint():
     from app.services import browser_remote
