@@ -296,12 +296,25 @@
       </div>
       <div class="speech-sep"></div>
       <p class="speech-menu-title">Conversation</p>
-      <div class="speech-actions">
-        <button type="button" data-convo-start class="speech-btn">Start talking</button>
-        <span class="speech-note">Or click the mic${window.xodDesktop ? ", press ⌃⌥Space anywhere" : ""}, or say “Hey Xod”.</span>
+      <div class="speech-modes" role="radiogroup" aria-label="Voice engine">
+        <button type="button" role="radio" data-engine="local" aria-checked="${(localStorage.getItem("xod_voice_engine") || "local") === "local"}">Local (Offline)</button>
+        <button type="button" role="radio" data-engine="agora" aria-checked="${(localStorage.getItem("xod_voice_engine") || "local") === "agora"}">Agora (Real-time)</button>
       </div>
-      <label class="speech-check"><input type="checkbox" data-wake ${s.wake ? "checked" : ""}> Listen for “Hey Xod”</label>
-      <p class="speech-note">While Xod is open it listens for its name. Sound is checked on this Mac and thrown away; nothing is recorded or sent. macOS shows the orange mic dot while it listens.</p>
+      <div data-agora-box class="${(localStorage.getItem("xod_voice_engine") || "local") === "agora" ? "" : "hidden"}" style="margin-top:8px;">
+        <div class="speech-actions">
+          <button type="button" data-agora-start class="speech-btn">Start Agora Voice</button>
+          <button type="button" data-agora-setup class="speech-btn hidden">Set up Agora</button>
+        </div>
+        <p data-agora-note class="speech-note" style="margin-top:6px;">Real-time voice with instant barge-in while Xod works in parallel on your Mac.</p>
+      </div>
+      <div data-local-box class="${(localStorage.getItem("xod_voice_engine") || "local") === "agora" ? "hidden" : ""}" style="margin-top:8px;">
+        <div class="speech-actions">
+          <button type="button" data-convo-start class="speech-btn">Start talking</button>
+          <span class="speech-note">Or click the mic${window.xodDesktop ? ", press ⌃⌥Space anywhere" : ""}, or say “Hey Xod”.</span>
+        </div>
+        <label class="speech-check"><input type="checkbox" data-wake ${s.wake ? "checked" : ""}> Listen for “Hey Xod”</label>
+        <p class="speech-note">While Xod is open it listens for its name. Sound is checked on this Mac and thrown away; nothing is recorded or sent. macOS shows the orange mic dot while it listens.</p>
+      </div>
       ${info.has_natural ? "" : `
       <div class="speech-tip">
         <p>For a far more natural voice, download a free <b>Premium</b> voice (Zoe or Ava, for example) in System Settings → Accessibility → Spoken Content → System voice → Manage Voices. Xod picks it up automatically.</p>
@@ -311,7 +324,48 @@
     const b = btn.getBoundingClientRect();
     el.style.left = `${Math.max(12, Math.min(innerWidth - el.offsetWidth - 12, b.right - el.offsetWidth))}px`;
     el.style.top = `${Math.max(12, b.top - el.offsetHeight - 10)}px`;
+    let agoraConfigured = null;
+    fetch("/api/voice-brief/status").then((r) => r.json()).then((st) => {
+      agoraConfigured = !!st.configured;
+      const startBtn = el.querySelector("[data-agora-start]");
+      const setupBtn = el.querySelector("[data-agora-setup]");
+      const note = el.querySelector("[data-agora-note]");
+      if (!agoraConfigured) {
+        if (startBtn) startBtn.classList.add("hidden");
+        if (setupBtn) setupBtn.classList.remove("hidden");
+        if (note) note.textContent = "Bring your own free Agora Console project (10,000 free min/mo). Keys stay in your OS Keychain.";
+      } else {
+        if (startBtn) startBtn.classList.remove("hidden");
+        if (setupBtn) setupBtn.classList.add("hidden");
+        if (note) note.textContent = "Agora ConvoAI is ready (BYOK, Keychain). Clicking the mic starts a live voice session.";
+      }
+    }).catch(() => {});
     el.addEventListener("click", async (e) => {
+      const eng = e.target.closest("[data-engine]");
+      if (eng) {
+        const chosenEngine = eng.dataset.engine === "agora" ? "agora" : "local";
+        try { localStorage.setItem("xod_voice_engine", chosenEngine); } catch (_) {}
+        el.querySelectorAll("[data-engine]").forEach((x) => x.setAttribute("aria-checked", String(x.dataset.engine === chosenEngine)));
+        const ab = el.querySelector("[data-agora-box]");
+        const lb = el.querySelector("[data-local-box]");
+        if (ab) ab.classList.toggle("hidden", chosenEngine !== "agora");
+        if (lb) lb.classList.toggle("hidden", chosenEngine === "agora");
+        el.style.top = `${Math.max(12, b.top - el.offsetHeight - 10)}px`;
+        return;
+      }
+      if (e.target.closest("[data-agora-start]")) {
+        el.remove();
+        if (typeof window.openVoiceBriefModal === "function") {
+          window.openVoiceBriefModal();
+          if (typeof window.startVoiceBrief === "function") setTimeout(() => window.startVoiceBrief(), 250);
+        }
+        return;
+      }
+      if (e.target.closest("[data-agora-setup]")) {
+        el.remove();
+        if (typeof window.openAgoraSettingsFromBrief === "function") window.openAgoraSettingsFromBrief();
+        return;
+      }
       const m = e.target.closest("[data-mode]");
       if (m) {
         await save({ mode: m.dataset.mode });

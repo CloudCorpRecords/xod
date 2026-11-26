@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.34
+
+Unifies **Local (Offline)** and **Agora (Real-time)** voice right inside the bottom **Voice / Conversation** popover so switching between offline Mac voice and live Agora ConvoAI takes one click.
+
+- **Unified Voice Engine toggle** (`app/static/js/speech.js`, `app/static/js/conversation.js`): added a **Local (Offline)** / **Agora (Real-time)** segmented switch inside the bottom **Spoken replies → Conversation** popover.
+- **One-click BYOK setup & mic routing**: when **Agora (Real-time)** is selected, clicking **Start Agora Voice** or the bottom mic button launches a live Agora session directly (or opens **Settings → Connections → Agora** with a clear 10,000 free min/mo BYOK Keychain prompt if not yet configured).
+
 ## 1.1.33
 
 Brings one-click **Quick Actions** to the Desktop top bar and pairs it with **visual proof thumbnails** for phone-driven browser actions so both your computer and your phone share the exact same effortless controls.

@@ -767,11 +767,32 @@
 
   function toast(text) { if (window.showToast) showToast(text); else console.warn(text); }
 
+  async function launchAgoraIfSelected(source) {
+    if (source === "wake") return false;
+    let engine = "local";
+    try { engine = localStorage.getItem("xod_voice_engine") || "local"; } catch (_) {}
+    if (engine !== "agora") return false;
+    try {
+      const st = await (await fetch("/api/voice-brief/status")).json();
+      if (st && st.configured) {
+        if (typeof window.openVoiceBriefModal === "function") {
+          window.openVoiceBriefModal();
+          if (typeof window.startVoiceBrief === "function") setTimeout(() => window.startVoiceBrief(), 250);
+          return true;
+        }
+      } else if (typeof window.openAgoraSettingsFromBrief === "function") {
+        window.openAgoraSettingsFromBrief();
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
   // ---------------------------------------------------------------- wiring
   async function init() {
     // The mic button, Option+Space and the old hands-free functions all start a conversation now.
-    window.toggleJarvisVoice = () => toggle("button");
-    window.startJarvisVoice = () => start({ source: "button" });
+    window.toggleJarvisVoice = async () => { if (await launchAgoraIfSelected("button")) return; toggle("button"); };
+    window.startJarvisVoice = async () => { if (await launchAgoraIfSelected("button")) return; start({ source: "button" }); };
     window.stopJarvisVoice = () => end("user");
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && C.active) { e.preventDefault(); end("user"); } });
     // Typing means you've switched to the keyboard: the conversation steps aside.
