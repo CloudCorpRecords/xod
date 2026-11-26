@@ -361,15 +361,23 @@ def _describe_error(e: Exception) -> str:
 # order separates them, and the hold is logged with the reason).
 _TOGGLE_LABELS = {"hide details", "show details", "see details", "details", "learn more"}
 _NEGATIVE_LABELS = {"deny", "deny all", "cancel", "block", "dismiss", "no", "not now"}
+_CHROME_LABELS = {
+    "+", "-", "×", "x", "...", "…", "attach", "attach file", "attach files", "add file", "add files",
+    "add attachment", "add attachments", "add image", "add photo", "add media", "upload file", "upload files",
+    "new chat", "new conversation", "close", "minimize", "maximize", "settings", "menu", "more",
+    "more options", "search", "copy", "edit", "sidebar", "toggle sidebar", "emoji", "voice", "microphone",
+}
+_CHROME_RE = re.compile(r"^(?:add\s+(?:file|files|attachment|attachments|image|photo|media|context)|attach(?:\s+\w+)?|upload\s+(?:file|files|image|photo)|new\s+(?:chat|thread|conversation)|open\s+menu)$", re.I)
 _ACTION_VERBS = ("reply", "create", "post", "share", "continue", "approve", "confirm",
                  "upload", "submit", "accept", "proceed", "pay", "sign", "verify",
                  "grant", "enable", "book", "schedule", "invite", "add", "save",
                  "join", "follow", "react", "update", "remove", "delete", "manage")
+_NEARBY_APPROVAL_VERBS = ("send", "allow", "approve", "confirm", "accept", "reply", "create", "post", "share", "continue", "submit")
 
 
 def _candidate_buttons(labels: List[str]) -> List[str]:
     """A card's plausible primary actions: real buttons only — no body text, no toggles,
-    no Don't/Deny side."""
+    no Don't/Deny side, and never chat-composer chrome like '+' or 'Add attachment'."""
     out: List[str] = []
     for l in labels:
         s = str(l).strip()
@@ -377,6 +385,10 @@ def _candidate_buttons(labels: List[str]) -> List[str]:
             continue
         low = s.lower()
         if len(s) > 80:  # the request text itself, rendered as one big button
+            continue
+        if not re.search(r"[a-zA-Z]{2,}", s):  # symbol-only / icon buttons like '+' or '×'
+            continue
+        if low in _CHROME_LABELS or _CHROME_RE.match(low):
             continue
         if low in _TOGGLE_LABELS or low.endswith(" hide details") or low.endswith(" show details") or low.endswith(" see details"):
             continue
@@ -390,9 +402,11 @@ def _candidate_buttons(labels: List[str]) -> List[str]:
     return out
 
 
-def _pick_button(labels: List[str]) -> Optional[str]:
+def _pick_button(labels: List[str], strict_nearby: bool = False) -> Optional[str]:
     """Prefer recipient/site Always allow, then one-time/task approvals, then the primary
-    action on a connector action card (Reply on a send card, Create on an event card)."""
+    action on a connector action card (Reply on a send card, Create on an event card).
+    When strict_nearby=True (climbing outside a card group), only explicit approval verbs
+    are eligible so chat-composer chrome can never be pressed."""
     clean = [str(l).strip() for l in labels if str(l).strip()]
     for l in clean:
         if l.casefold() in ("always allow for this recipient", "always allow for this site"):
@@ -409,12 +423,13 @@ def _pick_button(labels: List[str]) -> Optional[str]:
         if low.startswith("allow ") and low.endswith(" for this task"):
             return l
     cands = _candidate_buttons(clean)
-    for want in _ACTION_VERBS:
+    verbs = _NEARBY_APPROVAL_VERBS if strict_nearby else _ACTION_VERBS
+    for want in verbs:
         for l in cands:
             low = l.lower()
             if low == want or low.startswith(want + " "):
                 return l
-    if len(cands) == 1:
+    if not strict_nearby and len(cands) == 1:
         return cands[0]
     return None
 
@@ -685,7 +700,7 @@ def _scan(press: bool, skip_ids: Optional[set] = None) -> Dict[str, Any]:
                         hunt(c, d + 1)
 
             hunt(parent, 0)
-            chosen = _pick_button(list(btns))
+            chosen = _pick_button(list(btns), strict_nearby=True)
             if chosen is not None:
                 return btns[chosen], chosen
             el = parent
