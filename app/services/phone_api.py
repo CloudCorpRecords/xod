@@ -87,7 +87,9 @@ def _history(args: Dict[str, Any]) -> Dict[str, Any]:
 async def _chat(args: Dict[str, Any]) -> Dict[str, Any]:
     """One chat turn, exactly as the desktop chat runs it (same agent, same history, saved in the same chat)."""
     from app import main
+    from app.services import agora_voice
     from app.services.storage import get_session, get_session_messages
+    agora_voice.mark_phone_call_active(90)
     text = str(args.get("text") or "").strip()
     if not text:
         raise ApiError("Say something first.")
@@ -452,6 +454,7 @@ def _voice_brief_config(args: Dict[str, Any]) -> Dict[str, Any]:
 
 async def _voice_brief_start(args: Dict[str, Any]) -> Dict[str, Any]:
     from app.services import agora_voice
+    agora_voice.mark_phone_call_active(1800)
     channel_name = str(args.get("channel_name") or "").strip()
     if not channel_name:
         raise ApiError("Missing channel_name.")
@@ -472,6 +475,7 @@ async def _voice_brief_start(args: Dict[str, Any]) -> Dict[str, Any]:
 
 async def _voice_brief_stop(args: Dict[str, Any]) -> Dict[str, Any]:
     from app.services import agora_voice
+    agora_voice.clear_phone_call_active()
     agent_id = str(args.get("agent_id") or "").strip()
     if not agent_id:
         raise ApiError("Missing agent_id.")

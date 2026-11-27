@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.49
+
+Fixes accidental Desktop wake-ups during Phone/Watch calls, unlocks **Full Xod Tools inside Agora Neural Voice Calls**, removes the mission-brief script from normal calls, and integrates **⚡ Xod Infra** (with a 2.7 MB native Rust Apple Silicon sidecar).
+
+- **Phone/Watch Call Wake Suppression** (`app/services/agora_voice.py`, `app/services/phone_api.py`, `app/main.py`): suppresses Desktop `"Hey Xod"` wake-word triggers whenever an iPhone, Android, or Wear OS Watch call/voice turn is active so your Mac never accidentally wakes up and answers over your phone call.
+- **Full Xod Tools in Agora Voice Calls** (`app/main.py`, `app/services/agora_voice.py`): adds a per-session Bearer-authenticated OpenAI SSE endpoint (`/api/agora/v1/chat/completions`) backed by Xod's full agent (`all 32+ tools`, terminal, `remote_device`, browser, cross-chat memory), auto-bridged via an ephemeral `cloudflared` tunnel when installed (falling back gracefully when absent).
+- **Natural Phone Call Default Everywhere** (`app/static/js/voice_brief.js`, `app/main.py`, `app/services/agora_voice.py`): defaults all Desktop & Phone Agora calls to the natural `"call"` persona instead of `"xodbrief"`.
+- **⚡ Xod Infra + Native Rust Sidecar** (`packages/xod-infra/`, `packages/xod-infra-rs/`, `app/services/xod_infra_bridge.py`, `app/static/js/control_center.js`): adds the open-source Apple Silicon token-speed engine (hardware doctor, Flash Attention + Q8_0 KV-cache tuner, live tok/s & TTFT benchmarker, and 2.7 MB native Rust gateway on `:8799`) right in Control Center.
+
 ## 1.1.48
 
 Brings **Muse-grade Remote Device Access (Tailscale + SSH)**, **Always-On Cross-Chat Memory**, and a **1-Click Superpowers Setup Shelf** in Control Center.

@@ -6130,8 +6130,93 @@ async def voice_wake_endpoint(request: Request):
     """Hands-free: was this short clip "Hey Xod…"? Returns the transcript, wake and the rest of the sentence."""
     if sys.platform != "darwin":
         return VOICE_MAC_ONLY
-    from app.services import speech_to_text
+    from app.services import agora_voice, speech_to_text
+    if agora_voice.is_phone_call_active():
+        return {"wake": False, "transcript": "", "rest": "", "suppressed": "phone_call_active"}
     return await speech_to_text.wake(await request.body())
+
+
+@app.post("/api/agora/v1/chat/completions")
+async def agora_custom_llm_endpoint(request: Request):
+    """
+    OpenAI-compatible SSE endpoint for Agora ConvoAI Custom LLM.
+    Lets Agora neural voice calls run Xod's FULL agent (all 32+ tools, terminal,
+    Tailscale remote_device, browser, and cross-chat memory), protected by a
+    per-session secret Bearer token.
+    """
+    import hmac
+    from app.services import agora_voice
+    auth = (request.headers.get("authorization") or "").strip()
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else auth
+    expected = agora_voice.get_agora_llm_secret()
+    if not token or not hmac.compare_digest(token, expected):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    body = await request.json()
+    raw_msgs = body.get("messages") or []
+    user_msgs = [m for m in raw_msgs if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
+    if not user_msgs:
+        user_msgs = [{"role": "user", "content": "Hello"}]
+
+    # Keep voice turns crisp and spoken-friendly while retaining full Xod tools.
+    voice_hint = {
+        "role": "system",
+        "content": (
+            "You are answering on a live voice phone call. Use any of your Xod tools needed to actually "
+            "check or do what the user asks, then reply in 1 to 3 natural spoken sentences. "
+            "No markdown, no bullet lists, no emojis, no raw URLs."
+        ),
+    }
+    resp = await chat_endpoint(ChatRequest(messages=[voice_hint] + user_msgs[-14:], source="phone"))
+
+    async def _sse_stream():
+        cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+        sent_any = False
+        async for chunk in resp.body_iterator:
+            text_chunk = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
+            for line in text_chunk.splitlines():
+                if not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    ev = json.loads(raw)
+                except Exception:
+                    continue
+                if ev.get("type") in ("content", "token", "answer") and ev.get("content"):
+                    piece = re.sub(r"[*_`#]+", "", str(ev["content"]))
+                    if piece:
+                        sent_any = True
+                        frame = {
+                            "id": cid,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": "xod-full-tools",
+                            "choices": [{"index": 0, "delta": {"role": "assistant", "content": piece}, "finish_reason": None}],
+                        }
+                        yield f"data: {json.dumps(frame)}\n\n"
+        if not sent_any:
+            fallback = {
+                "id": cid,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": "xod-full-tools",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Done — let me know what you want to do next."}, "finish_reason": None}],
+            }
+            yield f"data: {json.dumps(fallback)}\n\n"
+        end_frame = {
+            "id": cid,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": "xod-full-tools",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+        yield f"data: {json.dumps(end_frame)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(_sse_stream(), media_type="text/event-stream")
 
 
 VOICE_LOG_EVENTS = {"mic_open_ok", "mic_open_fail", "wake_start", "wake_stop", "wake_detected", "wake_blocked"}

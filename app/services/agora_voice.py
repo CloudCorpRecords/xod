@@ -51,6 +51,88 @@ AGORA_CREDENTIAL_LENGTH = 32
 DEFAULT_EXPIRY_SECONDS = 3600
 MAX_EXPIRY_SECONDS = 86400
 DEFAULT_MANAGED_PRESET = "deepgram_nova_3,openai_gpt_4o_mini,minimax_speech_2_6_turbo"
+CUSTOM_LLM_PRESET = "deepgram_nova_3,minimax_speech_2_6_turbo"
+
+# Phone/Watch call suppression for Desktop "Hey Xod" wake listener so talking to Xod on
+# iPhone/Android/Watch never accidentally wakes the desktop app.
+_PHONE_CALL_ACTIVE_UNTIL: float = 0.0
+_AGORA_LLM_SECRET: str = ""
+_TUNNEL_PROC: Any = None
+_TUNNEL_URL: str = ""
+
+
+def mark_phone_call_active(seconds: int = 1800) -> None:
+    global _PHONE_CALL_ACTIVE_UNTIL
+    _PHONE_CALL_ACTIVE_UNTIL = max(_PHONE_CALL_ACTIVE_UNTIL, time.time() + max(15, int(seconds)))
+
+
+def clear_phone_call_active() -> None:
+    global _PHONE_CALL_ACTIVE_UNTIL
+    _PHONE_CALL_ACTIVE_UNTIL = 0.0
+
+
+def is_phone_call_active() -> bool:
+    return time.time() < _PHONE_CALL_ACTIVE_UNTIL
+
+
+def get_agora_llm_secret() -> str:
+    global _AGORA_LLM_SECRET
+    if not _AGORA_LLM_SECRET:
+        _AGORA_LLM_SECRET = secrets.token_urlsafe(32)
+    return _AGORA_LLM_SECRET
+
+
+def ensure_custom_llm_url(local_port: int = 8010) -> str:
+    """
+    Returns a public HTTPS URL for `/api/agora/v1/chat/completions` so Agora ConvoAI can
+    call Xod's FULL agent (with all tools, memory, terminal, Tailscale remote_device).
+    Uses AGORA_CUSTOM_LLM_URL if set, else an ephemeral `cloudflared` quick tunnel if installed.
+    """
+    global _TUNNEL_PROC, _TUNNEL_URL
+    explicit = (os.environ.get("AGORA_CUSTOM_LLM_URL") or "").strip().rstrip("/")
+    if explicit:
+        return explicit if explicit.endswith("/chat/completions") else f"{explicit}/api/agora/v1/chat/completions"
+
+    if _TUNNEL_URL and _TUNNEL_PROC is not None and _TUNNEL_PROC.poll() is None:
+        return f"{_TUNNEL_URL}/api/agora/v1/chat/completions"
+
+    import shutil
+    import subprocess
+    cf = shutil.which("cloudflared")
+    if not cf:
+        return ""
+    try:
+        kwargs: Dict[str, Any] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "text": True,
+        }
+        if os.name == "nt":
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        proc = subprocess.Popen([cf, "tunnel", "--url", f"http://127.0.0.1:{local_port}", "--no-autoupdate"], **kwargs)
+        deadline = time.time() + 10.0
+        found_url = ""
+        while time.time() < deadline and proc.poll() is None:
+            line = proc.stdout.readline() if proc.stdout else ""
+            if not line:
+                time.sleep(0.1)
+                continue
+            m = re.search(r"(https://[a-z0-9-]+\.trycloudflare\.com)", line)
+            if m:
+                found_url = m.group(1)
+                break
+        if found_url:
+            _TUNNEL_PROC = proc
+            _TUNNEL_URL = found_url
+            logger.info("Started ephemeral cloudflared tunnel for Agora Full-Tools LLM: %s", found_url)
+            return f"{found_url}/api/agora/v1/chat/completions"
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug("cloudflared tunnel unavailable: %s", e)
+    return ""
 
 SECTION_LABELS: List[str] = [
     "Mission",
@@ -781,10 +863,33 @@ class AgoraVoiceService:
         if isinstance(output_audio_codec, str) and output_audio_codec.strip():
             params["output_audio_codec"] = output_audio_codec.strip()
 
-        agent_name = f"xodbrief-{int(time.time())}-{random.randint(1000, 9999)}"
+        custom_llm_url = await asyncio.to_thread(ensure_custom_llm_url) if is_call else ""
+        llm_block: Dict[str, Any] = {
+            "style": "openai",
+            "input_modalities": ["text"],
+            "greeting_message": effective_greeting,
+            "failure_message": "Give me just a second, checking that now.",
+            "max_history": 30,
+            "system_messages": [
+                {"role": "system", "content": effective_instructions}
+            ],
+            "params": {
+                "max_tokens": 512,
+                "temperature": 0.7,
+                "top_p": 0.95,
+            },
+        }
+        effective_preset = DEFAULT_MANAGED_PRESET
+        if custom_llm_url:
+            effective_preset = CUSTOM_LLM_PRESET
+            llm_block["url"] = custom_llm_url
+            llm_block["api_key"] = get_agora_llm_secret()
+            llm_block["params"]["model"] = "xod-full-tools"
+
+        agent_name = f"xodcall-{int(time.time())}-{random.randint(1000, 9999)}" if is_call else f"xodbrief-{int(time.time())}-{random.randint(1000, 9999)}"
         payload: Dict[str, Any] = {
             "name": agent_name,
-            "preset": DEFAULT_MANAGED_PRESET,
+            "preset": effective_preset,
             "properties": {
                 "channel": channel_name,
                 "token": agent_rtc_token,
@@ -817,21 +922,7 @@ class AgoraVoiceService:
                         "voice_setting": {"voice_id": "English_captivating_female1"}
                     },
                 },
-                "llm": {
-                    "style": "openai",
-                    "input_modalities": ["text"],
-                    "greeting_message": effective_greeting,
-                    "failure_message": "Please wait a moment.",
-                    "max_history": 50,
-                    "system_messages": [
-                        {"role": "system", "content": effective_instructions}
-                    ],
-                    "params": {
-                        "max_tokens": 1024,
-                        "temperature": 0.7,
-                        "top_p": 0.95,
-                    },
-                },
+                "llm": llm_block,
                 "asr": {
                     "vendor": "deepgram",
                     "params": {"language": "en"},
