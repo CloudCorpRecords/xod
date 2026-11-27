@@ -3255,22 +3255,26 @@ TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "remote_device",
-            "description": "Access and operate on any of the user's other devices over Tailscale or SSH (Mac, Windows/Razer, Linux servers, Raspberry Pi). "
-                           "list: auto-discover every machine on the user's Tailscale tailnet, ~/.ssh/config, and saved profiles (name, IP, OS, online status). "
-                           "run: execute a shell command on a named device (e.g. device='razer', command='hostname'). "
+            "description": "Access and operate on any of the user's other devices over Tailscale or SSH (Mac, Windows/Razer, Linux servers, Steam Deck, Raspberry Pi) with persistent multiplexed SSH and automatic route failover. "
+                           "list: auto-discover every machine on the user's Tailscale tailnet, ~/.ssh/config, and saved profiles (name, hostname, IP, OS, online status). "
+                           "run: execute a shell command on a named device (supports custom port and jump_host). "
+                           "launch_gui: launch a desktop app on a remote machine so it stays alive after SSH exits (uses interactive scheduled task on Windows, `open -a` on Mac). "
                            "inspect: quick system health snapshot (hostname, OS, uptime, disk/RAM) on a remote device. "
                            "read_file: read a file on a remote device. "
-                           "save: remember a device's nickname, SSH username, host, and note across all future chats.",
+                           "save: remember a device's nickname, SSH username, host, port, jump_host, fallback_host, and note across all future chats.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "action": {"type": "string", "enum": ["list", "run", "inspect", "read_file", "save"]},
-                    "device": {"type": "string", "description": "Device name, nickname, Tailscale name, or IP (for run, inspect, read_file, save)."},
-                    "command": {"type": "string", "description": "For run: shell command to execute on the remote device."},
+                    "action": {"type": "string", "enum": ["list", "run", "launch_gui", "inspect", "read_file", "save"]},
+                    "device": {"type": "string", "description": "Device name, nickname, Tailscale name, or IP (for run, launch_gui, inspect, read_file, save)."},
+                    "command": {"type": "string", "description": "For run: shell command. For launch_gui: app name or executable path to launch on the remote desktop."},
                     "path": {"type": "string", "description": "For read_file: file path on the remote device."},
                     "user": {"type": "string", "description": "Optional SSH username (remembered automatically once saved)."},
+                    "port": {"type": "integer", "description": "Optional SSH port (e.g. 2222 for Steam Deck)."},
+                    "jump_host": {"type": "string", "description": "Optional SSH jump host (e.g. 'cloud@razer') for multi-hop routes."},
+                    "fallback_host": {"type": "string", "description": "For save: optional fallback IP/host if primary route fails."},
                     "note": {"type": "string", "description": "For save: short note about what this device is (e.g. 'Windows gaming/dev laptop')."},
-                    "host": {"type": "string", "description": "For save: optional IP or hostname override."},
+                    "host": {"type": "string", "description": "For save: optional IP or hostname override (prefer hostname over raw IP when host keys are pinned)."},
                     "max_lines": {"type": "integer", "description": "For read_file: max lines to return (default 200)."},
                     "timeout": {"type": "integer", "description": "For run: timeout in seconds (default 45)."}
                 },
@@ -4424,6 +4428,15 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                 str(a.get("command") or ""),
                 str(a.get("user") or ""),
                 int(a.get("timeout") or 45),
+                int(a.get("port") or 0),
+                str(a.get("jump_host") or ""),
+            )
+        if act == "launch_gui":
+            return await asyncio.to_thread(
+                remote_devices.launch_gui_app,
+                str(a.get("device") or ""),
+                str(a.get("command") or ""),
+                str(a.get("user") or ""),
             )
         if act == "inspect":
             return await asyncio.to_thread(
@@ -4446,6 +4459,10 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                 str(a.get("user") or ""),
                 str(a.get("note") or ""),
                 str(a.get("host") or ""),
+                "",
+                int(a.get("port") or 0),
+                str(a.get("jump_host") or ""),
+                str(a.get("fallback_host") or ""),
             )
         return {"ok": False, "error": f"Unknown remote_device action: {act}"}
     if name == "tailscale_files":
