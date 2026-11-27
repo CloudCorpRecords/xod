@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.43
+
+Declutters the **Family** drawer so your family of devices is immediately front and center instead of buried below setup banners.
+
+- **Clean 3-Tab Family Drawer** (`app/static/js/family.js`): splits the Family drawer into **Devices** (default), **Connect** (Muse, local AIs, Message Tree), and **Account** (GitHub sign-in, setup checklist, keys, approvals).
+- **Devices First + Decoy Filtering**: shows your active family machines right at the top of the **Devices** tab, collapses phone pairing into an expandable card, and hides internal `decoy` / `family-canary` test entries.
+
 ## 1.1.42
 
 **Deep Terminal Engine Upgrade**: upgrades Xod from stateless `/bin/sh` one-liners to full `/bin/zsh` execution, persistent interactive PTY sessions, a smart `curl` downloader with SHA-256 verification & auto-extraction, and a built-in CLI Toolchain Inspector & Installer.

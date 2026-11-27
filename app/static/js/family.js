@@ -11,6 +11,7 @@
   let poll = null;
   let devPoll = null;
   let devFlow = null;   // {user_code, verification_uri, state, message, account} while a device sign-in runs
+  let activeTab = "devices"; // "devices" | "connect" | "account"
 
   const ago = (t) => {
     if (!t) return "not seen yet";
@@ -252,24 +253,89 @@
           </div>
         </section>`;
     }
-    const others = (r.devices || []).filter((d) => d.status !== "active");
+    const members = (r.members || []).filter((m) => String(m.platform || "").toLowerCase() !== "decoy" && m.id !== "family-canary");
+    const others = (r.devices || []).filter((d) => d.status !== "active" && String(d.platform || "").toLowerCase() !== "decoy" && d.id !== "family-canary");
     const problems = (r.problems || []).map((p) => `<li>${esc(p)}</li>`).join("");
     return `
       <section class="space-y-3">
-        <div class="task-card space-y-1.5">
-          <p class="task-title">Your machines, one family</p>
-          <p class="text-[12px] text-zinc-400">This list comes from the family registry.
-            ${r.interim_unsigned ? "Some records are still unsigned, so treat those as a directory of your machines, not proof of identity."
-              : "Every member's record is signature-verified and covered by the family approval."}
-            The family vault shares provider keys between verified members only; borrowed inference is signed the same way.</p>
-          ${r.vault ? `<p class="text-[12px] text-zinc-400">Family vault: ${r.vault.state === "ok" ? `bundle v${esc(r.vault.version)} for ${(r.vault.recipients || []).length} member(s); this device has applied v${esc(r.vault.applied_version)}${r.vault.local_only ? " (pinned local-only)" : ""}` : "no bundle published yet"}.</p>` : ""}
+        <div class="flex items-center justify-between">
+          <p class="text-[12px] font-semibold text-zinc-200">Your Family Devices (${members.length})</p>
+          ${r.vault && r.vault.state === "ok" ? `<span class="text-[11px] text-emerald-300/90">Vault v${esc(r.vault.version)} synced</span>` : ""}
         </div>
-        <p class="text-[12px] font-semibold text-zinc-300">Family members</p>
-        ${(r.members || []).length ? `<ul class="space-y-2">${r.members.map(memberRow).join("")}</ul>`
-          : `<p class="text-[12px] text-zinc-500">No active members in the registry yet.</p>`}
-        ${others.length ? `<p class="text-[12px] font-semibold text-zinc-300">Not active</p><ul class="space-y-1.5">${others.map(otherRow).join("")}</ul>` : ""}
-        ${problems ? `<div class="task-card space-y-1"><p class="text-[12px] font-semibold text-amber-300">Some records were skipped</p><ul class="text-[12px] text-zinc-400 list-disc pl-5 space-y-1">${problems}</ul></div>` : ""}
+        ${members.length ? `<ul class="space-y-2">${members.map(memberRow).join("")}</ul>`
+          : `<div class="task-card"><p class="text-[12px] text-zinc-400">No active devices in the family registry yet.</p></div>`}
+        ${others.length ? `<details class="pt-1"><summary class="text-[12px] font-medium text-zinc-400 cursor-pointer">Inactive devices (${others.length})</summary><ul class="space-y-1.5 mt-2">${others.map(otherRow).join("")}</ul></details>` : ""}
+        ${problems ? `<details class="task-card"><summary class="text-[12px] font-semibold text-amber-300 cursor-pointer">Skipped records (${(r.problems || []).length})</summary><ul class="text-[12px] text-zinc-400 list-disc pl-5 space-y-1 mt-1.5">${problems}</ul></details>` : ""}
       </section>`;
+  }
+
+  function pairCardHtml() {
+    return `
+      <details class="rounded-xl bg-surface-900/80 border border-white/[0.08] p-3">
+        <summary class="text-[12px] font-semibold text-white cursor-pointer flex items-center justify-between">
+          <span>Pair &amp; sync a phone or machine</span>
+          <span class="text-[11px] text-brand-300 font-normal">QR · Bluetooth · Address</span>
+        </summary>
+        <div class="pt-2.5 space-y-2.5">
+          <div class="flex flex-wrap gap-2">
+            <button data-family-pair="qr" class="px-3 py-1.5 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[12px] font-semibold">Show QR code</button>
+            <button data-family-pair="ble" class="px-3 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px] font-medium">Pair over Bluetooth</button>
+            <button data-family-pair="addr" class="px-3 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-200 text-[12px]">Copy address</button>
+          </div>
+          <div id="familyPairBox" class="hidden pt-1 space-y-2"></div>
+        </div>
+      </details>`;
+  }
+
+  function quickLinksHtml() {
+    return `
+      <div class="grid grid-cols-3 gap-2">
+        <button data-family-action="xods" class="px-2.5 py-2 rounded-lg bg-surface-800 hover:bg-surface-700 border border-white/[0.06] text-zinc-100 text-[12px] font-medium">Your Xods</button>
+        <button data-family-action="messages" class="px-2.5 py-2 rounded-lg bg-surface-800 hover:bg-surface-700 border border-white/[0.06] text-zinc-100 text-[12px] font-medium">Messages</button>
+        <button data-family-action="phone" class="px-2.5 py-2 rounded-lg bg-surface-800 hover:bg-surface-700 border border-white/[0.06] text-zinc-100 text-[12px] font-medium">Phone</button>
+      </div>`;
+  }
+
+  function messageTreeCardHtml() {
+    return `
+      <div class="task-card space-y-2">
+        <p class="task-title">Message Tree</p>
+        <p class="text-[12px] text-zinc-400">Send a note straight to Tree, your Muse agent — it lands in the family inbox.</p>
+        <textarea id="treeText" rows="2" class="task-answer w-full" placeholder="What should Tree know?"></textarea>
+        <div class="flex items-center gap-2">
+          <select id="treeKind" class="rounded-lg bg-surface-700 text-zinc-200 text-[12px] px-2 py-1.5">
+            <option value="note">Note</option>
+            <option value="task">Task</option>
+            <option value="result">Result</option>
+          </select>
+          <button id="treeSend" class="px-3 py-1.5 rounded-lg bg-emerald-900 text-emerald-200 text-[12px] font-semibold hover:bg-emerald-800">Send to Tree</button>
+          <span id="treeState" class="text-[12px] text-zinc-500"></span>
+        </div>
+      </div>`;
+  }
+
+  let lastCache = { r: null, c: null, mailStatus: null, reqThreads: [], mc: null, ac: null };
+
+  function paintTab() {
+    const el = document.getElementById("familyBody");
+    const root = document.getElementById("familyPanel");
+    if (!el) return;
+    if (root) {
+      root.querySelectorAll("[data-family-tab]").forEach((btn) => {
+        const on = btn.getAttribute("data-family-tab") === activeTab;
+        btn.className = `flex-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${
+          on ? "bg-brand-500 text-surface-900 font-semibold" : "text-zinc-300 hover:bg-surface-700"
+        }`;
+      });
+    }
+    const { r, c, mailStatus, reqThreads, mc, ac } = lastCache;
+    if (activeTab === "devices") {
+      el.innerHTML = pausedLine(mailStatus) + requestsSection(reqThreads) + body(r) + pairCardHtml() + quickLinksHtml();
+    } else if (activeTab === "connect") {
+      el.innerHTML = museConnectSection(mc) + autoConnectSection(ac) + messageTreeCardHtml();
+    } else {
+      el.innerHTML = controlView(c) || `<div class="task-card"><p class="text-[12px] text-zinc-400">Account status unavailable right now.</p></div>`;
+    }
   }
 
   async function render() {
@@ -282,7 +348,8 @@
     try { const t = await api("/api/mail/threads?box=requests"); reqThreads = t.threads || []; } catch (e) { /* request cards just omit */ }
     try { mc = await api("/api/muse-connect"); } catch (e) { /* connect card just omits */ }
     try { ac = await api("/api/auto-connect"); } catch (e) { /* auto-connect card just omits */ }
-    el.innerHTML = pausedLine(mailStatus) + controlView(c) + museConnectSection(mc) + autoConnectSection(ac) + requestsSection(reqThreads) + body(r);
+    lastCache = { r, c, mailStatus, reqThreads, mc, ac };
+    paintTab();
   }
 
   async function saveClientId() {
@@ -328,54 +395,27 @@
         <aside class="tasks-drawer" role="dialog" aria-label="Family">
           <header class="px-5 pt-5 pb-3 flex items-start justify-between gap-3 border-b border-white/[0.06]">
             <div><h3 class="font-bold text-lg text-white">Family</h3>
-              <p class="text-[12px] text-zinc-400 mt-0.5">Your machines and what each one offers.</p></div>
+              <p class="text-[12px] text-zinc-400 mt-0.5">Your machines, phone pairing, and connected AIs.</p></div>
             <button data-close-family class="p-1 -mr-1 rounded-lg text-zinc-500 hover:text-white hover:bg-surface-700" title="Close"><i data-lucide="x" class="size-4"></i></button>
           </header>
-          <div class="px-5 py-4 border-b border-white/[0.06] space-y-3">
-            <!-- Prominent Phone Sync & Pairing card (QR + Bluetooth + Same Wi-Fi / Tailscale) -->
-            <div class="rounded-xl bg-surface-900/90 border border-brand-500/25 p-3.5 space-y-2.5">
-              <div class="flex items-center justify-between gap-2">
-                <div>
-                  <p class="text-[13px] font-semibold text-white">Pair &amp; sync your phone</p>
-                  <p class="text-[11px] text-zinc-400">Scan QR, pair over Bluetooth nearby, or copy this computer's address.</p>
-                </div>
-              </div>
-              <div class="flex flex-wrap gap-2">
-                <button data-family-pair="qr" class="px-3 py-1.5 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[12px] font-semibold">Show QR code</button>
-                <button data-family-pair="ble" class="px-3 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px] font-medium">Pair over Bluetooth</button>
-                <button data-family-pair="addr" class="px-3 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-200 text-[12px]">Copy address</button>
-              </div>
-              <div id="familyPairBox" class="hidden pt-1 space-y-2"></div>
+          <div class="px-5 py-2.5 border-b border-white/[0.06]">
+            <div class="flex gap-1 p-1 rounded-xl bg-surface-900/90 border border-white/[0.06]">
+              <button type="button" data-family-tab="devices" class="flex-1 px-2.5 py-1.5 rounded-lg text-[12px] font-semibold bg-brand-500 text-surface-900">Devices</button>
+              <button type="button" data-family-tab="connect" class="flex-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-zinc-300 hover:bg-surface-700">Connect</button>
+              <button type="button" data-family-tab="account" class="flex-1 px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-zinc-300 hover:bg-surface-700">Account</button>
             </div>
-            <button data-family-action="messages" class="surface-row" style="background:rgba(255,255,255,0.03)">
-              <span class="flex-1 min-w-0"><span class="block text-zinc-100 text-[13px] font-semibold">Messages</span><span class="block text-[12px] text-zinc-500">Messages between your machines and agents (Agent Mail), real messages only.</span></span>
-              <span class="text-zinc-500 text-[12px]">Open</span>
-            </button>
-            <div class="flex gap-2">
-              <button data-family-action="xods" class="flex-1 px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px]">Your Xods</button>
-              <button data-family-action="phone" class="flex-1 px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px]">Phone &amp; Telegram</button>
-            </div>
-            <details class="pt-1">
-              <summary class="text-[12px] font-semibold text-zinc-300 cursor-pointer">Message Tree</summary>
-              <div class="space-y-2 pt-2">
-                <p class="text-[12px] text-zinc-500">Send a note straight to Tree, your Muse agent — it lands in the family inbox and Tree picks it up from there.</p>
-                <textarea id="treeText" rows="2" class="task-answer w-full" placeholder="What should Tree know?"></textarea>
-                <div class="flex items-center gap-2">
-                  <select id="treeKind" class="rounded-lg bg-surface-700 text-zinc-200 text-[12px] px-2 py-1.5">
-                    <option value="note">Note</option>
-                    <option value="task">Task</option>
-                    <option value="result">Result</option>
-                  </select>
-                  <button id="treeSend" class="px-3 py-1.5 rounded-lg bg-emerald-900 text-emerald-200 text-[12px] font-semibold hover:bg-emerald-800">Send to Tree</button>
-                  <span id="treeState" class="text-[12px] text-zinc-500"></span>
-                </div>
-              </div>
-            </details>
           </div>
-          <div id="familyBody" class="flex-1 overflow-y-auto px-5 py-4 space-y-4"></div>
+          <div id="familyBody" class="flex-1 overflow-y-auto px-5 py-4 space-y-3.5"></div>
         </aside>`;
       document.body.appendChild(root);
-      root.addEventListener("click", (e) => { if (e.target.closest("[data-close-family]")) window.closeFamilyPanel(); });
+      root.addEventListener("click", (e) => {
+        if (e.target.closest("[data-close-family]")) { window.closeFamilyPanel(); return; }
+        const tabBtn = e.target.closest("[data-family-tab]");
+        if (tabBtn) {
+          activeTab = tabBtn.getAttribute("data-family-tab") || "devices";
+          paintTab();
+        }
+      });
       root.addEventListener("click", async (e) => {
         const pairBtn = e.target.closest("[data-family-pair]");
         if (pairBtn) {
@@ -446,27 +486,29 @@
         if (a === "xods" && window.openXodsPanel) window.openXodsPanel();
         if (a === "phone" && window.openPhonePanel) window.openPhonePanel();
       });
-      root.querySelector("#treeSend").addEventListener("click", async () => {
+      root.addEventListener("click", async (e) => {
+        if (!e.target.closest("#treeSend")) return;
         const textEl = root.querySelector("#treeText");
         const stateEl = root.querySelector("#treeState");
-        const text = (textEl.value || "").trim();
-        if (!text) { stateEl.textContent = "Write something first."; return; }
-        stateEl.textContent = "Sending…";
+        const text = ((textEl && textEl.value) || "").trim();
+        if (!text) { if (stateEl) stateEl.textContent = "Write something first."; return; }
+        if (stateEl) stateEl.textContent = "Sending…";
         try {
+          const kindEl = root.querySelector("#treeKind");
           const r = await (await fetch("/api/tree/message", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ kind: root.querySelector("#treeKind").value, text }),
+            body: JSON.stringify({ kind: (kindEl && kindEl.value) || "note", text }),
           })).json();
           if (r.success && r.state === "inbox") {
-            stateEl.textContent = "Sent — Tree will pick it up from the family inbox.";
-            textEl.value = "";
+            if (stateEl) stateEl.textContent = "Sent — Tree will pick it up from the family inbox.";
+            if (textEl) textEl.value = "";
           } else if (r.success && r.state === "queued") {
-            stateEl.textContent = "Queued on this machine — the family drive isn't reachable from here right now. It will drain when it is.";
-            textEl.value = "";
+            if (stateEl) stateEl.textContent = "Queued on this machine — the family drive isn't reachable from here right now. It will drain when it is.";
+            if (textEl) textEl.value = "";
           } else {
-            stateEl.textContent = r.message || "Could not send.";
+            if (stateEl) stateEl.textContent = r.message || "Could not send.";
           }
-        } catch (e) { stateEl.textContent = "Could not send — Xod's backend did not answer."; }
+        } catch (err) { if (stateEl) stateEl.textContent = "Could not send — Xod's backend did not answer."; }
       });
       root.addEventListener("click", async (e) => {
         const fix = e.target.closest("[data-family-fix]");
