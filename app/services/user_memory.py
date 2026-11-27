@@ -53,18 +53,21 @@ TOPICS = ["identity", "work", "location", "people", "projects", "interests", "pr
 KEYS = ["name", "nickname", "pronouns", "birthday", "email", "phone", "city", "country", "timezone", "language",
         "job", "company", "school", "partner"]
 KEY_ORDER = {k: i for i, k in enumerate(KEYS)}
-CORE_CHARS = 900          # the always-on block stays short: it's read on every request
+CORE_CHARS = 1400          # the always-on block stays concise: it's read on every request
 
 # Never keep these, whoever offers them.
 SECRET_RE = re.compile(r"\b(password|passcode|pin\b|api[ _-]?key|secret|token|ssn|social security|credit card|card number|"
                        r"cvv|routing number|account number|seed phrase|private key)\b|\b(?:\d[ -]?){13,19}\b|\b(sk|fw|ghp|xox[bp])[-_][A-Za-z0-9]{12,}", re.I)
-# Talk about oneself (worth one small model call to look for facts), as opposed to a request or a question.
+# Talk about oneself, one's devices/projects/decisions (worth one small model call to look for lasting facts).
 ABOUT_ME_RE = re.compile(r"\b(i'?m|i am|i'?ve|i'?ll be|i'?d (rather|prefer)|"
                          r"i (just |recently |now |also |still |usually |always |never )?(was|have|had|live|lived|moved|work|worked|"
                          r"like|love|hate|prefer|use|study|studied|got|started|quit|left|joined|bought|own|drive|speak|grew up|"
-                         r"was born|graduated|run|teach|play|build|make|go to)|my (name|wife|husband|partner|girlfriend|boyfriend|son|daughter|kid|kids|mom|dad|mother|"
+                         r"was born|graduated|run|teach|play|build|make|go to|decided|switched|deployed|host|keep)|"
+                         r"(?:my|our) (?:main |primary |current |new |old |other |gaming |work |home |)?(name|wife|husband|partner|girlfriend|boyfriend|son|daughter|kid|kids|mom|dad|mother|"
                          r"father|brother|sister|dog|cat|job|work|company|boss|team|startup|birthday|email|phone|address|"
-                         r"city|home|school|major|favorite|favourite)|call me|we'?re|our (company|startup|team|family))\b", re.I)
+                         r"city|home|school|major|favorite|favourite|mac|pc|laptop|desktop|razer|server|box|machine|device|"
+                         r"iphone|android|watch|repo|project|app|site|website|domain|tailscale|ssh|family)|"
+                         r"call me|we'?re)\b", re.I)
 REMEMBER_RE = re.compile(r"^\s*(?:please\s+)?(?:remember|note|keep in mind|don'?t forget)\s+(?:that\s+)?(.{3,300})$", re.I)
 FORGET_RE = re.compile(r"^\s*(?:please\s+)?forget\s+(?:that\s+|about\s+)?(.{2,200})$", re.I)
 FORGET_ALL_RE = re.compile(r"^\s*(?:please\s+)?forget (?:everything|all) (?:you know )?(?:about me)?\s*\.?$", re.I)
@@ -487,18 +490,69 @@ def relevant_note(query: str) -> str:
     return out
 
 
+def recent_chats_note(exclude_session_id: str = "", limit: int = 6, max_age_days: int = 7) -> str:
+    """
+    Compact cross-chat continuity digest pulled from recent SQLite sessions so every new chat
+    automatically knows what the user was just discussing or building in other chats.
+    """
+    if not load()["settings"].get("recall", True):
+        return ""
+    try:
+        from app.services.storage import get_db_connection
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cutoff = time.time() - max_age_days * 86400
+        if exclude_session_id:
+            rows = cur.execute(
+                "SELECT id, title, updated_at FROM sessions WHERE id != ? AND updated_at >= ? ORDER BY updated_at DESC LIMIT ?",
+                (exclude_session_id, cutoff, limit),
+            ).fetchall()
+        else:
+            rows = cur.execute(
+                "SELECT id, title, updated_at FROM sessions WHERE updated_at >= ? ORDER BY updated_at DESC LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+        lines: List[str] = []
+        for r in rows:
+            sid = r["id"]
+            title = re.sub(r"\s+", " ", (r["title"] or "").strip())[:70]
+            if not title or title.lower() in ("new chat", "untitled"):
+                continue
+            msg = cur.execute(
+                "SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY created_at DESC LIMIT 1",
+                (sid,),
+            ).fetchone()
+            snippet = ""
+            if msg and msg["content"]:
+                raw = re.sub(r"\s+", " ", str(msg["content"]).strip())
+                if not SECRET_RE.search(raw):
+                    snippet = f" — last asked: \"{raw[:110]}\""
+            age_h = max(0, int((time.time() - float(r["updated_at"] or 0)) / 3600))
+            when = "just now" if age_h < 1 else (f"{age_h}h ago" if age_h < 24 else f"{age_h // 24}d ago")
+            lines.append(f"- [{when}] {title}{snippet}")
+        if not lines:
+            return ""
+        return (
+            "\n\n[RECENT CROSS-CHAT CONTEXT — what you and the user were recently working on in other chats]\n"
+            + "\n".join(lines)
+            + "\n(Use this naturally if the user references something from another chat; don't bring it up unprompted.)"
+        )
+    except Exception:
+        return ""
+
+
 # ----------------------------------------------------------------------------------------------- learning
 
-EXTRACT_PROMPT = """You keep a short, accurate memory of facts about the user so Xod can help them better later.
-From the user's latest message, pick out lasting facts ABOUT THE USER or their life: who they are, their work and
-projects, where they live, people in their life (by relationship), what they like or prefer, goals and routines.
-Only what they clearly said in THIS message, and only what isn't already known (listed below). Not: requests or questions, facts about the world, passing states ("I'm tired"),
-anything about other people beyond their relationship and name, passwords, account or card numbers, health details.
+EXTRACT_PROMPT = """You keep a short, accurate cross-chat memory of lasting facts about the user so Xod remembers them across every chat.
+From the user's latest message, pick out lasting facts ABOUT THE USER, their life, their projects, their devices/servers/Tailscale/SSH hosts, and their technical decisions or preferences:
+who they are, their work and projects, repos/paths, devices (e.g. Razer Windows laptop, Mac, Linux server, SSH usernames), where they live, people in their life (by relationship), what they like or prefer, goals, decisions, and routines.
+Only what they clearly said in THIS message, and only what isn't already known (listed below). Not: pure questions, passing states ("I'm tired"),
+anything about other people beyond their relationship and name, passwords, API keys, tokens, account or card numbers, health details.
 Write each fact short, with no subject (not their name, not "the user"): "Name is Ana", "Works as a nurse at
-St. Mary's", "Lives in Denver", "Has a dog named Biscuit", "Prefers short answers". If a fact replaces one they
-already have (they moved, changed jobs), give it the same key so the old one is replaced.
+St. Mary's", "Lives in Denver", "Has a dog named Biscuit", "Prefers short answers", "Razer Windows laptop is on Tailscale as razer", "Main Xod release repo is ~/xod-release-1123".
+If a fact replaces one they already have (they moved, changed jobs), give it the same key so the old one is replaced.
 
-Reply with ONLY JSON: {"facts": [{"fact": "...", "topic": "identity|work|location|people|projects|interests|preferences|routines|other",
+Reply with ONLY JSON: {"facts": [{"fact": "...", "topic": "identity|work|location|people|projects|interests|preferences|routines|decisions|other",
 "key": "name|nickname|pronouns|birthday|email|phone|city|country|timezone|language|job|company|school|partner|null"}],
 "forget": ["<what they asked you to forget, if anything>"]}
 No lasting facts: {"facts": [], "forget": []}."""

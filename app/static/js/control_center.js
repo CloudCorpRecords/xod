@@ -111,6 +111,8 @@
     const vLast = vault.last_export || {};
     const checkpoints = data.checkpoints || [];
     const tc = data.terminal_toolchain || { installed: {}, missing: [], installed_count: 0, total_catalog: 0, shell: "" };
+    const sp = data.superpowers || { items: [], installed_count: 0, total_count: 0, memory_facts_count: 0 };
+    const rd = data.remote_devices || { devices: [], online_count: 0, total_count: 0, tailscale_running: false };
     const route = mcp.last_route || {};
 
     const issuesHtml = issues.length
@@ -142,6 +144,51 @@
       ${issuesHtml}
 
       <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+        <!-- 0. Superpowers, Remote Devices & Cross-Chat Memory -->
+        <section class="md:col-span-2 rounded-xl bg-surface-850 border border-brand-500/20 p-4 space-y-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h4 class="text-[13px] font-semibold text-white">Superpowers, Remote Devices &amp; Cross-Chat Memory</h4>
+              <p class="text-[11px] text-zinc-400 mt-0.5">1-click tools that let Xod hop into your other devices via Tailscale/SSH and carry memory seamlessly across chats.</p>
+            </div>
+            <div class="flex items-center gap-1.5">
+              ${pill(true, `${sp.memory_facts_count || 0} cross-chat facts`)}
+              ${pill(!!rd.tailscale_running, rd.tailscale_running ? `${rd.online_count || 0} remote devices online` : "Tailscale not connected")}
+            </div>
+          </div>
+          ${(rd.devices || []).length ? `
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span class="text-[11px] text-zinc-400 mr-1">Devices:</span>
+              ${(rd.devices || []).slice(0, 10).map((d) => `
+                <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-surface-900/80 border border-white/[0.06] text-[11px] text-zinc-200" title="${esc(d.ip || d.host)} · ${esc(d.os || d.source)}">
+                  <span class="size-1.5 rounded-full ${d.online ? "bg-emerald-400" : "bg-zinc-500"}"></span>
+                  <span>${esc(d.name)}</span>
+                  ${d.os ? `<span class="text-zinc-500">${esc(d.os)}</span>` : ""}
+                </span>
+              `).join("")}
+            </div>
+          ` : ""}
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+            ${(sp.items || []).map((item) => `
+              <div class="rounded-lg bg-surface-900/75 border border-white/[0.06] p-3 flex flex-col justify-between gap-2">
+                <div>
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-[12px] font-semibold text-zinc-100">${esc(item.name)}</span>
+                    ${pill(!!item.connected || !!item.installed, item.status_label || (item.installed ? "Ready" : "Not installed"))}
+                  </div>
+                  <div class="text-[11px] text-zinc-400 mt-1 leading-snug">${esc(item.detail || item.tagline)}</div>
+                </div>
+                <div class="flex flex-wrap items-center gap-1.5 pt-1">
+                  ${item.can_install ? `<button type="button" data-cc-superpower-install="${esc(item.id)}" class="px-2.5 py-1 rounded-md bg-brand-500 hover:bg-brand-400 text-surface-900 text-[11px] font-semibold">Install</button>` : ""}
+                  ${item.can_login ? `<button type="button" data-cc-tailscale-act="login" class="px-2.5 py-1 rounded-md bg-amber-500 hover:bg-amber-400 text-black text-[11px] font-semibold">Sign In</button>` : ""}
+                  ${item.can_enable_ssh ? `<button type="button" data-cc-tailscale-act="enable_ssh" class="px-2.5 py-1 rounded-md bg-surface-700 hover:bg-surface-600 text-zinc-200 text-[11px]">Enable Remote SSH</button>` : ""}
+                </div>
+              </div>
+            `).join("")}
+          </div>
+          <div id="ccSuperpowerStatus" class="hidden text-[11px]"></div>
+        </section>
+
         <!-- 1. AI Brain & Voice -->
         <section class="rounded-xl bg-surface-850 border border-white/[0.07] p-4 space-y-2.5">
           <div class="flex items-center justify-between gap-2">
@@ -549,6 +596,57 @@
           }
           if (out.ok) refreshControlCenter();
         } catch (e) {
+          if (st) { st.textContent = String(e.message || e); st.className = "text-[11px] text-red-300"; }
+        }
+      });
+    });
+
+    body.querySelectorAll("[data-cc-superpower-install]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const pid = btn.getAttribute("data-cc-superpower-install");
+        const st = document.getElementById("ccSuperpowerStatus");
+        btn.disabled = true;
+        btn.textContent = "Installing…";
+        if (st) { st.textContent = `Installing ${pid}…`; st.className = "text-[11px] text-amber-200"; st.classList.remove("hidden"); }
+        try {
+          const res = await fetch("/api/superpowers/install", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ power_id: pid }),
+          });
+          const out = await res.json().catch(() => ({}));
+          if (st) {
+            st.textContent = out.ok ? `Installed ${pid} successfully.` : (out.error || out.stderr || `Could not install ${pid}.`);
+            st.className = `text-[11px] ${out.ok ? "text-emerald-300" : "text-red-300"}`;
+          }
+          refreshControlCenter();
+        } catch (e) {
+          if (st) { st.textContent = String(e.message || e); st.className = "text-[11px] text-red-300"; }
+        }
+      });
+    });
+
+    body.querySelectorAll("[data-cc-tailscale-act]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const act = btn.getAttribute("data-cc-tailscale-act");
+        const st = document.getElementById("ccSuperpowerStatus");
+        btn.disabled = true;
+        if (st) { st.textContent = act === "login" ? "Opening Tailscale sign-in…" : "Enabling Tailscale SSH…"; st.className = "text-[11px] text-amber-200"; st.classList.remove("hidden"); }
+        try {
+          const res = await fetch("/api/superpowers/tailscale", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: act }),
+          });
+          const out = await res.json().catch(() => ({}));
+          if (st) {
+            st.textContent = out.message || out.error || (out.ok ? "Done." : "Action failed.");
+            st.className = `text-[11px] ${out.ok ? "text-emerald-300" : "text-amber-300"}`;
+          }
+          btn.disabled = false;
+          if (out.ok) refreshControlCenter();
+        } catch (e) {
+          btn.disabled = false;
           if (st) { st.textContent = String(e.message || e); st.className = "text-[11px] text-red-300"; }
         }
       });

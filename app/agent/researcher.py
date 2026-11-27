@@ -280,6 +280,9 @@ class AgenticResearcher:
             about = user_memory.core_note()
             if about:
                 system_prompt += "\n\n" + about + user_memory.relevant_note(user_query or "")
+            recent_ctx = user_memory.recent_chats_note(exclude_session_id=session_id or "")
+            if recent_ctx:
+                system_prompt += recent_ctx
         except Exception:
             pass
         try:

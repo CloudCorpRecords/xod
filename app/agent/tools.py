@@ -3254,6 +3254,33 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "remote_device",
+            "description": "Access and operate on any of the user's other devices over Tailscale or SSH (Mac, Windows/Razer, Linux servers, Raspberry Pi). "
+                           "list: auto-discover every machine on the user's Tailscale tailnet, ~/.ssh/config, and saved profiles (name, IP, OS, online status). "
+                           "run: execute a shell command on a named device (e.g. device='razer', command='hostname'). "
+                           "inspect: quick system health snapshot (hostname, OS, uptime, disk/RAM) on a remote device. "
+                           "read_file: read a file on a remote device. "
+                           "save: remember a device's nickname, SSH username, host, and note across all future chats.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["list", "run", "inspect", "read_file", "save"]},
+                    "device": {"type": "string", "description": "Device name, nickname, Tailscale name, or IP (for run, inspect, read_file, save)."},
+                    "command": {"type": "string", "description": "For run: shell command to execute on the remote device."},
+                    "path": {"type": "string", "description": "For read_file: file path on the remote device."},
+                    "user": {"type": "string", "description": "Optional SSH username (remembered automatically once saved)."},
+                    "note": {"type": "string", "description": "For save: short note about what this device is (e.g. 'Windows gaming/dev laptop')."},
+                    "host": {"type": "string", "description": "For save: optional IP or hostname override."},
+                    "max_lines": {"type": "integer", "description": "For read_file: max lines to return (default 200)."},
+                    "timeout": {"type": "integer", "description": "For run: timeout in seconds (default 45)."}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "tailscale_files",
             "description": "Move files between this computer and the person's own devices (phone, other computers) over Tailscale. "
                            "devices: which devices can take a file and which are online. send: one file to one device. receive: take the files their devices sent to this computer "
@@ -4384,6 +4411,43 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
         return await _desktop(name, dict(arguments or {}))
     if name == "desktop_setup":
         return _desktop_setup_card(dict(arguments or {}))
+    if name == "remote_device":
+        from app.services import remote_devices
+        a = dict(arguments or {})
+        act = str(a.get("action") or "list").strip().lower()
+        if act == "list":
+            return await asyncio.to_thread(remote_devices.list_devices)
+        if act == "run":
+            return await asyncio.to_thread(
+                remote_devices.run_command,
+                str(a.get("device") or ""),
+                str(a.get("command") or ""),
+                str(a.get("user") or ""),
+                int(a.get("timeout") or 45),
+            )
+        if act == "inspect":
+            return await asyncio.to_thread(
+                remote_devices.inspect_device,
+                str(a.get("device") or ""),
+                str(a.get("user") or ""),
+            )
+        if act == "read_file":
+            return await asyncio.to_thread(
+                remote_devices.read_remote_file,
+                str(a.get("device") or ""),
+                str(a.get("path") or ""),
+                int(a.get("max_lines") or 200),
+                str(a.get("user") or ""),
+            )
+        if act == "save":
+            return await asyncio.to_thread(
+                remote_devices.save_device_profile,
+                str(a.get("device") or ""),
+                str(a.get("user") or ""),
+                str(a.get("note") or ""),
+                str(a.get("host") or ""),
+            )
+        return {"ok": False, "error": f"Unknown remote_device action: {act}"}
     if name == "tailscale_files":
         return await _taildrop_tool(dict(arguments or {}))
     if name == "memory_sync_accept":    # only from an approved card, like xod_network_accept
@@ -5776,6 +5840,12 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
     # The Muse approvals switch
     if any(k in q for k in ["muse", "approval", "approve", "auto-approve", "autoapprove", "auto approve"]):
         affinities.append("muse_approvals")
+
+    # Remote devices via Tailscale / SSH
+    if any(k in q for k in ["tailscale", "tailnet", "ssh", "razer", "remote", "server", "other device", "other devices",
+                             "other computer", "other computers", "my pc", "my windows", "my linux", "my laptop", "my desktop",
+                             "my machines", "my devices", "hop into", "get into"]):
+        affinities.append("remote_device")
 
     # Files to and from the person's own devices
     if any(k in q for k in ["taildrop", "tailscale", "to my phone", "to my iphone", "to my android", "from my phone",

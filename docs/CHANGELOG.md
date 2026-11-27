@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.48
+
+Brings **Muse-grade Remote Device Access (Tailscale + SSH)**, **Always-On Cross-Chat Memory**, and a **1-Click Superpowers Setup Shelf** in Control Center.
+
+- **First-Class `remote_device` Tool (Tailscale + SSH)** (`app/services/remote_devices.py`, `app/agent/tools.py`): auto-discovers every device on your Tailscale tailnet (`tailscale status --json`), `~/.ssh/config`, and saved device profiles so Xod can list devices, run commands, inspect health, read remote files, and remember device nicknames & SSH usernames across chats.
+- **Always-On Cross-Chat Memory & Recent Context Digest** (`app/services/user_memory.py`, `app/agent/researcher.py`): injects a compact `[RECENT CROSS-CHAT CONTEXT]` digest of your recent chats into every new chat (respecting your recall setting), widens automatic fact extraction to capture devices, servers, repos, projects, and decisions, and expands the always-on memory budget.
+- **1-Click Superpowers Setup Shelf** (`app/services/superpowers.py`, `app/services/control_center.py`, `app/static/js/control_center.js`, `app/main.py`): adds a dedicated card at the top of Control Center showing live Tailscale devices, cross-chat memory fact count, and 1-click Install / Sign In / Enable Remote SSH for **Tailscale**, **GitHub CLI**, **Ollama**, **Media & Dev Pack (`ffmpeg`, `yt-dlp`, `rg`, `jq`)**, **1Password CLI**, and **Cloudflare Tunnel**.
+
 ## 1.1.47
 
 Upgrades Xod's **Auto-Updater UI** with a live hover/click download & upgrade status popover and a floating **Restart to update** alert toast (like Antigravity & Muse).

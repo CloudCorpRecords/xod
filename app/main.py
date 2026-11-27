@@ -1040,6 +1040,38 @@ async def terminal_pty_list_endpoint():
     return {"sessions": await asyncio.to_thread(terminal_pro.pty_manager.list)}
 
 
+class SuperpowerInstallRequest(BaseModel):
+    power_id: str
+
+
+class TailscaleActionRequest(BaseModel):
+    action: str
+
+
+@app.get("/api/superpowers")
+async def superpowers_status_endpoint():
+    from app.services import superpowers
+    return await asyncio.to_thread(superpowers.status)
+
+
+@app.post("/api/superpowers/install")
+async def superpowers_install_endpoint(req: SuperpowerInstallRequest):
+    from app.services import superpowers
+    return await superpowers.install_superpower(req.power_id)
+
+
+@app.post("/api/superpowers/tailscale")
+async def superpowers_tailscale_endpoint(req: TailscaleActionRequest):
+    from app.services import superpowers
+    return await asyncio.to_thread(superpowers.tailscale_action, req.action)
+
+
+@app.get("/api/remote-devices")
+async def remote_devices_list_endpoint():
+    from app.services import remote_devices
+    return await asyncio.to_thread(remote_devices.list_devices)
+
+
 @app.get("/api/voice-call/screen-context")
 async def voice_call_screen_context_endpoint():
     """Fast, popup-free active window + signed-in Chrome tab summary for Screen-Aware Voice Calls."""
