@@ -91,8 +91,11 @@ def _ax_api():
 
 def _chrome_pid() -> Optional[int]:
     try:
-        r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/FO", "CSV", "/NH"],
-                           capture_output=True, text=True, timeout=5)
+        r = subprocess.run(
+            ["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
         for line in (r.stdout or "").splitlines():
             parts = [p.strip('"') for p in line.split('","')]
             if len(parts) >= 2 and parts[1].isdigit():

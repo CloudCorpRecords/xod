@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.46
+
+Fixes the Windows 11 flashing terminal window & high CPU bug reported on Razer (`tasklist` polling without `CREATE_NO_WINDOW`).
+
+- **Windows 11 Flashing Console Fix** (`app/services/muse_backends.py`, `app/services/muse_chrome.py`): adds `creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)` (`0x08000000` on Windows) to the `tasklist` polls in `_win_pid()` and `_chrome_pid()`, preventing Windows Terminal / `OpenConsole` / `conhost` from flashing open and closed every 1–2 seconds.
+
 ## 1.1.45
 
 Adds the Mac phone-bridge endpoints for **native iPhone & Android Agora ConvoAI** voice calls (`voice_brief.config`, `voice_brief.start`, `voice_brief.stop`).
