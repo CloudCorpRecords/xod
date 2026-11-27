@@ -4670,7 +4670,10 @@
           <div id="vbError" class="hidden rounded-lg bg-red-500/10 border border-red-500/25 px-3 py-2 text-[12px] text-red-300"></div>
           <div class="flex flex-wrap items-center gap-2 pt-1">
             <button id="vbStartBtn" type="button" onclick="startVoiceBrief()" class="px-4 py-2 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[13px] font-semibold flex items-center gap-2">
-              <i data-lucide="mic" class="size-4"></i><span>Start Voice Brief</span>
+              <i data-lucide="mic" class="size-4"></i><span>Start Agora Call</span>
+            </button>
+            <button type="button" onclick="try{localStorage.setItem('xod_voice_engine','local');localStorage.setItem('xod_voice_engine_explicit','1');}catch(_){} closeVoiceBriefModal(); if(window.XodConversation) XodConversation.start({source:'button'});" class="px-3.5 py-2 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 text-emerald-200 text-[12px] font-semibold flex items-center gap-1.5" title="Use Xod's full local voice call with all Mac tools (Chrome, Terminal, MCPs, Files, Screen-Aware)">
+              <i data-lucide="phone-call" class="size-3.5"></i><span>Full Xod Call (All Tools)</span>
             </button>
             <button id="vbMuteBtn" type="button" onclick="toggleVoiceBriefMute()" class="hidden px-3 py-2 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-200 text-[13px] flex items-center gap-1.5">
               <i data-lucide="mic-off" class="size-3.5"></i><span id="vbMuteLabel">Mute</span>

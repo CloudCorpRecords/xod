@@ -46,6 +46,7 @@
   }
 
   function enqueue(text) {
+    if (window.__xodAgoraActive) return;
     if (!text || !/[A-Za-z0-9]/.test(text)) return;
     const gen = generation;
     queue.push({ text, audio: fetchAudio(text, gen), gen });
@@ -344,7 +345,10 @@
       const eng = e.target.closest("[data-engine]");
       if (eng) {
         const chosenEngine = eng.dataset.engine === "agora" ? "agora" : "local";
-        try { localStorage.setItem("xod_voice_engine", chosenEngine); } catch (_) {}
+        try {
+          localStorage.setItem("xod_voice_engine", chosenEngine);
+          localStorage.setItem("xod_voice_engine_explicit", "1");
+        } catch (_) {}
         el.querySelectorAll("[data-engine]").forEach((x) => x.setAttribute("aria-checked", String(x.dataset.engine === chosenEngine)));
         const ab = el.querySelector("[data-agora-box]");
         const lb = el.querySelector("[data-local-box]");

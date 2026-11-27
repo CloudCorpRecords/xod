@@ -487,9 +487,10 @@
     window.__xodVoiceTurn = true;
     try { quickSendPrompt(outbound); } finally { setTimeout(() => { window.__xodVoiceTurn = false; }, 400); }
     clearTimeout(C.slowTimer);
-    C.slowTimer = setTimeout(() => {           // nothing yet after a while: say so, once
-      if (C.turn && !C.turn.filler && !C.turn.content && C.state === "thinking") { C.turn.filler = true; say(pick(FILLERS.other)); }
-    }, 4500);
+    // Visual status only — never speak awkward "One sec" / "On it" filler before the real answer
+    C.slowTimer = setTimeout(() => {
+      if (C.turn && !C.turn.content && C.state === "thinking") { setState("thinking", "Working on it…"); }
+    }, 3500);
   }
 
   function say(text) {
@@ -507,9 +508,8 @@
   window.addEventListener("xod:agent", (e) => {
     if (!C.active || !C.turn) return;
     const ev = e.detail || {};
-    if (ev.type === "tool_call" && !C.turn.filler && !C.turn.content) {
-      C.turn.filler = true;
-      say(pick(/search|browse|web|fetch|news/i.test(ev.name || "") ? FILLERS.search : FILLERS.other));
+    if (ev.type === "tool_call" && !C.turn.content) {
+      setState("thinking", /search|browse|web|fetch|news/i.test(ev.name || "") ? "Checking…" : "Running tool…");
     }
     if (ev.type === "status" && C.state === "thinking" && ev.content) setState("thinking", ev.content.replace(/^•\s*/, ""));
     if (ev.type === "content") { C.turn.content = true; clearTimeout(C.slowTimer); }
@@ -574,7 +574,7 @@
     if (Date.now() - linesPreparedAt < 10 * 60 * 1000) return;
     linesPreparedAt = Date.now();
     fetch("/api/speech/prepare", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ texts: [...FILLERS.search, ...FILLERS.other, ...GOODBYES, "The rest is on screen.", "You're welcome.", "Glad to help."] }) }).catch(() => {});
+      body: JSON.stringify({ texts: [...GOODBYES, "You're welcome.", "Glad to help."] }) }).catch(() => {});
   }
 
   // ---------------------------------------------------------------- starting and ending
@@ -689,6 +689,7 @@
           <div class="talk-follow"><span></span></div>
         </div>
         <div class="talk-actions">
+          <button type="button" data-talk="agora" title="Switch to Agora real-time voice call"><i data-lucide="radio" class="size-4"></i></button>
           <button type="button" data-talk="screen" title="Look at my screen: share active window &amp; Chrome tab during this call"><i data-lucide="monitor" class="size-4"></i></button>
           <button type="button" data-talk="mute" title="Pause listening"><i data-lucide="mic" class="size-4"></i></button>
           <button type="button" data-talk="end" title="End the conversation (Esc)"><i data-lucide="x" class="size-4"></i></button>
@@ -699,6 +700,18 @@
         const b = e.target.closest("[data-talk]");
         if (!b) return;
         if (b.dataset.talk === "end") end("user");
+        if (b.dataset.talk === "agora") {
+          try {
+            localStorage.setItem("xod_voice_engine", "agora");
+            localStorage.setItem("xod_voice_engine_explicit", "1");
+          } catch (_) {}
+          end("user");
+          if (typeof window.openVoiceBriefModal === "function") {
+            window.openVoiceBriefModal();
+            if (typeof window.startVoiceBrief === "function") setTimeout(() => window.startVoiceBrief(), 250);
+          }
+          return;
+        }
         if (b.dataset.talk === "screen") {
           C.screenAware = !C.screenAware;
           b.style.background = C.screenAware ? "rgba(34,211,238,0.22)" : "";
@@ -829,18 +842,26 @@
 
   async function launchAgoraIfSelected(source) {
     if (source === "wake") return false;
-    let engine = "local";
-    try { engine = localStorage.getItem("xod_voice_engine") || "local"; } catch (_) {}
-    if (engine !== "agora") return false;
+    let engine = "";
+    let explicit = false;
+    try {
+      engine = localStorage.getItem("xod_voice_engine") || "";
+      explicit = localStorage.getItem("xod_voice_engine_explicit") === "1";
+    } catch (_) {}
+    // If user explicitly chose local, respect it; otherwise auto-prefer Agora when configured!
+    if (explicit && engine === "local") return false;
     try {
       const st = await (await fetch("/api/voice-brief/status")).json();
       if (st && st.configured) {
+        if (!explicit) {
+          try { localStorage.setItem("xod_voice_engine", "agora"); } catch (_) {}
+        }
         if (typeof window.openVoiceBriefModal === "function") {
           window.openVoiceBriefModal();
           if (typeof window.startVoiceBrief === "function") setTimeout(() => window.startVoiceBrief(), 250);
           return true;
         }
-      } else if (typeof window.openAgoraSettingsFromBrief === "function") {
+      } else if (engine === "agora" && typeof window.openAgoraSettingsFromBrief === "function") {
         window.openAgoraSettingsFromBrief();
         return true;
       }

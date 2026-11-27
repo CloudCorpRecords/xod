@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.44
+
+Unifies **Agora** and **Full Xod Voice Calls** on Mac, eliminates double-voices, removes awkward `"One sec"` / `"On it"` spoken fillers, and puts full Xod tools 1 click away inside the Call UI.
+
+- **Auto-Prefer Agora When Configured + Zero Double-Voices** (`app/static/js/conversation.js`, `app/static/js/speech.js`, `app/static/js/voice_brief.js`): clicking **Call** now automatically uses **Agora (Real-time)** when your Agora API keys are configured (unless you explicitly switch to Local), and suppresses local `XodSpeech` while an Agora call is active so two different voices never overlap.
+- **No More Awkward Spoken Fillers** (`app/static/js/conversation.js`): removes spoken `"One sec, checking."` / `"On it."` / `"Give me a moment."` fillers before answers — shows a clean silent visual status in the call dock and speaks only the actual reply.
+- **Full Xod Tools Right From the Call Section** (`app/static/index.html`, `app/static/js/conversation.js`, `app/static/js/voice_brief.js`): adds a 1-click **Full Xod Call (All Tools)** button and **Run in Chat (All Tools)** action inside the Agora Call modal, plus a 1-click **Switch to Agora** button inside the local Call dock.
+
 ## 1.1.43
 
 Declutters the **Family** drawer so your family of devices is immediately front and center instead of buried below setup banners.

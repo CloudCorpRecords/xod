@@ -116,6 +116,7 @@
   }
 
   async function cleanupRtc() {
+    window.__xodAgoraActive = false;
     stopTimer();
     if (localAudioTrack) {
       try { localAudioTrack.stop(); localAudioTrack.close(); } catch (_) {}
@@ -158,6 +159,7 @@
       const actions = launched
         ? `<button type="button" onclick="openWorkForBrief()" class="px-3 py-1.5 rounded-lg bg-surface-700 hover:bg-surface-600 text-zinc-100 text-[12px] font-medium">View in Work</button>`
         : `<button type="button" onclick="launchVoiceBrief('${esc(b.id)}')" class="px-3 py-1.5 rounded-lg bg-brand-500 hover:bg-brand-400 text-surface-900 text-[12px] font-semibold">Confirm &amp; Run Mission</button>
+           <button type="button" onclick="runBriefInChat('${esc(b.id)}')" class="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-200 text-[12px] font-medium">Run in Chat (All Tools)</button>
            <button type="button" onclick="dismissVoiceBrief('${esc(b.id)}')" class="px-2.5 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-surface-700 text-[12px]">Dismiss</button>`;
       return `<div class="rounded-xl bg-surface-900/90 border border-white/[0.08] p-4 space-y-2.5">
         <div class="flex items-start justify-between gap-2">
@@ -210,6 +212,10 @@
 
   async function startVoiceBrief() {
     if (isLive) return;
+    // Prevent double-voices: stop local TTS / local conversation immediately when Agora starts
+    window.__xodAgoraActive = true;
+    try { if (window.XodSpeech) XodSpeech.stop(); } catch (_) {}
+    try { if (window.XodConversation && XodConversation.active()) XodConversation.end("user"); } catch (_) {}
     setError("");
     updateUiState("connecting", "Connecting to Agora…");
     try {
@@ -332,6 +338,23 @@
     closeVoiceBriefModal();
     if (typeof openTasksPanel === "function") openTasksPanel();
   }
+
+  async function runBriefInChat(briefId) {
+    try {
+      const res = await fetch("/api/voice-brief/briefs");
+      const data = await res.json().catch(() => ({}));
+      const b = (data.briefs || []).find((x) => x.id === briefId);
+      if (!b) return;
+      const secs = b.sections || {};
+      const lines = SECTION_ORDER
+        .map((k) => (secs[k] && secs[k] !== "not specified" ? `${k}: ${secs[k]}` : ""))
+        .filter(Boolean);
+      const prompt = lines.length ? `Execute this voice brief using any Xod tools needed:\n${lines.join("\n")}` : (b.mission_title || "");
+      closeVoiceBriefModal();
+      if (prompt && typeof window.quickSendPrompt === "function") window.quickSendPrompt(prompt);
+    } catch (_) {}
+  }
+  window.runBriefInChat = runBriefInChat;
 
   // ---- Settings -> Connections: Agora BYOK credentials ----
   async function loadAgoraSettings() {
