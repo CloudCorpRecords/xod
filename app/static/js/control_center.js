@@ -110,6 +110,7 @@
     const vDests = vault.destinations || [];
     const vLast = vault.last_export || {};
     const checkpoints = data.checkpoints || [];
+    const tc = data.terminal_toolchain || { installed: {}, missing: [], installed_count: 0, total_catalog: 0, shell: "" };
     const route = mcp.last_route || {};
 
     const issuesHtml = issues.length
@@ -394,6 +395,31 @@
         ` : `<div class="text-[11px] text-zinc-500">No file checkpoints recorded yet. Next time Xod writes or edits a file, a snapshot appears here automatically.</div>`}
         <div id="ccUndoStatus" class="hidden text-[11px] text-emerald-300"></div>
       </section>
+
+      <!-- 9. Terminal Engine & CLI Toolchain -->
+      <section class="rounded-xl bg-surface-850 border border-white/[0.07] p-4 space-y-2.5">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h4 class="text-[13px] font-semibold text-white">Terminal Engine &amp; CLI Toolchain</h4>
+            <p class="text-[11px] text-zinc-400">Shell: <span class="font-mono text-zinc-200">${esc(tc.shell || "/bin/zsh")}</span> · Persistent PTY sessions, curl downloader with SHA-256/extract, and 1-click CLI installs.</p>
+          </div>
+          ${pill((tc.installed_count || 0) > 0, `${tc.installed_count || 0}/${tc.total_catalog || 0} tools ready`)}
+        </div>
+        <div class="flex flex-wrap gap-1.5">
+          ${Object.keys(tc.installed || {}).slice(0, 16).map((t) => `<span class="px-2 py-0.5 rounded-md bg-emerald-500/10 border border-emerald-500/25 text-[11px] font-mono text-emerald-200">${esc(t)}</span>`).join("")}
+        </div>
+        ${(tc.missing || []).length ? `
+          <div class="pt-1 space-y-1.5">
+            <div class="text-[11px] text-zinc-400">Install missing CLI tools (via Homebrew / uv / npm):</div>
+            <div class="flex flex-wrap gap-1.5">
+              ${(tc.missing || []).filter((t) => t !== "brew").slice(0, 10).map((t) => `
+                <button type="button" data-cc-install-cli="${esc(t)}" class="px-2 py-0.5 rounded-md bg-surface-700 hover:bg-surface-600 border border-white/[0.08] text-[11px] font-mono text-zinc-200">+ ${esc(t)}</button>
+              `).join("")}
+            </div>
+            <div id="ccCliInstallStatus" class="hidden text-[11px] text-zinc-300"></div>
+          </div>
+        ` : ""}
+      </section>
     `;
 
     body.querySelectorAll("[data-cc-action]").forEach((btn) => {
@@ -499,6 +525,31 @@
             st.className = "text-[11px] text-red-300";
             st.classList.remove("hidden");
           }
+        }
+      });
+    });
+
+    body.querySelectorAll("[data-cc-install-cli]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const tool = btn.getAttribute("data-cc-install-cli");
+        const st = document.getElementById("ccCliInstallStatus");
+        btn.disabled = true;
+        btn.textContent = `Installing ${tool}…`;
+        if (st) { st.textContent = `Installing ${tool}…`; st.className = "text-[11px] text-amber-200"; st.classList.remove("hidden"); }
+        try {
+          const res = await fetch("/api/terminal/install", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ tool_name: tool, manager: "auto" }),
+          });
+          const out = await res.json().catch(() => ({}));
+          if (st) {
+            st.textContent = out.ok ? `Installed ${tool} (${out.installed_path || out.manager}).` : (out.error || out.stderr || `Failed to install ${tool}.`);
+            st.className = `text-[11px] ${out.ok ? "text-emerald-300" : "text-red-300"}`;
+          }
+          if (out.ok) refreshControlCenter();
+        } catch (e) {
+          if (st) { st.textContent = String(e.message || e); st.className = "text-[11px] text-red-300"; }
         }
       });
     });

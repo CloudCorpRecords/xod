@@ -43,10 +43,12 @@ def is_local_provider(info_or_name: Any) -> bool:
 
 _SAFE_READONLY_CMD_RE = re.compile(
     r"^\s*(?:git\s+(?:status|diff|log|branch|show|rev-parse)\b|"
-    r"ls\b|pwd\b|whoami\b|uname\b|which\b|wc\b|head\b|tail\b|"
+    r"ls\b|pwd\b|whoami\b|uname\b|which\b|wc\b|head\b|tail\b|file\b|stat\b|du\b|df\b|tree\b|"
+    r"rg\b|fd\b|jq\b|brew\s+(?:list|info|--version)\b|gh\s+(?:pr|issue|repo|release)\s+(?:list|view|status)\b|"
+    r"curl\s+(?:-s?I|--head)\b|"
     r"node\s+--check\b|python3?\s+-m\s+(?:pytest|unittest)\b|pytest\b|"
     r"npm\s+test\b|cargo\s+test\b|go\s+test\b)"
-    r"(?![^;&|`$]*(?:[;&|`$]|\brm\b|\bsudo\b|\bcurl\b|\bwget\b|>))",
+    r"(?![^;&|`$]*(?:[;&|`$]|\brm\b|\bsudo\b|\bwget\b|>))",
     re.I,
 )
 

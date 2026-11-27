@@ -568,7 +568,16 @@ class SystemControlService:
                 lambda m: f"{m.group(1)} {py_q} -B -m pytest",
                 command,
             )
-        proc = await asyncio.create_subprocess_shell(command, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env, start_new_session=True)
+        shell_exe = "/bin/zsh" if os.path.exists("/bin/zsh") else ("/bin/bash" if os.path.exists("/bin/bash") else None)
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            executable=shell_exe,
+            start_new_session=True,
+        )
         self._register_tool_child(proc, track=track)
         return proc
 

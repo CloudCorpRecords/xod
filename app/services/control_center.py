@@ -176,11 +176,12 @@ def snapshot() -> Dict[str, Any]:
             "action_label": "Reconnect",
         })
 
-    from app.services import fleet_control, autonomy_modes, training_vault, checkpoints
+    from app.services import fleet_control, autonomy_modes, training_vault, checkpoints, terminal_pro
     fleet_block = _safe(fleet_control.status_snapshot, {}) or {}
     autonomy_block = _safe(autonomy_modes.status, {}) or {}
     vault_block = _safe(training_vault.status, {}) or {}
     checkpoints_list = _safe(lambda: checkpoints.list_checkpoints(limit=12), []) or []
+    toolchain_block = _safe(terminal_pro.toolchain_status, {}) or {}
 
     return {
         "ok": len(issues) == 0,
@@ -194,4 +195,5 @@ def snapshot() -> Dict[str, Any]:
         "autonomy": autonomy_block,
         "training_vault": vault_block,
         "checkpoints": checkpoints_list,
+        "terminal_toolchain": toolchain_block,
     }

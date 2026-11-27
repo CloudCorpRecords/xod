@@ -2989,6 +2989,114 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "terminal_toolchain_status",
+            "description": "Inspects which CLI tools (curl, wget, jq, rg, fd, gh, git, brew, node, npm, uv, python3, ffmpeg, yt-dlp, docker, tmux, adb, tailscale, etc.) and package managers are installed on this computer, plus the active shell.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal_install_tool",
+            "description": "Installs a missing CLI tool cleanly via Homebrew, uv, npm, or pip (e.g. 'jq', 'rg', 'wget', 'gh', 'ffmpeg', 'yt-dlp', 'uv', 'tmux', 'http').",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tool_name": {"type": "string", "description": "CLI tool or package name (e.g. 'jq', 'rg', 'wget', 'ffmpeg')."},
+                    "manager": {"type": "string", "enum": ["auto", "brew", "uv", "npm", "pip"], "description": "Package manager (default 'auto')."}
+                },
+                "required": ["tool_name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal_download",
+            "description": "Downloads a file or archive over HTTP(S) using curl with automatic retries, resume support, optional SHA-256 verification, and optional safe extraction (.zip, .tar.gz, .tgz).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "HTTP(S) URL to download."},
+                    "dest_path": {"type": "string", "description": "Destination file or folder path (defaults to ~/Downloads)."},
+                    "resume": {"type": "boolean", "description": "Resume partial download if file exists (default true)."},
+                    "expected_sha256": {"type": "string", "description": "Optional expected SHA-256 hex checksum to verify."},
+                    "extract": {"type": "boolean", "description": "Auto-extract .zip / .tar.* archives after download (default false)."},
+                    "timeout_sec": {"type": "integer", "description": "Max download time in seconds (default 300)."}
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal_pty_open",
+            "description": "Opens a persistent interactive zsh/bash PTY terminal session that keeps working directory, exported env vars, virtualenvs, and interactive REPLs alive across turns.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Starting working directory."},
+                    "shell": {"type": "string", "description": "Optional shell path (default /bin/zsh)."}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal_pty_send",
+            "description": "Sends a command or keystrokes into a persistent PTY session opened with terminal_pty_open and returns the resulting terminal output.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string", "description": "Session ID from terminal_pty_open."},
+                    "text": {"type": "string", "description": "Command or input text to send."},
+                    "press_enter": {"type": "boolean", "description": "Append newline / Enter (default true)."},
+                    "wait_sec": {"type": "number", "description": "Seconds to wait for output (default 0.8, max 10)."}
+                },
+                "required": ["session_id", "text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal_pty_read",
+            "description": "Reads buffered output from a persistent PTY session.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "clear": {"type": "boolean", "description": "Clear buffer after reading (default false)."}
+                },
+                "required": ["session_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal_pty_close",
+            "description": "Closes a persistent PTY session and terminates its process group.",
+            "parameters": {
+                "type": "object",
+                "properties": {"session_id": {"type": "string"}},
+                "required": ["session_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "terminal_pty_list",
+            "description": "Lists all active persistent PTY terminal sessions.",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "agent_mail_setup",
             "description": "Sets up Agent Mail (the user's own agent address for messaging other AI agents; not normal email): turns the add-on on and claims an address with this computer's keys. With no shared post office, this computer hosts its own (no server needed): the address is name@<this computer on the network or Tailscale>. Use when the user asks to set up, turn on or get an agent mail address.",
             "parameters": {"type": "object", "properties": {
@@ -5000,6 +5108,62 @@ async def _execute_tool(name: str, arguments: Dict[str, Any], active_workspace_p
                     "exit_code": exit_code, "stdout": "".join(out_accum), "stderr": "".join(err_accum),
                     "duration_sec": duration}
 
+        elif name == "terminal_toolchain_status":
+            from app.services import terminal_pro
+            return await asyncio.to_thread(terminal_pro.toolchain_status)
+
+        elif name == "terminal_install_tool":
+            from app.services import terminal_pro
+            return await terminal_pro.install_cli_tool(
+                tool_name=str(arguments.get("tool_name") or ""),
+                manager=str(arguments.get("manager") or "auto"),
+            )
+
+        elif name == "terminal_download":
+            from app.services import terminal_pro
+            return await terminal_pro.download_file(
+                url=str(arguments.get("url") or ""),
+                dest_path=str(arguments.get("dest_path") or ""),
+                resume=bool(arguments.get("resume", True)),
+                expected_sha256=str(arguments.get("expected_sha256") or ""),
+                extract=bool(arguments.get("extract", False)),
+                timeout_sec=int(arguments.get("timeout_sec") or 300),
+            )
+
+        elif name == "terminal_pty_open":
+            from app.services import terminal_pro
+            return await asyncio.to_thread(
+                terminal_pro.pty_manager.open,
+                str(arguments.get("cwd") or active_workspace_path or ""),
+                str(arguments.get("shell") or ""),
+            )
+
+        elif name == "terminal_pty_send":
+            from app.services import terminal_pro
+            return await asyncio.to_thread(
+                terminal_pro.pty_manager.send,
+                str(arguments.get("session_id") or ""),
+                str(arguments.get("text") or ""),
+                bool(arguments.get("press_enter", True)),
+                float(arguments.get("wait_sec") or 0.8),
+            )
+
+        elif name == "terminal_pty_read":
+            from app.services import terminal_pro
+            return await asyncio.to_thread(
+                terminal_pro.pty_manager.read,
+                str(arguments.get("session_id") or ""),
+                bool(arguments.get("clear", False)),
+            )
+
+        elif name == "terminal_pty_close":
+            from app.services import terminal_pro
+            return await asyncio.to_thread(terminal_pro.pty_manager.close, str(arguments.get("session_id") or ""))
+
+        elif name == "terminal_pty_list":
+            from app.services import terminal_pro
+            return {"ok": True, "sessions": await asyncio.to_thread(terminal_pro.pty_manager.list)}
+
         elif name == "computer_inspect_system":
             return system_control_service.get_system_telemetry()
 
@@ -5514,10 +5678,14 @@ _NO_EXT_FILES = {"makefile", "dockerfile", "license", "licence", "readme", "proc
                  "vagrantfile", "jenkinsfile", "brewfile", "pipfile", "notice", "authors", "changelog", "todo", "caddyfile"}
 
 
-_SLOW_COMMAND_RE = re.compile(r"\b(?:winget|choco|scoop|brew|apt(?:-get)?|pip3?|pipx|uv|npm|npx|pnpm|yarn|bun|cargo|go|"
-                              r"dotnet|gradle|mvn|docker|conda|gem|composer)\s+(?:install|add|update|upgrade|build|sync|"
-                              r"restore|pull|run build|ci|i)\b|\b-m\s+(?:pip|venv)\b|\bgit\s+clone\b|\bInstall-(?:Module|Package)\b",
-                              re.I)
+_SLOW_COMMAND_RE = re.compile(
+    r"\b(?:winget|choco|scoop|brew|apt(?:-get)?|pip3?|pipx|uv|npm|npx|pnpm|yarn|bun|cargo|go|"
+    r"dotnet|gradle|gradlew|mvn|docker|conda|gem|composer)\s+(?:install|add|update|upgrade|build|sync|"
+    r"restore|pull|run build|ci|i|assemble\w*)\b|"
+    r"\b-m\s+(?:pip|venv)\b|\bgit\s+clone\b|\bInstall-(?:Module|Package)\b|"
+    r"\b(?:curl|wget|ffmpeg|yt-dlp|rsync|tar|unzip|xcodebuild)\b",
+    re.I,
+)
 
 
 def only_asks(query: str) -> bool:
@@ -5573,6 +5741,14 @@ def _select_builtin_tools(query: str, persona: str = "ultimate_researcher", max_
     if any(k in q for k in ["background", "wait until", "wait for", "until it", "when it's done", "when it finishes", "dev server",
                              "build", "install", "long-running", "keep an eye", "watch", "monitor", "server is ready", "in the background"]):
         affinities.extend(["computer_start_job", "computer_wait_for", "computer_check_job", "computer_list_jobs", "computer_stop_job"])
+
+    # Deep Terminal Pro: downloads, CLI toolchains, interactive persistent PTY shells
+    if any(k in q for k in ["terminal", "shell", "zsh", "bash", "pty", "curl", "wget", "download", "brew", "homebrew",
+                             "install", "cli", "toolchain", "jq", "ripgrep", "rg", "ffmpeg", "yt-dlp", "venv", "nvm", "ssh", "repl"]):
+        affinities.extend([
+            "terminal_toolchain_status", "terminal_install_tool", "terminal_download",
+            "terminal_pty_open", "terminal_pty_send", "terminal_pty_read", "terminal_pty_close", "terminal_pty_list",
+        ])
 
     # Changing its own code
     if any(k in q for k in ["your code", "your own code", "own code", "edit yourself", "change yourself", "improve yourself",

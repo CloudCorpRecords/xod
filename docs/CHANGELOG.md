@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.42
+
+**Deep Terminal Engine Upgrade**: upgrades Xod from stateless `/bin/sh` one-liners to full `/bin/zsh` execution, persistent interactive PTY sessions, a smart `curl` downloader with SHA-256 verification & auto-extraction, and a built-in CLI Toolchain Inspector & Installer.
+
+- **Real `/bin/zsh` Shell Execution & Expanded Long-Command Timeouts** (`app/services/system_control.py`, `app/agent/tools.py`): `computer_run_command` now runs in `/bin/zsh` (instead of `/bin/sh`), unlocking modern shell syntax (`[[ ... ]]`, arrays, `pipefail`, process substitution), and extends auto-timeouts to `curl`, `wget`, `ffmpeg`, `yt-dlp`, `rsync`, `tar`, `unzip`, `gradlew`, and `xcodebuild`.
+- **Persistent Interactive PTY Sessions** (`app/services/terminal_pro.py`, `app/agent/tools.py`): adds `terminal_pty_open`, `terminal_pty_send`, `terminal_pty_read`, `terminal_pty_list`, and `terminal_pty_close` so Xod can keep working directories, exported environment variables, virtualenvs, and interactive REPLs alive across turns.
+- **Smart `curl` File & Archive Downloader** (`app/services/terminal_pro.py`, `app/agent/tools.py`): adds `terminal_download` with automatic retries (`--retry 3`), resume (`-C -`), SHA-256 checksum verification, and safe path-traversal-guarded `.zip`/`.tar.*` extraction.
+- **CLI Toolchain Inspector & 1-Click Package Installer** (`app/services/terminal_pro.py`, `app/services/control_center.py`, `app/static/js/control_center.js`, `app/main.py`): adds `terminal_toolchain_status` and `terminal_install_tool` (Homebrew / `uv` / `npm` / `pip`), plus a live **Terminal Engine & CLI Toolchain** card in Control Center (`/api/terminal/toolchain`, `/api/terminal/install`, `/api/terminal/pty`).
+
 ## 1.1.41
 
 Adds **Screen-Aware Desktop Voice Calls with Instant Barge-In**, **Instant Checkpoints & 1-Click Undo** for Turbo / Xod Mode, and fixes repeated macOS **Screen & System Audio Recording** permission prompts.

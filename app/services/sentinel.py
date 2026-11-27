@@ -89,7 +89,11 @@ _SEND_RE = re.compile(r"(?:^|_)(?:send|post|reply|message|email|mail|publish|twe
 _DESTRUCTIVE_RE = re.compile(r"(?:^|_)(?:delete|remove|destroy|drop|erase|purge|trash|kill|uninstall|wipe|truncate|revoke)(?:_|$)", re.I)
 _ASKED_DESTRUCTIVE_RE = re.compile(r"\b(?:delet|remov|eras|trash|bin|clean|clear|purg|wip|kill|stop|end|quit|close|uninstall|"
                                    r"get rid|throw away|drop|tidy|free up|empty|cancel|undo)\w*", re.I)
-_RUN_TOOLS = {"computer_run_command", "computer_start_job", "computer_run_applescript", "terminal_send", "cli_agent_run", "cli_agent_session", "cli_agent_install", "cli_agent_chat", "crew_start", "crew_message"}
+_RUN_TOOLS = {
+    "computer_run_command", "computer_start_job", "computer_run_applescript", "terminal_send",
+    "terminal_install_tool", "terminal_download", "terminal_pty_send",
+    "cli_agent_run", "cli_agent_session", "cli_agent_install", "cli_agent_chat", "crew_start", "crew_message",
+}
 _CHANGE_TOOLS = {"computer_write_file", "computer_edit_file", "computer_manage_file", "computer_batch_organize", "computer_kill_process",
                  "fs_write_workspace_file", "fs_move_file", "fs_organize_files", "computer_clipboard"}
 _SEND_TOOLS = {"agent_mail_send", "xod_make_report"}

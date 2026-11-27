@@ -1017,6 +1017,29 @@ async def checkpoints_undo_endpoint(checkpoint_id: str):
     return await asyncio.to_thread(checkpoints.undo_checkpoint, checkpoint_id)
 
 
+class TerminalInstallRequest(BaseModel):
+    tool_name: str
+    manager: Optional[str] = "auto"
+
+
+@app.get("/api/terminal/toolchain")
+async def terminal_toolchain_endpoint():
+    from app.services import terminal_pro
+    return await asyncio.to_thread(terminal_pro.toolchain_status)
+
+
+@app.post("/api/terminal/install")
+async def terminal_install_endpoint(req: TerminalInstallRequest):
+    from app.services import terminal_pro
+    return await terminal_pro.install_cli_tool(req.tool_name, req.manager or "auto")
+
+
+@app.get("/api/terminal/pty")
+async def terminal_pty_list_endpoint():
+    from app.services import terminal_pro
+    return {"sessions": await asyncio.to_thread(terminal_pro.pty_manager.list)}
+
+
 @app.get("/api/voice-call/screen-context")
 async def voice_call_screen_context_endpoint():
     """Fast, popup-free active window + signed-in Chrome tab summary for Screen-Aware Voice Calls."""
