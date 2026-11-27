@@ -41,7 +41,7 @@ const WIN = process.platform === "win32";
 const WORK = WIN ? path.join(os.tmpdir(), "Xod", "updates") : path.join(os.homedir(), "Library", "Caches", "Xod", "updates");
 
 // What the page sees. state: idle | checking | uptodate | available | downloading | ready | installing | manual | error
-let S = { state: "idle", current: app.getVersion(), latest: null, name: null, page: null, progress: 0, error: null, checkedAt: 0, packaged: app.isPackaged };
+let S = { state: "idle", current: app.getVersion(), latest: null, name: null, page: null, progress: 0, stage: "", bytesDone: 0, bytesTotal: 0, error: null, checkedAt: 0, packaged: app.isPackaged };
 let ready = null;          // {version, appPath} once a checked update is staged
 let rel = null;            // the latest release, when it's newer
 let staging = null;        // the download in flight (a promise)
@@ -160,7 +160,16 @@ async function stage(release, onProgress) {
   if (!release.sums) throw new Error("the release has no SHA256SUMS.txt to check the download against");
   const dmgPath = path.join(WORK, release.dmg.name);
   log("downloading", release.dmg.name);
-  await download(release.dmg.browser_download_url, dmgPath, (got, total) => onProgress && total && onProgress(got / total));
+  let lastEmit = 0;
+  await download(release.dmg.browser_download_url, dmgPath, (got, total) => {
+    if (!onProgress || !total) return;
+    const now = Date.now();
+    if (now - lastEmit >= 150 || got >= total) {
+      lastEmit = now;
+      onProgress({ progress: got / total, stage: "downloading", bytesDone: got, bytesTotal: total });
+    }
+  });
+  if (onProgress) onProgress({ progress: 1, stage: "verifying" });
   const sumsPath = path.join(WORK, "SHA256SUMS.txt");
   await download(release.sums.browser_download_url, sumsPath);
   const line = fs.readFileSync(sumsPath, "utf8").split("\n").find((l) => l.trim().endsWith(release.dmg.name));
@@ -168,6 +177,7 @@ async function stage(release, onProgress) {
   const got = await sha256(dmgPath);
   if (!want || want !== got) throw new Error("the download's checksum doesn't match the release");
   if (WIN) return dmgPath;              // the checked installer; it runs when Xod quits (swap)
+  if (onProgress) onProgress({ progress: 1, stage: "unpacking" });
   const mnt = fs.mkdtempSync(path.join(os.tmpdir(), "xod-update-"));
   const staged = path.join(WORK, "Xod.app");
   run("/usr/bin/hdiutil", ["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint", mnt, dmgPath]);
@@ -243,28 +253,31 @@ fi
 }
 
 function restartInto() {
-  set({ state: "installing", progress: 1 });
+  set({ state: "installing", progress: 1, stage: "installing" });
   if (swap(true)) { setTimeout(() => app.quit(), 300); return; }
   // The swap did not start (AGE-72 deferral): do not sit in "installing"
   // and do not quit into nothing. The update stays ready and installs on
   // a later quit.
-  set({ state: "ready", progress: 1, error: "The update is ready, but the update guardian is checking the current install right now; it will install on a later quit." });
+  set({ state: "ready", progress: 1, stage: "ready", error: "The update is ready, but the update guardian is checking the current install right now; it will install on a later quit." });
 }
 
 // Starts (or joins) the background download of the newer release.
 function startStaging() {
   if (staging || ready || !rel) return staging;
-  set({ state: "downloading", progress: 0, error: null });
-  staging = stage(rel, (p) => set({ state: "downloading", progress: p }))
+  set({ state: "downloading", progress: 0, stage: "downloading", bytesDone: 0, bytesTotal: 0, error: null });
+  staging = stage(rel, (p) => {
+    if (typeof p === "number") set({ state: "downloading", progress: p, stage: "downloading" });
+    else set({ state: "downloading", ...p });
+  })
     .then((appPath) => {
       ready = { version: rel.version, appPath };
-      set({ state: "ready", progress: 1 });
+      set({ state: "ready", progress: 1, stage: "ready", error: null });
       if (installAfterStage) restartInto();
     })
     .catch((e) => {
       log("download failed:", e.message || e);
       installAfterStage = false;
-      set({ state: "error", error: `Couldn't download ${rel.version}: ${e.message || e}` });
+      set({ state: "error", stage: "", error: `Couldn't download ${rel.version}: ${e.message || e}` });
     })
     .finally(() => { staging = null; });
   return staging;

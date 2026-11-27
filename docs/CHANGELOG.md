@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.47
+
+Upgrades Xod's **Auto-Updater UI** with a live hover/click download & upgrade status popover and a floating **Restart to update** alert toast (like Antigravity & Muse).
+
+- **Live Hover & Click Update Status Popover** (`app/static/js/updates.js`, `electron/updater.js`): hovering over or clicking the top-bar version pill now opens a floating status card showing live download percentage, MB progress, verification/unpacking stage (`Downloading` → `Verifying SHA-256` → `Unpacking` → `Ready to restart`), auto-update badge, **Check now**, and **Settings**.
+- **Restart-Ready Alert Toast** (`app/static/js/updates.js`): once a background update finishes downloading and passes SHA-256 + signature verification, Xod now surfaces a sleek bottom-right alert card with **Restart to update**, **Later**, and **What's new** — while still auto-installing cleanly on quit if you prefer to wait.
+
 ## 1.1.46
 
 Fixes the Windows 11 flashing terminal window & high CPU bug reported on Razer (`tasklist` polling without `CREATE_NO_WINDOW`).
