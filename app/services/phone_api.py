@@ -457,12 +457,16 @@ async def _voice_brief_start(args: Dict[str, Any]) -> Dict[str, Any]:
         raise ApiError("Missing channel_name.")
     agent_uid = int(args.get("agent_uid") or 1000)
     user_uid = int(args.get("user_uid") or 1001)
-    preset = str(args.get("preset") or "xodbrief")
+    preset = str(args.get("preset") or "call")
+    instructions = str(args.get("instructions") or "").strip() or None
+    greeting = str(args.get("greeting") or "").strip() or None
     return await agora_voice.agora_voice_service.start_session(
         channel_name=channel_name,
         agent_uid=agent_uid,
         user_uid=user_uid,
         preset=preset,
+        instructions=instructions,
+        greeting=greeting,
     )
 
 

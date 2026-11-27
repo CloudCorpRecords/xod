@@ -79,6 +79,29 @@ XOD_BRIEF_GREETING = (
     "and I will build the brief with you."
 )
 
+XOD_CALL_GREETING = "Hey! Xod here. What's up?"
+
+
+def build_xod_call_instructions(owner_name: Optional[str] = None) -> str:
+    owner = (owner_name or _owner_display_name()).strip() or "the user"
+    mem_extra = ""
+    try:
+        from app.services import user_memory
+        core = user_memory.core_note() or ""
+        recent = user_memory.recent_chats_note(limit=4) or ""
+        if core or recent:
+            mem_extra = f"\n\nContext you already know about {owner}:\n{core}\n{recent}"
+    except Exception:
+        pass
+    return (
+        f"You are Xod, {owner}'s personal AI assistant on a live phone call. "
+        "Talk like a sharp, warm, natural friend on the phone — concise (1 to 3 short spoken sentences), "
+        "direct, and genuinely helpful. Answer questions, brainstorm, give advice, or talk through whatever "
+        "they bring up. Do NOT ask them for a mission brief, guardrails, or structured intake unless they "
+        "explicitly say they want to build a mission brief. Never read out emojis, markdown, asterisks, or URLs."
+        f"{mem_extra}"
+    )
+
 
 def _owner_display_name() -> str:
     """Resolve the user's name from Xod's local profile if available, else 'the user'."""
@@ -734,8 +757,13 @@ class AgoraVoiceService:
         if int(agent_uid) <= 0 or int(user_uid) <= 0:
             raise ValueError("agent_uid and user_uid must be positive integers")
 
-        effective_instructions = (instructions or "").strip() or build_xod_brief_instructions()
-        effective_greeting = (greeting or "").strip() or XOD_BRIEF_GREETING
+        is_call = (preset or "").strip().lower() in ("call", "phone", "chat", "companion")
+        effective_instructions = (instructions or "").strip() or (
+            build_xod_call_instructions() if is_call else build_xod_brief_instructions()
+        )
+        effective_greeting = (greeting or "").strip() or (
+            XOD_CALL_GREETING if is_call else XOD_BRIEF_GREETING
+        )
 
         agent_rtc_token = generate_convo_ai_token(
             app_id=creds["app_id"],
