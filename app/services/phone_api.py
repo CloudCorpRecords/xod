@@ -441,6 +441,39 @@ def _voice_briefs_list(args: Dict[str, Any]) -> Dict[str, Any]:
     return {"configured": agora_voice.is_configured(), "briefs": agora_voice.list_briefs(limit=15)}
 
 
+def _voice_brief_config(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import agora_voice
+    if not agora_voice.is_configured():
+        raise ApiError("Agora is not configured on this Mac yet. Add your Agora keys in Settings -> Connections.")
+    channel = str(args.get("channel") or "").strip() or None
+    uid = args.get("uid")
+    return agora_voice.agora_voice_service.generate_client_config(channel=channel, uid=int(uid) if uid is not None else None)
+
+
+async def _voice_brief_start(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import agora_voice
+    channel_name = str(args.get("channel_name") or "").strip()
+    if not channel_name:
+        raise ApiError("Missing channel_name.")
+    agent_uid = int(args.get("agent_uid") or 1000)
+    user_uid = int(args.get("user_uid") or 1001)
+    preset = str(args.get("preset") or "xodbrief")
+    return await agora_voice.agora_voice_service.start_session(
+        channel_name=channel_name,
+        agent_uid=agent_uid,
+        user_uid=user_uid,
+        preset=preset,
+    )
+
+
+async def _voice_brief_stop(args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import agora_voice
+    agent_id = str(args.get("agent_id") or "").strip()
+    if not agent_id:
+        raise ApiError("Missing agent_id.")
+    return await agora_voice.agora_voice_service.stop_session(agent_id)
+
+
 def _voice_brief_launch(args: Dict[str, Any]) -> Dict[str, Any]:
     from app.services import agora_voice
     bid = str(args.get("id") or "").strip()
@@ -604,7 +637,9 @@ OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "desktop.launch_app": _desktop_launch_app,
     "chat.sessions": _sessions, "chat.history": _history, "chat.send": _chat,
     "tasks.list": _tasks, "tasks.get": _task_get, "tasks.create": _task_create, "tasks.act": _task_act,
-    "voice_brief.list": _voice_briefs_list, "voice_brief.launch": _voice_brief_launch, "voice_brief.dismiss": _voice_brief_dismiss,
+    "voice_brief.list": _voice_briefs_list, "voice_brief.config": _voice_brief_config,
+    "voice_brief.start": _voice_brief_start, "voice_brief.stop": _voice_brief_stop,
+    "voice_brief.launch": _voice_brief_launch, "voice_brief.dismiss": _voice_brief_dismiss,
     "routines.list": _routines, "routines.act": _routine_act, "goals.act": _goal_act,
     "memory.search": _memory, "reports.list": _reports, "reports.read": _report_read,
     "files.projects": _projects, "files.read": _file_read,

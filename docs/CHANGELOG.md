@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.45
+
+Adds the Mac phone-bridge endpoints for **native iPhone & Android Agora ConvoAI** voice calls (`voice_brief.config`, `voice_brief.start`, `voice_brief.stop`).
+
+- **Phone API Agora ConvoAI Bridge** (`app/services/phone_api.py`): exposes `voice_brief.config` (Token007 + channel minting from Mac Keychain), `voice_brief.start` (starts Agora ConvoAI with Deepgram Nova-3 STT + Minimax neural voice), and `voice_brief.stop` (captures brief & stops session) over encrypted Xod Mail / Tailscale so Xod on iPhone and Android can run native Agora neural voice calls using the Mac's Keychain keys.
+
 ## 1.1.44
 
 Unifies **Agora** and **Full Xod Voice Calls** on Mac, eliminates double-voices, removes awkward `"One sec"` / `"On it"` spoken fillers, and puts full Xod tools 1 click away inside the Call UI.
