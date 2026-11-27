@@ -113,6 +113,8 @@
     const tc = data.terminal_toolchain || { installed: {}, missing: [], installed_count: 0, total_catalog: 0, shell: "" };
     const sp = data.superpowers || { items: [], installed_count: 0, total_count: 0, memory_facts_count: 0 };
     const rd = data.remote_devices || { devices: [], online_count: 0, total_count: 0, tailscale_running: false };
+    const xi = data.xod_infra || { available: false };
+    const xiHw = xi.hardware || {};
     const route = mcp.last_route || {};
 
     const issuesHtml = issues.length
@@ -188,6 +190,27 @@
           </div>
           <div id="ccSuperpowerStatus" class="hidden text-[11px]"></div>
         </section>
+
+        ${xi.available ? `
+        <!-- 0b. Xod Infra — Apple Silicon Token Speed Engine -->
+        <section class="md:col-span-2 rounded-xl bg-surface-850 border border-cyan-500/20 p-4 space-y-2.5">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h4 class="text-[13px] font-semibold text-white">⚡ Xod Infra — Mac Token Speed Engine</h4>
+              <p class="text-[11px] text-zinc-400 mt-0.5">${esc(xiHw.chip || "Apple Silicon")} · ${esc(xiHw.ram_gb || 0)} GB Unified · ~${esc(xiHw.memory_bandwidth_gbps || 0)} GB/s (est. ${esc(xiHw.estimated_7b_4bit_tps || 0)} tok/s on 7B 4-bit)</p>
+            </div>
+            <div class="flex items-center gap-1.5">
+              ${pill(!!xi.gateway_running, xi.gateway_running ? "Gateway Live :8790" : "Gateway Standby")}
+            </div>
+          </div>
+          <div class="flex flex-wrap items-center gap-2 pt-0.5">
+            <button type="button" data-cc-xod-infra="tune" class="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 text-[12px] text-cyan-200 font-medium">Apply Mac Tuning (Flash Attn + Q8 KV)</button>
+            <button type="button" data-cc-xod-infra="bench" class="px-2.5 py-1 rounded-lg bg-surface-700 hover:bg-surface-600 text-[12px] text-zinc-200">Run Live Tok/s Benchmark</button>
+            <button type="button" data-cc-xod-infra="gateway" class="px-2.5 py-1 rounded-lg bg-surface-700 hover:bg-surface-600 text-[12px] text-zinc-200">${xi.gateway_running ? "Open Dashboard (:8790)" : "Start OpenAI Gateway (:8790)"}</button>
+          </div>
+          <div id="ccXodInfraStatus" class="hidden text-[11px] font-mono bg-surface-900/80 border border-white/[0.06] rounded-lg p-2.5 text-zinc-300"></div>
+        </section>
+        ` : ""}
 
         <!-- 1. AI Brain & Voice -->
         <section class="rounded-xl bg-surface-850 border border-white/[0.07] p-4 space-y-2.5">
@@ -648,6 +671,44 @@
         } catch (e) {
           btn.disabled = false;
           if (st) { st.textContent = String(e.message || e); st.className = "text-[11px] text-red-300"; }
+        }
+      });
+    });
+
+    body.querySelectorAll("[data-cc-xod-infra]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const act = btn.getAttribute("data-cc-xod-infra");
+        const st = document.getElementById("ccXodInfraStatus");
+        if (act === "gateway" && xi.gateway_running) {
+          window.open(xi.dashboard_url || "http://127.0.0.1:8790", "_blank", "noopener");
+          return;
+        }
+        btn.disabled = true;
+        if (st) {
+          st.textContent = act === "bench" ? "Running live token-speed benchmark…" : act === "tune" ? "Applying Flash Attention + Q8_0 KV cache…" : "Starting Xod Infra gateway on :8790…";
+          st.classList.remove("hidden");
+        }
+        try {
+          const ep = act === "bench" ? "/api/xod-infra/benchmark" : act === "tune" ? "/api/xod-infra/tune" : "/api/xod-infra/start-gateway";
+          const res = await fetch(ep, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+          const out = await res.json().catch(() => ({}));
+          if (st) {
+            st.textContent = act === "bench" && out.ok
+              ? `Model: ${out.model} · ${out.decode_tps} tok/s · TTFT ${out.ttft_ms} ms (${out.tokens} tokens in ${out.total_sec}s)`
+              : act === "tune" && out.ok
+              ? `Applied Ollama tuning (${Object.keys(out.applied || {}).join(", ")}). ${out.note || ""}`
+              : act === "gateway" && out.ok
+              ? `Xod Infra gateway live at ${out.gateway_url} (dashboard: ${out.dashboard_url})`
+              : (out.error || JSON.stringify(out));
+          }
+          btn.disabled = false;
+          if (act === "gateway" && out.ok) {
+            setTimeout(refreshControlCenter, 900);
+            window.open(out.dashboard_url || "http://127.0.0.1:8790", "_blank", "noopener");
+          }
+        } catch (e) {
+          btn.disabled = false;
+          if (st) st.textContent = String(e.message || e);
         }
       });
     });

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xod-infra"
+version = "0.1.0"
+description = "Apple Silicon local LLM speed & efficiency engine — MLX speculative decoding, KV-cache quantization, prefix-cache routing, and OpenAI-compatible telemetry gateway for Xod and any local AI client."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+mlx = ["mlx>=0.21.0", "mlx-lm>=0.21.0"]
+
+[project.scripts]
+xod-infra = "xod_infra.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["xod_infra*"]

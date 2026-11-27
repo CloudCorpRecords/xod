@@ -1072,6 +1072,30 @@ async def remote_devices_list_endpoint():
     return await asyncio.to_thread(remote_devices.list_devices)
 
 
+@app.get("/api/xod-infra/status")
+async def xod_infra_status_endpoint():
+    from app.services import xod_infra_bridge
+    return await asyncio.to_thread(xod_infra_bridge.status)
+
+
+@app.post("/api/xod-infra/tune")
+async def xod_infra_tune_endpoint():
+    from app.services import xod_infra_bridge
+    return await asyncio.to_thread(xod_infra_bridge.tune_ollama)
+
+
+@app.post("/api/xod-infra/benchmark")
+async def xod_infra_benchmark_endpoint(body: Dict[str, Any] = Body(default={})):
+    from app.services import xod_infra_bridge
+    return await xod_infra_bridge.benchmark(model=str((body or {}).get("model") or ""))
+
+
+@app.post("/api/xod-infra/start-gateway")
+async def xod_infra_start_gateway_endpoint():
+    from app.services import xod_infra_bridge
+    return await asyncio.to_thread(xod_infra_bridge.start_gateway, 8790)
+
+
 @app.get("/api/voice-call/screen-context")
 async def voice_call_screen_context_endpoint():
     """Fast, popup-free active window + signed-in Chrome tab summary for Screen-Aware Voice Calls."""

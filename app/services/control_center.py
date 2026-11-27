@@ -176,7 +176,7 @@ def snapshot() -> Dict[str, Any]:
             "action_label": "Reconnect",
         })
 
-    from app.services import fleet_control, autonomy_modes, training_vault, checkpoints, terminal_pro, superpowers, remote_devices
+    from app.services import fleet_control, autonomy_modes, training_vault, checkpoints, terminal_pro, superpowers, remote_devices, xod_infra_bridge
     fleet_block = _safe(fleet_control.status_snapshot, {}) or {}
     autonomy_block = _safe(autonomy_modes.status, {}) or {}
     vault_block = _safe(training_vault.status, {}) or {}
@@ -184,6 +184,7 @@ def snapshot() -> Dict[str, Any]:
     toolchain_block = _safe(terminal_pro.toolchain_status, {}) or {}
     superpowers_block = _safe(superpowers.status, {}) or {}
     remote_block = _safe(remote_devices.list_devices, {}) or {}
+    xod_infra_block = _safe(xod_infra_bridge.status, {}) or {}
 
     return {
         "ok": len(issues) == 0,
@@ -200,4 +201,5 @@ def snapshot() -> Dict[str, Any]:
         "terminal_toolchain": toolchain_block,
         "superpowers": superpowers_block,
         "remote_devices": remote_block,
+        "xod_infra": xod_infra_block,
     }
