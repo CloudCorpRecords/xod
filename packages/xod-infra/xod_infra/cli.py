@@ -25,7 +25,7 @@ def main(argv=None) -> int:
 
     sp = sub.add_parser("serve", help="Start the Xod Infra OpenAI-compatible gateway + dashboard")
     sp.add_argument("--host", default="127.0.0.1")
-    sp.add_argument("--port", type=int, default=8790)
+    sp.add_argument("--port", type=int, default=8799)
 
     args = p.parse_args(argv)
 

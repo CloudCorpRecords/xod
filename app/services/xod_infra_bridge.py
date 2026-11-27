@@ -26,7 +26,7 @@ def _ensure_importable() -> bool:
         return False
 
 
-def _gateway_running(port: int = 8790) -> bool:
+def _gateway_running(port: int = 8799) -> bool:
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/status", timeout=0.6) as r:
             return r.status == 200
@@ -42,12 +42,12 @@ def status() -> Dict[str, Any]:
 
     hw = detect_hardware()
     plan = build_tuning_plan(hw)
-    gw_up = _gateway_running(8790)
+    gw_up = _gateway_running(8799)
     return {
         "available": True,
         "gateway_running": gw_up,
-        "gateway_url": "http://127.0.0.1:8790/v1",
-        "dashboard_url": "http://127.0.0.1:8790",
+        "gateway_url": "http://127.0.0.1:8799/v1",
+        "dashboard_url": "http://127.0.0.1:8799",
         "hardware": hw,
         "ollama_env": plan["ollama_env"],
         "mlx_speculative_command": plan["mlx_speculative_command"],
@@ -78,7 +78,7 @@ async def benchmark(model: str = "") -> Dict[str, Any]:
     return await benchmark_endpoint(base, model=model)
 
 
-def start_gateway(port: int = 8790) -> Dict[str, Any]:
+def start_gateway(port: int = 8799) -> Dict[str, Any]:
     if not _ensure_importable():
         return {"ok": False, "error": "packages/xod-infra not found"}
     if _gateway_running(port):
@@ -88,21 +88,38 @@ def start_gateway(port: int = 8790) -> Dict[str, Any]:
             "gateway_url": f"http://127.0.0.1:{port}/v1",
             "dashboard_url": f"http://127.0.0.1:{port}",
         }
-    env = dict(**__import__("os").environ)
-    pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{_PKG_ROOT}:{pp}" if pp else str(_PKG_ROOT)
+    # Prefer the compiled native Rust sidecar binary when available (5ms cold start, ~6MB RAM).
+    rust_candidates = [
+        _PKG_ROOT.parent / "xod-infra-rs" / "target" / "release" / "xod-infra",
+        Path(sys.executable).resolve().parents[2] / "bin" / "xod-infra",
+    ]
+    rust_bin = next((p for p in rust_candidates if p.is_file()), None)
     kwargs: Dict[str, Any] = {
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
-        "env": env,
         "start_new_session": True,
     }
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    if rust_bin is not None:
+        subprocess.Popen([str(rust_bin), "--port", str(port)], **kwargs)
+        return {
+            "ok": True,
+            "started": True,
+            "engine": "rust",
+            "binary": str(rust_bin),
+            "gateway_url": f"http://127.0.0.1:{port}/v1",
+            "dashboard_url": f"http://127.0.0.1:{port}",
+        }
+    env = dict(**__import__("os").environ)
+    pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{_PKG_ROOT}:{pp}" if pp else str(_PKG_ROOT)
+    kwargs["env"] = env
     subprocess.Popen([sys.executable, "-m", "xod_infra.cli", "serve", "--port", str(port)], **kwargs)
     return {
         "ok": True,
         "started": True,
+        "engine": "python",
         "gateway_url": f"http://127.0.0.1:{port}/v1",
         "dashboard_url": f"http://127.0.0.1:{port}",
     }

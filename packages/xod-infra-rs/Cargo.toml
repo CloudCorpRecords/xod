@@ -1,0 +1,25 @@
+[package]
+name = "xod-infra-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Ultra-fast native Rust sidecar for Xod Infra — Apple Silicon LLM acceleration gateway, prefix-cache tracker, and live tok/s telemetry."
+license = "MIT"
+
+[[bin]]
+name = "xod-infra"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.7"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

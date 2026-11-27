@@ -253,7 +253,7 @@
           channel_name: cfg.channel_name,
           agent_uid: Number(cfg.agent_uid),
           user_uid: Number(cfg.uid),
-          preset: "xodbrief",
+          preset: "call",
         }),
       });
       const startJson = await startRes.json();

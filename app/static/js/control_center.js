@@ -200,13 +200,13 @@
               <p class="text-[11px] text-zinc-400 mt-0.5">${esc(xiHw.chip || "Apple Silicon")} · ${esc(xiHw.ram_gb || 0)} GB Unified · ~${esc(xiHw.memory_bandwidth_gbps || 0)} GB/s (est. ${esc(xiHw.estimated_7b_4bit_tps || 0)} tok/s on 7B 4-bit)</p>
             </div>
             <div class="flex items-center gap-1.5">
-              ${pill(!!xi.gateway_running, xi.gateway_running ? "Gateway Live :8790" : "Gateway Standby")}
+              ${pill(!!xi.gateway_running, xi.gateway_running ? "Gateway Live :8799" : "Gateway Standby")}
             </div>
           </div>
           <div class="flex flex-wrap items-center gap-2 pt-0.5">
             <button type="button" data-cc-xod-infra="tune" class="px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 text-[12px] text-cyan-200 font-medium">Apply Mac Tuning (Flash Attn + Q8 KV)</button>
             <button type="button" data-cc-xod-infra="bench" class="px-2.5 py-1 rounded-lg bg-surface-700 hover:bg-surface-600 text-[12px] text-zinc-200">Run Live Tok/s Benchmark</button>
-            <button type="button" data-cc-xod-infra="gateway" class="px-2.5 py-1 rounded-lg bg-surface-700 hover:bg-surface-600 text-[12px] text-zinc-200">${xi.gateway_running ? "Open Dashboard (:8790)" : "Start OpenAI Gateway (:8790)"}</button>
+            <button type="button" data-cc-xod-infra="gateway" class="px-2.5 py-1 rounded-lg bg-surface-700 hover:bg-surface-600 text-[12px] text-zinc-200">${xi.gateway_running ? "Open Dashboard (:8799)" : "Start OpenAI Gateway (:8799)"}</button>
           </div>
           <div id="ccXodInfraStatus" class="hidden text-[11px] font-mono bg-surface-900/80 border border-white/[0.06] rounded-lg p-2.5 text-zinc-300"></div>
         </section>
@@ -680,12 +680,12 @@
         const act = btn.getAttribute("data-cc-xod-infra");
         const st = document.getElementById("ccXodInfraStatus");
         if (act === "gateway" && xi.gateway_running) {
-          window.open(xi.dashboard_url || "http://127.0.0.1:8790", "_blank", "noopener");
+          window.open(xi.dashboard_url || "http://127.0.0.1:8799", "_blank", "noopener");
           return;
         }
         btn.disabled = true;
         if (st) {
-          st.textContent = act === "bench" ? "Running live token-speed benchmark…" : act === "tune" ? "Applying Flash Attention + Q8_0 KV cache…" : "Starting Xod Infra gateway on :8790…";
+          st.textContent = act === "bench" ? "Running live token-speed benchmark…" : act === "tune" ? "Applying Flash Attention + Q8_0 KV cache…" : "Starting Xod Infra gateway on :8799…";
           st.classList.remove("hidden");
         }
         try {

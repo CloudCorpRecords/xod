@@ -189,7 +189,7 @@ async def dashboard():
   pre{background:#0b0d12;padding:12px;border-radius:10px;overflow:auto;font-size:12px;color:#cbd5e1}
 </style></head><body><div class="wrap">
   <h1>⚡ Xod Infra</h1>
-  <div class="sub">Open-source Apple Silicon LLM speed &amp; efficiency engine · Connect Xod to <code>http://127.0.0.1:8790/v1</code></div>
+  <div class="sub">Open-source Apple Silicon LLM speed &amp; efficiency engine · Connect Xod to <code>http://127.0.0.1:8799/v1</code></div>
   <div class="grid" id="stats"></div>
   <div class="card" style="margin-bottom:14px">
     <div class="k">Actions</div>

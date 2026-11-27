@@ -804,7 +804,7 @@ class VoiceBriefStartRequest(BaseModel):
     channel_name: str
     agent_uid: int
     user_uid: int
-    preset: str = "xodbrief"
+    preset: str = "call"
     instructions: Optional[str] = None
     greeting: Optional[str] = None
     output_audio_codec: Optional[str] = None
@@ -1093,7 +1093,7 @@ async def xod_infra_benchmark_endpoint(body: Dict[str, Any] = Body(default={})):
 @app.post("/api/xod-infra/start-gateway")
 async def xod_infra_start_gateway_endpoint():
     from app.services import xod_infra_bridge
-    return await asyncio.to_thread(xod_infra_bridge.start_gateway, 8790)
+    return await asyncio.to_thread(xod_infra_bridge.start_gateway, 8799)
 
 
 @app.get("/api/voice-call/screen-context")

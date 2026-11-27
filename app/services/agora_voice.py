@@ -741,7 +741,7 @@ class AgoraVoiceService:
         channel_name: str,
         agent_uid: int,
         user_uid: int,
-        preset: str = "xodbrief",
+        preset: str = "call",
         instructions: Optional[str] = None,
         greeting: Optional[str] = None,
         output_audio_codec: Optional[str] = None,

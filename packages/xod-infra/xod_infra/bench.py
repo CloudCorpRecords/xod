@@ -58,7 +58,8 @@ async def benchmark_endpoint(
                     ev = json.loads(raw)
                 except Exception:
                     continue
-                delta = ((ev.get("choices") or [{}])[0].get("delta") or {}).get("content") or ""
+                d_obj = (ev.get("choices") or [{}])[0].get("delta") or {}
+                delta = d_obj.get("content") or d_obj.get("reasoning_content") or d_obj.get("reasoning") or ""
                 if delta:
                     if first_token_at is None:
                         first_token_at = time.perf_counter()
