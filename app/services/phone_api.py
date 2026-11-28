@@ -482,6 +482,11 @@ async def _voice_brief_stop(args: Dict[str, Any]) -> Dict[str, Any]:
     return await agora_voice.agora_voice_service.stop_session(agent_id)
 
 
+def _voice_brief_status(_args: Dict[str, Any]) -> Dict[str, Any]:
+    from app.services import agora_voice
+    return agora_voice.get_call_activity()
+
+
 def _voice_brief_launch(args: Dict[str, Any]) -> Dict[str, Any]:
     from app.services import agora_voice
     bid = str(args.get("id") or "").strip()
@@ -647,6 +652,7 @@ OPS: Dict[str, Callable[[Dict[str, Any]], Any]] = {
     "tasks.list": _tasks, "tasks.get": _task_get, "tasks.create": _task_create, "tasks.act": _task_act,
     "voice_brief.list": _voice_briefs_list, "voice_brief.config": _voice_brief_config,
     "voice_brief.start": _voice_brief_start, "voice_brief.stop": _voice_brief_stop,
+    "voice_brief.status": _voice_brief_status,
     "voice_brief.launch": _voice_brief_launch, "voice_brief.dismiss": _voice_brief_dismiss,
     "routines.list": _routines, "routines.act": _routine_act, "goals.act": _goal_act,
     "memory.search": _memory, "reports.list": _reports, "reports.read": _report_read,

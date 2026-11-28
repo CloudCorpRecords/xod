@@ -6162,6 +6162,9 @@ async def agora_custom_llm_endpoint(request: Request):
     if not user_msgs:
         user_msgs = [{"role": "user", "content": "Hello"}]
 
+    last_user = next((str(m.get("content") or "") for m in reversed(user_msgs) if m.get("role") == "user"), "")
+    agora_voice.set_call_activity(state="thinking", activity="Thinking…", tool="", user_text=last_user, reply_text="")
+
     # Keep voice turns crisp and spoken-friendly while retaining full Xod tools.
     voice_hint = {
         "role": "system",
@@ -6177,6 +6180,7 @@ async def agora_custom_llm_endpoint(request: Request):
         cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
         sent_any = False
+        reply_acc: List[str] = []
         async for chunk in resp.body_iterator:
             text_chunk = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
             for line in text_chunk.splitlines():
@@ -6189,10 +6193,17 @@ async def agora_custom_llm_endpoint(request: Request):
                     ev = json.loads(raw)
                 except Exception:
                     continue
-                if ev.get("type") in ("content", "token", "answer") and ev.get("content"):
+                ev_type = ev.get("type")
+                if ev_type in ("tool_call", "tool_start", "status"):
+                    tname = str(ev.get("tool") or ev.get("name") or "").strip()
+                    label = str(ev.get("content") or ev.get("status") or (f"Using {tname}…" if tname else "Working…")).strip()
+                    agora_voice.set_call_activity(state="working", activity=label[:120], tool=tname)
+                elif ev_type in ("content", "token", "answer") and ev.get("content"):
                     piece = re.sub(r"[*_`#]+", "", str(ev["content"]))
                     if piece:
                         sent_any = True
+                        reply_acc.append(piece)
+                        agora_voice.set_call_activity(state="speaking", activity="Answering…", tool="", reply_text="".join(reply_acc))
                         frame = {
                             "id": cid,
                             "object": "chat.completion.chunk",
@@ -6210,6 +6221,7 @@ async def agora_custom_llm_endpoint(request: Request):
                 "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Done — let me know what you want to do next."}, "finish_reason": None}],
             }
             yield f"data: {json.dumps(fallback)}\n\n"
+        agora_voice.set_call_activity(state="live", activity="Listening…", tool="", reply_text="".join(reply_acc) or None)
         end_frame = {
             "id": cid,
             "object": "chat.completion.chunk",

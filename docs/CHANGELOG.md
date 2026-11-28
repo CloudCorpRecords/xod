@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.51
+
+Fixes the Agora Full-Tools `cloudflared` tunnel port auto-detection (targets Xod's live port `8000` instead of hardcoded `8010`) and adds a real-time **Live Call Activity** endpoint (`voice_brief.status`) so phones display exactly what tool/step Xod is running during a voice call.
+
 ## 1.1.50
 
 Hotfix for `v1.1.49` startup `NameError` in `/api/xod-infra/benchmark` (`Body` import) plus all `v1.1.49` upgrades: Phone/Watch wake suppression, Full Xod Tools in Agora Voice Calls, natural phone-call preset everywhere, and ⚡ Xod Infra + native Rust sidecar.

@@ -59,6 +59,38 @@ _PHONE_CALL_ACTIVE_UNTIL: float = 0.0
 _AGORA_LLM_SECRET: str = ""
 _TUNNEL_PROC: Any = None
 _TUNNEL_URL: str = ""
+_CALL_ACTIVITY: Dict[str, Any] = {
+    "state": "idle",
+    "activity": "",
+    "tool": "",
+    "user_text": "",
+    "reply_text": "",
+    "updated_at": 0.0,
+}
+
+
+def set_call_activity(
+    state: str = "",
+    activity: str = "",
+    tool: str = "",
+    user_text: Optional[str] = None,
+    reply_text: Optional[str] = None,
+) -> None:
+    if state:
+        _CALL_ACTIVITY["state"] = state
+    if activity is not None:
+        _CALL_ACTIVITY["activity"] = activity
+    if tool is not None:
+        _CALL_ACTIVITY["tool"] = tool
+    if user_text is not None:
+        _CALL_ACTIVITY["user_text"] = user_text[:240]
+    if reply_text is not None:
+        _CALL_ACTIVITY["reply_text"] = reply_text[:400]
+    _CALL_ACTIVITY["updated_at"] = time.time()
+
+
+def get_call_activity() -> Dict[str, Any]:
+    return dict(_CALL_ACTIVITY)
 
 
 def mark_phone_call_active(seconds: int = 1800) -> None:
@@ -69,6 +101,7 @@ def mark_phone_call_active(seconds: int = 1800) -> None:
 def clear_phone_call_active() -> None:
     global _PHONE_CALL_ACTIVE_UNTIL
     _PHONE_CALL_ACTIVE_UNTIL = 0.0
+    set_call_activity(state="idle", activity="", tool="")
 
 
 def is_phone_call_active() -> bool:
@@ -82,7 +115,29 @@ def get_agora_llm_secret() -> str:
     return _AGORA_LLM_SECRET
 
 
-def ensure_custom_llm_url(local_port: int = 8010) -> str:
+def _detect_local_backend_port() -> int:
+    """Finds the actual port this Xod FastAPI server is listening on (default 8000)."""
+    for env_key in ("XOD_PORT", "PORT", "UVICORN_PORT"):
+        raw = (os.environ.get(env_key) or "").strip()
+        if raw.isdigit():
+            return int(raw)
+    # Probe common Xod ports for our /api/agora/v1/chat/completions route (expects 401/405, not 404).
+    import urllib.request
+    import urllib.error
+    for cand in (8000, 8001, 8010, 8787):
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{cand}/api/agora/v1/chat/completions", method="POST", data=b"{}")
+            urllib.request.urlopen(req, timeout=0.6)
+            return cand
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403, 422):
+                return cand
+        except Exception:
+            continue
+    return 8000
+
+
+def ensure_custom_llm_url(local_port: int = 0) -> str:
     """
     Returns a public HTTPS URL for `/api/agora/v1/chat/completions` so Agora ConvoAI can
     call Xod's FULL agent (with all tools, memory, terminal, Tailscale remote_device).
@@ -101,6 +156,7 @@ def ensure_custom_llm_url(local_port: int = 8010) -> str:
     cf = shutil.which("cloudflared")
     if not cf:
         return ""
+    port = local_port or _detect_local_backend_port()
     try:
         kwargs: Dict[str, Any] = {
             "stdout": subprocess.PIPE,
@@ -109,7 +165,7 @@ def ensure_custom_llm_url(local_port: int = 8010) -> str:
         }
         if os.name == "nt":
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        proc = subprocess.Popen([cf, "tunnel", "--url", f"http://127.0.0.1:{local_port}", "--no-autoupdate"], **kwargs)
+        proc = subprocess.Popen([cf, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"], **kwargs)
         deadline = time.time() + 10.0
         found_url = ""
         while time.time() < deadline and proc.poll() is None:
@@ -124,7 +180,7 @@ def ensure_custom_llm_url(local_port: int = 8010) -> str:
         if found_url:
             _TUNNEL_PROC = proc
             _TUNNEL_URL = found_url
-            logger.info("Started ephemeral cloudflared tunnel for Agora Full-Tools LLM: %s", found_url)
+            logger.info("Started ephemeral cloudflared tunnel (port %s) for Agora Full-Tools LLM: %s", port, found_url)
             return f"{found_url}/api/agora/v1/chat/completions"
         try:
             proc.terminate()
@@ -868,7 +924,7 @@ class AgoraVoiceService:
             "style": "openai",
             "input_modalities": ["text"],
             "greeting_message": effective_greeting,
-            "failure_message": "Give me just a second, checking that now.",
+            "failure_message": "Sorry, I didn't quite catch that — say that again?",
             "max_history": 30,
             "system_messages": [
                 {"role": "system", "content": effective_instructions}
