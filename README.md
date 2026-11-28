@@ -83,7 +83,7 @@ Most AI apps stop at text. **Xod is a full personal operating layer** that runs 
 - **100% Local Data:** Chats, episodic recall (`recall.db`), daily logs, and projects stay in `~/Library/Application Support/Xod` (Mac) or `%APPDATA%\Xod` (Windows). Zero telemetry, zero vendor lock-in.
 - **Keychain & 1Password Vault:** API keys, OAuth tokens, Agora BYOK keys, and saved logins live in macOS Keychain / Windows Credential Manager (or 1Password `op://` references) — never in plain-text prompts or logs.
 - **End-to-End Encrypted Links:** Phone ↔ Computer (Agent Mail) and Fleet ↔ Fleet sync use Tailscale `whois` verification + X25519/ChaCha20-Poly1305/Ed25519 sealing.
-- **Audited Autonomy:** Interactive actions ask before sending, paying, or deleting; Fleet/Muse rubber-stamp approvals are cryptographically locked to your own devices and recorded in append-only `audit.jsonl` logs.
+- **Audited Autonomy:** You set the scope once; inside it Xod acts without per-action prompts. Fleet/Muse approvals are cryptographically locked to your own devices and recorded in append-only `audit.jsonl` logs.
 
 See [SECURITY.md](.github/SECURITY.md) for responsible disclosure and [docs/RELIABILITY.md](docs/RELIABILITY.md) for measured evals.
 
