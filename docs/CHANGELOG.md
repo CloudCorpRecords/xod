@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.55
+
+Stops Agora Voice Calls from reading out `**Source links**` / `Context links` lists (which have no trailing colon) and widens the streaming speech filter lookahead buffer so all desktop-only citations and HTML comments are cleanly suppressed.
+
+- **Complete Source/Context Links Cutoff (`app/main.py`)**: updates `_AGORA_STOP_RE` and increases `_SpokenChunkFilter.HOLD_CHARS` to 44 so `**Source links**`, `Source links`, `Context links`, `Sources`, `Checked:`, `References`, and all `<!-- xod-* -->` metadata comments are cut off before reaching Agora TTS.
+
 ## 1.1.54
 
 Cleans up Agora Voice Call speech output so Xod only speaks the natural answer — never reading out `**Checked:**` source footers or hidden `<!-- xod-work:... -->` metadata comments.

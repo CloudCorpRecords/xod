@@ -6194,7 +6194,11 @@ def _friendly_tool_activity(tname: str, raw_label: str = "") -> str:
 
 
 _AGORA_STOP_RE = re.compile(
-    r"(?:<!--|\n+\s*(?:\*\*|__)?(?:Checked|Sources|References)\s*:|\n+\s*---+\s*(?:\n|$))",
+    r"(?:"
+    r"<!--"
+    r"|\n+\s*(?:#{1,4}\s*)?(?:\*\*|__)?(?:Checked|Sources?|Source\s+links?|Context\s+links?|References?|Citations?)(?:\*\*|__)?\s*:?(?:\s*(?:\n|$)|\s+\S)"
+    r"|\n+\s*---+\s*(?:\n|$)"
+    r")",
     re.IGNORECASE,
 )
 
@@ -6202,11 +6206,12 @@ _AGORA_STOP_RE = re.compile(
 class _SpokenChunkFilter:
     """
     Streams spoken-friendly text for Agora TTS while cleanly cutting off desktop-only
-    footers (`**Checked:** ...`, `Sources:`, `<!-- xod-work:... -->`) even when a marker
-    is split across SSE token boundaries.
+    footers (`**Source links**`, `**Checked:** ...`, `Sources:`, `<!-- xod-work:... -->`,
+    `<!-- xod-apps:... -->`, `<!-- xod-build:... -->`) even when a marker is split across
+    SSE token boundaries.
     """
 
-    HOLD_CHARS = 32
+    HOLD_CHARS = 44
 
     def __init__(self) -> None:
         self._buf = ""
@@ -6232,6 +6237,12 @@ class _SpokenChunkFilter:
             return self._clean(head)
         if len(self._buf) <= self.HOLD_CHARS:
             return ""
+        # If an inline markdown link [label](https://...) is mid-stream, wait for ')' (up to 180 chars)
+        # so the URL is cleanly stripped instead of leaking across a chunk boundary.
+        if ("[" in self._buf or "http" in self._buf) and len(self._buf) < 180:
+            last_open = self._buf.rfind("[")
+            if last_open != -1 and ")" not in self._buf[last_open:]:
+                return ""
         emit = self._buf[: -self.HOLD_CHARS]
         self._buf = self._buf[-self.HOLD_CHARS :]
         return self._clean(emit)
