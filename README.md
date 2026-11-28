@@ -5,8 +5,12 @@
 <h1 align="center">Xod</h1>
 
 <p align="center">
-  <b>Your private, local-first AI agent with real hands on your computer — and a companion in your pocket.</b><br>
-  Control your signed-in browser and Mac apps, connect 32+ tools &amp; MCP servers, talk in real time, and orchestrate multi-machine fleets.
+  <b>Approve once. Local. Receipts.</b><br>
+  Xod is a local-first AI agent that works inside your already-signed-in Chrome and your Mac apps. You set the scope once, in plain words. Inside that scope it does the job on your machine, with your own keys, and every action lands in an audit log you can read and undo.
+</p>
+
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=o7nU92CyFSk"><b>Watch the 60-second trailer</b></a>
 </p>
 
 <p align="center">
