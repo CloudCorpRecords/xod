@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.50
+
+Hotfix for `v1.1.49` startup `NameError` in `/api/xod-infra/benchmark` (`Body` import) plus all `v1.1.49` upgrades: Phone/Watch wake suppression, Full Xod Tools in Agora Voice Calls, natural phone-call preset everywhere, and ⚡ Xod Infra + native Rust sidecar.
+
 ## 1.1.49
 
 Fixes accidental Desktop wake-ups during Phone/Watch calls, unlocks **Full Xod Tools inside Agora Neural Voice Calls**, removes the mission-brief script from normal calls, and integrates **⚡ Xod Infra** (with a 2.7 MB native Rust Apple Silicon sidecar).

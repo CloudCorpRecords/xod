@@ -1085,8 +1085,12 @@ async def xod_infra_tune_endpoint():
 
 
 @app.post("/api/xod-infra/benchmark")
-async def xod_infra_benchmark_endpoint(body: Dict[str, Any] = Body(default={})):
+async def xod_infra_benchmark_endpoint(request: Request):
     from app.services import xod_infra_bridge
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     return await xod_infra_bridge.benchmark(model=str((body or {}).get("model") or ""))
 
 
