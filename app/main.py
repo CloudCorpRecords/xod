@@ -6193,6 +6193,60 @@ def _friendly_tool_activity(tname: str, raw_label: str = "") -> str:
     return "Working…"
 
 
+_AGORA_STOP_RE = re.compile(
+    r"(?:<!--|\n+\s*(?:\*\*|__)?(?:Checked|Sources|References)\s*:|\n+\s*---+\s*(?:\n|$))",
+    re.IGNORECASE,
+)
+
+
+class _SpokenChunkFilter:
+    """
+    Streams spoken-friendly text for Agora TTS while cleanly cutting off desktop-only
+    footers (`**Checked:** ...`, `Sources:`, `<!-- xod-work:... -->`) even when a marker
+    is split across SSE token boundaries.
+    """
+
+    HOLD_CHARS = 32
+
+    def __init__(self) -> None:
+        self._buf = ""
+        self._stopped = False
+
+    @staticmethod
+    def _clean(text: str) -> str:
+        s = re.sub(r"\[([^\]]+)\]\(https?://[^)]+\)", r"\1", text)
+        s = re.sub(r"https?://\S+", "", s)
+        s = re.sub(r"\[\s*(?:\d+|ok)\s*\]", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"[*_`#]+", "", s)
+        return s
+
+    def feed(self, raw_piece: str) -> str:
+        if self._stopped or not raw_piece:
+            return ""
+        self._buf += raw_piece
+        m = _AGORA_STOP_RE.search(self._buf)
+        if m:
+            self._stopped = True
+            head = self._buf[: m.start()].rstrip()
+            self._buf = ""
+            return self._clean(head)
+        if len(self._buf) <= self.HOLD_CHARS:
+            return ""
+        emit = self._buf[: -self.HOLD_CHARS]
+        self._buf = self._buf[-self.HOLD_CHARS :]
+        return self._clean(emit)
+
+    def flush(self) -> str:
+        if self._stopped or not self._buf:
+            self._buf = ""
+            return ""
+        m = _AGORA_STOP_RE.search(self._buf)
+        tail = self._buf[: m.start()].rstrip() if m else self._buf
+        self._buf = ""
+        self._stopped = True
+        return self._clean(tail)
+
+
 @app.post("/api/agora/v1/chat/completions")
 async def agora_custom_llm_endpoint(request: Request):
     """
@@ -6257,6 +6311,7 @@ async def agora_custom_llm_endpoint(request: Request):
         sent_any = False
         err_text = ""
         reply_acc: List[str] = []
+        spoken_filter = _SpokenChunkFilter()
         async for chunk in resp.body_iterator:
             text_chunk = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
             for line in text_chunk.splitlines():
@@ -6280,7 +6335,7 @@ async def agora_custom_llm_endpoint(request: Request):
                     err_text = str(ev["content"]).strip()
                     logger.warning("Agora Custom LLM chat error: %s", err_text[:200])
                 elif ev_type in ("content", "token", "answer") and ev.get("content"):
-                    piece = re.sub(r"[*_`#]+", "", str(ev["content"]))
+                    piece = spoken_filter.feed(str(ev["content"]))
                     if piece:
                         sent_any = True
                         reply_acc.append(piece)
@@ -6291,6 +6346,17 @@ async def agora_custom_llm_endpoint(request: Request):
                             reply_text="".join(reply_acc),
                         )
                         yield piece
+        tail = spoken_filter.flush()
+        if tail:
+            sent_any = True
+            reply_acc.append(tail)
+            agora_voice.set_call_activity(
+                state="speaking",
+                activity="Answering…",
+                tool="",
+                reply_text="".join(reply_acc),
+            )
+            yield tail
         if not sent_any:
             fallback_msg = (
                 "My language model hit a snag on the Mac right now — check the model setting in Xod."

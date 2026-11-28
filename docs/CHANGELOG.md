@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.54
+
+Cleans up Agora Voice Call speech output so Xod only speaks the natural answer — never reading out `**Checked:**` source footers or hidden `<!-- xod-work:... -->` metadata comments.
+
+- **Streaming Spoken-Output Filter (`app/main.py`)**: adds `_SpokenChunkFilter` to `/api/agora/v1/chat/completions` with a rolling lookahead buffer that cuts off desktop-only `Checked:` / `Sources:` / `References:` footers and `<!-- xod-work:... -->` HTML comments across SSE token boundaries, while stripping markdown links, raw URLs, and inline `[1]`/`[ok]` citations.
+
 ## 1.1.53
 
 Fixes `cloudflared` quick-tunnel DNS readiness on macOS so Agora Voice Calls always connect to **Xod's Full-Tools Custom LLM** (web search, terminal, Chrome, Tailscale `remote_device`, and cross-chat memory) instead of falling back to the tool-less managed LLM.
