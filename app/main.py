@@ -1492,6 +1492,11 @@ async def _start_task_worker():
     asyncio.create_task(browser_sandbox_service.idle_loop())   # an unused sandbox browser closes itself (services/browser_sandbox.py)
     from app.services import family_vault as _family_vault
     asyncio.create_task(asyncio.to_thread(_family_vault.sync_keys))   # enroll -> keys: a device enrolled since last boot receives the family keys on startup; a typed no-op state for everyone else (services/family_vault.py)
+    try:
+        from app.services import agora_voice as _agora_voice
+        _agora_voice.prewarm_custom_llm_tunnel()
+    except Exception:
+        pass
 
 
 class ModelRef(BaseModel):
@@ -6169,10 +6174,15 @@ def _friendly_tool_activity(tname: str, raw_label: str = "") -> str:
         "remote_device": "Reaching your remote device…",
         "shell_exec": "Running a command on your Mac…",
         "run_command": "Running a command on your Mac…",
+        "run_shell": "Running a command on your Mac…",
         "desktop_action": "Checking your desktop…",
         "chrome_tabs": "Checking Chrome tabs…",
         "browser_open": "Checking the browser…",
         "web_search": "Searching the web…",
+        "omni_search": "Searching the web…",
+        "you_search": "Searching the web…",
+        "tavily_search": "Searching the web…",
+        "search_web": "Searching the web…",
         "file_read": "Reading files…",
         "file_write": "Updating a file…",
     }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.53
+
+Fixes `cloudflared` quick-tunnel DNS readiness on macOS so Agora Voice Calls always connect to **Xod's Full-Tools Custom LLM** (web search, terminal, Chrome, Tailscale `remote_device`, and cross-chat memory) instead of falling back to the tool-less managed LLM.
+
+- **DoH-Gated Tunnel Verification (`app/services/agora_voice.py`)**: waits for `cloudflared` `"Registered tunnel connection"` and confirms the `*.trycloudflare.com` A-record via Cloudflare DoH (`1.1.1.1`) before probing `HTTP 401`, preventing macOS `mDNSResponder` from negatively caching premature `NXDOMAIN` responses.
+- **Instant Background Tunnel Pre-Warming (`app/services/agora_voice.py`)**: pre-warms the ephemeral tunnel with a thread lock as soon as a phone fetches `voice_brief.config` so Full-Tools Agora calls connect immediately.
+
 ## 1.1.52
 
 Fixes Agora ConvoAI Custom LLM calls returning HTTP 403 (`"Sorry, I didn't quite catch that"`) through the ephemeral `cloudflared` tunnel, hardens tunnel readiness verification, and keeps each voice call in one clean spoken-mode session.

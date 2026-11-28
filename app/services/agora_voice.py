@@ -59,6 +59,7 @@ _PHONE_CALL_ACTIVE_UNTIL: float = 0.0
 _AGORA_LLM_SECRET: str = ""
 _TUNNEL_PROC: Any = None
 _TUNNEL_URL: str = ""
+_TUNNEL_LOCK: Any = None
 _CALL_SESSION_ID: str = ""
 _CALL_ACTIVITY: Dict[str, Any] = {
     "state": "idle",
@@ -126,22 +127,39 @@ def get_agora_llm_secret() -> str:
     return _AGORA_LLM_SECRET
 
 
-def _probe_public_llm_url(endpoint_url: str, timeout: float = 2.0) -> bool:
+def _get_tunnel_lock():
+    global _TUNNEL_LOCK
+    if _TUNNEL_LOCK is None:
+        import threading
+        _TUNNEL_LOCK = threading.Lock()
+    return _TUNNEL_LOCK
+
+
+def _wait_for_doh_a_record(hostname: str, max_wait: float = 12.0) -> bool:
+    """Wait via Cloudflare DoH (1.1.1.1) until the trycloudflare A record exists.
+
+    Crucial on macOS: querying the OS resolver before Cloudflare publishes the record
+    causes mDNSResponder to negatively cache NXDOMAIN for 15-60s, breaking all probes.
+    """
+    deadline = time.time() + max_wait
+    doh_url = f"https://1.1.1.1/dns-query?name={hostname}&type=A"
+    while time.time() < deadline:
+        try:
+            r = httpx.get(doh_url, headers={"Accept": "application/dns-json"}, timeout=2.5)
+            if r.status_code == 200 and (r.json().get("Answer") or []):
+                return True
+        except Exception:
+            pass
+        time.sleep(0.6)
+    return False
+
+
+def _probe_public_llm_url(endpoint_url: str, timeout: float = 3.0) -> bool:
     """Confirm the public tunnel routes POST /api/agora/v1/chat/completions to Xod (expects 401)."""
-    import urllib.error
-    import urllib.request
     try:
-        req = urllib.request.Request(
-            endpoint_url,
-            method="POST",
-            data=b"{}",
-            headers={"Content-Type": "application/json"},
-        )
-        urllib.request.urlopen(req, timeout=timeout)
-        return True
-    except urllib.error.HTTPError as e:
+        r = httpx.post(endpoint_url, json={}, timeout=timeout)
         # 401 proves the request passed Cloudflare edge AND local_only_guard and hit auth check.
-        return e.code == 401
+        return r.status_code == 401
     except Exception:
         return False
 
@@ -167,19 +185,31 @@ def _detect_local_backend_port() -> int:
         if raw.isdigit():
             return int(raw)
     # Probe common Xod ports for our /api/agora/v1/chat/completions route (expects 401, not 404).
-    import urllib.request
-    import urllib.error
     for cand in (8000, 8001, 8010, 8787):
         try:
-            req = urllib.request.Request(f"http://127.0.0.1:{cand}/api/agora/v1/chat/completions", method="POST", data=b"{}")
-            urllib.request.urlopen(req, timeout=0.6)
-            return cand
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403, 422):
+            r = httpx.post(f"http://127.0.0.1:{cand}/api/agora/v1/chat/completions", json={}, timeout=0.6)
+            if r.status_code in (200, 401, 403, 422):
                 return cand
         except Exception:
             continue
     return 8000
+
+
+def prewarm_custom_llm_tunnel() -> None:
+    """Start & verify the ephemeral cloudflared tunnel in a background daemon thread so calls connect in 0s."""
+    import threading
+    if not is_configured():
+        return
+    if _TUNNEL_URL and _TUNNEL_PROC is not None and _TUNNEL_PROC.poll() is None:
+        return
+
+    def _warm() -> None:
+        try:
+            ensure_custom_llm_url()
+        except Exception:
+            pass
+
+    threading.Thread(target=_warm, name="agora-tunnel-prewarm", daemon=True).start()
 
 
 def ensure_custom_llm_url(local_port: int = 0) -> str:
@@ -187,76 +217,84 @@ def ensure_custom_llm_url(local_port: int = 0) -> str:
     Returns a public HTTPS URL for `/api/agora/v1/chat/completions` so Agora ConvoAI can
     call Xod's FULL agent (with all tools, memory, terminal, Tailscale remote_device).
     Uses AGORA_CUSTOM_LLM_URL if set, else an ephemeral `cloudflared` quick tunnel if installed.
-    Verifies the tunnel actually routes to Xod (HTTP 401) before returning it to Agora.
+    Waits for tunnel registration + Cloudflare DoH A-record before probing HTTP 401 so macOS
+    mDNSResponder never caches a premature NXDOMAIN.
     """
     global _TUNNEL_PROC, _TUNNEL_URL
     explicit = (os.environ.get("AGORA_CUSTOM_LLM_URL") or "").strip().rstrip("/")
     if explicit:
         return explicit if explicit.endswith("/chat/completions") else f"{explicit}/api/agora/v1/chat/completions"
 
-    if _TUNNEL_URL and _TUNNEL_PROC is not None and _TUNNEL_PROC.poll() is None:
-        endpoint = f"{_TUNNEL_URL}/api/agora/v1/chat/completions"
-        if _probe_public_llm_url(endpoint, timeout=2.0):
-            return endpoint
-        logger.warning("Existing cloudflared tunnel %s failed health probe; restarting", _TUNNEL_URL)
-        try:
-            _TUNNEL_PROC.terminate()
-        except Exception:
-            pass
-        _TUNNEL_PROC = None
-        _TUNNEL_URL = ""
-
-    import shutil
-    import subprocess
-    cf = shutil.which("cloudflared")
-    if not cf:
-        return ""
-    port = local_port or _detect_local_backend_port()
-    try:
-        kwargs: Dict[str, Any] = {
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.STDOUT,
-            "text": True,
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        proc = subprocess.Popen([cf, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"], **kwargs)
-        deadline = time.time() + 10.0
-        found_url = ""
-        while time.time() < deadline and proc.poll() is None:
-            line = proc.stdout.readline() if proc.stdout else ""
-            if not line:
-                time.sleep(0.1)
-                continue
-            m = re.search(r"(https://[a-z0-9-]+\.trycloudflare\.com)", line)
-            if m:
-                found_url = m.group(1)
-                break
-        if found_url:
-            if proc.stdout is not None:
-                _drain_pipe_background(proc.stdout)
-            endpoint = f"{found_url}/api/agora/v1/chat/completions"
-            # Wait for Cloudflare DNS + edge routing to become live (returns HTTP 401).
-            probe_deadline = time.time() + 8.0
-            ready = False
-            while time.time() < probe_deadline and proc.poll() is None:
-                if _probe_public_llm_url(endpoint, timeout=1.8):
-                    ready = True
-                    break
-                time.sleep(0.4)
-            if ready:
-                _TUNNEL_PROC = proc
-                _TUNNEL_URL = found_url
-                logger.info("Started verified cloudflared tunnel (port %s) for Agora Full-Tools LLM: %s", port, found_url)
+    with _get_tunnel_lock():
+        if _TUNNEL_URL and _TUNNEL_PROC is not None and _TUNNEL_PROC.poll() is None:
+            endpoint = f"{_TUNNEL_URL}/api/agora/v1/chat/completions"
+            if _probe_public_llm_url(endpoint, timeout=2.5):
                 return endpoint
-            logger.warning("cloudflared tunnel %s did not pass HTTP 401 probe in time; falling back to managed LLM", found_url)
+            logger.warning("Existing cloudflared tunnel %s failed health probe; restarting", _TUNNEL_URL)
+            try:
+                _TUNNEL_PROC.terminate()
+            except Exception:
+                pass
+            _TUNNEL_PROC = None
+            _TUNNEL_URL = ""
+
+        import shutil
+        import subprocess
+        cf = shutil.which("cloudflared")
+        if not cf:
+            return ""
+        port = local_port or _detect_local_backend_port()
         try:
-            proc.terminate()
-        except Exception:
-            pass
-    except Exception as e:
-        logger.debug("cloudflared tunnel unavailable: %s", e)
-    return ""
+            kwargs: Dict[str, Any] = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "text": True,
+            }
+            if os.name == "nt":
+                kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            proc = subprocess.Popen([cf, "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"], **kwargs)
+            deadline = time.time() + 12.0
+            found_url = ""
+            while time.time() < deadline and proc.poll() is None:
+                line = proc.stdout.readline() if proc.stdout else ""
+                if not line:
+                    time.sleep(0.1)
+                    continue
+                if not found_url:
+                    m = re.search(r"(https://[a-z0-9-]+\.trycloudflare\.com)", line)
+                    if m:
+                        found_url = m.group(1)
+                if found_url and "Registered tunnel connection" in line:
+                    break
+            if found_url:
+                if proc.stdout is not None:
+                    _drain_pipe_background(proc.stdout)
+                host = found_url.replace("https://", "").split("/", 1)[0]
+                endpoint = f"{found_url}/api/agora/v1/chat/completions"
+                # Wait 5.0s after tunnel registration BEFORE any DNS lookup so neither 1.1.1.1 nor
+                # macOS mDNSResponder negatively caches a premature NXDOMAIN.
+                time.sleep(5.0)
+                _wait_for_doh_a_record(host, max_wait=10.0)
+                probe_deadline = time.time() + 10.0
+                ready = False
+                while time.time() < probe_deadline and proc.poll() is None:
+                    if _probe_public_llm_url(endpoint, timeout=3.0):
+                        ready = True
+                        break
+                    time.sleep(1.2)
+                if ready:
+                    _TUNNEL_PROC = proc
+                    _TUNNEL_URL = found_url
+                    logger.info("Started verified cloudflared tunnel (port %s) for Agora Full-Tools LLM: %s", port, found_url)
+                    return endpoint
+                logger.warning("cloudflared tunnel %s did not pass HTTP 401 probe in time; falling back to managed LLM", found_url)
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug("cloudflared tunnel unavailable: %s", e)
+        return ""
 
 SECTION_LABELS: List[str] = [
     "Mission",
@@ -934,6 +972,8 @@ class AgoraVoiceService:
             uid=user_uid,
             token_expire=DEFAULT_EXPIRY_SECONDS,
         )
+        # Kick off tunnel pre-warm as soon as the phone requests call config so start_session is instant.
+        prewarm_custom_llm_tunnel()
         return {
             "app_id": creds["app_id"],
             "token": token,
