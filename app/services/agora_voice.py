@@ -59,6 +59,7 @@ _PHONE_CALL_ACTIVE_UNTIL: float = 0.0
 _AGORA_LLM_SECRET: str = ""
 _TUNNEL_PROC: Any = None
 _TUNNEL_URL: str = ""
+_CALL_SESSION_ID: str = ""
 _CALL_ACTIVITY: Dict[str, Any] = {
     "state": "idle",
     "activity": "",
@@ -67,6 +68,15 @@ _CALL_ACTIVITY: Dict[str, Any] = {
     "reply_text": "",
     "updated_at": 0.0,
 }
+
+
+def get_call_session_id() -> str:
+    return _CALL_SESSION_ID
+
+
+def set_call_session_id(session_id: str) -> None:
+    global _CALL_SESSION_ID
+    _CALL_SESSION_ID = (session_id or "").strip()
 
 
 def set_call_activity(
@@ -99,8 +109,9 @@ def mark_phone_call_active(seconds: int = 1800) -> None:
 
 
 def clear_phone_call_active() -> None:
-    global _PHONE_CALL_ACTIVE_UNTIL
+    global _PHONE_CALL_ACTIVE_UNTIL, _CALL_SESSION_ID
     _PHONE_CALL_ACTIVE_UNTIL = 0.0
+    _CALL_SESSION_ID = ""
     set_call_activity(state="idle", activity="", tool="")
 
 
@@ -115,13 +126,47 @@ def get_agora_llm_secret() -> str:
     return _AGORA_LLM_SECRET
 
 
+def _probe_public_llm_url(endpoint_url: str, timeout: float = 2.0) -> bool:
+    """Confirm the public tunnel routes POST /api/agora/v1/chat/completions to Xod (expects 401)."""
+    import urllib.error
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            endpoint_url,
+            method="POST",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=timeout)
+        return True
+    except urllib.error.HTTPError as e:
+        # 401 proves the request passed Cloudflare edge AND local_only_guard and hit auth check.
+        return e.code == 401
+    except Exception:
+        return False
+
+
+def _drain_pipe_background(pipe: Any) -> None:
+    import threading
+
+    def _reader() -> None:
+        try:
+            for _ in iter(pipe.readline, ""):
+                pass
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_reader, name="cloudflared-drain", daemon=True)
+    t.start()
+
+
 def _detect_local_backend_port() -> int:
     """Finds the actual port this Xod FastAPI server is listening on (default 8000)."""
     for env_key in ("XOD_PORT", "PORT", "UVICORN_PORT"):
         raw = (os.environ.get(env_key) or "").strip()
         if raw.isdigit():
             return int(raw)
-    # Probe common Xod ports for our /api/agora/v1/chat/completions route (expects 401/405, not 404).
+    # Probe common Xod ports for our /api/agora/v1/chat/completions route (expects 401, not 404).
     import urllib.request
     import urllib.error
     for cand in (8000, 8001, 8010, 8787):
@@ -142,6 +187,7 @@ def ensure_custom_llm_url(local_port: int = 0) -> str:
     Returns a public HTTPS URL for `/api/agora/v1/chat/completions` so Agora ConvoAI can
     call Xod's FULL agent (with all tools, memory, terminal, Tailscale remote_device).
     Uses AGORA_CUSTOM_LLM_URL if set, else an ephemeral `cloudflared` quick tunnel if installed.
+    Verifies the tunnel actually routes to Xod (HTTP 401) before returning it to Agora.
     """
     global _TUNNEL_PROC, _TUNNEL_URL
     explicit = (os.environ.get("AGORA_CUSTOM_LLM_URL") or "").strip().rstrip("/")
@@ -149,7 +195,16 @@ def ensure_custom_llm_url(local_port: int = 0) -> str:
         return explicit if explicit.endswith("/chat/completions") else f"{explicit}/api/agora/v1/chat/completions"
 
     if _TUNNEL_URL and _TUNNEL_PROC is not None and _TUNNEL_PROC.poll() is None:
-        return f"{_TUNNEL_URL}/api/agora/v1/chat/completions"
+        endpoint = f"{_TUNNEL_URL}/api/agora/v1/chat/completions"
+        if _probe_public_llm_url(endpoint, timeout=2.0):
+            return endpoint
+        logger.warning("Existing cloudflared tunnel %s failed health probe; restarting", _TUNNEL_URL)
+        try:
+            _TUNNEL_PROC.terminate()
+        except Exception:
+            pass
+        _TUNNEL_PROC = None
+        _TUNNEL_URL = ""
 
     import shutil
     import subprocess
@@ -178,10 +233,23 @@ def ensure_custom_llm_url(local_port: int = 0) -> str:
                 found_url = m.group(1)
                 break
         if found_url:
-            _TUNNEL_PROC = proc
-            _TUNNEL_URL = found_url
-            logger.info("Started ephemeral cloudflared tunnel (port %s) for Agora Full-Tools LLM: %s", port, found_url)
-            return f"{found_url}/api/agora/v1/chat/completions"
+            if proc.stdout is not None:
+                _drain_pipe_background(proc.stdout)
+            endpoint = f"{found_url}/api/agora/v1/chat/completions"
+            # Wait for Cloudflare DNS + edge routing to become live (returns HTTP 401).
+            probe_deadline = time.time() + 8.0
+            ready = False
+            while time.time() < probe_deadline and proc.poll() is None:
+                if _probe_public_llm_url(endpoint, timeout=1.8):
+                    ready = True
+                    break
+                time.sleep(0.4)
+            if ready:
+                _TUNNEL_PROC = proc
+                _TUNNEL_URL = found_url
+                logger.info("Started verified cloudflared tunnel (port %s) for Agora Full-Tools LLM: %s", port, found_url)
+                return endpoint
+            logger.warning("cloudflared tunnel %s did not pass HTTP 401 probe in time; falling back to managed LLM", found_url)
         try:
             proc.terminate()
         except Exception:
@@ -896,6 +964,9 @@ class AgoraVoiceService:
             raise ValueError("agent_uid and user_uid must be positive integers")
 
         is_call = (preset or "").strip().lower() in ("call", "phone", "chat", "companion")
+        if is_call:
+            set_call_session_id("")
+            set_call_activity(state="connecting", activity="Connecting call…", tool="", user_text="", reply_text="")
         effective_instructions = (instructions or "").strip() or (
             build_xod_call_instructions() if is_call else build_xod_brief_instructions()
         )

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.52
+
+Fixes Agora ConvoAI Custom LLM calls returning HTTP 403 (`"Sorry, I didn't quite catch that"`) through the ephemeral `cloudflared` tunnel, hardens tunnel readiness verification, and keeps each voice call in one clean spoken-mode session.
+
+- **Localhost Guard Exception for Authenticated Agora Webhook** (`app/main.py`): exempts only `POST /api/agora/v1/chat/completions` (protected by a per-session 32-byte cryptographic Bearer token checked with `hmac.compare_digest`) from the localhost-only `Host` header middleware so Cloudflare Quick Tunnel requests from Agora ConvoAI reach Xod while every other route stays strictly localhost-only.
+- **Spoken-Mode Full-Tools Voice Turn & Protocol Hardening** (`app/main.py`): runs Agora Custom LLM turns with `voice=True` in one persistent phone session per call, safely parses both string and multimodal-list OpenAI message contents, handles both SSE streaming and non-streaming responses, logs request/reply metrics, and reports clean tool-activity labels to phones.
+- **Verified `cloudflared` Tunnel Readiness & Drain** (`app/services/agora_voice.py`): drains `cloudflared` stdout in a background thread to prevent pipe-buffer stalls and verifies live HTTP `401` routing through Cloudflare edge before passing the URL to Agora `/join`, falling back cleanly to the managed LLM if the tunnel cannot be reached.
+
 ## 1.1.51
 
 Fixes the Agora Full-Tools `cloudflared` tunnel port auto-detection (targets Xod's live port `8000` instead of hardcoded `8010`) and adds a real-time **Live Call Activity** endpoint (`voice_brief.status`) so phones display exactly what tool/step Xod is running during a voice call.

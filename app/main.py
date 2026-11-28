@@ -61,6 +61,11 @@ async def trustmrr_error_handler(request: Request, exc: _TrustMRRError):
 
 @app.middleware("http")
 async def local_only_guard(request, call_next):
+    # Single remote-reachable exception: Agora ConvoAI Custom LLM webhook over an ephemeral
+    # tunnel. The endpoint itself strictly requires a per-session 32-byte cryptographic Bearer
+    # token checked with hmac.compare_digest; every other Xod route stays localhost-only.
+    if request.method == "POST" and request.url.path == "/api/agora/v1/chat/completions":
+        return await call_next(request)
     if _host_only(request.headers.get("host", "")) not in _LOCAL_HOSTS:
         return JSONResponse({"detail": "Xod only answers on localhost."}, status_code=403)
     from app.services import previews as _previews
@@ -6140,6 +6145,44 @@ async def voice_wake_endpoint(request: Request):
     return await speech_to_text.wake(await request.body())
 
 
+def _extract_openai_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") in ("text", "input_text"):
+                t = str(item.get("text") or "").strip()
+                if t:
+                    parts.append(t)
+            elif isinstance(item, str) and item.strip():
+                parts.append(item.strip())
+        return " ".join(parts).strip()
+    return str(content or "").strip()
+
+
+def _friendly_tool_activity(tname: str, raw_label: str = "") -> str:
+    clean = (raw_label or "").strip()
+    if clean and len(clean) <= 90 and not clean.startswith("{"):
+        return clean
+    friendly = {
+        "remote_device": "Reaching your remote device…",
+        "shell_exec": "Running a command on your Mac…",
+        "run_command": "Running a command on your Mac…",
+        "desktop_action": "Checking your desktop…",
+        "chrome_tabs": "Checking Chrome tabs…",
+        "browser_open": "Checking the browser…",
+        "web_search": "Searching the web…",
+        "file_read": "Reading files…",
+        "file_write": "Updating a file…",
+    }
+    if tname in friendly:
+        return friendly[tname]
+    if tname:
+        return f"Using {tname.replace('_', ' ')}…"
+    return "Working…"
+
+
 @app.post("/api/agora/v1/chat/completions")
 async def agora_custom_llm_endpoint(request: Request):
     """
@@ -6149,37 +6192,60 @@ async def agora_custom_llm_endpoint(request: Request):
     per-session secret Bearer token.
     """
     import hmac
+    import time
+    import uuid
     from app.services import agora_voice
     auth = (request.headers.get("authorization") or "").strip()
     token = auth[7:].strip() if auth.lower().startswith("bearer ") else auth
+    if not token:
+        token = (request.headers.get("x-api-key") or "").strip()
     expected = agora_voice.get_agora_llm_secret()
     if not token or not hmac.compare_digest(token, expected):
+        logger.warning("Agora Custom LLM unauthorized request (host=%s)", request.headers.get("host", ""))
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    want_stream = body.get("stream", True) is not False
     raw_msgs = body.get("messages") or []
-    user_msgs = [m for m in raw_msgs if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
+    user_msgs: List[Dict[str, str]] = []
+    for m in raw_msgs:
+        if not isinstance(m, dict):
+            continue
+        role = str(m.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        txt = _extract_openai_text(m.get("content"))
+        if txt:
+            user_msgs.append({"role": role, "content": txt})
     if not user_msgs:
         user_msgs = [{"role": "user", "content": "Hello"}]
 
-    last_user = next((str(m.get("content") or "") for m in reversed(user_msgs) if m.get("role") == "user"), "")
+    last_user = next((m["content"] for m in reversed(user_msgs) if m["role"] == "user"), "")
+    logger.info("Agora Custom LLM turn: stream=%s msgs=%d user=%r", want_stream, len(user_msgs), last_user[:120])
     agora_voice.set_call_activity(state="thinking", activity="Thinking…", tool="", user_text=last_user, reply_text="")
 
-    # Keep voice turns crisp and spoken-friendly while retaining full Xod tools.
-    voice_hint = {
-        "role": "system",
-        "content": (
-            "You are answering on a live voice phone call. Use any of your Xod tools needed to actually "
-            "check or do what the user asks, then reply in 1 to 3 natural spoken sentences. "
-            "No markdown, no bullet lists, no emojis, no raw URLs."
-        ),
-    }
-    resp = await chat_endpoint(ChatRequest(messages=[voice_hint] + user_msgs[-14:], source="phone"))
+    # Keep the whole live phone call in one clean phone session with spoken=True so
+    # researcher uses fast spoken routing + concise natural answers while retaining all tools.
+    call_sid = agora_voice.get_call_session_id() or None
+    resp = await chat_endpoint(
+        ChatRequest(
+            messages=user_msgs[-14:],
+            session_id=call_sid,
+            voice=True,
+            source="phone",
+        )
+    )
 
-    async def _sse_stream():
-        cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-        created = int(time.time())
+    cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created = int(time.time())
+
+    async def _iter_reply_pieces():
         sent_any = False
+        err_text = ""
         reply_acc: List[str] = []
         async for chunk in resp.body_iterator:
             text_chunk = chunk.decode("utf-8", errors="ignore") if isinstance(chunk, (bytes, bytearray)) else str(chunk)
@@ -6194,34 +6260,67 @@ async def agora_custom_llm_endpoint(request: Request):
                 except Exception:
                     continue
                 ev_type = ev.get("type")
-                if ev_type in ("tool_call", "tool_start", "status"):
+                if ev_type == "session_info" and ev.get("session_id"):
+                    agora_voice.set_call_session_id(str(ev["session_id"]))
+                elif ev_type in ("tool_call", "tool_start", "subagent_tool_call", "status"):
                     tname = str(ev.get("tool") or ev.get("name") or "").strip()
-                    label = str(ev.get("content") or ev.get("status") or (f"Using {tname}…" if tname else "Working…")).strip()
+                    label = _friendly_tool_activity(tname, str(ev.get("content") or ev.get("status") or ""))
                     agora_voice.set_call_activity(state="working", activity=label[:120], tool=tname)
+                elif ev_type == "error" and ev.get("content"):
+                    err_text = str(ev["content"]).strip()
+                    logger.warning("Agora Custom LLM chat error: %s", err_text[:200])
                 elif ev_type in ("content", "token", "answer") and ev.get("content"):
                     piece = re.sub(r"[*_`#]+", "", str(ev["content"]))
                     if piece:
                         sent_any = True
                         reply_acc.append(piece)
-                        agora_voice.set_call_activity(state="speaking", activity="Answering…", tool="", reply_text="".join(reply_acc))
-                        frame = {
-                            "id": cid,
-                            "object": "chat.completion.chunk",
-                            "created": created,
-                            "model": "xod-full-tools",
-                            "choices": [{"index": 0, "delta": {"role": "assistant", "content": piece}, "finish_reason": None}],
-                        }
-                        yield f"data: {json.dumps(frame)}\n\n"
+                        agora_voice.set_call_activity(
+                            state="speaking",
+                            activity="Answering…",
+                            tool="",
+                            reply_text="".join(reply_acc),
+                        )
+                        yield piece
         if not sent_any:
-            fallback = {
+            fallback_msg = (
+                "My language model hit a snag on the Mac right now — check the model setting in Xod."
+                if err_text
+                else "Done — let me know what you want to do next."
+            )
+            reply_acc.append(fallback_msg)
+            yield fallback_msg
+        full_reply = "".join(reply_acc)
+        logger.info("Agora Custom LLM reply complete: chars=%d", len(full_reply))
+        agora_voice.set_call_activity(state="live", activity="Listening…", tool="", reply_text=full_reply or None)
+
+    if not want_stream:
+        chunks = [piece async for piece in _iter_reply_pieces()]
+        full = "".join(chunks)
+        return JSONResponse({
+            "id": cid,
+            "object": "chat.completion",
+            "created": created,
+            "model": "xod-full-tools",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": full},
+                "finish_reason": "stop",
+            }],
+        })
+
+    async def _sse_stream():
+        first = True
+        async for piece in _iter_reply_pieces():
+            delta = {"role": "assistant", "content": piece} if first else {"content": piece}
+            first = False
+            frame = {
                 "id": cid,
                 "object": "chat.completion.chunk",
                 "created": created,
                 "model": "xod-full-tools",
-                "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Done — let me know what you want to do next."}, "finish_reason": None}],
+                "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
             }
-            yield f"data: {json.dumps(fallback)}\n\n"
-        agora_voice.set_call_activity(state="live", activity="Listening…", tool="", reply_text="".join(reply_acc) or None)
+            yield f"data: {json.dumps(frame)}\n\n"
         end_frame = {
             "id": cid,
             "object": "chat.completion.chunk",
@@ -6232,7 +6331,15 @@ async def agora_custom_llm_endpoint(request: Request):
         yield f"data: {json.dumps(end_frame)}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(_sse_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _sse_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 VOICE_LOG_EVENTS = {"mic_open_ok", "mic_open_fail", "wake_start", "wake_stop", "wake_detected", "wake_blocked"}
